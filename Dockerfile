@@ -20,8 +20,24 @@ RUN npm ci --omit=dev
 FROM node:22-alpine AS runtime
 
 ENV NODE_ENV=production
-ENV PORT=3000
-ENV HOST=0.0.0.0
+
+# Runtime config (see .env.example). These become the image's default ENV
+# values; docker-compose/`docker run -e` still override them per container.
+ARG PORT=3000
+ARG HOST=0.0.0.0
+ARG WS_PATH=/ws
+ARG ROOM_CAPACITY=4
+ARG TICK_HZ=20
+ARG MAX_ROOMS=200
+ARG MAX_CONNECTIONS=200
+
+ENV PORT=$PORT
+ENV HOST=$HOST
+ENV WS_PATH=$WS_PATH
+ENV ROOM_CAPACITY=$ROOM_CAPACITY
+ENV TICK_HZ=$TICK_HZ
+ENV MAX_ROOMS=$MAX_ROOMS
+ENV MAX_CONNECTIONS=$MAX_CONNECTIONS
 
 WORKDIR /app
 
