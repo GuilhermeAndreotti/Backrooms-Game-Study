@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# systemd unit for running the game without Docker.
+#
+#   sudo cp deploy/backrooms.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now backrooms
+#
+# Adjust User and WorkingDirectory if you cloned somewhere else.
+# ---------------------------------------------------------------------------
+
+[Unit]
+Description=Backrooms Level 0 Online
+After=network.target
+
+[Service]
+Type=simple
+User=backrooms
+WorkingDirectory=/opt/backrooms
+EnvironmentFile=-/opt/backrooms/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node dist/server.cjs
+
+Restart=always
+RestartSec=5
+
+# The graceful shutdown handler closes sockets on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=backrooms
+
+# --- Hardening: the process only needs to read its own directory -----------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/backrooms
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

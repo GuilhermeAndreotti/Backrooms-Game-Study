@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#14130a" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="Backrooms Level 0 Online - exploracao 3D cooperativa com geracao procedural de mapa."
+    />
+    <title>Backrooms Level 0 — Online</title>
+    <style>
+      /* Painted before any JS runs so there is no white flash on a slow VPS. */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #020201;
+        color: #deb81d;
+        overscroll-behavior: none;
+      }
+      #root {
+        min-height: 100vh;
+      }
+      #boot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font: 12px/1.6 "Courier New", monospace;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        background: #020201;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div id="boot">Carregando o Level 0...</div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

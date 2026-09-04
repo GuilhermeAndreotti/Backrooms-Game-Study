@@ -1,0 +1,36 @@
+services:
+  backrooms:
+    build: .
+    image: backrooms-level0:latest
+    container_name: backrooms
+    restart: unless-stopped
+
+    # Only bound to localhost: nginx (or Caddy) terminates TLS and proxies here.
+    # To expose the game directly without a reverse proxy, change this to
+    # "3000:3000" and open port 3000 in the firewall.
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      # Players per room.
+      ROOM_CAPACITY: "4"
+      # Movement snapshots broadcast per second.
+      TICK_HZ: "20"
+      # Safety caps for a small VPS.
+      MAX_ROOMS: "200"
+      MAX_CONNECTIONS: "200"
+
+    # Keeps one runaway container from taking the whole box down.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

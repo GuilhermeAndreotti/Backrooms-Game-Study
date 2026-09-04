@@ -1,0 +1,43 @@
+{
+  "name": "backrooms-level-0-online",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch server.ts",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs",
+    "start": "NODE_ENV=production node dist/server.cjs",
+    "clean": "rm -rf dist",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "compression": "^1.8.1",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "three": "^0.184.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/compression": "^1.8.1",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "@types/three": "^0.184.1",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^5.0.4",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3"
+  },
+  "description": "Jogo 3D multiplayer cooperativo do Level 0 das Backrooms, com geracao procedural.",
+  "engines": {
+    "node": ">=20"
+  }
+}
