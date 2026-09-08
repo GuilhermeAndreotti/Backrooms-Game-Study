@@ -11,6 +11,7 @@ import { GameHUD } from "./components/GameHUD";
 import { InventoryHUD } from "./components/InventoryHUD";
 import { AchievementsHUD } from "./components/AchievementsHUD";
 import { addAchievementListener, removeAchievementListener, unlockAchievement } from "./utils/achievements";
+import { isTypingInField } from "./utils/input";
 import { BackroomsLore, generateProceduralLore } from "./utils/lore";
 import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, X, FileText, Compass, Skull } from "lucide-react";
 
@@ -204,6 +205,9 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (phase !== ConnectionPhase.PLAYING) return;
+      // Typing a chat message: "i"/"k" should land in the message, not pop
+      // open the inventory/achievements panels over it.
+      if (isTypingInField()) return;
       if (e.key === "i" || e.key === "I") {
         e.preventDefault();
         setIsAchievementsOpen(false);

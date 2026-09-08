@@ -5,7 +5,7 @@
 
 import * as THREE from "three";
 import { ProceduralMap } from "./ProceduralMap";
-import { PlayerController } from "./PlayerController";
+import { PlayerController, PLAYER_STANDING_HEIGHT, PLAYER_CROUCH_HEIGHT } from "./PlayerController";
 import { AudioManager } from "./AudioManager";
 import { WanderingEntity, EntityType } from "./WanderingEntity";
 import { GameSettings, RemotePlayer } from "../types/game";
@@ -1186,6 +1186,20 @@ export class GameEngine {
   }
 
   /**
+   * `PlayerController.position.y` is the camera's eye height (1.6 standing /
+   * 0.95 crouched), not a floor height — that is what gets broadcast over the
+   * network as `x/y/z`. The hazmat model, though, is built feet-down from
+   * floor level (boots near y=0, head near y=1.3). Placing the group straight
+   * at the received y therefore floats it roughly a body-height above the
+   * floor, looking like it is stuck near the ceiling. Subtract the eye height
+   * back out so the model's feet land on the floor.
+   */
+  private remoteFloorY(eyeY: number, state?: string): number {
+    const eyeHeight = state === "crouching" ? PLAYER_CROUCH_HEIGHT : PLAYER_STANDING_HEIGHT;
+    return eyeY - eyeHeight;
+  }
+
+  /**
    * Spawns a remote explorer visual node and sets up their shoulder spotlight.
    */
   public spawnRemotePlayer(id: string, name: string, x: number, y: number, z: number) {
@@ -1193,7 +1207,7 @@ export class GameEngine {
 
     // Create Hazmat Group Mesh
     const group = this.createHazmatExplorer(name);
-    group.position.set(x, y, z);
+    group.position.set(x, this.remoteFloorY(y), z);
     this.scene.add(group);
     this.remotePlayerGroups.set(id, group);
 
@@ -1270,7 +1284,7 @@ export class GameEngine {
     // Assign custom attributes into group container for asynchronous lerp integration in game loop
     const anyGroup = group as any;
     anyGroup.targetX = update.x;
-    anyGroup.targetY = update.y;
+    anyGroup.targetY = this.remoteFloorY(update.y, update.state);
     anyGroup.targetZ = update.z;
     anyGroup.targetYaw = update.yaw;
     anyGroup.targetPitch = update.pitch;

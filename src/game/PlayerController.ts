@@ -5,6 +5,15 @@
 
 import * as THREE from "three";
 import { ProceduralMap } from "./ProceduralMap";
+import { isTypingInField } from "../utils/input";
+
+/**
+ * Eye height (`position.y`) while standing/crouching. Shared with GameEngine
+ * so remote player visuals can convert the eye-height Y broadcast over the
+ * network back into a floor-level Y for the hazmat model.
+ */
+export const PLAYER_STANDING_HEIGHT = 1.6;
+export const PLAYER_CROUCH_HEIGHT = 0.95;
 
 export class PlayerController {
   private camera: THREE.Camera;
@@ -52,8 +61,8 @@ export class PlayerController {
   private bobTime = 0;
   private bobFrequency = 14; // steps pace
   private bobAmplitude = 0.04;
-  private baseHeight = 1.6;
-  private currentHeight = 1.6;
+  private baseHeight = PLAYER_STANDING_HEIGHT;
+  private currentHeight = PLAYER_STANDING_HEIGHT;
 
   // New breathing effect timer
   private breathingTime = 0;
@@ -140,6 +149,10 @@ export class PlayerController {
   };
 
   private onKeyDown = (e: KeyboardEvent) => {
+    // The chat input (and any other text field) is focused: let the browser
+    // handle the keystroke as text instead of driving the player.
+    if (isTypingInField()) return;
+
     const key = e.key.toLowerCase();
     this.keys[key] = true;
 
@@ -150,6 +163,8 @@ export class PlayerController {
   };
 
   private onKeyUp = (e: KeyboardEvent) => {
+    // Always release, even if focus moved to a text field mid-press —
+    // otherwise a key held while opening chat would look stuck on afterward.
     const key = e.key.toLowerCase();
     this.keys[key] = false;
   };
@@ -275,7 +290,7 @@ export class PlayerController {
     }
 
     // 5b. SMOOTH CAMERA CROUCH TRANSITION
-    const targetHeight = wantsCrouch ? 0.95 : this.baseHeight;
+    const targetHeight = wantsCrouch ? PLAYER_CROUCH_HEIGHT : this.baseHeight;
     this.currentHeight += (targetHeight - this.currentHeight) * 12 * dt;
     this.position.y = this.currentHeight + this.jumpOffset;
 
