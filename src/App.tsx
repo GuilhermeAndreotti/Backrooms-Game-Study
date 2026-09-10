@@ -384,7 +384,7 @@ export default function App() {
                       // Same clue on every note this seed, appended to the body
                       // (never the title, so the dedupe-by-title below still works).
                       if (doorMarker) {
-                        lore.content += `\n\n"Rabiscado na margem: a porta certa carrega a marca ${doorMarker}. A outra só leva de volta ao vermelho."`;
+                        lore.content += `\n\n"Rabiscado na margem: a porta certa é a pintada de ${doorMarker}. A outra só leva de volta ao vermelho — e depois que você abre uma, não dá pra voltar."`;
                       }
                       setCollectedNotes((prev) => {
                         if (prev.some((n) => n.title === lore.title)) return prev;
