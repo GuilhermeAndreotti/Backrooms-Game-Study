@@ -53,7 +53,7 @@ export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
   {
     id: "gate_unlocked",
     title: "Selo Rompido",
-    description: "Abriu o Portão de Vapor do Nível 1 usando a Chave Enferrujada.",
+    description: "Abriu o portão trancado do Nível 0 usando a Chave de Ferro Enferrujada.",
     iconName: "Trophy",
     unlocked: false,
   },

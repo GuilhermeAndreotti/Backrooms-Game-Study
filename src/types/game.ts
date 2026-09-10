@@ -14,7 +14,23 @@ export interface RemotePlayer {
   flashlight: boolean;
   state: 'idle' | 'walking' | 'running' | 'crouching';
   level?: number;
+  /** Hazmat suit colour chosen in the customization screen (hex string). */
+  suitColor?: string;
 }
+
+/** Hazmat suit colours offered in the character-customization screen. */
+export const SUIT_COLORS: string[] = [
+  '#deb81d', // classic Level 0 yellow (default)
+  '#d94f2b', // hazard orange
+  '#3f7d3a', // olive green
+  '#2f6f8f', // industrial teal
+  '#8a3ab0', // ultraviolet
+  '#b0243a', // warning red
+  '#c9c2b0', // bleached grey
+  '#1c1c22', // blackout
+];
+
+export const DEFAULT_SUIT_COLOR = SUIT_COLORS[0];
 
 export interface ChatMessage {
   id: string;
@@ -38,6 +54,8 @@ export interface GameSettings {
   adaptiveResolution: boolean;
   /** Show the live FPS / resolution readout in the HUD. */
   showFps: boolean;
+  /** Hazmat suit colour (hex), picked in the character-customization screen. */
+  suitColor: string;
 }
 
 export enum ConnectionPhase {

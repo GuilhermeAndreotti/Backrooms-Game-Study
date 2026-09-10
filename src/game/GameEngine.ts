@@ -853,18 +853,19 @@ export class GameEngine {
           const dist = Math.sqrt(dx * dx + dz * dz);
           if (dist < 8.0) {
             nearMonster = true;
-            monsterDepletionSum += (8.0 - dist) * 0.022; // closer = faster (slower depletion coefficient)
+            monsterDepletionSum += (8.0 - dist) * 0.008; // closer = faster (retuned ~3x slower)
           }
         });
 
-        // 2. Distance check to active smilers
+        // 2. Distance check to active smilers (ambient dread from mere proximity,
+        //    separate from and stacking with the sustained-gaze drain in updateSmilers)
         this.smilers.forEach(s => {
           const dx = s.mesh.position.x - px;
           const dz = s.mesh.position.z - pz;
           const dist = Math.sqrt(dx * dx + dz * dz);
           if (dist < 6.0) {
             nearMonster = true;
-            monsterDepletionSum += (6.0 - dist) * 0.03; // slower depletion coefficient
+            monsterDepletionSum += (6.0 - dist) * 0.010; // retuned ~3x slower
           }
         });
 
@@ -873,22 +874,24 @@ export class GameEngine {
         const isFlashlightOn = this.player.isFlashlightOn;
         if (!isFlashlightOn) {
           if (this.map.globalEventState === "blackout") {
-            darknessDepletion = 0.038; // completed blackout is terrifying (slower depletion coefficient)
+            darknessDepletion = 0.014; // completed blackout is terrifying (retuned ~3x slower)
           } else if (this.level === 1 || this.level === 2) {
-            darknessDepletion = 0.02; // dark industrial environments (slower depletion coefficient)
+            darknessDepletion = 0.008; // dark industrial environments (retuned ~3x slower)
           } else {
-            darknessDepletion = 0.006; // normal level 0 with fluorescent lights on but flashlight off (slower depletion coefficient)
+            darknessDepletion = 0.003; // normal level 0 with fluorescent lights on but flashlight off (retuned ~2x slower)
           }
         }
 
-        // Apply depletion or recovery
+        // Apply depletion or recovery. Sanity now falls slowly, but hitting zero
+        // still kills the player (App.tsx onSanityChange -> GAME_OVER).
         if (nearMonster) {
           this.sanity = Math.max(0.0, this.sanity - (monsterDepletionSum + darknessDepletion) * delta);
         } else if (darknessDepletion > 0) {
           this.sanity = Math.max(0.0, this.sanity - darknessDepletion * delta);
         } else {
-          // Recover sanity in normal illuminated space
-          this.sanity = Math.min(1.0, this.sanity + 0.018 * delta);
+          // Recover sanity in normal illuminated space (trimmed only slightly, so a
+          // careful player still recovers at close to the old pace)
+          this.sanity = Math.min(1.0, this.sanity + 0.014 * delta);
         }
       }
 
@@ -1095,11 +1098,12 @@ export class GameEngine {
    * Spawns a beautiful, stylized retro Hazmat Explorer (Yellow Anti-contamination Suit) made of THREE primitive blocks.
    * Super light weight, no assets loading slowdown!
    */
-  private createHazmatExplorer(name: string): THREE.Group {
+  private createHazmatExplorer(name: string, suitColor?: string): THREE.Group {
     const group = new THREE.Group();
 
-    // Yellow Hazmat Fabric Material (flat shading to enhance vintage polygon rendering)
-    const suitMat = new THREE.MeshStandardMaterial({ color: 0xdeb81d, roughness: 0.9, metalness: 0.1 });
+    // Hazmat suit fabric — colour picked in the customization screen, defaults
+    // to the classic Level 0 yellow (flat shading keeps the vintage polygon look)
+    const suitMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(suitColor || "#deb81d"), roughness: 0.9, metalness: 0.1 });
     
     // Visor Glass: Shiny dark glass block
     const visorMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.9, roughness: 0.1 });
@@ -1202,11 +1206,11 @@ export class GameEngine {
   /**
    * Spawns a remote explorer visual node and sets up their shoulder spotlight.
    */
-  public spawnRemotePlayer(id: string, name: string, x: number, y: number, z: number) {
+  public spawnRemotePlayer(id: string, name: string, x: number, y: number, z: number, suitColor?: string) {
     if (this.remotePlayerGroups.has(id)) return;
 
     // Create Hazmat Group Mesh
-    const group = this.createHazmatExplorer(name);
+    const group = this.createHazmatExplorer(name, suitColor);
     group.position.set(x, this.remoteFloorY(y), z);
     this.scene.add(group);
     this.remotePlayerGroups.set(id, group);
@@ -1277,7 +1281,7 @@ export class GameEngine {
 
     const group = this.remotePlayerGroups.get(id);
     if (!group) {
-      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z);
+      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor);
       return;
     }
 

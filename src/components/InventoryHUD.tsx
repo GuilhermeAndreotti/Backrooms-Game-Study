@@ -59,7 +59,7 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
       description: "Uma chave pesada de ferro fundido antigo, completamente corroída por uma espessa camada de ferrugem vermelha áspera ao toque.",
       lore: "Ao segurar a chave por tempo suficiente, você percebe que o metal está anormalmente frio, quase congelante. Mais estranho ainda é uma vibração de alta frequência pulsando no cabo da chave — um zumbido mecânico perpétuo que se alinha perfeitamente com a frequência das lâmpadas fluorescentes.",
       clueTitle: "NOTA EXTRAPOLADA DO EXPLORADOR:",
-      clueText: "\"O mecanismo interno de certas portas escondidas parece se alimentar de distorções magnéticas. Guarde esta chave. Ela vibra mais forte quando próxima a fendas ou anomalias espaciais de transição de nível. Ela abre o portão do Nível 1!\""
+      clueText: "\"O mecanismo interno de certas portas trancadas parece se alimentar de distorções magnéticas. Guarde esta chave. Ela vibra mais forte perto de um portão trancado nas profundezas deste andar — abra-o e o labirinto além dele leva à saída.\""
     },
     cassette_tape: {
       id: "cassette_tape",
@@ -69,7 +69,7 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
       description: "Uma fita cassete antiga de fita magnética marrom exposta. A carcaça de plástico preta está riscada e rachada nas bordas.",
       lore: "Ao aproximá-la do ouvido, você ouve ruídos de estática magnética pesada misturados com vozes distorcidas murmurando coordenadas incoerentes. Em uma etiqueta descascada lê-se: 'PROTOCOLO DE INFILTRAÇÃO 109'.",
       clueTitle: "GRAVAÇÃO DE ÁUDIO DECODIFICADA:",
-      clueText: "\"Não confie nas sombras que se movem. A fenda é real, mas o portão para o nível 2 requer a chave de ferro. Ela ressoa com as lâmpadas do saguão...\""
+      clueText: "\"Não confie nas sombras que se movem. A fenda é real, mas o portão trancado deste andar só cede à chave de ferro. Ela ressoa com as lâmpadas do saguão...\""
     },
     strange_crystal: {
       id: "strange_crystal",

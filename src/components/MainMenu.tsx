@@ -4,8 +4,8 @@
  */
 
 import React, { useState, useEffect } from "react";
-import { GameSettings } from "../types/game";
-import { Settings, Play, Users, LogOut, Check, Sliders, Volume2, MonitorCog } from "lucide-react";
+import { GameSettings, SUIT_COLORS } from "../types/game";
+import { Settings, Play, Users, LogOut, Check, Sliders, Volume2, MonitorCog, Shirt } from "lucide-react";
 
 interface MainMenuProps {
   settings: GameSettings;
@@ -24,6 +24,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
 }) => {
   const [localSettings, setLocalSettings] = useState<GameSettings>({ ...settings });
   const [showSettings, setShowSettings] = useState(false);
+  const [showCharacter, setShowCharacter] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   // Sync state if parent settings shift
@@ -231,6 +232,21 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                     <div className="h-[1px] w-full bg-white/10 group-hover:bg-[#deb81d]/30 mt-2 transition-colors"></div>
                   </button>
 
+                  <button
+                    id="btn-character"
+                    type="button"
+                    onClick={() => setShowCharacter(true)}
+                    className="group w-full text-left transition-all cursor-pointer"
+                  >
+                    <div className="flex items-center gap-4 text-[#F2E8CF]/80 group-hover:text-white transition-colors">
+                      <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">04</span>
+                      <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
+                        Personalizar Explorador
+                      </span>
+                    </div>
+                    <div className="h-[1px] w-full bg-white/10 group-hover:bg-[#deb81d]/30 mt-2 transition-colors"></div>
+                  </button>
+
                   {onCloseApp && (
                     <button
                       id="btn-exit"
@@ -238,7 +254,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                       className="group w-full text-left transition-all cursor-pointer"
                     >
                       <div className="flex items-center gap-4 text-red-400/80 group-hover:text-red-400 transition-colors">
-                        <span className="font-mono text-xs opacity-50 bg-red-400/5 px-2 py-0.5 rounded">04</span>
+                        <span className="font-mono text-xs opacity-50 bg-red-400/5 px-2 py-0.5 rounded">05</span>
                         <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
                           Exit Terminal
                         </span>
@@ -498,6 +514,73 @@ export const MainMenu: React.FC<MainMenuProps> = ({
         </div>
 
       </div>
+
+      {/* Character customization overlay */}
+      {showCharacter && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm font-mono px-4">
+          <div className="w-full max-w-md bg-[#14130a] border border-[#a28e3b]/40 rounded-lg p-6 md:p-8 shadow-[0_0_60px_rgba(0,0,0,0.9)] relative">
+            <div className="absolute top-0 left-0 w-full h-[2px] bg-[#deb81d] opacity-40 rounded-t-lg" />
+
+            <h2 className="text-lg font-bold text-[#F2E8CF] flex items-center gap-2 border-b border-white/10 pb-3 uppercase tracking-wider">
+              <Shirt className="w-5 h-5 text-[#deb81d]" />
+              Traje do Explorador
+            </h2>
+
+            <p className="text-[11px] text-[#F2E8CF]/50 mt-3 leading-relaxed uppercase tracking-wider">
+              A cor do seu traje anti-contaminação. Os outros exploradores da sala veem esta cor.
+            </p>
+
+            <div className="grid grid-cols-4 gap-3 mt-5">
+              {SUIT_COLORS.map((color) => {
+                const selected = localSettings.suitColor === color;
+                return (
+                  <button
+                    key={color}
+                    type="button"
+                    aria-label={`Cor ${color}`}
+                    onClick={() => handleChange("suitColor", color)}
+                    className={`aspect-square rounded border-2 transition-all cursor-pointer ${
+                      selected ? "border-[#deb81d] scale-105 shadow-[0_0_14px_rgba(222,184,29,0.4)]" : "border-white/10 hover:border-white/40"
+                    }`}
+                    style={{ backgroundColor: color }}
+                  >
+                    {selected && <Check className="w-4 h-4 text-black mx-auto drop-shadow" />}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex gap-3 pt-6">
+              <button
+                type="button"
+                id="btn-character-cancel"
+                onClick={() => {
+                  setLocalSettings({ ...settings });
+                  setShowCharacter(false);
+                }}
+                className="flex-1 bg-transparent border border-white/20 text-[#F2E8CF]/80 hover:text-white py-2 rounded hover:bg-white/5 uppercase tracking-wider text-xs font-semibold transition-all cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                id="btn-character-save"
+                onClick={() => {
+                  onUpdateSettings(localSettings);
+                  setSaveSuccess(true);
+                  setTimeout(() => {
+                    setSaveSuccess(false);
+                    setShowCharacter(false);
+                  }, 900);
+                }}
+                className="flex-1 flex items-center justify-center gap-2 bg-[#deb81d] hover:bg-[#ebd255] text-black py-2 rounded uppercase tracking-wider text-xs font-bold transition-all cursor-pointer"
+              >
+                {saveSuccess ? (<><Check className="w-4 h-4 text-black" />Salvo</>) : "Salvar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

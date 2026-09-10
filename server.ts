@@ -62,6 +62,24 @@ interface PlayerState {
   flashlight: boolean;
   state: string; // 'idle' | 'walking' | 'running' | 'crouching'
   level: number;
+  suitColor: string; // hex, validated against SUIT_COLORS at join time
+}
+
+/**
+ * Hazmat suit colours the client offers in its customization screen. Kept in
+ * sync with SUIT_COLORS in src/types/game.ts. Anything a client sends outside
+ * this set is rejected and replaced with the default.
+ */
+const ALLOWED_SUIT_COLORS = new Set([
+  "#deb81d", "#d94f2b", "#3f7d3a", "#2f6f8f",
+  "#8a3ab0", "#b0243a", "#c9c2b0", "#1c1c22",
+]);
+const DEFAULT_SUIT_COLOR = "#deb81d";
+
+function sanitizeSuitColor(value: unknown): string {
+  return typeof value === "string" && ALLOWED_SUIT_COLORS.has(value.toLowerCase())
+    ? value.toLowerCase()
+    : DEFAULT_SUIT_COLOR;
 }
 
 interface Connection {
@@ -228,6 +246,7 @@ async function startServer() {
           flashlight: false,
           state: "idle",
           level: 0,
+          suitColor: sanitizeSuitColor(data.suitColor),
         };
 
         conn = { ws, player, isAlive: true, chatTimestamps: [] };

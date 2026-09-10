@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { GameSettings, ConnectionPhase, RemotePlayer, ChatMessage } from "./types/game";
+import { GameSettings, ConnectionPhase, RemotePlayer, ChatMessage, DEFAULT_SUIT_COLOR } from "./types/game";
 import { GameEngine } from "./game/GameEngine";
 import { MainMenu } from "./components/MainMenu";
 import { GameHUD } from "./components/GameHUD";
@@ -29,6 +29,7 @@ const defaultSettings: GameSettings = {
   quality: "auto",
   adaptiveResolution: true,
   showFps: false,
+  suitColor: DEFAULT_SUIT_COLOR,
 };
 
 /**
@@ -278,6 +279,7 @@ export default function App() {
           type: "join",
           room: roomKeyFor(settings),
           name: settings.name,
+          suitColor: settings.suitColor,
           requestedSeed: forceSeed,
         }));
       };
@@ -404,7 +406,7 @@ export default function App() {
 
                 // Instantly spawn existing players
                 currentOn.forEach((p: RemotePlayer) => {
-                  engineRef.current?.spawnRemotePlayer(p.id, p.name, p.x, p.y, p.z);
+                  engineRef.current?.spawnRemotePlayer(p.id, p.name, p.x, p.y, p.z, p.suitColor);
                 });
 
                 // Track real asynchronous map precreation cells loading progress for Level 0
@@ -483,7 +485,7 @@ export default function App() {
 
             // Update 3D engine world
             if (engineRef.current) {
-              engineRef.current.spawnRemotePlayer(player.id, player.name, player.x, player.y, player.z);
+              engineRef.current.spawnRemotePlayer(player.id, player.name, player.x, player.y, player.z, player.suitColor);
             }
 
             // Standard terminal join announcement message
