@@ -192,6 +192,9 @@ export class ProceduralMap {
   /** Grid cells of the two choice doors at the maze's end. */
   public doorAGridX = -1; public doorAGridZ = -1;
   public doorBGridX = -1; public doorBGridZ = -1;
+  /** The junction cell in front of the two doors; path guidance stops here so
+   *  it never gives away which door is correct. */
+  public gatewayJunctionX = -1; public gatewayJunctionZ = -1;
   /** Which door leads onward vs. into the red rooms — decided by the seed. */
   public correctDoorIsA = true;
   /** Colour-name shown on the correct door's placard; repeated in every note's clue. */
@@ -388,8 +391,11 @@ export class ProceduralMap {
   public findExitPath() {
     const startX = 2;
     const startZ = 2;
-    const endX = this.exitGridX;
-    const endZ = this.exitGridZ;
+    // On Level 0 the breadcrumb/arrow guidance stops at the door junction so it
+    // never reveals which of the two doors is the correct one.
+    const guideToJunction = this.level === 0 && this.gatewayJunctionX >= 0;
+    const endX = guideToJunction ? this.gatewayJunctionX : this.exitGridX;
+    const endZ = guideToJunction ? this.gatewayJunctionZ : this.exitGridZ;
 
     const queue: [number, number][][] = [[[startX, startZ]]];
     const visited = new Set<string>();
@@ -1990,6 +1996,7 @@ export class ProceduralMap {
     // 4. Two choice doors branching off a junction at the far east end.
     const jX = 60, jZ = 32;
     this.grid[jX][jZ] = CellType.CORRIDOR;
+    this.gatewayJunctionX = jX; this.gatewayJunctionZ = jZ;
     this.doorAGridX = jX; this.doorAGridZ = jZ - 2;
     this.doorBGridX = jX; this.doorBGridZ = jZ + 2;
     for (let d = 1; d <= 4; d++) {
@@ -2145,10 +2152,12 @@ export class ProceduralMap {
   public disposeGateway(scene: THREE.Scene) {
     for (const m of this.gatewayMeshes) {
       scene.remove(m);
-      const anyM = m as THREE.Mesh;
-      if (anyM.geometry) anyM.geometry.dispose?.();
-      const mat = (anyM as THREE.Mesh).material;
-      if (mat) (Array.isArray(mat) ? mat : [mat]).forEach((mm) => mm.dispose());
+      m.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose?.();
+        const mat = mesh.material;
+        if (mat) (Array.isArray(mat) ? mat : [mat]).forEach((mm) => mm.dispose());
+      });
     }
     this.gatewayMeshes = [];
     this.gateLeafMesh = null;
