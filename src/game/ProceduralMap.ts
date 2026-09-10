@@ -202,6 +202,11 @@ export class ProceduralMap {
   public gatewayMeshes: THREE.Object3D[] = [];
   private gateLeafMesh: THREE.Object3D | null = null;
 
+  /** Level 1: cells belonging to a "ramp" connector, dressed to read as an incline. */
+  public rampCells = new Set<string>();
+  /** Level 1: X column dividing sector 2 from the sealed sector 3 (smiler hall). */
+  public level1Sector3X = 33;
+
   // Guaranteed landmark chair pyramid coordinates on Level 0
   public chairPyramidX = -1;
   public chairPyramidZ = -1;
@@ -1652,6 +1657,10 @@ export class ProceduralMap {
       this.grid[15][39] = CellType.CORRIDOR;
       this.grid[30][39] = CellType.CORRIDOR;
 
+      // Split into 3 sequential sectors; sector 3 (the smiler hall) is sealed off
+      // except for one long "ramp" corridor the player has to find.
+      this.partitionLevel1Sectors();
+
     } else {
       // LEVEL 0: The Lobby (Classic Backrooms yellow partitions forming a modular wall-labyrinth)
       // Populate as walkable hallway/open area space by default
@@ -1988,8 +1997,10 @@ export class ProceduralMap {
       this.grid[jX][jZ + d] = CellType.CORRIDOR;
     }
 
-    // 5. Seed-deterministic correct door + placard colours.
-    const doorRng = new SeededRandom(this.seed + 55555);
+    // 5. Seed-deterministic correct door + placard colours. Mix the seed and
+    //    burn a few outputs first so nearby seeds don't all pick the same door.
+    const doorRng = new SeededRandom(((this.seed ^ 0x9e3779b9) >>> 0) + 55555);
+    doorRng.next(); doorRng.next(); doorRng.next();
     this.correctDoorIsA = doorRng.next() < 0.5;
     const palette = [
       { name: "ÂMBAR", hex: 0xe0b93a },
@@ -2041,6 +2052,28 @@ export class ProceduralMap {
       }
     }
     if (this.keyGridX < 0) { this.keyGridX = 12; this.keyGridZ = 12; this.grid[12][12] = CellType.CORRIDOR; }
+  }
+
+  /** Hazard-striped floor for Level 1 "ramp" connector cells. */
+  private getRampFloorMaterial(): THREE.Material {
+    return this.sharedMat("ramp_floor", () => {
+      const c = document.createElement("canvas");
+      c.width = 64; c.height = 64;
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = "#2b2b30"; ctx.fillRect(0, 0, 64, 64);
+      ctx.strokeStyle = "#c8992f"; ctx.lineWidth = 10;
+      for (let i = -64; i < 128; i += 22) {
+        ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i + 64, 64); ctx.stroke();
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      this.sharedTextures.push(tex);
+      return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, metalness: 0.15 });
+    });
+  }
+
+  private getRampLipMaterial(): THREE.Material {
+    return this.sharedMat("ramp_lip_mat", () => new THREE.MeshStandardMaterial({ color: 0xd7a233, emissive: 0x2a1c05, roughness: 0.7 }));
   }
 
   /** World-space centre of a grid cell. */
@@ -2119,6 +2152,55 @@ export class ProceduralMap {
     }
     this.gatewayMeshes = [];
     this.gateLeafMesh = null;
+  }
+
+  /**
+   * Level 1: carve the three-sector spine. Sectors 1 and 2 stay one connected
+   * space (monsters roam, no smilers); sector 3 (x >= level1Sector3X, the
+   * smiler hall holding the exit) is walled off except for one long "ramp"
+   * corridor tucked in the south that the player has to find.
+   */
+  private partitionLevel1Sectors() {
+    const gs = this.gridSize;
+    const divX = this.level1Sector3X; // 33
+    const rampZ = gs - 4;             // 44 — the ramp runs along the south edge
+
+    // 1. Wall off sector 3, leaving only the ramp mouth open (z = rampZ-1..rampZ).
+    for (let z = 2; z < gs - 2; z++) {
+      if (z < rampZ - 1) this.grid[divX][z] = CellType.SOLID;
+    }
+
+    // 2. The "extensive ramp": a long narrow corridor hugging the south wall from
+    //    deep in sector 2 across the divider into sector 3.
+    for (let x = 18; x <= gs - 4; x++) {
+      for (let z = rampZ - 1; z <= rampZ; z++) {
+        this.grid[x][z] = CellType.CORRIDOR;
+        this.rampCells.add(`${x},${z}`);
+      }
+    }
+    // a short spur so the ramp mouth is reachable from the central field's south edge
+    for (let z = 38; z <= rampZ; z++) {
+      this.grid[20][z] = CellType.CORRIDOR;
+      this.rampCells.add(`${20},${z}`);
+    }
+
+    // 3. Sector 3: an open hall for the smilers, with the exit at its far north end.
+    for (let x = divX + 1; x <= gs - 3; x++) {
+      for (let z = 4; z <= rampZ; z++) {
+        this.grid[x][z] = CellType.OPEN_AREA;
+      }
+    }
+    this.exitGridX = gs - 4;
+    this.exitGridZ = 6;
+    this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
+
+    // 4. Dress the first stretch of the central spine as "ramp 1" (cosmetic only —
+    //    sectors 1 and 2 are not walled apart).
+    for (let x = 13; x <= 20; x++) {
+      for (let z = 19; z <= 21; z++) {
+        if (this.grid[x][z] !== CellType.SOLID) this.rampCells.add(`${x},${z}`);
+      }
+    }
   }
 
   /**
@@ -2310,11 +2392,24 @@ export class ProceduralMap {
         }
       }
     } else {
-      const mat = (cellType === CellType.RED_ROOM) ? this.redCarpetMaterial : this.carpetMaterial;
+      const isRamp = this.level === 1 && this.rampCells.has(`${gx},${gz}`);
+      const mat = (cellType === CellType.RED_ROOM)
+        ? this.redCarpetMaterial
+        : (isRamp ? this.getRampFloorMaterial() : this.carpetMaterial);
       const floorMesh = new THREE.Mesh(this.floorGeo, mat);
       floorMesh.position.set(posX, 0, posZ);
       floorMesh.receiveShadow = true;
       group.add(floorMesh);
+
+      if (isRamp) {
+        // Raised hazard-yellow lips at the cell's ends read as incline steps.
+        const lipGeo = this.sharedGeo("ramp_lip", () => new THREE.BoxGeometry(this.cellSize, 0.13, 0.32));
+        for (const oz of [-this.cellSize / 2 + 0.18, this.cellSize / 2 - 0.18]) {
+          const lip = new THREE.Mesh(lipGeo, this.getRampLipMaterial());
+          lip.position.set(posX, 0.07, posZ + oz);
+          group.add(lip);
+        }
+      }
     }
 
     // 2. CEILING (Acoustic ceiling panels) - Use shared ceilGeo

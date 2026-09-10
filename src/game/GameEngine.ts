@@ -98,7 +98,7 @@ export class GameEngine {
   private frameCounter = 0;
 
   // Smilers system
-  public smilers: { mesh: THREE.Mesh; gridX: number; gridZ: number; spawnTime: number }[] = [];
+  public smilers: { mesh: THREE.Mesh; gridX: number; gridZ: number; spawnTime: number; gazeTimer: number }[] = [];
   private smilerSpawnCheckTimer = 0;
   
   // Exposure timer in the mysterious Level 0 Red Rooms (60 seconds to collapse)
@@ -424,55 +424,11 @@ export class GameEngine {
     this.flashlight.target = this.flashlightTarget;
     this.camera.add(this.flashlight);
 
-    // Instantiate multiple official Wandering Entities on Level 1
+    // Instantiate the Level 1 sector 1/2 monsters (no smilers here — they live
+    // only in sector 3).
+    this.entities = [];
     if (this.level === 1) {
-      this.entities = [];
-      const types = [
-        EntityType.HOUND,
-        EntityType.DULLER,
-        EntityType.CLUMP,
-        EntityType.SKIN_STEALER,
-        EntityType.WRETCH
-      ];
-      
-      const targetQuads = [
-        [41, 41],
-        [15, 40],
-        [40, 15],
-        [24, 24],
-        [32, 32]
-      ];
-
-      for (let i = 0; i < types.length; i++) {
-        const type = types[i];
-        const [qx, qz] = targetQuads[i];
-        
-        let entGX = qx;
-        let entGZ = qz;
-        let found = false;
-        
-        for (let r = 0; r < 12 && !found; r++) {
-          for (let dx = -r; dx <= r && !found; dx++) {
-            for (let dz = -r; dz <= r && !found; dz++) {
-              const nx = qx + dx;
-              const nz = qz + dz;
-              if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2) {
-                if (this.map.grid[nx][nz] !== 0) {
-                  entGX = nx;
-                  entGZ = nz;
-                  found = true;
-                }
-              }
-            }
-          }
-        }
-        
-        const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, type, this.scene);
-        this.entities.push(entity);
-        console.log(`[GameEngine] ${type} spawned at grid (${entGX}, ${entGZ})`);
-      }
-    } else {
-      this.entities = [];
+      this.spawnLevel1Entities();
     }
 
     // Initial first-turn map culler tick
@@ -679,18 +635,12 @@ export class GameEngine {
 
         // 1. Sector Identification and Notification (Level 1 only)
         if (this.level === 1) {
-          let sec = "";
-          if (gx >= 18 && gx <= 30 && gz >= 18 && gz <= 30) {
-            sec = "Construction Sector";
-          } else if (gx < 24 && gz < 24) {
-            sec = "Aquila Sector";
-          } else if (gx >= 24 && gz < 24) {
-            sec = "Gild Sector";
-          } else if (gx < 24 && gz >= 24) {
-            sec = "Crate Warehouse";
-          } else {
-            sec = "Gothic Sector";
-          }
+          const s = this.getCurrentSector(gx, gz);
+          const sec = s === 1
+            ? "Setor 1 // Corredores Baixos"
+            : s === 2
+              ? "Setor 2 // Passarelas Superiores"
+              : "Setor 3 // Salão dos Sorridentes";
 
           if (sec && sec !== this.currentSector) {
             const oldSector = this.currentSector;
@@ -1613,52 +1563,9 @@ export class GameEngine {
     this.entities.forEach(entity => entity.returnToPool(this.scene));
     this.entities = [];
 
-    // Spawn new Wandering Stalker Entities on Level 1
+    // Spawn new Wandering Stalker Entities on Level 1 (sectors 1 & 2 only)
     if (level === 1) {
-      const types = [
-        EntityType.HOUND,
-        EntityType.DULLER,
-        EntityType.CLUMP,
-        EntityType.SKIN_STEALER,
-        EntityType.WRETCH
-      ];
-      
-      const targetQuads = [
-        [41, 41],
-        [15, 40],
-        [40, 15],
-        [24, 24],
-        [32, 32]
-      ];
-
-      for (let i = 0; i < types.length; i++) {
-        const type = types[i];
-        const [qx, qz] = targetQuads[i];
-        
-        let entGX = qx;
-        let entGZ = qz;
-        let found = false;
-        
-        for (let r = 0; r < 12 && !found; r++) {
-          for (let dx = -r; dx <= r && !found; dx++) {
-            for (let dz = -r; dz <= r && !found; dz++) {
-              const nx = qx + dx;
-              const nz = qz + dz;
-              if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2) {
-                if (this.map.grid[nx][nz] !== 0) {
-                  entGX = nx;
-                  entGZ = nz;
-                  found = true;
-                }
-              }
-            }
-          }
-        }
-        
-        const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, type, this.scene);
-        this.entities.push(entity);
-        console.log(`[GameEngine] ${type} spawned on transition at grid (${entGX}, ${entGZ})`);
-      }
+      this.spawnLevel1Entities();
     }
 
     // Spawn multiple chasing entities on Level 2 (Pipe Dreams)
@@ -1865,7 +1772,8 @@ export class GameEngine {
       mesh,
       gridX: gx,
       gridZ: gz,
-      spawnTime: this.totalPlayTime
+      spawnTime: this.totalPlayTime,
+      gazeTimer: 0,
     });
 
     console.log(`[Smiler] Spawned creepily at grid (${gx}, ${gz}) - Distance: ${Math.sqrt((worldX - px)**2 + (worldZ - pz)**2).toFixed(1)}m`);
@@ -1885,11 +1793,62 @@ export class GameEngine {
     this.smilerSpawnCheckTimer = 0;
   }
 
+  /**
+   * Which of Level 1's three sequential sectors a grid cell is in.
+   * 1 = low corridors, 2 = upper walkways, 3 = the sealed smiler hall (holds
+   * the exit). Sectors 1 and 2 share one connected space; only sector 3 is
+   * walled off (reached via the "extensive ramp").
+   */
+  public getCurrentSector(gx: number, gz: number): 1 | 2 | 3 {
+    const divX = this.map ? this.map.level1Sector3X : 33;
+    if (gx >= divX) return 3;
+    if (gx < 17) return 1;
+    return 2;
+  }
+
+  /**
+   * Spawns Level 1's roaming monsters. They live in sectors 1 & 2 only —
+   * sector 3 is the smiler hall. Shared by the first level load and every
+   * transitionToLevel(1) so the two spawn sites can't drift apart.
+   */
+  private spawnLevel1Entities() {
+    if (!this.map) return;
+    const types = [
+      EntityType.HOUND,
+      EntityType.DULLER,
+      EntityType.CLUMP,
+      EntityType.SKIN_STEALER,
+      EntityType.WRETCH,
+    ];
+    // All targets sit inside sectors 1 & 2 (x < level1Sector3X).
+    const targetQuads = [[8, 10], [10, 30], [24, 12], [26, 30], [30, 22]];
+
+    for (let i = 0; i < types.length; i++) {
+      const [qx, qz] = targetQuads[i];
+      let entGX = qx, entGZ = qz, found = false;
+      for (let r = 0; r < 12 && !found; r++) {
+        for (let dx = -r; dx <= r && !found; dx++) {
+          for (let dz = -r; dz <= r && !found; dz++) {
+            const nx = qx + dx, nz = qz + dz;
+            if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2 && nx < this.map.level1Sector3X) {
+              if (this.map.grid[nx][nz] !== 0) { entGX = nx; entGZ = nz; found = true; }
+            }
+          }
+        }
+      }
+      const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, types[i], this.scene);
+      this.entities.push(entity);
+    }
+  }
+
   private updateSmilers(delta: number) {
     if (!this.player || !this.map) return;
 
-    // Level 0 should NOT have entities (Smilers)
-    if (this.level !== 1) {
+    // Smilers live only in Level 1's sector 3 (the final hall). Anywhere else,
+    // clear them out.
+    const pgx = Math.floor(this.player.position.x / this.map.cellSize);
+    const pgz = Math.floor(this.player.position.z / this.map.cellSize);
+    if (this.level !== 1 || this.getCurrentSector(pgx, pgz) !== 3) {
       if (this.smilers.length > 0) {
         this.clearAllSmilers();
       }
@@ -1957,26 +1916,23 @@ export class GameEngine {
         continue;
       }
 
-      // 3. Glancing check: Did the player look directly at the Smiler?
+      // 3. Sustained-gaze drain. Looking straight at a smiler no longer makes
+      //    it vanish — instead your sanity bleeds for as long as you keep
+      //    staring, and the drain rate ramps up the longer you hold the look.
+      //    Glance away and gazeTimer decays fast, so a brief look is forgiving.
       const dirToSmiler = new THREE.Vector3().subVectors(mesh.position, this.camera.position).normalize();
       const dot = camDir.dot(dirToSmiler);
+      const gazing = dot > 0.90 && dist < 20.0; // ~25 deg cone, 20 m range
 
-      // Look direction dot product > 0.94 represents roughly 20 degrees central field of view
-      if (dot > 0.94) {
-        // Player locked eyes! They vanish instantly!
-        this.scene.remove(mesh);
-        mesh.geometry.dispose();
-        if (Array.isArray(mesh.material)) {
-          mesh.material.forEach(m => m.dispose());
-        } else if (mesh.material) {
-          mesh.material.dispose();
+      if (gazing) {
+        smiler.gazeTimer += delta;
+        const drainRate = 0.010 + Math.min(smiler.gazeTimer, 8) * 0.006; // ~0.01/s -> ~0.058/s after 8s
+        this.sanity = Math.max(0.0, this.sanity - drainRate * delta);
+        if (Math.random() < delta * 0.18) {
+          this.audio.triggerHumFlicker(90);
         }
-
-        // Psychic interference details: flicker the ambient master hum or flashlight momentarily
-        // this triggers genuine paranoia!
-        this.audio.triggerHumFlicker(180);
-        console.log(`[Smiler] Explorer spotted smiler at (${smiler.gridX}, ${smiler.gridZ})! Vanished and triggered hum feedback.`);
-        continue;
+      } else {
+        smiler.gazeTimer = Math.max(0, smiler.gazeTimer - delta * 0.6);
       }
 
       activeSmilers.push(smiler);
