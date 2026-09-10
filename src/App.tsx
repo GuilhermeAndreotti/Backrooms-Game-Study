@@ -294,7 +294,7 @@ export default function App() {
           }
 
           else if (type === "joined") {
-            const { id: myId, seed, players: currentOn } = data;
+            const { id: myId, seed, players: currentOn, level: roomLevel = 0 } = data;
             console.log(`Infiltration confirmed! Seed acquired: ${seed}. Connecting visuals...`);
             setClientId(myId);
             clientIdRef.current = myId;
@@ -331,36 +331,19 @@ export default function App() {
                       if (!engine) return;
 
                       if (engine.level === 0 || engine.level === 1) {
-                        const nextLevel = engine.level + 1;
-                        console.log(`Explorer successfully noclipped into Level ${nextLevel}!`);
-                        if (nextLevel === 1) unlockAchievement("noclip_master");
-
-                        setLoadingMap(true);
-                        setLoadingProgress(0);
-                        setCurrentLevel(nextLevel);
-                        engine.transitionToLevel(nextLevel, seed, settings);
-
-                        if (engine.player) {
-                          engine.player.mapFullyLoaded = false;
+                        // Ask the server to advance the whole room together instead
+                        // of transitioning just this client: previously each player
+                        // who found the exit noclipped into their own next level,
+                        // leaving the group split across levels. The actual
+                        // transition now runs for every player (this one included)
+                        // when the server's "level_transition" broadcast comes back
+                        // — see that handler below.
+                        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+                          socketRef.current.send(JSON.stringify({
+                            type: "level_transition_request",
+                            level: engine.level + 1,
+                          }));
                         }
-
-                        engine.precreateMap((p) => {
-                          setLoadingProgress(Math.round(p * 100));
-                        }).then(() => {
-                          setLoadingProgress(100);
-                          setTimeout(() => {
-                            setLoadingMap(false);
-                            if (engineRef.current?.player) {
-                              engineRef.current.player.mapFullyLoaded = true; // Unlock controls!
-                            }
-                          }, 350);
-                        }).catch((err) => {
-                          console.error(`Error during Level ${nextLevel} precreation:`, err);
-                          setLoadingMap(false);
-                          if (engineRef.current?.player) {
-                            engineRef.current.player.mapFullyLoaded = true;
-                          }
-                        });
                       } else {
                         console.log("Explorer successfully escaped the Backrooms!");
                         unlockAchievement("absolute_survivor");
@@ -406,6 +389,14 @@ export default function App() {
                   }
                 );
 
+                // The room had already moved past Level 0 by the time we joined
+                // (the rest of the group found an exit earlier) — catch up to that
+                // same level instead of spawning alone back on Level 0.
+                if (roomLevel > 0) {
+                  engineRef.current.transitionToLevel(roomLevel, seed, settings);
+                  setCurrentLevel(roomLevel);
+                }
+
                 // Set player lock state during generation to guarantee no movement
                 if (engineRef.current && engineRef.current.player) {
                   engineRef.current.player.mapFullyLoaded = false;
@@ -441,6 +432,46 @@ export default function App() {
                 setPhase(ConnectionPhase.ERROR);
               }
             }, 50);
+          }
+
+          // Server-authoritative "the room advanced to the next level" broadcast —
+          // fires for every player in the room (including whoever triggered it),
+          // so the group always transitions together onto the same level.
+          else if (type === "level_transition") {
+            const engine = engineRef.current;
+            const nextLevel = data.level;
+            const roomSeed = data.seed;
+            if (!engine || typeof nextLevel !== "number" || nextLevel <= engine.level) return;
+
+            console.log(`Group noclipped into Level ${nextLevel}!`);
+            if (nextLevel === 1) unlockAchievement("noclip_master");
+
+            setLoadingMap(true);
+            setLoadingProgress(0);
+            setCurrentLevel(nextLevel);
+            engine.transitionToLevel(nextLevel, roomSeed, settings);
+
+            if (engine.player) {
+              engine.player.mapFullyLoaded = false;
+            }
+
+            engine.precreateMap((p) => {
+              setLoadingProgress(Math.round(p * 100));
+            }).then(() => {
+              setLoadingProgress(100);
+              setTimeout(() => {
+                setLoadingMap(false);
+                if (engineRef.current?.player) {
+                  engineRef.current.player.mapFullyLoaded = true; // Unlock controls!
+                }
+              }, 350);
+            }).catch((err) => {
+              console.error(`Error during Level ${nextLevel} precreation:`, err);
+              setLoadingMap(false);
+              if (engineRef.current?.player) {
+                engineRef.current.player.mapFullyLoaded = true;
+              }
+            });
           }
 
           else if (type === "player_joined") {
