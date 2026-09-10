@@ -379,8 +379,13 @@ export default function App() {
                         }
                       }
                     },
-                    onScrapOfNoteCollected: (noteSeed) => {
+                    onScrapOfNoteCollected: (noteSeed, doorMarker) => {
                       const lore = generateProceduralLore(noteSeed);
+                      // Same clue on every note this seed, appended to the body
+                      // (never the title, so the dedupe-by-title below still works).
+                      if (doorMarker) {
+                        lore.content += `\n\n"Rabiscado na margem: a porta certa carrega a marca ${doorMarker}. A outra só leva de volta ao vermelho."`;
+                      }
                       setCollectedNotes((prev) => {
                         if (prev.some((n) => n.title === lore.title)) return prev;
                         return [...prev, lore];

@@ -33,7 +33,7 @@ export interface GameEngineCallbacks {
   onSectorChange?: (sector: string) => void;
   onInventoryChange?: (items: string[]) => void;
   onSanityChange?: (val: number) => void;
-  onScrapOfNoteCollected?: (seed: number) => void;
+  onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   /** Smoothed FPS and current render scale, emitted about twice a second. */
   onPerformanceSample?: (fps: number, renderScale: number) => void;
 }
@@ -121,7 +121,7 @@ export class GameEngine {
   public onSectorChange?: (sector: string) => void;
   public onInventoryChange?: (items: string[]) => void;
   private onSanityChange?: (val: number) => void;
-  public onScrapOfNoteCollected?: (seed: number) => void;
+  public onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   private onPerformanceSample?: (fps: number, renderScale: number) => void;
 
   // Sanity system
@@ -386,6 +386,7 @@ export class GameEngine {
 
     // Instantiate Procedural Level 0 or 1 Map
     this.map = new ProceduralMap(seed, this.level, this.quality);
+    this.map.buildLevel0Gateway(this.scene);
 
     // Fixed pool of real point lights shared by every lamp in the level.
     this.lightPool = new LightPool(this.scene, this.quality.lightBudget, this.quality.lightRange);
@@ -594,6 +595,26 @@ export class GameEngine {
       // Tick player controllers
       this.player.update(delta);
 
+      // Level 0 locked gate: walking up to it with the rusty key uses it
+      // automatically (no interact key exists — same convention as pickups).
+      if (this.level === 0 && this.map && this.player && this.map.gateGridX >= 0 && !this.map.gateUnlocked) {
+        if (this.inventory.includes("rusty_key")) {
+          const gcx = this.map.gateGridX * this.map.cellSize + this.map.cellSize / 2;
+          const gcz = this.map.gateGridZ * this.map.cellSize + this.map.cellSize / 2;
+          const ddx = this.player.position.x - gcx;
+          const ddz = this.player.position.z - gcz;
+          if (ddx * ddx + ddz * ddz < 9.0) { // within ~3m of the gate cell centre
+            const ki = this.inventory.indexOf("rusty_key");
+            if (ki !== -1) this.inventory.splice(ki, 1);
+            this.map.unlockLevel0Gate();
+            if (this.onInventoryChange) this.onInventoryChange([...this.inventory]);
+            if (this.onHUDNotification) this.onHUDNotification("CHAVE ENFERRUJADA USADA: O portão trancado cede com um estalo metálico.");
+            if (this.audio) this.audio.playGlitchNoclipSound();
+            unlockAchievement("gate_unlocked");
+          }
+        }
+      }
+
       // Detect if explorer has entered creeping crimson Red Rooms
       let inRedRoom = false;
       if (this.level === 0 && this.map && this.player) {
@@ -773,7 +794,10 @@ export class GameEngine {
                 }
                 if (this.onScrapOfNoteCollected) {
                   const noteSeed = Math.floor(Math.abs(item.x * 313 + item.z * 719) % 100000) || Math.floor(Math.random() * 100000);
-                  this.onScrapOfNoteCollected(noteSeed);
+                  // The clue marker is a per-map (per-seed) fact, so it is the
+                  // same on every note in this room; only the flavour text varies.
+                  const marker = this.level === 0 ? this.map.correctDoorMarker : "";
+                  this.onScrapOfNoteCollected(noteSeed, marker);
                 }
               }
             }
@@ -1529,6 +1553,7 @@ export class GameEngine {
     
     // 1. Terminate current map mesh references
     if (this.map) {
+      this.map.disposeGateway(this.scene);
       this.map.clearAll(this.scene);
     }
     
@@ -1557,6 +1582,7 @@ export class GameEngine {
 
     // 4. Instantiate new level's ProceduralMap
     this.map = new ProceduralMap(seed, level, this.quality);
+    this.map.buildLevel0Gateway(this.scene);
     this.lightPool.invalidate();
     
     // Pre-create/load the entire proximity map meshes before placing/spawning the player
@@ -2020,6 +2046,7 @@ export class GameEngine {
     }
 
     if (this.map) {
+      this.map.disposeGateway(this.scene);
       this.map.clearAll(this.scene);
     }
 

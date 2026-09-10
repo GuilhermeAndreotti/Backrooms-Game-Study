@@ -53,8 +53,14 @@ export interface LightFixture {
   dust?: THREE.Points;
 }
 
+/** Grid width/height per level. Level 0 is larger to fit the key/maze/dual-door gauntlet. */
+export function gridSizeForLevel(level: number): number {
+  return level === 0 ? 64 : 48;
+}
+
 export class ProceduralMap {
-  public gridSize = 48; // Grid size limit (e.g., 48x48 blocks)
+  /** Grid width/height in cells. Set in the constructor from {@link gridSizeForLevel}. */
+  public gridSize = 48;
   public cellSize = 4;  // Size of one cell in units/meters
   public grid: CellType[][] = [];
   public roomsList: { x: number; z: number; w: number; h: number }[] = [];
@@ -75,7 +81,8 @@ export class ProceduralMap {
 
   // Cells caches for dynamic proximity culling
   public cellGroups: Map<string, THREE.Group> = new Map();
-  public cellGroupGrid: (THREE.Group | null)[][] = Array.from({ length: 48 }, () => Array(48).fill(null));
+  /** Allocated in the constructor once {@link gridSize} is known. */
+  public cellGroupGrid: (THREE.Group | null)[][] = [];
   public cellObstacles: Map<string, { x: number; z: number; radius: number }[]> = new Map();
   /** Cell streaming radius in meters; follows the active quality preset. */
   public maxVisibleDistance = 24;
@@ -173,6 +180,28 @@ export class ProceduralMap {
   public exitGridX = 0;
   public exitGridZ = 0;
 
+  // --- Level 0 gateway (key -> locked gate -> maze -> two doors) ---------------
+  /** Grid cell of the locked gate doorway; -1 when the level has no gate. */
+  public gateGridX = -1;
+  public gateGridZ = -1;
+  /** Grid cell where the one guaranteed rusty key spawns (Level 0). */
+  public keyGridX = -1;
+  public keyGridZ = -1;
+  /** True once the rusty key has been used on the gate this session. */
+  public gateUnlocked = false;
+  /** Grid cells of the two choice doors at the maze's end. */
+  public doorAGridX = -1; public doorAGridZ = -1;
+  public doorBGridX = -1; public doorBGridZ = -1;
+  /** Which door leads onward vs. into the red rooms — decided by the seed. */
+  public correctDoorIsA = true;
+  /** Colour-name shown on the correct door's placard; repeated in every note's clue. */
+  public correctDoorMarker = "";
+  /** Colour-name shown on the wrong (red-room) door's placard. */
+  public wrongDoorMarker = "";
+  /** Meshes for the gate leaf + the two placards, kept in the scene for the level's life. */
+  public gatewayMeshes: THREE.Object3D[] = [];
+  private gateLeafMesh: THREE.Object3D | null = null;
+
   // Guaranteed landmark chair pyramid coordinates on Level 0
   public chairPyramidX = -1;
   public chairPyramidZ = -1;
@@ -184,7 +213,7 @@ export class ProceduralMap {
    * Grid -> index into {@link exitPath}, or -1. Replaces a linear findIndex that
    * ran on the exit path every frame once the guidance draft kicks in.
    */
-  public exitPathIndexGrid = new Int32Array(48 * 48).fill(-1);
+  public exitPathIndexGrid = new Int32Array(0); // allocated in the constructor once gridSize is known
 
   // Random Environmental Event States
   private eventCooldown = 15.0; // Seconds between event rolls
@@ -211,9 +240,9 @@ export class ProceduralMap {
   public activeAnimatingMeshes: ProceduralMap["animatingMeshes"] = [];
   public activeConsumables: ProceduralMap["consumables"] = [];
 
-  /** Obstacle lookup as a dense grid: avoids per-frame string key allocation. */
-  private obstacleGrid: ({ x: number; z: number; radius: number }[] | null)[][] =
-    Array.from({ length: 48 }, () => Array(48).fill(null));
+  /** Obstacle lookup as a dense grid: avoids per-frame string key allocation.
+   *  Allocated in the constructor once {@link gridSize} is known. */
+  private obstacleGrid: ({ x: number; z: number; radius: number }[] | null)[][] = [];
 
   /**
    * Shared props/materials created on demand and reused by every cell.
@@ -231,10 +260,19 @@ export class ProceduralMap {
   constructor(seed: number, level = 0, quality?: QualityProfile) {
     this.seed = seed;
     this.level = level;
+    this.gridSize = gridSizeForLevel(level);
     this.quality = quality ?? getQualityProfile("medium");
     // Stay within the fog cutoff; Level 1 (warehouse) is more open so it needs
     // a little more reach. The quality profile scales both.
     this.maxVisibleDistance = this.quality.viewDistance * (level === 1 ? 1.15 : 1.0);
+
+    // Dense per-cell grids: allocated here, not as field initializers, because
+    // gridSize now varies by level and field initializers run before this body.
+    const gs = this.gridSize;
+    this.cellGroupGrid = Array.from({ length: gs }, () => Array(gs).fill(null));
+    this.obstacleGrid = Array.from({ length: gs }, () => Array(gs).fill(null));
+    this.exitPathIndexGrid = new Int32Array(gs * gs).fill(-1);
+
     this.prng = new SeededRandom(seed);
     this.initMaterials();
     this.generateGrid();
@@ -1827,6 +1865,10 @@ export class ProceduralMap {
         this.exitGridX = chosen[0];
         this.exitGridZ = chosen[1];
       }
+
+      // Carve the key/gate/maze/two-doors gauntlet into the enlarged east wing.
+      // This overrides exitGridX/Z with the cell behind the correct door.
+      this.carveLevel0Gateway();
     }
 
     // Ensure spawn around (2,2) is safe, walkable, and fully cleared
@@ -1861,6 +1903,222 @@ export class ProceduralMap {
         }
       }
     }
+  }
+
+  /** Placard colours for the two choice doors, set by carveLevel0Gateway(). */
+  private doorMarkerHex = { correct: 0xffffff, wrong: 0xffffff };
+
+  /**
+   * Randomized recursive-backtracker perfect maze over [x0..x1] x [z0..z1].
+   * The region must already be SOLID. Room cells are those an even number of
+   * steps from (x0,z0); the odd cells between them are the walls that get
+   * knocked through. The result is fully connected with exactly one path
+   * between any two room cells.
+   */
+  private carvePerfectMaze(x0: number, z0: number, x1: number, z1: number, startX: number, startZ: number) {
+    const rng = new SeededRandom(this.seed + 0x5a17 + x0 * 31 + z0 * 17);
+    const inRegion = (x: number, z: number) => x >= x0 && x <= x1 && z >= z0 && z <= z1;
+    const keyOf = (x: number, z: number) => x * 4096 + z;
+    const visited = new Set<number>();
+
+    let sx = startX - ((startX - x0) & 1);
+    let sz = startZ - ((startZ - z0) & 1);
+    if (!inRegion(sx, sz)) { sx = x0; sz = z0; }
+
+    const stack: [number, number][] = [[sx, sz]];
+    visited.add(keyOf(sx, sz));
+    this.grid[sx][sz] = CellType.CORRIDOR;
+
+    const dirs = [[2, 0], [-2, 0], [0, 2], [0, -2]];
+    while (stack.length > 0) {
+      const [cx, cz] = stack[stack.length - 1];
+      const order = [0, 1, 2, 3];
+      for (let i = 3; i > 0; i--) {
+        const j = rng.nextInt(0, i + 1);
+        const t = order[i]; order[i] = order[j]; order[j] = t;
+      }
+      let carved = false;
+      for (const di of order) {
+        const nx = cx + dirs[di][0];
+        const nz = cz + dirs[di][1];
+        if (!inRegion(nx, nz) || visited.has(keyOf(nx, nz))) continue;
+        this.grid[cx + dirs[di][0] / 2][cz + dirs[di][1] / 2] = CellType.CORRIDOR;
+        this.grid[nx][nz] = CellType.CORRIDOR;
+        visited.add(keyOf(nx, nz));
+        stack.push([nx, nz]);
+        carved = true;
+        break;
+      }
+      if (!carved) stack.pop();
+    }
+  }
+
+  /**
+   * Level 0 progression gauntlet, carved into the enlarged east wing:
+   *   guaranteed key (in the lobby) -> locked gate -> perfect maze ->
+   *   two choice doors -> the correct one reaches the exit, the wrong one
+   *   opens into red rooms. The correct door (and its placard colour) is
+   *   seed-deterministic; every scrap-of-note carries a clue naming it.
+   */
+  private carveLevel0Gateway() {
+    const gs = this.gridSize;
+
+    // 1. Seal the east wing so it is reachable only through the gate.
+    for (let x = 45; x < gs; x++) {
+      for (let z = 0; z < gs; z++) this.grid[x][z] = CellType.SOLID;
+    }
+
+    // 2. Locked gate doorway + a corridor from the lobby's vertical spine.
+    this.gateGridX = 45;
+    this.gateGridZ = 32;
+    for (let x = 20; x <= 45; x++) this.grid[x][32] = CellType.CORRIDOR;
+
+    // 3. Perfect maze filling the wing.
+    const mazeX0 = 46, mazeX1 = 60, mazeZ0 = 4, mazeZ1 = gs - 4;
+    this.carvePerfectMaze(mazeX0, mazeZ0, mazeX1, mazeZ1, 46, 32);
+    this.grid[46][32] = CellType.CORRIDOR; // guarantee the maze entry meets the gate
+
+    // 4. Two choice doors branching off a junction at the far east end.
+    const jX = 60, jZ = 32;
+    this.grid[jX][jZ] = CellType.CORRIDOR;
+    this.doorAGridX = jX; this.doorAGridZ = jZ - 2;
+    this.doorBGridX = jX; this.doorBGridZ = jZ + 2;
+    for (let d = 1; d <= 4; d++) {
+      this.grid[jX][jZ - d] = CellType.CORRIDOR;
+      this.grid[jX][jZ + d] = CellType.CORRIDOR;
+    }
+
+    // 5. Seed-deterministic correct door + placard colours.
+    const doorRng = new SeededRandom(this.seed + 55555);
+    this.correctDoorIsA = doorRng.next() < 0.5;
+    const palette = [
+      { name: "ÂMBAR", hex: 0xe0b93a },
+      { name: "AZUL", hex: 0x3d7fa6 },
+      { name: "VERDE", hex: 0x4c9a4c },
+      { name: "VERMELHO", hex: 0xc0392b },
+      { name: "VIOLETA", hex: 0x8e44ad },
+    ];
+    const iCorrect = doorRng.nextInt(0, palette.length);
+    let iWrong = doorRng.nextInt(0, palette.length);
+    if (iWrong === iCorrect) iWrong = (iWrong + 1) % palette.length;
+    this.correctDoorMarker = palette[iCorrect].name;
+    this.wrongDoorMarker = palette[iWrong].name;
+    this.doorMarkerHex = { correct: palette[iCorrect].hex, wrong: palette[iWrong].hex };
+
+    // 6. Behind the correct door: the exit. Behind the wrong one: a red room.
+    const correctEndZ = this.correctDoorIsA ? jZ - 4 : jZ + 4;
+    const wrongEndZ = this.correctDoorIsA ? jZ + 4 : jZ - 4;
+    this.exitGridX = jX;
+    this.exitGridZ = correctEndZ;
+    this.grid[jX][correctEndZ] = CellType.CORRIDOR;
+    const wStep = wrongEndZ < jZ ? -1 : 1;
+    for (let x = jX - 2; x <= jX; x++) {
+      for (let k = 0; k <= 3; k++) {
+        const z = wrongEndZ + k * wStep;
+        if (x >= 0 && x < gs && z >= 0 && z < gs) this.grid[x][z] = CellType.RED_ROOM;
+      }
+    }
+
+    // 7. A few more red-room clearings scattered through the maze.
+    for (const [rx, rz] of [[49, 13], [54, 47], [51, 27]] as [number, number][]) {
+      for (let x = rx; x <= rx + 3; x++) {
+        for (let z = rz; z <= rz + 3; z++) {
+          if (x > mazeX0 && x < mazeX1 && z > mazeZ0 && z < mazeZ1) this.grid[x][z] = CellType.RED_ROOM;
+        }
+      }
+    }
+
+    // 8. The one guaranteed rusty key, in the lobby, far from the gate.
+    const keyRng = new SeededRandom(this.seed + 24601);
+    this.keyGridX = -1;
+    for (let attempt = 0; attempt < 400; attempt++) {
+      const kx = keyRng.nextInt(6, 40);
+      const kz = keyRng.nextInt(6, gs - 6);
+      const t = this.grid[kx][kz];
+      if ((t === CellType.CORRIDOR || t === CellType.ROOM_LARGE || t === CellType.ROOM_SMALL) && !(kx < 8 && kz < 8)) {
+        this.keyGridX = kx; this.keyGridZ = kz;
+        break;
+      }
+    }
+    if (this.keyGridX < 0) { this.keyGridX = 12; this.keyGridZ = 12; this.grid[12][12] = CellType.CORRIDOR; }
+  }
+
+  /** World-space centre of a grid cell. */
+  private cellCenter(gx: number, gz: number): [number, number] {
+    return [gx * this.cellSize + this.cellSize / 2, gz * this.cellSize + this.cellSize / 2];
+  }
+
+  /**
+   * Builds the Level 0 gateway props (locked gate leaf + the two door
+   * placards) and drops a blocking obstacle in front of the gate. Called by
+   * GameEngine once the map exists. Safe to no-op on other levels.
+   */
+  public buildLevel0Gateway(scene: THREE.Scene) {
+    if (this.level !== 0 || this.gateGridX < 0) return;
+
+    // --- Locked gate leaf (blocks the maze entrance until the key is used) ---
+    const [gcx, gcz] = this.cellCenter(this.gateGridX, this.gateGridZ);
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x6b5230, roughness: 0.8, metalness: 0.5 });
+    const leaf = new THREE.Group();
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(0.35, 2.9, 3.7), leafMat);
+    slab.position.set(0, 1.45, 0);
+    leaf.add(slab);
+    for (const oy of [0.5, 1.45, 2.4]) {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.14, 3.6), new THREE.MeshStandardMaterial({ color: 0x3c2f1c, roughness: 0.9 }));
+      bar.position.set(0, oy, 0);
+      leaf.add(bar);
+    }
+    // sits on the lobby side edge of the gate cell (passage runs along X)
+    leaf.position.set(gcx - this.cellSize / 2, 0, gcz);
+    scene.add(leaf);
+    this.gateLeafMesh = leaf;
+    this.gatewayMeshes.push(leaf);
+
+    // Blocking obstacle spanning the doorway.
+    const g = this.obstacleGrid[this.gateGridX]?.[this.gateGridZ] ?? [];
+    g.push({ x: gcx - this.cellSize / 2 + 0.2, z: gcz, radius: 2.6 });
+    if (this.obstacleGrid[this.gateGridX]) this.obstacleGrid[this.gateGridX][this.gateGridZ] = g;
+
+    // --- Choice door placards ------------------------------------------------
+    const makePlacard = (gx: number, gz: number, hex: number) => {
+      const [cx, cz] = this.cellCenter(gx, gz);
+      const mat = new THREE.MeshStandardMaterial({ color: hex, emissive: hex, emissiveIntensity: 0.6, roughness: 0.5 });
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.9, 0.2), mat);
+      panel.position.set(cx, 2.7, cz);
+      scene.add(panel);
+      this.gatewayMeshes.push(panel);
+      const glow = new THREE.PointLight(hex, 1.4, 7, 1.4);
+      glow.position.set(cx, 2.3, cz);
+      scene.add(glow);
+      this.gatewayMeshes.push(glow);
+    };
+    const aIsCorrect = this.correctDoorIsA;
+    makePlacard(this.doorAGridX, this.doorAGridZ, aIsCorrect ? this.doorMarkerHex.correct : this.doorMarkerHex.wrong);
+    makePlacard(this.doorBGridX, this.doorBGridZ, aIsCorrect ? this.doorMarkerHex.wrong : this.doorMarkerHex.correct);
+  }
+
+  /** Consumes the key: removes the gate obstacle and swings the leaf open. */
+  public unlockLevel0Gate() {
+    if (this.gateUnlocked || this.gateGridX < 0) return;
+    this.gateUnlocked = true;
+    if (this.obstacleGrid[this.gateGridX]) this.obstacleGrid[this.gateGridX][this.gateGridZ] = null;
+    if (this.gateLeafMesh) {
+      // slide + swing the leaf out of the way (handled by ProceduralMap.update)
+      (this.gateLeafMesh as THREE.Object3D & { _openT?: number })._openT = 0;
+    }
+  }
+
+  /** Tears down gateway props on level transition. */
+  public disposeGateway(scene: THREE.Scene) {
+    for (const m of this.gatewayMeshes) {
+      scene.remove(m);
+      const anyM = m as THREE.Mesh;
+      if (anyM.geometry) anyM.geometry.dispose?.();
+      const mat = (anyM as THREE.Mesh).material;
+      if (mat) (Array.isArray(mat) ? mat : [mat]).forEach((mm) => mm.dispose());
+    }
+    this.gatewayMeshes = [];
+    this.gateLeafMesh = null;
   }
 
   /**
@@ -3163,11 +3421,22 @@ export class ProceduralMap {
       group.add(archGroup);
     }
 
-    // 9. SPAWN SCATTERED COLLECTIBLES (Old Photo and Rusty Key)
+    // 9a. GUARANTEED RUSTY KEY (Level 0) — exactly one per map, placed by
+    // carveLevel0Gateway() in the main lobby, well away from the locked gate.
+    if (gx === this.keyGridX && gz === this.keyGridZ) {
+      const keyMesh = this.createRustyKeyMesh();
+      const ky = 0.45;
+      keyMesh.position.set(posX, ky, posZ);
+      group.add(keyMesh);
+      this.consumables.push({ mesh: keyMesh, initialY: ky, collected: false, type: "rusty_key", x: posX, z: posZ, gridX: gx, gridZ: gz });
+      this.animatingMeshes.push({ mesh: keyMesh, type: "spin", initialY: ky, phase: 0, gridX: gx, gridZ: gz });
+    }
+
+    // 9. SPAWN SCATTERED COLLECTIBLES (mementos, lore fragments, hazards)
     // On both Level 0 and Level 1, there is a sparse chance (e.g., 3.5%) to spawn a collectible item in a cell
     const itemRng = new SeededRandom(this.seed + gx * 83 + gz * 109);
     // Don't spawn collectibles at the exit or spawning point (0,0) or solid cells
-    if (itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
+    if (!(gx === this.keyGridX && gz === this.keyGridZ) && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
       const itemTypeRoll = itemRng.next();
       // Keep it within the cell boundaries (so + hSize/2 is center, range is -hSize/2 + 0.5 to hSize/2 - 0.5)
       const maxOffset = hSize / 2 - 0.6;
@@ -3190,20 +3459,20 @@ export class ProceduralMap {
         selectedType = "scrap_of_note";
         spawnedMesh = this.createScrapOfNoteMesh();
       } else {
+        // rusty_key is excluded here — the one key per map is placed
+        // deterministically by carveLevel0Gateway(); its old share is spread
+        // across the remaining mementos.
         const adjustedRoll = isRoom ? (itemTypeRoll - 0.45) / 0.55 : itemTypeRoll;
-        if (adjustedRoll < 0.25) {
+        if (adjustedRoll < 0.30) {
           selectedType = "old_photo";
           spawnedMesh = this.createOldPhotoMesh();
-        } else if (adjustedRoll < 0.50) {
-          selectedType = "rusty_key";
-          spawnedMesh = this.createRustyKeyMesh();
-        } else if (adjustedRoll < 0.65) {
+        } else if (adjustedRoll < 0.52) {
           selectedType = "cassette_tape";
           spawnedMesh = this.createCassetteTapeMesh();
-        } else if (adjustedRoll < 0.80) {
+        } else if (adjustedRoll < 0.72) {
           selectedType = "strange_crystal";
           spawnedMesh = this.createStrangeCrystalMesh();
-        } else if (adjustedRoll < 0.90) {
+        } else if (adjustedRoll < 0.87) {
           selectedType = "liquid_pain";
           spawnedMesh = this.createLiquidPainMesh();
         } else {
@@ -4115,6 +4384,16 @@ export class ProceduralMap {
         anim.mesh.scale.set(scaleChance, scaleChance, scaleChance);
       }
     });
+
+    // 4. Swing the Level 0 locked gate open after the key is used.
+    const leaf = this.gateLeafMesh as (THREE.Object3D & { _openT?: number }) | null;
+    if (leaf && leaf._openT !== undefined && leaf._openT < 1) {
+      leaf._openT = Math.min(1, leaf._openT + delta * 1.2);
+      const t = leaf._openT;
+      const ease = t * t * (3 - 2 * t);
+      leaf.rotation.y = -ease * (Math.PI * 0.62);
+      leaf.position.y = ease * 0.15; // slight lift as it grinds open
+    }
   }
 
   /**
@@ -4312,8 +4591,8 @@ export class ProceduralMap {
     });
     this.cellGroups.clear();
     this.cellObstacles.clear();
-    this.obstacleGrid = Array.from({ length: 48 }, () => Array(48).fill(null));
-    this.cellGroupGrid = Array.from({ length: 48 }, () => Array(48).fill(null));
+    this.obstacleGrid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill(null));
+    this.cellGroupGrid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill(null));
     this.lightFixtures = [];
     this.animatingMeshes = [];
     this.waterDrips = [];
