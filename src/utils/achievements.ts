@@ -63,6 +63,13 @@ export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
     description: "Completou o Nível 2 e escapou da perseguição mortal das entidades.",
     iconName: "Skull",
     unlocked: false,
+  },
+  {
+    id: "secret_level_found",
+    title: "Luzes Apagadas",
+    description: "Seguiu um corredor sem nenhuma luz até o fim e encontrou o Nível 6: Lights Out.",
+    iconName: "Sparkles",
+    unlocked: false,
   }
 ];
 

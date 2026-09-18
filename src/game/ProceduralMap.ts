@@ -229,6 +229,17 @@ export class ProceduralMap {
    */
   public floorHeight: number[][] = [];
 
+  // --- Level 2: secret "Lights Out" entrance ------------------------------
+  /** Cells with no fluorescent/emergency fixtures spawned — the secret corridor. */
+  public forcedDarkCells = new Set<string>();
+  /** Dead-end trigger cell at the end of the dark corridor; -1 if not Level 2. */
+  public secretGridX = -1;
+  public secretGridZ = -1;
+
+  // --- Level 3 ("Lights Out"): pitch-black maze, no ambient light at all --
+  /** Sparse glowing waypoints along the true path — the only light in the maze. */
+  public pathLightCells = new Set<string>();
+
   // Guaranteed landmark chair pyramid coordinates on Level 0
   public chairPyramidX = -1;
   public chairPyramidZ = -1;
@@ -457,6 +468,17 @@ export class ProceduralMap {
       this.exitPathSet.add(`${x},${z}`);
       this.exitPathIndexGrid[x * this.gridSize + z] = idx;
     });
+
+    // Level 3 ("Lights Out"): sparse glowing waypoints along the true path —
+    // in a maze with no other light source, these are the only way to navigate.
+    // Spaced further apart than they'd need to be for a lit level, since
+    // finding your way between them in the dark is the point.
+    if (this.level === 3) {
+      this.pathLightCells.clear();
+      foundPath.forEach(([x, z], idx) => {
+        if (idx > 0 && idx % 5 === 0) this.pathLightCells.add(`${x},${z}`);
+      });
+    }
 
     // Populate wet spills along the shortest path as a subtle navigation cue (Level 0 wet carpets)
     this.wetSpills.clear();
@@ -1485,6 +1507,18 @@ export class ProceduralMap {
           }
         }
       });
+
+      // Secret entrance to "Lights Out": a single-wide corridor (the main
+      // tunnel is 3-wide, so this reads as distinctly narrower/off) branching
+      // east off Segment 1 at z=14, with no fixtures spawned anywhere along
+      // it — walking it straight to the end in the dark is the whole "puzzle".
+      const secretZ = 14;
+      for (let x = 4; x <= 20; x++) {
+        this.grid[x][secretZ] = CellType.CORRIDOR;
+        this.forcedDarkCells.add(`${x},${secretZ}`);
+      }
+      this.secretGridX = 20;
+      this.secretGridZ = secretZ;
     } else if (this.level === 1) {
       // LEVEL 1: Industrial warehouse / boiler room
       // Vast central field, long sweeping paths, lateral mazes
@@ -1585,6 +1619,22 @@ export class ProceduralMap {
       // Split into 3 sequential sectors; sector 3 (the smiler hall) is sealed off
       // except for one long "ramp" corridor the player has to find.
       this.partitionLevel1Sectors();
+
+    } else if (this.level === 3) {
+      // LEVEL 3 ("Lights Out" — secret level, found through a dark corridor on
+      // Level 2). A real perfect maze, pitch black: no fluorescent fixtures are
+      // ever spawned here (see createCell3D's light-fixture gate). The only
+      // visible things are sparse glowing waypoints traced along the true path
+      // (populated in findExitPath, right after this maze exists) — you
+      // navigate by hopping from light to light, not by sight. Bounded to a
+      // 34x34 region (not the full grid) so the shortest path stays in the
+      // same ballpark as the other levels' gauntlets rather than ballooning —
+      // a perfect maze's only path can wind a very long way.
+      this.exitGridX = 34;
+      this.exitGridZ = 34;
+      this.carvePerfectMaze(2, 2, this.exitGridX, this.exitGridZ, 2, 2);
+      this.grid[2][2] = CellType.CORRIDOR;
+      this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
 
     } else {
       // LEVEL 0: The Lobby (Classic Backrooms yellow partitions forming a modular wall-labyrinth)
@@ -2484,6 +2534,18 @@ export class ProceduralMap {
           }
         }
       }
+
+      // Level 3 ("Lights Out"): a small self-lit waypoint — the only thing
+      // visible in the whole maze without your own flashlight, and the whole
+      // point is that turning that flashlight on has a cost (see GameEngine's
+      // entity-summon logic).
+      if (this.level === 3 && this.pathLightCells.has(`${gx},${gz}`)) {
+        const glowMat = this.sharedMat("lightsout_waypoint", () => new THREE.MeshBasicMaterial({ color: 0xbfe6ff }));
+        const orb = new THREE.Mesh(this.sharedGeo("lightsout_orb", () => new THREE.SphereGeometry(0.11, 8, 8)), glowMat);
+        orb.position.set(posX, 0.55, posZ);
+        group.add(orb);
+        this.registerLight(gx, gz, posX, 0.55, posZ, 0x9fd4ff, 1.1, 4.0, 1.4);
+      }
     }
 
     // 2. CEILING (Acoustic ceiling panels) - Use shared ceilGeo
@@ -2597,8 +2659,9 @@ export class ProceduralMap {
         this.addObstacle(gx, gz, boilerMesh.position.x, boilerMesh.position.z, 0.75);
       }
 
-      // Tense orange/red emergency warning light inside the cells
-      if ((gx + gz) % 4 === 0) {
+      // Tense orange/red emergency warning light inside the cells (never in the
+      // secret "Lights Out" corridor — it has to stay genuinely unlit)
+      if ((gx + gz) % 4 === 0 && !this.forcedDarkCells.has(`${gx},${gz}`)) {
         this.registerLight(gx, gz, posX, fY + height - 0.4, posZ, 0xff2200, 2.5, 8.0, 1.5);
 
         // A small glass/cage emergency light fixture on the ceiling
@@ -3012,10 +3075,13 @@ export class ProceduralMap {
 
     // 6. FLUORESCENT LIGHT LUMINAIRE FIXTURE (Deterministic placement)
     // Place a fluorescent lightbox on the ceiling. (45% probability on corridor cells or room centers)
+    // Level 3 ("Lights Out") never gets one — total darkness is the whole level.
+    // Level 2's secret dark corridor is force-excluded the same way.
+    const isForcedDark = this.level === 3 || this.forcedDarkCells.has(`${gx},${gz}`);
     const lightRand = new SeededRandom(this.seed + gx * 7 + gz * 13);
-    const shouldSpawnLight = cellType === CellType.CORRIDOR 
-      ? lightRand.next() > 0.65 
-      : lightRand.next() > 0.55;
+    const shouldSpawnLight = !isForcedDark && (cellType === CellType.CORRIDOR
+      ? lightRand.next() > 0.65
+      : lightRand.next() > 0.55);
 
     // We do NOT spawn fluorescent lighting in the exit cell to preserve the dramatic crimson visual contrast
     if (shouldSpawnLight && !(gx === this.exitGridX && gz === this.exitGridZ)) {

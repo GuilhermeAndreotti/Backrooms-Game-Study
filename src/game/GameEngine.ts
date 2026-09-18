@@ -28,6 +28,8 @@ export interface GameEngineCallbacks {
   onStateChange: (state: string) => void;
   onFlashlightChange: (state: boolean) => void;
   onEscapeTrigger?: () => void;
+  /** Fired once, when the player reaches the end of Level 2's secret dark corridor. */
+  onSecretLevelFound?: () => void;
   onRedRoomExposureChange?: (val: number) => void;
   onHUDNotification?: (msg: string) => void;
   onSectorChange?: (sector: string) => void;
@@ -100,6 +102,8 @@ export class GameEngine {
   // Smilers system
   public smilers: { mesh: THREE.Mesh; gridX: number; gridZ: number; spawnTime: number; gazeTimer: number }[] = [];
   private smilerSpawnCheckTimer = 0;
+  /** Level 3 ("Lights Out"): seconds the flashlight has been held on continuously. */
+  private lightsOutSummonTimer = 0;
   
   // Exposure timer in the mysterious Level 0 Red Rooms (60 seconds to collapse)
   public redRoomExposure = 0;
@@ -116,6 +120,7 @@ export class GameEngine {
   private onStateChange: (state: string) => void;
   private onFlashlightChange: (state: boolean) => void;
   private onEscapeTrigger?: () => void;
+  private onSecretLevelFound?: () => void;
   private onRedRoomExposureChange?: (val: number) => void;
   public onHUDNotification?: (msg: string) => void;
   public onSectorChange?: (sector: string) => void;
@@ -153,6 +158,7 @@ export class GameEngine {
     this.onStateChange = callbacks.onStateChange;
     this.onFlashlightChange = callbacks.onFlashlightChange;
     this.onEscapeTrigger = callbacks.onEscapeTrigger;
+    this.onSecretLevelFound = callbacks.onSecretLevelFound;
     this.onRedRoomExposureChange = callbacks.onRedRoomExposureChange;
     this.onHUDNotification = callbacks.onHUDNotification;
     this.onSectorChange = callbacks.onSectorChange;
@@ -362,7 +368,7 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === 2 ? 0.045 : (level === 1 ? 0.020 : 0.024);
+    const authored = level === 3 ? 0.075 : (level === 2 ? 0.045 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
@@ -833,6 +839,9 @@ export class GameEngine {
       // Update psychological Smilers
       this.updateSmilers(delta);
 
+      // Level 3 ("Lights Out"): turning the flashlight on summons stalkers.
+      this.updateLightsOutSummons(delta);
+
       // Sanity system depletion & recovery calculation
       if (this.player && this.map) {
         const px = this.player.position.x;
@@ -869,6 +878,8 @@ export class GameEngine {
         if (!isFlashlightOn) {
           if (this.map.globalEventState === "blackout") {
             darknessDepletion = 0.014; // completed blackout is terrifying (retuned ~3x slower)
+          } else if (this.level === 3) {
+            darknessDepletion = 0.010; // "Lights Out": genuinely unlit by design, worse than mere no-flashlight elsewhere
           } else if (this.level === 1 || this.level === 2) {
             darknessDepletion = 0.008; // dark industrial environments (retuned ~3x slower)
           } else {
@@ -889,6 +900,17 @@ export class GameEngine {
         }
       }
 
+      // Level 2's secret entrance: walk to the dead end of the unlit side
+      // corridor and the "Lights Out" transition fires — purely local (not a
+      // room-wide level_transition_request), since it's an optional solo detour.
+      if (this.level === 2 && this.map && this.map.secretGridX >= 0 && this.onSecretLevelFound) {
+        const pgX = Math.floor(this.player.position.x / this.map.cellSize);
+        const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
+        if (pgX === this.map.secretGridX && pgZ === this.map.secretGridZ) {
+          this.onSecretLevelFound();
+        }
+      }
+
       // Check if player is near the escape exit door and jumping against the glitching wall
       if (this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
@@ -896,7 +918,7 @@ export class GameEngine {
 
         if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ) {
           // Player is in the instability cell!
-          if (this.level === 1 || this.level === 2) {
+          if (this.level === 1 || this.level === 2 || this.level === 3) {
             // Direct entry transition! No blocking wall!
             this.audio.playGlitchNoclipSound();
             if (this.onEscapeTrigger) {
@@ -1537,15 +1559,17 @@ export class GameEngine {
       this.scene.remove(this.ambientLight);
     }
     
-    // Level 2 Pipe Dreams: tense dark reddish brown. Level 1 warehouse: brighter industrial. Level 0: classic yellow.
-    const ambientColor = level === 2 ? 0x522312 : (level === 1 ? 0xaab5bd : 0xeae2c2);
-    const ambientInt = level === 2 ? 0.75 : (level === 1 ? 1.35 : 1.05);
+    // Level 3 "Lights Out": as close to zero ambient as still renders. Level 2
+    // Pipe Dreams: tense dark reddish brown. Level 1 warehouse: brighter
+    // industrial. Level 0: classic yellow.
+    const ambientColor = level === 3 ? 0x0a0a0f : (level === 2 ? 0x522312 : (level === 1 ? 0xaab5bd : 0xeae2c2));
+    const ambientInt = level === 3 ? 0.035 : (level === 2 ? 0.75 : (level === 1 ? 1.35 : 1.05));
     this.ambientLight = new THREE.AmbientLight(ambientColor, ambientInt);
     this.scene.add(this.ambientLight);
-    
+
     // Adjust psychological fog
     if (this.scene.fog) {
-      const fogColor = level === 2 ? 0x240902 : (level === 1 ? 0x8a9299 : 0xede4c0);
+      const fogColor = level === 3 ? 0x000000 : (level === 2 ? 0x240902 : (level === 1 ? 0x8a9299 : 0xede4c0));
       this.scene.background = new THREE.Color(fogColor);
       this.scene.fog = new THREE.FogExp2(fogColor, this.fogDensityFor(level));
     }
@@ -1861,6 +1885,65 @@ export class GameEngine {
       }
       const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, types[i], this.scene);
       this.entities.push(entity);
+    }
+  }
+
+  /**
+   * Level 3 ("Lights Out"): the maze is only navigable by its sparse glowing
+   * waypoints — you don't need the flashlight to see them. Turning it on
+   * anyway (to see the walls, out of habit or panic) is what the level
+   * punishes: held on continuously, it summons a stalker every few seconds,
+   * up to a small cap. Switching it back off lets the timer cool down before
+   * the next one comes.
+   */
+  private updateLightsOutSummons(delta: number) {
+    if (this.level !== 3 || !this.player || !this.map) {
+      this.lightsOutSummonTimer = 0;
+      return;
+    }
+
+    const SUMMON_INTERVAL = 6.0;
+    const MAX_STALKERS = 5;
+
+    if (this.player.isFlashlightOn) {
+      this.lightsOutSummonTimer += delta;
+      if (this.lightsOutSummonTimer >= SUMMON_INTERVAL) {
+        this.lightsOutSummonTimer = 0;
+        if (this.entities.length < MAX_STALKERS) {
+          this.spawnLightsOutStalker();
+        }
+      }
+    } else {
+      this.lightsOutSummonTimer = Math.max(0, this.lightsOutSummonTimer - delta * 2);
+    }
+  }
+
+  private spawnLightsOutStalker() {
+    if (!this.player || !this.map) return;
+    const pgX = Math.floor(this.player.position.x / this.map.cellSize);
+    const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
+
+    const types = [EntityType.DULLER, EntityType.SKIN_STEALER, EntityType.WRETCH, EntityType.HOUND];
+    const type = types[Math.floor(Math.random() * types.length)];
+
+    // A walkable cell 8-14 cells out in a random direction — close enough to
+    // feel like it answered the light, far enough to not spawn on top of you.
+    let entGX = -1, entGZ = -1;
+    for (let attempt = 0; attempt < 24 && entGX < 0; attempt++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 8 + Math.random() * 6;
+      const nx = Math.round(pgX + Math.cos(angle) * dist);
+      const nz = Math.round(pgZ + Math.sin(angle) * dist);
+      if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2 && this.map.grid[nx][nz] !== 0) {
+        entGX = nx; entGZ = nz;
+      }
+    }
+    if (entGX < 0) return; // couldn't find a spot this time — try again next interval
+
+    const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, type, this.scene);
+    this.entities.push(entity);
+    if (this.onHUDNotification) {
+      this.onHUDNotification("A luz atraiu algo na escuridão...");
     }
   }
 

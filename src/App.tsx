@@ -377,6 +377,42 @@ export default function App() {
                         }
                       }
                     },
+                    onSecretLevelFound: () => {
+                      // Purely local — an optional solo detour off Level 2, not a
+                      // room-wide progression event, so no server round-trip.
+                      const engine = engineRef.current;
+                      if (!engine || engine.level !== 2) return;
+
+                      console.log("Found the dark corridor... entering Level 6: Lights Out.");
+                      unlockAchievement("secret_level_found");
+
+                      setLoadingMap(true);
+                      setLoadingProgress(0);
+                      setCurrentLevel(3);
+                      engine.transitionToLevel(3, seed, settings);
+
+                      if (engine.player) {
+                        engine.player.mapFullyLoaded = false;
+                      }
+
+                      engine.precreateMap((p) => {
+                        setLoadingProgress(Math.round(p * 100));
+                      }).then(() => {
+                        setLoadingProgress(100);
+                        setTimeout(() => {
+                          setLoadingMap(false);
+                          if (engineRef.current?.player) {
+                            engineRef.current.player.mapFullyLoaded = true;
+                          }
+                        }, 350);
+                      }).catch((err) => {
+                        console.error("Error during Level 6 (Lights Out) precreation:", err);
+                        setLoadingMap(false);
+                        if (engineRef.current?.player) {
+                          engineRef.current.player.mapFullyLoaded = true;
+                        }
+                      });
+                    },
                     onRedRoomExposureChange: (exp) => setRedRoomExposure(exp),
                     onHUDNotification: (msg) => triggerNotification(msg),
                     onSectorChange: (sec) => setCurrentSector(sec),
@@ -925,7 +961,7 @@ export default function App() {
                     Inicializando Fenda Dimensional...
                   </div>
                    <h2 className="text-lg font-black tracking-widest text-[#deb81d] uppercase select-none flex items-center justify-between">
-                    <span>DESCOMPRIMINDO LEVEL {currentLevel}</span>
+                    <span>DESCOMPRIMINDO LEVEL {currentLevel === 3 ? "6 · LIGHTS OUT" : currentLevel}</span>
                     <span className="text-[#a28e3b] text-sm font-semibold">{loadingProgress}%</span>
                   </h2>
                 </div>
@@ -943,21 +979,27 @@ export default function App() {
                   <div className={loadingProgress >= 5 ? "opacity-100" : "opacity-0"}>[OK] Conectando ao terminal de infiltração...</div>
                   <div className={loadingProgress >= 28 ? "opacity-100 animate-pulse" : "opacity-0"}>[OK] Sincronizando com a semente {currentSeed}...</div>
                   <div className={loadingProgress >= 50 ? "opacity-100 font-bold" : "opacity-0"}>
-                    {currentLevel === 1 
-                      ? "[OK] Construindo usinas termoelétricas de concreto e encanamentos brutais..." 
-                      : "[OK] Gerando labirinto infinito de papel de parede..."
+                    {currentLevel === 3
+                      ? "[OK] Desligando toda fonte de luz do setor..."
+                      : currentLevel === 1
+                        ? "[OK] Construindo usinas termoelétricas de concreto e encanamentos brutais..."
+                        : "[OK] Gerando labirinto infinito de papel de parede..."
                     }
                   </div>
                   <div className={loadingProgress >= 72 ? "opacity-100" : "opacity-0"}>
-                    {currentLevel === 1 
-                      ? "[OK] Distribuição de tonéis industriais e vazamentos de vapor estocásticos..." 
-                      : "[OK] Construindo marcadores de emergência no carpete..."
+                    {currentLevel === 3
+                      ? "[OK] Calibrando pontos de luz residual ao longo da rota..."
+                      : currentLevel === 1
+                        ? "[OK] Distribuição de tonéis industriais e vazamentos de vapor estocásticos..."
+                        : "[OK] Construindo marcadores de emergência no carpete..."
                     }
                   </div>
                   <div className={loadingProgress >= 92 ? "opacity-100" : "opacity-0"}>
-                    {currentLevel === 1 
-                      ? "[OK] Injetando ruídos industriais e drone pesado de caldeira..." 
-                      : "[OK] Canal de áudio fluorescente ativo (60Hz Subhum)..."
+                    {currentLevel === 3
+                      ? "[AVISO] Não acenda a lanterna sem necessidade. Algo vai notar."
+                      : currentLevel === 1
+                        ? "[OK] Injetando ruídos industriais e drone pesado de caldeira..."
+                        : "[OK] Canal de áudio fluorescente ativo (60Hz Subhum)..."
                     }
                   </div>
                 </div>
