@@ -51,13 +51,6 @@ export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
     unlocked: false,
   },
   {
-    id: "gate_unlocked",
-    title: "Selo Rompido",
-    description: "Abriu o portão trancado do Nível 0 usando a Chave de Ferro Enferrujada.",
-    iconName: "Trophy",
-    unlocked: false,
-  },
-  {
     id: "absolute_survivor",
     title: "Fuga do Labirinto",
     description: "Completou o Nível 2 e escapou da perseguição mortal das entidades.",

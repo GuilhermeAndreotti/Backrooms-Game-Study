@@ -59,7 +59,7 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
       description: "Uma chave pesada de ferro fundido antigo, completamente corroída por uma espessa camada de ferrugem vermelha áspera ao toque.",
       lore: "Ao segurar a chave por tempo suficiente, você percebe que o metal está anormalmente frio, quase congelante. Mais estranho ainda é uma vibração de alta frequência pulsando no cabo da chave — um zumbido mecânico perpétuo que se alinha perfeitamente com a frequência das lâmpadas fluorescentes.",
       clueTitle: "NOTA EXTRAPOLADA DO EXPLORADOR:",
-      clueText: "\"O mecanismo interno de certas portas trancadas parece se alimentar de distorções magnéticas. Guarde esta chave. Ela vibra mais forte perto de um portão trancado nas profundezas deste andar — abra-o e o labirinto além dele leva à saída.\""
+      clueText: "\"O metal está anormalmente frio, quase congelante, e não abre nada que eu já tenha encontrado por aqui. Talvez sirva pra alguma coisa mais adiante. Talvez não sirva pra nada.\""
     },
     cassette_tape: {
       id: "cassette_tape",
@@ -69,7 +69,7 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
       description: "Uma fita cassete antiga de fita magnética marrom exposta. A carcaça de plástico preta está riscada e rachada nas bordas.",
       lore: "Ao aproximá-la do ouvido, você ouve ruídos de estática magnética pesada misturados com vozes distorcidas murmurando coordenadas incoerentes. Em uma etiqueta descascada lê-se: 'PROTOCOLO DE INFILTRAÇÃO 109'.",
       clueTitle: "GRAVAÇÃO DE ÁUDIO DECODIFICADA:",
-      clueText: "\"Não confie nas sombras que se movem. A fenda é real, mas o portão trancado deste andar só cede à chave de ferro. Ela ressoa com as lâmpadas do saguão...\""
+      clueText: "\"Não confie nas sombras que se movem. A fenda é real. Nas duas passagens ao fim do labirinto, confie na marca pintada, não no medo...\""
     },
     strange_crystal: {
       id: "strange_crystal",
@@ -382,7 +382,7 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
                         <div className="text-[5px] text-stone-400 text-right uppercase tracking-wider font-bold">PAGE 47</div>
                         <p className="italic">"...não pare por nada..."</p>
                         <p className="italic">"...as paredes respiram..."</p>
-                        <p className="italic">"...use a chave para o portão do nível 1..."</p>
+                        <p className="italic">"...confie na cor da porta certa..."</p>
                         <p className="italic">"...corra..."</p>
                       </div>
                       <div className="h-0.5 bg-gradient-to-r from-transparent via-stone-400/40 to-transparent" />

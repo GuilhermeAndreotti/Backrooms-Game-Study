@@ -557,45 +557,6 @@ export class GameEngine {
       // Tick player controllers
       this.player.update(delta);
 
-      // Level 0 locked gate: walking up to it with the rusty key uses it
-      // automatically (no interact key exists — same convention as pickups).
-      if (this.level === 0 && this.map && this.player && this.map.gateGridX >= 0 && !this.map.gateUnlocked) {
-        if (this.inventory.includes("rusty_key")) {
-          const gcx = this.map.gateGridX * this.map.cellSize + this.map.cellSize / 2;
-          const gcz = this.map.gateGridZ * this.map.cellSize + this.map.cellSize / 2;
-          const ddx = this.player.position.x - gcx;
-          const ddz = this.player.position.z - gcz;
-          if (ddx * ddx + ddz * ddz < 9.0) { // within ~3m of the gate cell centre
-            const ki = this.inventory.indexOf("rusty_key");
-            if (ki !== -1) this.inventory.splice(ki, 1);
-            this.map.unlockLevel0Gate();
-            if (this.onInventoryChange) this.onInventoryChange([...this.inventory]);
-            if (this.onHUDNotification) this.onHUDNotification("CHAVE ENFERRUJADA USADA: O portão trancado cede com um estalo metálico.");
-            if (this.audio) this.audio.playGlitchNoclipSound();
-            unlockAchievement("gate_unlocked");
-          }
-        }
-      }
-
-      // Level 0 choice chamber: walking into one of the two shut doors opens it
-      // and seals the way back — the choice is final.
-      if (this.level === 0 && this.map && this.player && !this.map.gatewayCommitted && this.map.doorAGridX >= 0) {
-        const near = (gx: number, gz: number) => {
-          const cx = gx * this.map.cellSize + this.map.cellSize / 2;
-          const cz = gz * this.map.cellSize + this.map.cellSize / 2;
-          const dx = this.player.position.x - cx;
-          const dz = this.player.position.z - cz;
-          return dx * dx + dz * dz < 4.0; // within ~2m
-        };
-        let picked: "A" | "B" | null = null;
-        if (near(this.map.doorAGridX, this.map.doorAGridZ)) picked = "A";
-        else if (near(this.map.doorBGridX, this.map.doorBGridZ)) picked = "B";
-        if (picked) {
-          this.map.openLevel0ChoiceDoor(picked, this.scene);
-          if (this.audio) this.audio.playGlitchNoclipSound();
-          if (this.onHUDNotification) this.onHUDNotification("A PORTA RANGE E SE ABRE. Atrás de você, a passagem se fecha com um baque. Não há volta.");
-        }
-      }
 
       // Detect if explorer has entered creeping crimson Red Rooms
       let inRedRoom = false;
