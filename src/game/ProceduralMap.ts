@@ -483,107 +483,6 @@ export class ProceduralMap {
   }
 
   /**
-   * Generates a subtler wall-mounted crimson arrow decal pointing left or right in local space
-   */
-  private createWallArrowMesh(direction: "left" | "right"): THREE.Group {
-    const arrow = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x9c1a1a, // Creepy hand-painted crimson red spray-pant hue
-      roughness: 0.95,
-      metalness: 0.0
-    });
-
-    const isLeft = direction === "left";
-
-    // Main horizontal stem of the arrow
-    const stemGeo = new THREE.BoxGeometry(0.35, 0.04, 0.008);
-    const stem = new THREE.Mesh(stemGeo, mat);
-    stem.position.set(0, 0, 0.004);
-    arrow.add(stem);
-
-    // Diagonal chevron arms of the arrow head
-    const armGeo = new THREE.BoxGeometry(0.14, 0.035, 0.008);
-
-    const headX = isLeft ? -0.15 : 0.15;
-    const angleMult = isLeft ? 1 : -1;
-
-    const armUpper = new THREE.Mesh(armGeo, mat);
-    armUpper.position.set(headX, 0.045, 0.004);
-    armUpper.rotation.z = angleMult * Math.PI / 4;
-    arrow.add(armUpper);
-
-    const armLower = new THREE.Mesh(armGeo, mat);
-    armLower.position.set(headX, -0.045, 0.004);
-    armLower.rotation.z = -angleMult * Math.PI / 4;
-    arrow.add(armLower);
-
-    return arrow;
-  }
-
-  /**
-   * Helper to compute if an arrow placed on a given wall should point "left" or "right"
-   * to guide the player towards the exit step.
-   */
-  private getPathArrowDirection(gx: number, gz: number, wallType: 'N' | 'S' | 'W' | 'E'): 'left' | 'right' | null {
-    const pathIdx = this.exitPath.findIndex(([x, z]) => x === gx && z === gz);
-    if (pathIdx === -1 || pathIdx >= this.exitPath.length - 1) return null;
-
-    const [nextX, nextZ] = this.exitPath[pathIdx + 1];
-    const dx = nextX - gx;
-    const dz = nextZ - gz;
-
-    if (wallType === 'N') {
-      // North Wall: facing -Z (North). Left is -X (West), Right is +X (East).
-      if (dx > 0) return 'right';
-      if (dx < 0) return 'left';
-      for (let i = pathIdx + 2; i < this.exitPath.length; i++) {
-        const pX = this.exitPath[i][0];
-        if (pX > gx) return 'right';
-        if (pX < gx) return 'left';
-      }
-      return 'right';
-    }
-
-    if (wallType === 'S') {
-      // South Wall: facing +Z (South). Left is +X (East), Right is -X (West).
-      if (dx > 0) return 'left';
-      if (dx < 0) return 'right';
-      for (let i = pathIdx + 2; i < this.exitPath.length; i++) {
-        const pX = this.exitPath[i][0];
-        if (pX > gx) return 'left';
-        if (pX < gx) return 'right';
-      }
-      return 'left';
-    }
-
-    if (wallType === 'W') {
-      // West Wall: facing -X (West). Left is +Z (South), Right is -Z (North).
-      if (dz > 0) return 'left';
-      if (dz < 0) return 'right';
-      for (let i = pathIdx + 2; i < this.exitPath.length; i++) {
-        const pZ = this.exitPath[i][1];
-        if (pZ > gz) return 'left';
-        if (pZ < gz) return 'right';
-      }
-      return 'right';
-    }
-
-    if (wallType === 'E') {
-      // East Wall: facing +X (East). Left is -Z (North), Right is +Z (South).
-      if (dz > 0) return 'right';
-      if (dz < 0) return 'left';
-      for (let i = pathIdx + 2; i < this.exitPath.length; i++) {
-        const pZ = this.exitPath[i][1];
-        if (pZ > gz) return 'right';
-        if (pZ < gz) return 'left';
-      }
-      return 'right';
-    }
-
-    return null;
-  }
-
-  /**
    * Generates a wooden table with a note written in Portuguese (instructing how to noclip)
    */
   private createDeskWithPaperMesh(): THREE.Group {
@@ -2712,9 +2611,6 @@ export class ProceduralMap {
     }
 
     // 3. WALLS - Evaluate cardinal neighbors. If the neighbor is SOLID, we build a wall panel!
-    const pathIdx = this.exitPath.findIndex(([x, z]) => x === gx && z === gz);
-    const shouldDrawArrow = pathIdx !== -1 && pathIdx % 30 === 0 && pathIdx > 0;
-    let arrowPlacedCurrCell = false;
 
     // NORTH WALL (Z-direction offset -1)
     if (gz === 0 || this.grid[gx][gz - 1] === CellType.SOLID) {
@@ -2728,16 +2624,6 @@ export class ProceduralMap {
       const base = new THREE.Mesh(this.baseGeo, this.skirtingBoardMaterial);
       base.position.set(0, 0.06, -hSize / 2 + 0.02);
       panel.add(base);
-
-      if (shouldDrawArrow && !arrowPlacedCurrCell) {
-        const dir = this.getPathArrowDirection(gx, gz, 'N');
-        if (dir) {
-          const wallArrow = this.createWallArrowMesh(dir);
-          wallArrow.position.set(0, 1.45, -hSize / 2 + 0.012);
-          panel.add(wallArrow);
-          arrowPlacedCurrCell = true;
-        }
-      }
 
       panel.position.set(posX, 0, posZ);
       group.add(panel);
@@ -2758,17 +2644,6 @@ export class ProceduralMap {
       base.rotateY(Math.PI);
       panel.add(base);
 
-      if (shouldDrawArrow && !arrowPlacedCurrCell) {
-        const dir = this.getPathArrowDirection(gx, gz, 'S');
-        if (dir) {
-          const wallArrow = this.createWallArrowMesh(dir);
-          wallArrow.position.set(0, 1.45, hSize / 2 - 0.012);
-          wallArrow.rotateY(Math.PI);
-          panel.add(wallArrow);
-          arrowPlacedCurrCell = true;
-        }
-      }
-
       panel.position.set(posX, 0, posZ);
       group.add(panel);
     }
@@ -2788,17 +2663,6 @@ export class ProceduralMap {
       base.rotateY(Math.PI / 2);
       panel.add(base);
 
-      if (shouldDrawArrow && !arrowPlacedCurrCell) {
-        const dir = this.getPathArrowDirection(gx, gz, 'W');
-        if (dir) {
-          const wallArrow = this.createWallArrowMesh(dir);
-          wallArrow.position.set(-hSize / 2 + 0.012, 1.45, 0);
-          wallArrow.rotateY(Math.PI / 2);
-          panel.add(wallArrow);
-          arrowPlacedCurrCell = true;
-        }
-      }
-
       panel.position.set(posX, 0, posZ);
       group.add(panel);
     }
@@ -2817,17 +2681,6 @@ export class ProceduralMap {
       base.position.set(hSize / 2 - 0.02, 0.06, 0);
       base.rotateY(-Math.PI / 2);
       panel.add(base);
-
-      if (shouldDrawArrow && !arrowPlacedCurrCell) {
-        const dir = this.getPathArrowDirection(gx, gz, 'E');
-        if (dir) {
-          const wallArrow = this.createWallArrowMesh(dir);
-          wallArrow.position.set(hSize / 2 - 0.012, 1.45, 0);
-          wallArrow.rotateY(-Math.PI / 2);
-          panel.add(wallArrow);
-          arrowPlacedCurrCell = true;
-        }
-      }
 
       panel.position.set(posX, 0, posZ);
       group.add(panel);

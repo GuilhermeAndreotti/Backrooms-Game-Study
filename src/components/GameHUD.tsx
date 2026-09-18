@@ -24,7 +24,7 @@ interface GameHUDProps {
   chatMessages: ChatMessage[];
   onSendMessage: (msg: string) => void;
   onDisconnect: () => void;
-  latency?: number; // Optional ping latency in milliseconds
+  latency?: number; // Real round-trip ms to the relay (undefined until the first pong arrives)
   level?: number;
   engineRef: React.MutableRefObject<GameEngine | null>;
   currentSector?: string;
@@ -49,7 +49,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
   chatMessages,
   onSendMessage,
   onDisconnect,
-  latency = 32,
+  latency,
   level = 0,
   engineRef,
   currentSector = "",
@@ -188,7 +188,16 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
             <div className="text-[10px] text-[#a28e3b]/70 flex items-center justify-end gap-2 mt-0.5">
               <span>EXPLORADORES: {connectedPlayers.length + 1} / 4</span>
               {latency !== undefined && (
-                <span className="px-1 bg-[#deb81d]/10 text-[#deb81d] rounded border border-[#deb81d]/20">
+                <span
+                  className={`px-1 rounded border tabular-nums ${
+                    latency < 80
+                      ? "bg-green-400/10 text-green-400 border-green-400/20"
+                      : latency < 180
+                        ? "bg-amber-400/10 text-amber-400 border-amber-400/20"
+                        : "bg-red-400/10 text-red-400 border-red-400/20"
+                  }`}
+                  title="Ida-e-volta até o servidor do relay"
+                >
                   PING: {latency}ms
                 </span>
               )}

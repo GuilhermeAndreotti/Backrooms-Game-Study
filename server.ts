@@ -312,6 +312,18 @@ async function startServer() {
         return;
       }
 
+      // --- ping ---------------------------------------------------------------
+      // Round-trip latency probe for the HUD: echo the client's own timestamp
+      // straight back (no room broadcast, no queuing) so the measurement isn't
+      // skewed by the movement-snapshot tick interval.
+      if (type === "ping") {
+        const t = data.t;
+        if (typeof t === "number" && Number.isFinite(t)) {
+          send(ws, { type: "pong", t });
+        }
+        return;
+      }
+
       // --- chat -------------------------------------------------------------
       if (type === "chat") {
         const text = sanitizeText(data.message, MAX_CHAT_LENGTH);

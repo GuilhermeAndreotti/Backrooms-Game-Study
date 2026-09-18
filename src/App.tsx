@@ -28,7 +28,7 @@ const defaultSettings: GameSettings = {
   port: "0",
   quality: "auto",
   adaptiveResolution: true,
-  showFps: false,
+  showFps: true,
   suitColor: DEFAULT_SUIT_COLOR,
 };
 
@@ -129,9 +129,12 @@ export default function App() {
 
   // Live FPS readout fed by the engine (never drives a re-render on its own).
   const [perf, setPerf] = useState({ fps: 0, scale: 1 });
+  // Round-trip latency to the relay, in ms — measured for real via ping/pong.
+  const [latency, setLatency] = useState<number | undefined>(undefined);
 
   // Core references
   const socketRef = useRef<WebSocket | null>(null);
+  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const engineRef = useRef<GameEngine | null>(null);
 
   /**
@@ -282,6 +285,16 @@ export default function App() {
           suitColor: settings.suitColor,
           requestedSeed: forceSeed,
         }));
+
+        // Real round-trip latency for the HUD's PING readout — echoed straight
+        // back by the server (see server.ts's "ping"/"pong" handling), not
+        // routed through the room tick, so it reflects actual relay latency.
+        if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "ping", t: Date.now() }));
+          }
+        }, 4000);
       };
 
       socket.onmessage = (event) => {
@@ -289,7 +302,11 @@ export default function App() {
           const data = JSON.parse(event.data);
           const { type } = data;
 
-          if (type === "room_full") {
+          if (type === "pong") {
+            if (typeof data.t === "number") setLatency(Date.now() - data.t);
+          }
+
+          else if (type === "room_full") {
             setErrorMessage(data.error || "A sala de infiltração selecionada atingiu o limite de 4 exploradores.");
             setPhase(ConnectionPhase.ERROR);
             socket.close();
@@ -556,6 +573,11 @@ export default function App() {
 
       socket.onclose = () => {
         console.log("Relay socket connection severed by remote.");
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
+        setLatency(undefined);
         // If we were active in game, transition back gracefully reporting connection issues
         if (phase === ConnectionPhase.PLAYING) {
           disconnect(true, "A ligação com a fenda do Level 0 foi interrompida.");
@@ -959,6 +981,7 @@ export default function App() {
             playersRef={playersRef}
             perf={perf}
             showFps={settings.showFps}
+            latency={latency}
             chatMessages={chatMessages}
             onSendMessage={handleSendMessage}
             onDisconnect={() => disconnect(false)}
