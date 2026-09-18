@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from "react";
 import { GameSettings, SUIT_COLORS } from "../types/game";
+import { FaceEditor } from "./FaceEditor";
 import { Settings, Play, Users, LogOut, Check, Sliders, Volume2, MonitorCog, Shirt } from "lucide-react";
 
 interface MainMenuProps {
@@ -518,7 +519,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
       {/* Character customization overlay */}
       {showCharacter && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm font-mono px-4">
-          <div className="w-full max-w-md bg-[#14130a] border border-[#a28e3b]/40 rounded-lg p-6 md:p-8 shadow-[0_0_60px_rgba(0,0,0,0.9)] relative">
+          <div className="w-full max-w-md max-h-[92vh] overflow-y-auto bg-[#14130a] border border-[#a28e3b]/40 rounded-lg p-6 md:p-8 shadow-[0_0_60px_rgba(0,0,0,0.9)] relative">
             <div className="absolute top-0 left-0 w-full h-[2px] bg-[#deb81d] opacity-40 rounded-t-lg" />
 
             <h2 className="text-lg font-bold text-[#F2E8CF] flex items-center gap-2 border-b border-white/10 pb-3 uppercase tracking-wider">
@@ -527,7 +528,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
             </h2>
 
             <p className="text-[11px] text-[#F2E8CF]/50 mt-3 leading-relaxed uppercase tracking-wider">
-              A cor do seu traje anti-contaminação. Os outros exploradores da sala veem esta cor.
+              A cor do seu traje anti-contaminação e o rosto desenhado no capacete. Os outros exploradores da sala veem os dois.
             </p>
 
             <div className="grid grid-cols-4 gap-3 mt-5">
@@ -549,6 +550,12 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 );
               })}
             </div>
+
+            <FaceEditor
+              face={localSettings.face}
+              suitColor={localSettings.suitColor}
+              onChange={(face) => handleChange("face", face)}
+            />
 
             <div className="flex gap-3 pt-6">
               <button

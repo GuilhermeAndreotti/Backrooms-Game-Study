@@ -16,6 +16,8 @@ export interface RemotePlayer {
   level?: number;
   /** Hazmat suit colour chosen in the customization screen (hex string). */
   suitColor?: string;
+  /** Hand-drawn helmet face (see utils/face.ts). Only in join/roster messages. */
+  face?: string;
 }
 
 /** Hazmat suit colours offered in the character-customization screen. */
@@ -56,6 +58,8 @@ export interface GameSettings {
   showFps: boolean;
   /** Hazmat suit colour (hex), picked in the character-customization screen. */
   suitColor: string;
+  /** Hand-drawn helmet face (see utils/face.ts); EMPTY_FACE for none. */
+  face: string;
 }
 
 export enum ConnectionPhase {

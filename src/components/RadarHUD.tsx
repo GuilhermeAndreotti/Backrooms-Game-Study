@@ -43,11 +43,6 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
     // effect mounts, and the cap follows the active quality preset.
     const frameBudgetFor = () => 1000 / (engineRef.current?.quality.radarFps ?? 20);
 
-    // Track previous positions and state for player heading direction
-    let prevX = 0;
-    let prevZ = 0;
-    let initializedPrev = false;
-    let currentArrowAngle = -Math.PI / 2; // Default looking UP
 
     const render = () => {
       if (!running) return;
@@ -101,22 +96,6 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
       const pz = player.position.z;
       const yaw = player.rotation.y;
 
-      // Track movement vector in local-space coordinates (relative to look rotation)
-      const moveDir = player.getMoveDirection();
-      let targetAngle = -yaw - Math.PI / 2; // Default looking direction in static world
-
-      if (moveDir && moveDir.lengthSq() > 0.01) {
-        // Local movement angle relative to forward (which is at -Math.PI/2)
-        const localAngle = Math.atan2(moveDir.z, moveDir.x);
-        // Integrate into global world movement orientation on static map
-        targetAngle = -yaw - Math.PI / 2 + (localAngle + Math.PI / 2);
-      }
-
-      // Smoothly lerp actual arrow heading orientation
-      let diffAngle = targetAngle - currentArrowAngle;
-      while (diffAngle < -Math.PI) diffAngle += Math.PI * 2;
-      while (diffAngle > Math.PI) diffAngle -= Math.PI * 2;
-      currentArrowAngle += diffAngle * 0.18; // smooth heading transition response
 
       // Update coordination state hook periodically (exactly every 400ms) to avoid React rendering noise
       const now = Date.now();
@@ -280,7 +259,7 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
 
           ctx.save();
           ctx.translate(rX, rY);
-          ctx.rotate(-p.yaw - Math.PI / 2); // face teammates pointing relative orientation
+          ctx.rotate(-p.yaw); // point where the teammate is looking (same as the self arrow)
 
           ctx.fillStyle = "#06b6d4"; // Cyan tracker signal
           ctx.strokeStyle = "#22d3ee";
@@ -430,7 +409,9 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
       // Draw sharp self arrow heading indicator pointing to direction walking/facing
       ctx.save();
       ctx.translate(cx, cy);
-      ctx.rotate(currentArrowAngle + Math.PI / 2);
+      // The arrow is drawn pointing up (world -Z, the camera's forward at yaw
+      // 0), so rotating by -yaw points it where the player is looking.
+      ctx.rotate(-yaw);
 
       ctx.beginPath();
       ctx.moveTo(0, -6);

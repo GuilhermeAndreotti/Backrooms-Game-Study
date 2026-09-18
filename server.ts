@@ -63,6 +63,12 @@ interface PlayerState {
   state: string; // 'idle' | 'walking' | 'running' | 'crouching'
   level: number;
   suitColor: string; // hex, validated against SUIT_COLORS at join time
+  /**
+   * Hand-drawn helmet face: 16x16 palette digits (see src/utils/face.ts), or
+   * "" for none. Sent with the join/roster messages only — stripped from the
+   * movement snapshots so it isn't re-sent 20 times a second.
+   */
+  face: string;
 }
 
 /**
@@ -80,6 +86,13 @@ function sanitizeSuitColor(value: unknown): string {
   return typeof value === "string" && ALLOWED_SUIT_COLORS.has(value.toLowerCase())
     ? value.toLowerCase()
     : DEFAULT_SUIT_COLOR;
+}
+
+/** 16x16 pixels, one palette digit each (0 = transparent, 1-7 = FACE_PALETTE). */
+const FACE_PATTERN = /^[0-7]{256}$/;
+
+function sanitizeFace(value: unknown): string {
+  return typeof value === "string" && FACE_PATTERN.test(value) ? value : "";
 }
 
 interface Connection {
@@ -247,6 +260,7 @@ async function startServer() {
           state: "idle",
           level: 0,
           suitColor: sanitizeSuitColor(data.suitColor),
+          face: sanitizeFace(data.face),
         };
 
         conn = { ws, player, isAlive: true, chatTimestamps: [] };
@@ -366,10 +380,12 @@ async function startServer() {
     rooms.forEach((room) => {
       if (room.dirty.size === 0) return;
 
-      const players: PlayerState[] = [];
+      const players: Omit<PlayerState, "face">[] = [];
       room.dirty.forEach((id) => {
         const player = room.players.get(id);
-        if (player) players.push(player);
+        if (!player) return;
+        const { face: _face, ...moving } = player;
+        players.push(moving);
       });
       room.dirty.clear();
       if (players.length === 0) return;

@@ -210,10 +210,10 @@ export class ProceduralMap {
    */
   public floorHeight: number[][] = [];
 
-  // --- Level 2: secret "Lights Out" entrance ------------------------------
+  // --- Level 1: secret "Lights Out" entrance ------------------------------
   /** Cells with no fluorescent/emergency fixtures spawned — the secret corridor. */
   public forcedDarkCells = new Set<string>();
-  /** Dead-end trigger cell at the end of the dark corridor; -1 if not Level 2. */
+  /** Dead-end trigger cell at the end of the dark corridor; -1 if not Level 1. */
   public secretGridX = -1;
   public secretGridZ = -1;
 
@@ -1488,18 +1488,6 @@ export class ProceduralMap {
           }
         }
       });
-
-      // Secret entrance to "Lights Out": a single-wide corridor (the main
-      // tunnel is 3-wide, so this reads as distinctly narrower/off) branching
-      // east off Segment 1 at z=14, with no fixtures spawned anywhere along
-      // it — walking it straight to the end in the dark is the whole "puzzle".
-      const secretZ = 14;
-      for (let x = 4; x <= 20; x++) {
-        this.grid[x][secretZ] = CellType.CORRIDOR;
-        this.forcedDarkCells.add(`${x},${secretZ}`);
-      }
-      this.secretGridX = 20;
-      this.secretGridZ = secretZ;
     } else if (this.level === 1) {
       // LEVEL 1: Industrial warehouse / boiler room
       // Vast central field, long sweeping paths, lateral mazes
@@ -1601,9 +1589,23 @@ export class ProceduralMap {
       // except for one long "ramp" corridor the player has to find.
       this.partitionLevel1Sectors();
 
+      // Secret entrance to "Lights Out": a single-wide corridor (the spawn
+      // corridor is wider, so this reads as distinctly narrower/off) branching
+      // east off it at z=7, through the solid block between spawn and the
+      // central field, with no fixtures spawned anywhere along it — walking
+      // it straight to the dead end in the dark is the whole "puzzle". Stops
+      // at x=15, short of the sector 1/2 divider (x=17), all on ground level.
+      const secretZ = 7;
+      for (let x = 4; x <= 15; x++) {
+        this.grid[x][secretZ] = CellType.CORRIDOR;
+        this.forcedDarkCells.add(`${x},${secretZ}`);
+      }
+      this.secretGridX = 15;
+      this.secretGridZ = secretZ;
+
     } else if (this.level === 3) {
       // LEVEL 3 ("Lights Out" — secret level, found through a dark corridor on
-      // Level 2). A real perfect maze, pitch black: no fluorescent fixtures are
+      // Level 1). A real perfect maze, pitch black: no fluorescent fixtures are
       // ever spawned here (see createCell3D's light-fixture gate). The only
       // visible things are sparse glowing waypoints traced along the true path
       // (populated in findExitPath, right after this maze exists) — you
@@ -2239,6 +2241,17 @@ export class ProceduralMap {
   }
 
   /**
+   * Cells where no random prop, divider, pillar or boiler may spawn: the exit
+   * cell plus the cells leading into it, and Level 1's secret dark corridor.
+   * Two obstacles rolled into the same one-cell-wide approach could leave no
+   * gap wide enough for the player, making the run impossible to finish.
+   */
+  private isKeepClearCell(gx: number, gz: number): boolean {
+    if (Math.abs(gx - this.exitGridX) + Math.abs(gz - this.exitGridZ) <= 1) return true;
+    return this.forcedDarkCells.has(`${gx},${gz}`);
+  }
+
+  /**
    * Adds an obstacle radius check for dynamic collision handling (crates, columns, boilers).
    */
   public addObstacle(gx: number, gz: number, x: number, z: number, radius: number) {
@@ -2489,7 +2502,7 @@ export class ProceduralMap {
       }
 
       // Steam Leaks / Valve dials / Industrial details on Level 2 cells!
-      if (pipeRng.next() < 0.22) {
+      if (pipeRng.next() < 0.22 && !this.isKeepClearCell(gx, gz)) {
         // Spawn a Boiler or Steam Machine on the side of the hallway
         const boilerMesh = this.createBoilerMesh(pipeRng);
         boilerMesh.position.set(posX + pipeRng.nextRange(-1.0, 1.0), 0, posZ + pipeRng.nextRange(-1.0, 1.0));
@@ -2521,7 +2534,9 @@ export class ProceduralMap {
     // wall panel gets built there since neither cell is SOLID, so without this
     // the mismatched floor/ceiling planes just show a gap you can see/fall
     // through. buildStepRiser closes that gap with a short panel sized to
-    // exactly the height difference, on whichever side is the lower cell.
+    // exactly the height difference, on whichever side is the lower cell —
+    // and a matching header up top, since the ceilings are offset by the same
+    // amount (lower cell's at `height`, the neighbour's at `height + delta`).
     const buildStepRiser = (nx: number, nz: number, axis: "z" | "x", sign: 1 | -1) => {
       if (this.level !== 1) return;
       if (nx < 0 || nz < 0 || nx >= this.gridSize || nz >= this.gridSize) return;
@@ -2537,6 +2552,11 @@ export class ProceduralMap {
       if (axis === "z") riser.position.set(posX, delta / 2, posZ + sign * edgeOffset);
       else riser.position.set(posX + sign * edgeOffset, delta / 2, posZ);
       group.add(riser);
+
+      const header = new THREE.Mesh(riser.geometry, this.wallMaterial);
+      header.position.copy(riser.position);
+      header.position.y = height + delta / 2;
+      group.add(header);
     };
 
     // NORTH WALL (Z-direction offset -1)
@@ -2624,7 +2644,7 @@ export class ProceduralMap {
     // 4. OPEN AREA - Columns / Pillars
     if (cellType === CellType.OPEN_AREA) {
       const randomCol = new SeededRandom(this.seed + gx * 100 + gz);
-      if (randomCol.next() > 0.84) {
+      if (randomCol.next() > 0.84 && !this.isKeepClearCell(gx, gz)) {
         if (this.level === 1) {
           // Identify sectors on Level 1
           const isConstructionSect = (gx >= 18 && gx <= 30 && gz >= 18 && gz <= 30);
@@ -2948,7 +2968,7 @@ export class ProceduralMap {
     // 6. FLUORESCENT LIGHT LUMINAIRE FIXTURE (Deterministic placement)
     // Place a fluorescent lightbox on the ceiling. (45% probability on corridor cells or room centers)
     // Level 3 ("Lights Out") never gets one — total darkness is the whole level.
-    // Level 2's secret dark corridor is force-excluded the same way.
+    // Level 1's secret dark corridor is force-excluded the same way.
     const isForcedDark = this.level === 3 || this.forcedDarkCells.has(`${gx},${gz}`);
     const lightRand = new SeededRandom(this.seed + gx * 7 + gz * 13);
     const shouldSpawnLight = !isForcedDark && (cellType === CellType.CORRIDOR
@@ -3012,7 +3032,7 @@ export class ProceduralMap {
     // 7. OFFICE WALL DIVIDER PARTITIONS ("pequenas paredes finas")
     // Attached perpendicular to adjacent solid walls, constructing office dividers.
     const isSpawnZone = (gx < 5 && gz < 5);
-    const isExitZone = (gx === this.exitGridX && gz === this.exitGridZ);
+    const isExitZone = this.isKeepClearCell(gx, gz);
 
     if (this.level !== 1 && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
       const wallRng = new SeededRandom(this.seed + gx * 11 + gz * 23);

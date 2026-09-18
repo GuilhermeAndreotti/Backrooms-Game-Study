@@ -6,6 +6,7 @@
 import * as THREE from "three";
 import { ProceduralMap } from "./ProceduralMap";
 import { PlayerController, PLAYER_STANDING_HEIGHT, PLAYER_CROUCH_HEIGHT } from "./PlayerController";
+import { FACE_SIZE, drawFace, hasFace } from "../utils/face";
 import { AudioManager } from "./AudioManager";
 import { WanderingEntity, EntityType } from "./WanderingEntity";
 import { GameSettings, RemotePlayer } from "../types/game";
@@ -28,7 +29,7 @@ export interface GameEngineCallbacks {
   onStateChange: (state: string) => void;
   onFlashlightChange: (state: boolean) => void;
   onEscapeTrigger?: () => void;
-  /** Fired once, when the player reaches the end of Level 2's secret dark corridor. */
+  /** Fired once, when the player reaches the end of Level 1's secret dark corridor. */
   onSecretLevelFound?: () => void;
   onRedRoomExposureChange?: (val: number) => void;
   onHUDNotification?: (msg: string) => void;
@@ -861,10 +862,10 @@ export class GameEngine {
         }
       }
 
-      // Level 2's secret entrance: walk to the dead end of the unlit side
+      // Level 1's secret entrance: walk to the dead end of the unlit side
       // corridor and the "Lights Out" transition fires — purely local (not a
       // room-wide level_transition_request), since it's an optional solo detour.
-      if (this.level === 2 && this.map && this.map.secretGridX >= 0 && this.onSecretLevelFound) {
+      if (this.level === 1 && this.map && this.map.secretGridX >= 0 && this.onSecretLevelFound) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
         if (pgX === this.map.secretGridX && pgZ === this.map.secretGridZ) {
@@ -1075,7 +1076,7 @@ export class GameEngine {
    * Spawns a beautiful, stylized retro Hazmat Explorer (Yellow Anti-contamination Suit) made of THREE primitive blocks.
    * Super light weight, no assets loading slowdown!
    */
-  private createHazmatExplorer(name: string, suitColor?: string): THREE.Group {
+  private createHazmatExplorer(name: string, suitColor?: string, face?: string): THREE.Group {
     const group = new THREE.Group();
 
     // Hazmat suit fabric — colour picked in the customization screen, defaults
@@ -1124,11 +1125,13 @@ export class GameEngine {
     
     // Left Leg
     const lLeg = new THREE.Mesh(lLegGeo, suitMat);
+    lLeg.name = "lLeg";
     lLeg.position.set(-0.11, 0.225, 0);
     group.add(lLeg);
 
     // Right Leg
     const rLeg = new THREE.Mesh(lLegGeo, suitMat);
+    rLeg.name = "rLeg";
     rLeg.position.set(0.11, 0.225, 0);
     group.add(rLeg);
 
@@ -1163,6 +1166,26 @@ export class GameEngine {
     tagSprite.scale.set(1.1, 0.3, 1.0);
     group.add(tagSprite);
 
+    // Hand-drawn face from the customization screen, as a pixel-art decal just
+    // in front of the helmet. Transparent pixels let the visor show through.
+    if (hasFace(face)) {
+      const faceCanvas = document.createElement("canvas");
+      faceCanvas.width = FACE_SIZE;
+      faceCanvas.height = FACE_SIZE;
+      const faceCtx = faceCanvas.getContext("2d");
+      if (faceCtx) {
+        drawFace(faceCtx, face);
+        const faceTexture = new THREE.CanvasTexture(faceCanvas);
+        faceTexture.magFilter = THREE.NearestFilter;
+        faceTexture.minFilter = THREE.NearestFilter;
+        faceTexture.colorSpace = THREE.SRGBColorSpace;
+        const faceMat = new THREE.MeshStandardMaterial({ map: faceTexture, alphaTest: 0.5, roughness: 0.7 });
+        const facePlane = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.26), faceMat);
+        facePlane.position.set(0, 1.31, 0.215);
+        group.add(facePlane);
+      }
+    }
+
     return group;
   }
 
@@ -1183,11 +1206,11 @@ export class GameEngine {
   /**
    * Spawns a remote explorer visual node and sets up their shoulder spotlight.
    */
-  public spawnRemotePlayer(id: string, name: string, x: number, y: number, z: number, suitColor?: string) {
+  public spawnRemotePlayer(id: string, name: string, x: number, y: number, z: number, suitColor?: string, face?: string) {
     if (this.remotePlayerGroups.has(id)) return;
 
     // Create Hazmat Group Mesh
-    const group = this.createHazmatExplorer(name, suitColor);
+    const group = this.createHazmatExplorer(name, suitColor, face);
     group.position.set(x, this.remoteFloorY(y), z);
     this.scene.add(group);
     this.remotePlayerGroups.set(id, group);
@@ -1258,7 +1281,7 @@ export class GameEngine {
 
     const group = this.remotePlayerGroups.get(id);
     if (!group) {
-      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor);
+      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor, update.face);
       return;
     }
 
@@ -1267,7 +1290,10 @@ export class GameEngine {
     anyGroup.targetX = update.x;
     anyGroup.targetY = this.remoteFloorY(update.y, update.state);
     anyGroup.targetZ = update.z;
-    anyGroup.targetYaw = update.yaw;
+    // `yaw` is the camera's, which looks down -Z, but the hazmat model is
+    // built facing +Z (visor front, tank back) — turn it half a revolution so
+    // the visor faces where the player is looking/walking.
+    anyGroup.targetYaw = update.yaw + Math.PI;
     anyGroup.targetPitch = update.pitch;
     
     // Toggle flashlight immediately
@@ -1315,16 +1341,15 @@ export class GameEngine {
           const amplitude = state === 'running' ? 0.22 : 0.12;
           const swing = Math.sin(this.totalPlayTime * pace);
 
-          // Get children (Legs are index 4 and 5 in createHazmatExplorer layout)
-          const lLeg = group.children[4];
-          const rLeg = group.children[5];
+          const lLeg = group.getObjectByName("lLeg");
+          const rLeg = group.getObjectByName("rLeg");
           if (lLeg && rLeg) {
             lLeg.rotation.x = swing * amplitude;
             rLeg.rotation.x = -swing * amplitude;
           }
         } else {
-          const lLeg = group.children[4];
-          const rLeg = group.children[5];
+          const lLeg = group.getObjectByName("lLeg");
+          const rLeg = group.getObjectByName("rLeg");
           if (lLeg && rLeg) {
             lLeg.rotation.x *= 0.85; // return to idle
             rLeg.rotation.x *= 0.85;

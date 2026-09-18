@@ -11,7 +11,8 @@ import { GameHUD } from "./components/GameHUD";
 import { InventoryHUD } from "./components/InventoryHUD";
 import { AchievementsHUD } from "./components/AchievementsHUD";
 import { addAchievementListener, removeAchievementListener, unlockAchievement } from "./utils/achievements";
-import { isTypingInField } from "./utils/input";
+import { isTypingInField, lockGameInput } from "./utils/input";
+import { EMPTY_FACE } from "./utils/face";
 import { BackroomsLore, generateProceduralLore } from "./utils/lore";
 import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, X, FileText, Compass, Skull } from "lucide-react";
 
@@ -30,6 +31,7 @@ const defaultSettings: GameSettings = {
   adaptiveResolution: true,
   showFps: true,
   suitColor: DEFAULT_SUIT_COLOR,
+  face: EMPTY_FACE,
 };
 
 /**
@@ -283,6 +285,7 @@ export default function App() {
           room: roomKeyFor(settings),
           name: settings.name,
           suitColor: settings.suitColor,
+          face: settings.face,
           requestedSeed: forceSeed,
         }));
 
@@ -378,10 +381,10 @@ export default function App() {
                       }
                     },
                     onSecretLevelFound: () => {
-                      // Purely local — an optional solo detour off Level 2, not a
+                      // Purely local — an optional solo detour off Level 1, not a
                       // room-wide progression event, so no server round-trip.
                       const engine = engineRef.current;
-                      if (!engine || engine.level !== 2) return;
+                      if (!engine || engine.level !== 1) return;
 
                       console.log("Found the dark corridor... entering Level 6: Lights Out.");
                       unlockAchievement("secret_level_found");
@@ -464,7 +467,7 @@ export default function App() {
 
                 // Instantly spawn existing players
                 currentOn.forEach((p: RemotePlayer) => {
-                  engineRef.current?.spawnRemotePlayer(p.id, p.name, p.x, p.y, p.z, p.suitColor);
+                  engineRef.current?.spawnRemotePlayer(p.id, p.name, p.x, p.y, p.z, p.suitColor, p.face);
                 });
 
                 // Track real asynchronous map precreation cells loading progress for Level 0
@@ -543,7 +546,7 @@ export default function App() {
 
             // Update 3D engine world
             if (engineRef.current) {
-              engineRef.current.spawnRemotePlayer(player.id, player.name, player.x, player.y, player.z, player.suitColor);
+              engineRef.current.spawnRemotePlayer(player.id, player.name, player.x, player.y, player.z, player.suitColor, player.face);
             }
 
             // Standard terminal join announcement message
@@ -567,7 +570,9 @@ export default function App() {
                 added = true;
               }
 
-              engineRef.current?.updateRemotePlayer(player.id, player);
+              // The merged roster entry, not the raw snapshot: snapshots omit
+              // the face, and the engine may need it to (re)spawn the model.
+              engineRef.current?.updateRemotePlayer(player.id, existing ?? player);
             }
 
             if (added || incoming.length > 0) touchRoster();
@@ -933,7 +938,7 @@ export default function App() {
                       // Lock mouse back or trigger override if pointer lock is unavailable
                       const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement;
                       if (canvasEl) {
-                        canvasEl.requestPointerLock();
+                        lockGameInput(canvasEl);
                       } else {
                         setPointerLockedOverride(true);
                       }

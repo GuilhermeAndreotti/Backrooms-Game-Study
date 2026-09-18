@@ -5,7 +5,7 @@
 
 import * as THREE from "three";
 import { ProceduralMap } from "./ProceduralMap";
-import { isTypingInField } from "../utils/input";
+import { GAME_KEYS, isTypingInField, lockGameInput } from "../utils/input";
 
 /**
  * Eye height (`position.y`) while standing/crouching. Shared with GameEngine
@@ -115,7 +115,7 @@ export class PlayerController {
 
   private requestLock = () => {
     if (!this.isLocked && !this.isOverrideActive) {
-      this.domElement.requestPointerLock();
+      lockGameInput(this.domElement);
     }
   };
 
@@ -163,6 +163,13 @@ export class PlayerController {
 
     const key = e.key.toLowerCase();
     this.keys[key] = true;
+
+    // While playing, keep game keys from triggering browser shortcuts
+    // (Ctrl+D bookmark, Ctrl+F find, Space scroll...). Ctrl+W itself is only
+    // catchable in fullscreen + Keyboard Lock — see lockGameInput.
+    if ((this.isLocked || this.isOverrideActive) && GAME_KEYS.has(key)) {
+      e.preventDefault();
+    }
 
     // Flashlight toggle key
     if (e.key === "f" || e.key === "F") {
