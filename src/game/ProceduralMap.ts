@@ -215,8 +215,19 @@ export class ProceduralMap {
 
   /** Level 1: cells belonging to a "ramp" connector, dressed to read as an incline. */
   public rampCells = new Set<string>();
+  /** Level 1: ramp cells that step up from their -X neighbour — gets a riser panel. */
+  public rampRiserX = new Set<string>();
+  /** Level 1: X column dividing sector 1 from sector 2. */
+  public level1Sector2X = 17;
   /** Level 1: X column dividing sector 2 from the sealed sector 3 (smiler hall). */
   public level1Sector3X = 33;
+  /**
+   * Per-cell floor elevation in metres (0 everywhere except Level 1, where
+   * each sector is a real, higher storey and the two ramps interpolate
+   * between them). Allocated in the constructor alongside the other dense
+   * per-cell grids, once gridSize is known.
+   */
+  public floorHeight: number[][] = [];
 
   // Guaranteed landmark chair pyramid coordinates on Level 0
   public chairPyramidX = -1;
@@ -288,6 +299,7 @@ export class ProceduralMap {
     this.cellGroupGrid = Array.from({ length: gs }, () => Array(gs).fill(null));
     this.obstacleGrid = Array.from({ length: gs }, () => Array(gs).fill(null));
     this.exitPathIndexGrid = new Int32Array(gs * gs).fill(-1);
+    this.floorHeight = Array.from({ length: gs }, () => new Array(gs).fill(0));
 
     this.prng = new SeededRandom(seed);
     this.initMaterials();
@@ -2109,6 +2121,19 @@ export class ProceduralMap {
   }
 
   /**
+   * Floor elevation (metres) under a world position — 0 everywhere except
+   * Level 1's stacked sectors/ramps. Used by the player controller, entities
+   * and smilers so everything actually standing on a given floor renders and
+   * moves at that floor's height, not just the 2D grid position.
+   */
+  public getFloorHeightAt(worldX: number, worldZ: number): number {
+    const gx = Math.floor(worldX / this.cellSize);
+    const gz = Math.floor(worldZ / this.cellSize);
+    if (gx < 0 || gz < 0 || gx >= this.gridSize || gz >= this.gridSize) return 0;
+    return this.floorHeight[gx][gz] || 0;
+  }
+
+  /**
    * A residential-style panelled door leaf (frame + slab + recessed panels +
    * knob). Built around a hinge at its left edge so `group.rotation.y` swings
    * it open. `width` is the opening width in metres.
@@ -2257,52 +2282,79 @@ export class ProceduralMap {
   }
 
   /**
-   * Level 1: carve the three-sector spine. Sectors 1 and 2 stay one connected
-   * space (monsters roam, no smilers); sector 3 (x >= level1Sector3X, the
-   * smiler hall holding the exit) is walled off except for one long "ramp"
-   * corridor tucked in the south that the player has to find.
+   * Level 1: carve the three-sector spine as three real, physically stacked
+   * storeys — each sector is a taller floor than the last (floorHeight), not
+   * just a different X band. Sector 1 (x < level1Sector2X) is ground level;
+   * sector 2 is one storey up, reached by climbing Ramp A; sector 3 (the
+   * sealed smiler hall holding the exit) is a second storey up, reached only
+   * by the long "extensive ramp" the player has to find. Both dividers are
+   * solid walls except at their one ramp mouth.
    */
   private partitionLevel1Sectors() {
     const gs = this.gridSize;
-    const divX = this.level1Sector3X; // 33
-    const rampZ = gs - 4;             // 44 — the ramp runs along the south edge
+    const divX2 = this.level1Sector2X; // 17 — sector 1 -> sector 2
+    const divX3 = this.level1Sector3X; // 33 — sector 2 -> sector 3 (sealed)
+    const rampZ = gs - 4;              // 44 — ramp B runs along the south edge
+    const H1 = 0, H2 = 3.2, H3 = 6.4;  // storey heights, ~one real floor apart
 
-    // 1. Wall off sector 3, leaving only the ramp mouth open (z = rampZ-1..rampZ).
-    for (let z = 2; z < gs - 2; z++) {
-      if (z < rampZ - 1) this.grid[divX][z] = CellType.SOLID;
-    }
-
-    // 2. The "extensive ramp": a long narrow corridor hugging the south wall from
-    //    deep in sector 2 across the divider into sector 3.
-    for (let x = 18; x <= gs - 4; x++) {
-      for (let z = rampZ - 1; z <= rampZ; z++) {
-        this.grid[x][z] = CellType.CORRIDOR;
-        this.rampCells.add(`${x},${z}`);
+    // 0. Base elevation per sector (ramps overridden below).
+    for (let x = 2; x < gs - 2; x++) {
+      for (let z = 2; z < gs - 2; z++) {
+        this.floorHeight[x][z] = x < divX2 ? H1 : x < divX3 ? H2 : H3;
       }
     }
-    // a short spur so the ramp mouth is reachable from the central field's south edge
+
+    // 1. Wall sector 1 off from sector 2 — only Ramp A's mouth (z 19-21) is open.
+    for (let z = 2; z < gs - 2; z++) {
+      if (z < 19 || z > 21) this.grid[divX2][z] = CellType.SOLID;
+    }
+    // Ramp A: climbs H1 -> H2 over x 13..21, stepped one storey per cell.
+    for (let x = 13; x <= 21; x++) {
+      const t = (x - 13) / (21 - 13);
+      const h = H1 + (H2 - H1) * t;
+      for (let z = 19; z <= 21; z++) {
+        this.grid[x][z] = CellType.CORRIDOR;
+        this.floorHeight[x][z] = h;
+        this.rampCells.add(`${x},${z}`);
+        if (x > 13) this.rampRiserX.add(`${x},${z}`); // riser on the -X edge of each climbing step
+      }
+    }
+
+    // 2. Wall off sector 3, leaving only the Ramp B mouth open (z = rampZ-1..rampZ).
+    for (let z = 2; z < gs - 2; z++) {
+      if (z < rampZ - 1) this.grid[divX3][z] = CellType.SOLID;
+    }
+
+    // 3. Ramp B ("the extensive ramp"): a long narrow corridor hugging the south
+    //    wall, climbing H2 -> H3 over its full run from sector 2 into sector 3.
+    for (let x = 18; x <= gs - 4; x++) {
+      const t = Math.min(1, (x - 18) / (divX3 - 18));
+      const h = H2 + (H3 - H2) * t;
+      for (let z = rampZ - 1; z <= rampZ; z++) {
+        this.grid[x][z] = CellType.CORRIDOR;
+        this.floorHeight[x][z] = h;
+        this.rampCells.add(`${x},${z}`);
+        if (x > 18) this.rampRiserX.add(`${x},${z}`);
+      }
+    }
+    // a short spur so the ramp mouth is reachable from the central field's south edge —
+    // flat, at sector 2's own height (it isn't climbing, just leading to the ramp).
     for (let z = 38; z <= rampZ; z++) {
       this.grid[20][z] = CellType.CORRIDOR;
+      this.floorHeight[20][z] = H2;
       this.rampCells.add(`${20},${z}`);
     }
 
-    // 3. Sector 3: an open hall for the smilers, with the exit at its far north end.
-    for (let x = divX + 1; x <= gs - 3; x++) {
+    // 4. Sector 3: an open hall for the smilers, with the exit at its far north end.
+    for (let x = divX3 + 1; x <= gs - 3; x++) {
       for (let z = 4; z <= rampZ; z++) {
         this.grid[x][z] = CellType.OPEN_AREA;
+        this.floorHeight[x][z] = H3;
       }
     }
     this.exitGridX = gs - 4;
     this.exitGridZ = 6;
     this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
-
-    // 4. Dress the first stretch of the central spine as "ramp 1" (cosmetic only —
-    //    sectors 1 and 2 are not walled apart).
-    for (let x = 13; x <= 20; x++) {
-      for (let z = 19; z <= 21; z++) {
-        if (this.grid[x][z] !== CellType.SOLID) this.rampCells.add(`${x},${z}`);
-      }
-    }
   }
 
   /**
@@ -2421,6 +2473,12 @@ export class ProceduralMap {
     const height = 3.0; // Backrooms standard height: 3.0 meters
     const posX = gx * hSize + hSize / 2;
     const posZ = gz * hSize + hSize / 2;
+    // This cell's floor elevation (0 except Level 1's stacked sectors/ramps).
+    // Everything below is built with locally-relative Y and gets carried up by
+    // offsetting the whole group at the end — except registerLight(), whose
+    // x/y/z are absolute world coordinates handed straight to the LightPool,
+    // so those calls add fY explicitly.
+    const fY = this.floorHeight[gx]?.[gz] ?? 0;
 
     // 1. CARPET (Floor pane) - Use shared floorGeo, or custom pit layouts
     if (cellType === CellType.PIT_ROOM) {
@@ -2511,6 +2569,21 @@ export class ProceduralMap {
           lip.position.set(posX, 0.07, posZ + oz);
           group.add(lip);
         }
+
+        // Step riser: this cell's floor sits above its -X neighbour's, so cover
+        // the gap with a short riser wall (the two floors are on separate
+        // group offsets and would otherwise show a seam).
+        if (this.rampRiserX.has(`${gx},${gz}`) && gx > 0) {
+          const rise = this.floorHeight[gx][gz] - this.floorHeight[gx - 1][gz];
+          if (rise > 0.02) {
+            const riser = new THREE.Mesh(
+              new THREE.BoxGeometry(0.12, rise, hSize),
+              this.getRampLipMaterial()
+            );
+            riser.position.set(posX - hSize / 2 + 0.06, -rise / 2, posZ);
+            group.add(riser);
+          }
+        }
       }
     }
 
@@ -2566,7 +2639,7 @@ export class ProceduralMap {
       group.add(ceilPipe2);
 
       // Add soft glowing hot red/orange lights under the pipes (pooled)
-      this.registerLight(gx, gz, posX, height - 0.4, posZ, 0xff4400, 1.6, 4.5, 1.2);
+      this.registerLight(gx, gz, posX, fY + height - 0.4, posZ, 0xff4400, 1.6, 4.5, 1.2);
     }
 
     // Level 2: Pipe Dreams - Intense red/copper pipes running along walls and ceilings in all cells!
@@ -2627,7 +2700,7 @@ export class ProceduralMap {
 
       // Tense orange/red emergency warning light inside the cells
       if ((gx + gz) % 4 === 0) {
-        this.registerLight(gx, gz, posX, height - 0.4, posZ, 0xff2200, 2.5, 8.0, 1.5);
+        this.registerLight(gx, gz, posX, fY + height - 0.4, posZ, 0xff2200, 2.5, 8.0, 1.5);
 
         // A small glass/cage emergency light fixture on the ceiling
         const fixtureGeo = this.sharedGeo("emergency_bulb", () => new THREE.CylinderGeometry(0.1, 0.1, 0.15, 6));
@@ -3124,7 +3197,7 @@ export class ProceduralMap {
 
       // The lamp is only *declared* here; the LightPool decides which lamps get
       // a real GPU light, keeping the visible light count small and constant.
-      const light = this.registerLight(gx, gz, posX, height - 0.15, posZ, lightColor, lightIntensity, 7.5, 1.0);
+      const light = this.registerLight(gx, gz, posX, fY + height - 0.15, posZ, lightColor, lightIntensity, 7.5, 1.0);
 
       // Local floating dust cloud directly under the fluorescent light fixture
       const dustCloud = this.quality.fixtureDustParticles > 0 ? this.createLocalDustCloud() : undefined;
@@ -3501,7 +3574,7 @@ export class ProceduralMap {
             const initialY = 1.0 + propRng.nextRange(0, 0.5);
 
             // Flickering glitch neon green point light (pooled)
-            this.registerLight(gx, gz, posX + rx, initialY, posZ + rz, 0x1aff80, 2.0, 5, 0.8);
+            this.registerLight(gx, gz, posX + rx, fY + initialY, posZ + rz, 0x1aff80, 2.0, 5, 0.8);
 
             anomalyGroup.position.set(posX + rx, initialY, posZ + rz);
             group.add(anomalyGroup);
@@ -3763,6 +3836,11 @@ export class ProceduralMap {
         }
       }
     }
+
+    // Everything above was placed with world X/Z but locally-relative Y (0 at
+    // this cell's own floor) — offsetting the whole group is what actually
+    // puts Level 1's higher sectors and ramp steps at their real elevation.
+    if (fY !== 0) group.position.y = fY;
 
     return group;
   }
@@ -4654,9 +4732,10 @@ export class ProceduralMap {
           }
 
           if (!cellGroup.userData.aabb) {
+            const fY = this.floorHeight[gx]?.[gz] ?? 0;
             cellGroup.userData.aabb = new THREE.Box3(
-              new THREE.Vector3(gx * hSize, -0.5, gz * hSize),
-              new THREE.Vector3((gx + 1) * hSize, 3.5, (gz + 1) * hSize)
+              new THREE.Vector3(gx * hSize, fY - 0.5, gz * hSize),
+              new THREE.Vector3((gx + 1) * hSize, fY + 3.5, (gz + 1) * hSize)
             );
           }
           culling.push({ group: cellGroup, box: cellGroup.userData.aabb });

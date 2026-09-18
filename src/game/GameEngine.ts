@@ -1782,10 +1782,12 @@ export class GameEngine {
     const geo = new THREE.PlaneGeometry(1.8, 1.8);
     const mesh = new THREE.Mesh(geo, mat);
 
-    // Place at 1.15m height (chest level)
+    // Place at 1.15m height (chest level) above this cell's floor — sector 3
+    // (the only sector smilers spawn in) is a real elevated storey.
     const worldX = gx * hSize + hSize / 2;
     const worldZ = gz * hSize + hSize / 2;
-    mesh.position.set(worldX, 1.15, worldZ);
+    const floorY = this.map ? this.map.getFloorHeightAt(worldX, worldZ) : 0;
+    mesh.position.set(worldX, floorY + 1.15, worldZ);
 
     this.scene.add(mesh);
     this.smilers.push({
@@ -1814,15 +1816,16 @@ export class GameEngine {
   }
 
   /**
-   * Which of Level 1's three sequential sectors a grid cell is in.
-   * 1 = low corridors, 2 = upper walkways, 3 = the sealed smiler hall (holds
-   * the exit). Sectors 1 and 2 share one connected space; only sector 3 is
-   * walled off (reached via the "extensive ramp").
+   * Which of Level 1's three sequential sectors (real stacked storeys) a grid
+   * cell is in. 1 = ground floor, 2 = the storey up Ramp A, 3 = the sealed
+   * smiler hall two storeys up (holds the exit, reached via the "extensive
+   * ramp"). Each pair of sectors is walled apart except at its one ramp mouth.
    */
   public getCurrentSector(gx: number, gz: number): 1 | 2 | 3 {
-    const divX = this.map ? this.map.level1Sector3X : 33;
-    if (gx >= divX) return 3;
-    if (gx < 17) return 1;
+    const divX2 = this.map ? this.map.level1Sector2X : 17;
+    const divX3 = this.map ? this.map.level1Sector3X : 33;
+    if (gx >= divX3) return 3;
+    if (gx < divX2) return 1;
     return 2;
   }
 

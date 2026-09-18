@@ -57,6 +57,14 @@ export class PlayerController {
   private moveDirection = new THREE.Vector3();
   private mouseSensitivity = 0.0022;
 
+  /**
+   * Elevation (metres) of the floor under the player, smoothed toward
+   * `map.getFloorHeightAt()`. 0 everywhere except Level 1's stacked sectors
+   * and ramps, where it makes climbing feel continuous even though the
+   * underlying geometry is stepped.
+   */
+  private floorY = 0;
+
   // Camera bobbing configuration
   private bobTime = 0;
   private bobFrequency = 14; // steps pace
@@ -186,7 +194,8 @@ export class PlayerController {
     const cSize = this.map.cellSize;
     
     // Position center of that start tile
-    this.position.set(startX * cSize + cSize / 2, 1.6, startZ * cSize + cSize / 2);
+    this.floorY = this.map.getFloorHeightAt(startX * cSize + cSize / 2, startZ * cSize + cSize / 2);
+    this.position.set(startX * cSize + cSize / 2, this.floorY + 1.6, startZ * cSize + cSize / 2);
     this.rotation.set(0, -Math.PI / 4, 0); // diagonal spawn perspective look
     this.stamina = 1.0;
   }
@@ -292,7 +301,13 @@ export class PlayerController {
     // 5b. SMOOTH CAMERA CROUCH TRANSITION
     const targetHeight = wantsCrouch ? PLAYER_CROUCH_HEIGHT : this.baseHeight;
     this.currentHeight += (targetHeight - this.currentHeight) * 12 * dt;
-    this.position.y = this.currentHeight + this.jumpOffset;
+
+    // 5c. FOLLOW THE FLOOR'S ELEVATION (Level 1's stacked sectors/ramps).
+    // Smoothed rather than snapped so a stepped ramp still feels like a climb.
+    const targetFloorY = this.map.getFloorHeightAt(this.position.x, this.position.z);
+    this.floorY += (targetFloorY - this.floorY) * Math.min(1, 10 * dt);
+
+    this.position.y = this.floorY + this.currentHeight + this.jumpOffset;
 
     // 6. HEAD BOBBING & PHYSICAL WEAVE EFFECTS WITH DYNAMIC BREATHING SWAYS
     let bobX = 0;

@@ -525,6 +525,9 @@ export class WanderingEntity {
       ey = 1.12; // ball of tumbling limbs
     }
 
+    // Level 1's sectors are real stacked storeys — stand on this cell's floor.
+    ey += this.map.getFloorHeightAt(wx, wz);
+
     this.mesh.position.set(wx, ey, wz);
     
     // If inside a solid wall (Duller clipping), set semi-transparent material state
@@ -597,7 +600,8 @@ export class WanderingEntity {
     else if (this.type === EntityType.HOUND) baseHeight = 1.05;
     else if (this.type === EntityType.CLUMP) baseHeight = 1.12;
 
-    this.mesh.position.y = baseHeight + bobOffset;
+    const floorY = this.map.getFloorHeightAt(this.mesh.position.x, this.mesh.position.z);
+    this.mesh.position.y = floorY + baseHeight + bobOffset;
 
     // Glitch animation (subtle scaling artifacts)
     if (this.glitchTimer >= 0.11) {
