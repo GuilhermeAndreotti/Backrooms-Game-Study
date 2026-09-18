@@ -525,6 +525,9 @@ export class WanderingEntity {
       ey = 1.12; // ball of tumbling limbs
     }
 
+    // Level 1's sectors are real stacked storeys — stand on this cell's floor.
+    ey += this.map.getFloorHeightAt(wx, wz);
+
     this.mesh.position.set(wx, ey, wz);
     
     // If inside a solid wall (Duller clipping), set semi-transparent material state
@@ -597,7 +600,8 @@ export class WanderingEntity {
     else if (this.type === EntityType.HOUND) baseHeight = 1.05;
     else if (this.type === EntityType.CLUMP) baseHeight = 1.12;
 
-    this.mesh.position.y = baseHeight + bobOffset;
+    const floorY = this.map.getFloorHeightAt(this.mesh.position.x, this.mesh.position.z);
+    this.mesh.position.y = floorY + baseHeight + bobOffset;
 
     // Glitch animation (subtle scaling artifacts)
     if (this.glitchTimer >= 0.11) {
@@ -698,10 +702,12 @@ export class WanderingEntity {
 
     // 5. INTENSITY AI LOGICS (Special features of the official Entities)
     
-    // Default chasing reset each frame, we calculate depending on sensors
-    if (this.map.level === 2) {
+    // Default chasing reset each frame, we calculate depending on sensors.
+    // Level 3 ("Lights Out") stalkers are summoned specifically to hunt the
+    // player, so they share Level 2's always-chasing behavior.
+    if (this.map.level === 2 || this.map.level === 3) {
       this.isChasing = true;
-      // Boost movement speeds dramatically on Level 2 to make it a fast, heart-pounding sprint chase!
+      // Boost movement speeds dramatically on Level 2/3 to make it a fast, heart-pounding sprint chase!
       if (this.type === EntityType.HOUND) {
         this.moveSpeed = 3.65;
       } else if (this.type === EntityType.CLUMP) {
@@ -720,7 +726,7 @@ export class WanderingEntity {
       this.isChasing = false;
     }
 
-    if (this.map.level !== 2) {
+    if (this.map.level !== 2 && this.map.level !== 3) {
       if (this.type === EntityType.HOUND) {
         // Intimidation Gaze logic!
         // Compute player gaze orientation against the Hound's relative direction

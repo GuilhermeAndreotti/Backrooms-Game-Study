@@ -24,7 +24,7 @@ interface GameHUDProps {
   chatMessages: ChatMessage[];
   onSendMessage: (msg: string) => void;
   onDisconnect: () => void;
-  latency?: number; // Optional ping latency in milliseconds
+  latency?: number; // Real round-trip ms to the relay (undefined until the first pong arrives)
   level?: number;
   engineRef: React.MutableRefObject<GameEngine | null>;
   currentSector?: string;
@@ -49,7 +49,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
   chatMessages,
   onSendMessage,
   onDisconnect,
-  latency = 32,
+  latency,
   level = 0,
   engineRef,
   currentSector = "",
@@ -167,7 +167,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
           <div className="text-[10px] text-[#a28e3b]/60 px-1 font-semibold uppercase tracking-wider flex items-center gap-2 flex-wrap max-w-lg">
             <span>Explorador: <span className="text-[#deb81d]">{playerName}</span></span>
             <span className="text-[#a28e3b]/30">•</span>
-            <span>Localização: <span className="text-[#deb81d]">{level === 2 ? "Level 2 (Pipe Dreams)" : (level === 1 ? "Level 1 (Habitable Zone)" : "Level 0 (The Lobby)")}</span></span>
+            <span>Localização: <span className="text-[#deb81d]">{level === 3 ? "Level 6 (Lights Out)" : (level === 2 ? "Level 2 (Pipe Dreams)" : (level === 1 ? "Level 1 (Habitable Zone)" : "Level 0 (The Lobby)"))}</span></span>
             {level === 1 && currentSector && (
               <>
                 <span className="text-[#a28e3b]/30">•</span>
@@ -188,7 +188,16 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
             <div className="text-[10px] text-[#a28e3b]/70 flex items-center justify-end gap-2 mt-0.5">
               <span>EXPLORADORES: {connectedPlayers.length + 1} / 4</span>
               {latency !== undefined && (
-                <span className="px-1 bg-[#deb81d]/10 text-[#deb81d] rounded border border-[#deb81d]/20">
+                <span
+                  className={`px-1 rounded border tabular-nums ${
+                    latency < 80
+                      ? "bg-green-400/10 text-green-400 border-green-400/20"
+                      : latency < 180
+                        ? "bg-amber-400/10 text-amber-400 border-amber-400/20"
+                        : "bg-red-400/10 text-red-400 border-red-400/20"
+                  }`}
+                  title="Ida-e-volta até o servidor do relay"
+                >
                   PING: {latency}ms
                 </span>
               )}

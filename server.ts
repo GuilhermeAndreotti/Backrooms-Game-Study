@@ -62,6 +62,24 @@ interface PlayerState {
   flashlight: boolean;
   state: string; // 'idle' | 'walking' | 'running' | 'crouching'
   level: number;
+  suitColor: string; // hex, validated against SUIT_COLORS at join time
+}
+
+/**
+ * Hazmat suit colours the client offers in its customization screen. Kept in
+ * sync with SUIT_COLORS in src/types/game.ts. Anything a client sends outside
+ * this set is rejected and replaced with the default.
+ */
+const ALLOWED_SUIT_COLORS = new Set([
+  "#deb81d", "#d94f2b", "#3f7d3a", "#2f6f8f",
+  "#8a3ab0", "#b0243a", "#c9c2b0", "#1c1c22",
+]);
+const DEFAULT_SUIT_COLOR = "#deb81d";
+
+function sanitizeSuitColor(value: unknown): string {
+  return typeof value === "string" && ALLOWED_SUIT_COLORS.has(value.toLowerCase())
+    ? value.toLowerCase()
+    : DEFAULT_SUIT_COLOR;
 }
 
 interface Connection {
@@ -73,6 +91,14 @@ interface Connection {
 
 interface Room {
   seed: number;
+  /**
+   * The level the whole room is on. Authoritative: a player reaching an exit
+   * only *requests* an advance (see "level_transition_request"); this is what
+   * actually decides it and gets broadcast back to everyone, so the group
+   * always transitions together instead of each explorer noclipping into
+   * their own separate next level.
+   */
+  level: number;
   players: Map<string, PlayerState>;
   /** Sockets in this room, so a broadcast never scans unrelated connections. */
   connections: Set<Connection>;
@@ -193,7 +219,7 @@ async function startServer() {
             typeof requestedSeed === "number" && requestedSeed > 0 && Number.isFinite(requestedSeed)
               ? Math.floor(requestedSeed)
               : Math.floor(Math.random() * 999999) + 1;
-          room = { seed, players: new Map(), connections: new Set(), dirty: new Set() };
+          room = { seed, level: 0, players: new Map(), connections: new Set(), dirty: new Set() };
           rooms.set(roomKey, room);
           console.log(`Created new room "${roomKey}" with seed ${seed}`);
         }
@@ -220,6 +246,7 @@ async function startServer() {
           flashlight: false,
           state: "idle",
           level: 0,
+          suitColor: sanitizeSuitColor(data.suitColor),
         };
 
         conn = { ws, player, isAlive: true, chatTimestamps: [] };
@@ -227,11 +254,14 @@ async function startServer() {
         room.connections.add(conn);
         room.players.set(playerId, player);
 
-        // 1. Confirm join to self: client id, shared map seed, current roster.
+        // 1. Confirm join to self: client id, shared map seed, current roster and
+        // level — a room the rest of the group already advanced past Level 0 in
+        // must not hand a fresh joiner a Level 0 map.
         send(ws, {
           type: "joined",
           id: playerId,
           seed: room.seed,
+          level: room.level,
           players: Array.from(room.players.values()).filter((p) => p.id !== playerId),
         });
 
@@ -260,6 +290,37 @@ async function startServer() {
 
         // Queued instead of relayed immediately: see the room tick below.
         room.dirty.add(p.id);
+        return;
+      }
+
+      // --- level transition ---------------------------------------------------
+      // A player reached the exit and is asking to advance. Whoever's request
+      // lands first wins; a duplicate/stale one (two players finding the exit
+      // together, or a message arriving after the room already moved on) is
+      // simply ignored, since `data.level` must be strictly ahead of the room.
+      if (type === "level_transition_request") {
+        const requestedLevel = data.level;
+        if (typeof requestedLevel !== "number" || !Number.isFinite(requestedLevel)) return;
+        if (requestedLevel <= room.level) return;
+
+        room.level = Math.floor(requestedLevel);
+        room.players.forEach((p) => {
+          p.level = room.level;
+        });
+
+        broadcastToRoom(room, { type: "level_transition", level: room.level, seed: room.seed });
+        return;
+      }
+
+      // --- ping ---------------------------------------------------------------
+      // Round-trip latency probe for the HUD: echo the client's own timestamp
+      // straight back (no room broadcast, no queuing) so the measurement isn't
+      // skewed by the movement-snapshot tick interval.
+      if (type === "ping") {
+        const t = data.t;
+        if (typeof t === "number" && Number.isFinite(t)) {
+          send(ws, { type: "pong", t });
+        }
         return;
       }
 

@@ -53,7 +53,7 @@ export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
   {
     id: "gate_unlocked",
     title: "Selo Rompido",
-    description: "Abriu o Portão de Vapor do Nível 1 usando a Chave Enferrujada.",
+    description: "Abriu o portão trancado do Nível 0 usando a Chave de Ferro Enferrujada.",
     iconName: "Trophy",
     unlocked: false,
   },
@@ -62,6 +62,13 @@ export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
     title: "Fuga do Labirinto",
     description: "Completou o Nível 2 e escapou da perseguição mortal das entidades.",
     iconName: "Skull",
+    unlocked: false,
+  },
+  {
+    id: "secret_level_found",
+    title: "Luzes Apagadas",
+    description: "Seguiu um corredor sem nenhuma luz até o fim e encontrou o Nível 6: Lights Out.",
+    iconName: "Sparkles",
     unlocked: false,
   }
 ];

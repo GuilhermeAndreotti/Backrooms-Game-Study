@@ -53,8 +53,14 @@ export interface LightFixture {
   dust?: THREE.Points;
 }
 
+/** Grid width/height per level. Level 0 is larger to fit the key/maze/dual-door gauntlet. */
+export function gridSizeForLevel(level: number): number {
+  return level === 0 ? 64 : 48;
+}
+
 export class ProceduralMap {
-  public gridSize = 48; // Grid size limit (e.g., 48x48 blocks)
+  /** Grid width/height in cells. Set in the constructor from {@link gridSizeForLevel}. */
+  public gridSize = 48;
   public cellSize = 4;  // Size of one cell in units/meters
   public grid: CellType[][] = [];
   public roomsList: { x: number; z: number; w: number; h: number }[] = [];
@@ -75,7 +81,8 @@ export class ProceduralMap {
 
   // Cells caches for dynamic proximity culling
   public cellGroups: Map<string, THREE.Group> = new Map();
-  public cellGroupGrid: (THREE.Group | null)[][] = Array.from({ length: 48 }, () => Array(48).fill(null));
+  /** Allocated in the constructor once {@link gridSize} is known. */
+  public cellGroupGrid: (THREE.Group | null)[][] = [];
   public cellObstacles: Map<string, { x: number; z: number; radius: number }[]> = new Map();
   /** Cell streaming radius in meters; follows the active quality preset. */
   public maxVisibleDistance = 24;
@@ -173,6 +180,66 @@ export class ProceduralMap {
   public exitGridX = 0;
   public exitGridZ = 0;
 
+  // --- Level 0 gateway (key -> locked gate -> maze -> two doors) ---------------
+  /** Grid cell of the locked gate doorway; -1 when the level has no gate. */
+  public gateGridX = -1;
+  public gateGridZ = -1;
+  /** Grid cell where the one guaranteed rusty key spawns (Level 0). */
+  public keyGridX = -1;
+  public keyGridZ = -1;
+  /** True once the rusty key has been used on the gate this session. */
+  public gateUnlocked = false;
+  /** Grid cells of the two choice doors at the maze's end. */
+  public doorAGridX = -1; public doorAGridZ = -1;
+  public doorBGridX = -1; public doorBGridZ = -1;
+  /** The chamber cell the two doors open off; path guidance stops here so it
+   *  never gives away which door is correct. */
+  public gatewayJunctionX = -1; public gatewayJunctionZ = -1;
+  /** Corridor cell sealed shut once a choice door is opened (no going back). */
+  public chamberEntryX = -1; public chamberEntryZ = -1;
+  /** Which door leads onward vs. into the red rooms — decided by the seed. */
+  public correctDoorIsA = true;
+  /** Colour-name painted on the correct door; repeated in every note's clue. */
+  public correctDoorMarker = "";
+  /** Colour-name painted on the wrong (red-room) door. */
+  public wrongDoorMarker = "";
+  /** Set once either choice door has been opened — the choice is now locked in. */
+  public gatewayCommitted = false;
+  public doorAOpened = false;
+  public doorBOpened = false;
+  /** Meshes for the gate + door leaves, kept in the scene for the level's life. */
+  public gatewayMeshes: THREE.Object3D[] = [];
+  private gateLeafMesh: THREE.Object3D | null = null;
+  private doorALeaf: THREE.Object3D | null = null;
+  private doorBLeaf: THREE.Object3D | null = null;
+
+  /** Level 1: cells belonging to a "ramp" connector, dressed to read as an incline. */
+  public rampCells = new Set<string>();
+  /** Level 1: ramp cells that step up from their -X neighbour — gets a riser panel. */
+  public rampRiserX = new Set<string>();
+  /** Level 1: X column dividing sector 1 from sector 2. */
+  public level1Sector2X = 17;
+  /** Level 1: X column dividing sector 2 from the sealed sector 3 (smiler hall). */
+  public level1Sector3X = 33;
+  /**
+   * Per-cell floor elevation in metres (0 everywhere except Level 1, where
+   * each sector is a real, higher storey and the two ramps interpolate
+   * between them). Allocated in the constructor alongside the other dense
+   * per-cell grids, once gridSize is known.
+   */
+  public floorHeight: number[][] = [];
+
+  // --- Level 2: secret "Lights Out" entrance ------------------------------
+  /** Cells with no fluorescent/emergency fixtures spawned — the secret corridor. */
+  public forcedDarkCells = new Set<string>();
+  /** Dead-end trigger cell at the end of the dark corridor; -1 if not Level 2. */
+  public secretGridX = -1;
+  public secretGridZ = -1;
+
+  // --- Level 3 ("Lights Out"): pitch-black maze, no ambient light at all --
+  /** Sparse glowing waypoints along the true path — the only light in the maze. */
+  public pathLightCells = new Set<string>();
+
   // Guaranteed landmark chair pyramid coordinates on Level 0
   public chairPyramidX = -1;
   public chairPyramidZ = -1;
@@ -184,7 +251,7 @@ export class ProceduralMap {
    * Grid -> index into {@link exitPath}, or -1. Replaces a linear findIndex that
    * ran on the exit path every frame once the guidance draft kicks in.
    */
-  public exitPathIndexGrid = new Int32Array(48 * 48).fill(-1);
+  public exitPathIndexGrid = new Int32Array(0); // allocated in the constructor once gridSize is known
 
   // Random Environmental Event States
   private eventCooldown = 15.0; // Seconds between event rolls
@@ -211,9 +278,9 @@ export class ProceduralMap {
   public activeAnimatingMeshes: ProceduralMap["animatingMeshes"] = [];
   public activeConsumables: ProceduralMap["consumables"] = [];
 
-  /** Obstacle lookup as a dense grid: avoids per-frame string key allocation. */
-  private obstacleGrid: ({ x: number; z: number; radius: number }[] | null)[][] =
-    Array.from({ length: 48 }, () => Array(48).fill(null));
+  /** Obstacle lookup as a dense grid: avoids per-frame string key allocation.
+   *  Allocated in the constructor once {@link gridSize} is known. */
+  private obstacleGrid: ({ x: number; z: number; radius: number }[] | null)[][] = [];
 
   /**
    * Shared props/materials created on demand and reused by every cell.
@@ -231,10 +298,20 @@ export class ProceduralMap {
   constructor(seed: number, level = 0, quality?: QualityProfile) {
     this.seed = seed;
     this.level = level;
+    this.gridSize = gridSizeForLevel(level);
     this.quality = quality ?? getQualityProfile("medium");
     // Stay within the fog cutoff; Level 1 (warehouse) is more open so it needs
     // a little more reach. The quality profile scales both.
     this.maxVisibleDistance = this.quality.viewDistance * (level === 1 ? 1.15 : 1.0);
+
+    // Dense per-cell grids: allocated here, not as field initializers, because
+    // gridSize now varies by level and field initializers run before this body.
+    const gs = this.gridSize;
+    this.cellGroupGrid = Array.from({ length: gs }, () => Array(gs).fill(null));
+    this.obstacleGrid = Array.from({ length: gs }, () => Array(gs).fill(null));
+    this.exitPathIndexGrid = new Int32Array(gs * gs).fill(-1);
+    this.floorHeight = Array.from({ length: gs }, () => new Array(gs).fill(0));
+
     this.prng = new SeededRandom(seed);
     this.initMaterials();
     this.generateGrid();
@@ -345,8 +422,11 @@ export class ProceduralMap {
   public findExitPath() {
     const startX = 2;
     const startZ = 2;
-    const endX = this.exitGridX;
-    const endZ = this.exitGridZ;
+    // On Level 0 the breadcrumb/arrow guidance stops at the door junction so it
+    // never reveals which of the two doors is the correct one.
+    const guideToJunction = this.level === 0 && this.gatewayJunctionX >= 0;
+    const endX = guideToJunction ? this.gatewayJunctionX : this.exitGridX;
+    const endZ = guideToJunction ? this.gatewayJunctionZ : this.exitGridZ;
 
     const queue: [number, number][][] = [[[startX, startZ]]];
     const visited = new Set<string>();
@@ -389,6 +469,17 @@ export class ProceduralMap {
       this.exitPathIndexGrid[x * this.gridSize + z] = idx;
     });
 
+    // Level 3 ("Lights Out"): sparse glowing waypoints along the true path —
+    // in a maze with no other light source, these are the only way to navigate.
+    // Spaced further apart than they'd need to be for a lit level, since
+    // finding your way between them in the dark is the point.
+    if (this.level === 3) {
+      this.pathLightCells.clear();
+      foundPath.forEach(([x, z], idx) => {
+        if (idx > 0 && idx % 5 === 0) this.pathLightCells.add(`${x},${z}`);
+      });
+    }
+
     // Populate wet spills along the shortest path as a subtle navigation cue (Level 0 wet carpets)
     this.wetSpills.clear();
     foundPath.forEach(([x, z], idx) => {
@@ -411,107 +502,6 @@ export class ProceduralMap {
         }
       }
     }
-  }
-
-  /**
-   * Generates a subtler wall-mounted crimson arrow decal pointing left or right in local space
-   */
-  private createWallArrowMesh(direction: "left" | "right"): THREE.Group {
-    const arrow = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x9c1a1a, // Creepy hand-painted crimson red spray-pant hue
-      roughness: 0.95,
-      metalness: 0.0
-    });
-
-    const isLeft = direction === "left";
-
-    // Main horizontal stem of the arrow
-    const stemGeo = new THREE.BoxGeometry(0.35, 0.04, 0.008);
-    const stem = new THREE.Mesh(stemGeo, mat);
-    stem.position.set(0, 0, 0.004);
-    arrow.add(stem);
-
-    // Diagonal chevron arms of the arrow head
-    const armGeo = new THREE.BoxGeometry(0.14, 0.035, 0.008);
-
-    const headX = isLeft ? -0.15 : 0.15;
-    const angleMult = isLeft ? 1 : -1;
-
-    const armUpper = new THREE.Mesh(armGeo, mat);
-    armUpper.position.set(headX, 0.045, 0.004);
-    armUpper.rotation.z = angleMult * Math.PI / 4;
-    arrow.add(armUpper);
-
-    const armLower = new THREE.Mesh(armGeo, mat);
-    armLower.position.set(headX, -0.045, 0.004);
-    armLower.rotation.z = -angleMult * Math.PI / 4;
-    arrow.add(armLower);
-
-    return arrow;
-  }
-
-  /**
-   * Helper to compute if an arrow placed on a given wall should point "left" or "right"
-   * to guide the player towards the exit step.
-   */
-  private getPathArrowDirection(gx: number, gz: number, wallType: 'N' | 'S' | 'W' | 'E'): 'left' | 'right' | null {
-    const pathIdx = this.exitPath.findIndex(([x, z]) => x === gx && z === gz);
-    if (pathIdx === -1 || pathIdx >= this.exitPath.length - 1) return null;
-
-    const [nextX, nextZ] = this.exitPath[pathIdx + 1];
-    const dx = nextX - gx;
-    const dz = nextZ - gz;
-
-    if (wallType === 'N') {
-      // North Wall: facing -Z (North). Left is -X (West), Right is +X (East).
-      if (dx > 0) return 'right';
-      if (dx < 0) return 'left';
-      for (let i = pathIdx + 2; i < this.exitPath.length; i++) {
-        const pX = this.exitPath[i][0];
-        if (pX > gx) return 'right';
-        if (pX < gx) return 'left';
-      }
-      return 'right';
-    }
-
-    if (wallType === 'S') {
-      // South Wall: facing +Z (South). Left is +X (East), Right is -X (West).
-      if (dx > 0) return 'left';
-      if (dx < 0) return 'right';
-      for (let i = pathIdx + 2; i < this.exitPath.length; i++) {
-        const pX = this.exitPath[i][0];
-        if (pX > gx) return 'left';
-        if (pX < gx) return 'right';
-      }
-      return 'left';
-    }
-
-    if (wallType === 'W') {
-      // West Wall: facing -X (West). Left is +Z (South), Right is -Z (North).
-      if (dz > 0) return 'left';
-      if (dz < 0) return 'right';
-      for (let i = pathIdx + 2; i < this.exitPath.length; i++) {
-        const pZ = this.exitPath[i][1];
-        if (pZ > gz) return 'left';
-        if (pZ < gz) return 'right';
-      }
-      return 'right';
-    }
-
-    if (wallType === 'E') {
-      // East Wall: facing +X (East). Left is -Z (North), Right is +Z (South).
-      if (dz > 0) return 'right';
-      if (dz < 0) return 'left';
-      for (let i = pathIdx + 2; i < this.exitPath.length; i++) {
-        const pZ = this.exitPath[i][1];
-        if (pZ > gz) return 'right';
-        if (pZ < gz) return 'left';
-      }
-      return 'right';
-    }
-
-    return null;
   }
 
   /**
@@ -1517,6 +1507,18 @@ export class ProceduralMap {
           }
         }
       });
+
+      // Secret entrance to "Lights Out": a single-wide corridor (the main
+      // tunnel is 3-wide, so this reads as distinctly narrower/off) branching
+      // east off Segment 1 at z=14, with no fixtures spawned anywhere along
+      // it — walking it straight to the end in the dark is the whole "puzzle".
+      const secretZ = 14;
+      for (let x = 4; x <= 20; x++) {
+        this.grid[x][secretZ] = CellType.CORRIDOR;
+        this.forcedDarkCells.add(`${x},${secretZ}`);
+      }
+      this.secretGridX = 20;
+      this.secretGridZ = secretZ;
     } else if (this.level === 1) {
       // LEVEL 1: Industrial warehouse / boiler room
       // Vast central field, long sweeping paths, lateral mazes
@@ -1613,6 +1615,26 @@ export class ProceduralMap {
       this.grid[35][9] = CellType.CORRIDOR;
       this.grid[15][39] = CellType.CORRIDOR;
       this.grid[30][39] = CellType.CORRIDOR;
+
+      // Split into 3 sequential sectors; sector 3 (the smiler hall) is sealed off
+      // except for one long "ramp" corridor the player has to find.
+      this.partitionLevel1Sectors();
+
+    } else if (this.level === 3) {
+      // LEVEL 3 ("Lights Out" — secret level, found through a dark corridor on
+      // Level 2). A real perfect maze, pitch black: no fluorescent fixtures are
+      // ever spawned here (see createCell3D's light-fixture gate). The only
+      // visible things are sparse glowing waypoints traced along the true path
+      // (populated in findExitPath, right after this maze exists) — you
+      // navigate by hopping from light to light, not by sight. Bounded to a
+      // 34x34 region (not the full grid) so the shortest path stays in the
+      // same ballpark as the other levels' gauntlets rather than ballooning —
+      // a perfect maze's only path can wind a very long way.
+      this.exitGridX = 34;
+      this.exitGridZ = 34;
+      this.carvePerfectMaze(2, 2, this.exitGridX, this.exitGridZ, 2, 2);
+      this.grid[2][2] = CellType.CORRIDOR;
+      this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
 
     } else {
       // LEVEL 0: The Lobby (Classic Backrooms yellow partitions forming a modular wall-labyrinth)
@@ -1827,6 +1849,10 @@ export class ProceduralMap {
         this.exitGridX = chosen[0];
         this.exitGridZ = chosen[1];
       }
+
+      // Carve the key/gate/maze/two-doors gauntlet into the enlarged east wing.
+      // This overrides exitGridX/Z with the cell behind the correct door.
+      this.carveLevel0Gateway();
     }
 
     // Ensure spawn around (2,2) is safe, walkable, and fully cleared
@@ -1861,6 +1887,423 @@ export class ProceduralMap {
         }
       }
     }
+  }
+
+  /** Placard colours for the two choice doors, set by carveLevel0Gateway(). */
+  private doorMarkerHex = { correct: 0xffffff, wrong: 0xffffff };
+
+  /**
+   * Randomized recursive-backtracker perfect maze over [x0..x1] x [z0..z1].
+   * The region must already be SOLID. Room cells are those an even number of
+   * steps from (x0,z0); the odd cells between them are the walls that get
+   * knocked through. The result is fully connected with exactly one path
+   * between any two room cells.
+   */
+  private carvePerfectMaze(x0: number, z0: number, x1: number, z1: number, startX: number, startZ: number) {
+    const rng = new SeededRandom(this.seed + 0x5a17 + x0 * 31 + z0 * 17);
+    const inRegion = (x: number, z: number) => x >= x0 && x <= x1 && z >= z0 && z <= z1;
+    const keyOf = (x: number, z: number) => x * 4096 + z;
+    const visited = new Set<number>();
+
+    let sx = startX - ((startX - x0) & 1);
+    let sz = startZ - ((startZ - z0) & 1);
+    if (!inRegion(sx, sz)) { sx = x0; sz = z0; }
+
+    const stack: [number, number][] = [[sx, sz]];
+    visited.add(keyOf(sx, sz));
+    this.grid[sx][sz] = CellType.CORRIDOR;
+
+    const dirs = [[2, 0], [-2, 0], [0, 2], [0, -2]];
+    while (stack.length > 0) {
+      const [cx, cz] = stack[stack.length - 1];
+      const order = [0, 1, 2, 3];
+      for (let i = 3; i > 0; i--) {
+        const j = rng.nextInt(0, i + 1);
+        const t = order[i]; order[i] = order[j]; order[j] = t;
+      }
+      let carved = false;
+      for (const di of order) {
+        const nx = cx + dirs[di][0];
+        const nz = cz + dirs[di][1];
+        if (!inRegion(nx, nz) || visited.has(keyOf(nx, nz))) continue;
+        this.grid[cx + dirs[di][0] / 2][cz + dirs[di][1] / 2] = CellType.CORRIDOR;
+        this.grid[nx][nz] = CellType.CORRIDOR;
+        visited.add(keyOf(nx, nz));
+        stack.push([nx, nz]);
+        carved = true;
+        break;
+      }
+      if (!carved) stack.pop();
+    }
+  }
+
+  /**
+   * Level 0 progression gauntlet, carved into the enlarged east wing:
+   *   guaranteed key (in the lobby) -> locked gate -> perfect maze ->
+   *   two choice doors -> the correct one reaches the exit, the wrong one
+   *   opens into red rooms. The correct door (and its placard colour) is
+   *   seed-deterministic; every scrap-of-note carries a clue naming it.
+   */
+  private carveLevel0Gateway() {
+    const gs = this.gridSize;
+
+    // 1. Seal the east wing so it is reachable only through the gate.
+    for (let x = 45; x < gs; x++) {
+      for (let z = 0; z < gs; z++) this.grid[x][z] = CellType.SOLID;
+    }
+
+    // 2. Locked gate doorway + a corridor from the lobby's vertical spine.
+    this.gateGridX = 45;
+    this.gateGridZ = 32;
+    for (let x = 20; x <= 45; x++) this.grid[x][32] = CellType.CORRIDOR;
+
+    // 3. Perfect maze filling the wing (kept clear of the choice chamber's
+    //    strip so walling the chamber can't fragment the maze).
+    const mazeX0 = 46, mazeX1 = 58, mazeZ0 = 4, mazeZ1 = gs - 4;
+    this.carvePerfectMaze(mazeX0, mazeZ0, mazeX1, mazeZ1, 46, 32);
+    this.grid[46][32] = CellType.CORRIDOR; // guarantee the maze entry meets the gate
+
+    // 4. A sealed choice chamber hanging off the maze cell (58,32). Its only way
+    //    in/out is that one entry cell; the two painted doors in its walls start
+    //    shut. Opening one swings it wide, walls the entry shut behind you and
+    //    commits you to that side.
+    for (let x = 59; x <= 61; x++) {
+      for (let z = 24; z <= 40; z++) this.grid[x][z] = CellType.SOLID;
+    }
+    for (let x = 59; x <= 60; x++) {
+      for (let z = 28; z <= 36; z++) this.grid[x][z] = CellType.CORRIDOR;
+    }
+    this.grid[58][32] = CellType.CORRIDOR;
+    this.grid[59][32] = CellType.CORRIDOR; // entry from the maze into the chamber
+    this.chamberEntryX = 59; this.chamberEntryZ = 32;
+    this.gatewayJunctionX = 60; this.gatewayJunctionZ = 32; // guidance stops in the chamber
+    this.doorAGridX = 60; this.doorAGridZ = 27; // north wall
+    this.doorBGridX = 60; this.doorBGridZ = 37; // south wall
+    this.grid[this.doorAGridX][this.doorAGridZ] = CellType.CORRIDOR;
+    this.grid[this.doorBGridX][this.doorBGridZ] = CellType.CORRIDOR;
+
+    // 5. Seed-deterministic correct door + placard colours. Mix the seed and
+    //    burn a few outputs first so nearby seeds don't all pick the same door.
+    const doorRng = new SeededRandom(((this.seed ^ 0x9e3779b9) >>> 0) + 55555);
+    doorRng.next(); doorRng.next(); doorRng.next();
+    this.correctDoorIsA = doorRng.next() < 0.5;
+    const palette = [
+      { name: "ÂMBAR", hex: 0xe0b93a },
+      { name: "AZUL", hex: 0x3d7fa6 },
+      { name: "VERDE", hex: 0x4c9a4c },
+      { name: "VERMELHO", hex: 0xc0392b },
+      { name: "VIOLETA", hex: 0x8e44ad },
+    ];
+    const iCorrect = doorRng.nextInt(0, palette.length);
+    let iWrong = doorRng.nextInt(0, palette.length);
+    if (iWrong === iCorrect) iWrong = (iWrong + 1) % palette.length;
+    this.correctDoorMarker = palette[iCorrect].name;
+    this.wrongDoorMarker = palette[iWrong].name;
+    this.doorMarkerHex = { correct: palette[iCorrect].hex, wrong: palette[iWrong].hex };
+
+    // 6. A small room behind each door. The correct one holds the exit; the
+    //    wrong one is a red room. (Doors' own cells were carved above.)
+    const carveRoom = (z0: number, z1: number, type: CellType) => {
+      for (let x = 59; x <= 61; x++) {
+        for (let z = z0; z <= z1; z++) {
+          if (x >= 0 && x < gs && z >= 0 && z < gs) this.grid[x][z] = type;
+        }
+      }
+    };
+    const aIsExit = this.correctDoorIsA;
+    // door A room: z 22..26 (north).  door B room: z 38..42 (south).
+    carveRoom(22, 26, aIsExit ? CellType.CORRIDOR : CellType.RED_ROOM);
+    carveRoom(38, 42, aIsExit ? CellType.RED_ROOM : CellType.CORRIDOR);
+    this.exitGridX = 60;
+    this.exitGridZ = aIsExit ? 23 : 41;
+    this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
+
+    // 7. A few more red-room clearings scattered through the maze.
+    for (const [rx, rz] of [[49, 13], [54, 47], [51, 27]] as [number, number][]) {
+      for (let x = rx; x <= rx + 3; x++) {
+        for (let z = rz; z <= rz + 3; z++) {
+          if (x > mazeX0 && x < mazeX1 && z > mazeZ0 && z < mazeZ1) this.grid[x][z] = CellType.RED_ROOM;
+        }
+      }
+    }
+
+    // 8. The one guaranteed rusty key, in the lobby, far from the gate.
+    const keyRng = new SeededRandom(this.seed + 24601);
+    this.keyGridX = -1;
+    for (let attempt = 0; attempt < 400; attempt++) {
+      const kx = keyRng.nextInt(6, 40);
+      const kz = keyRng.nextInt(6, gs - 6);
+      const t = this.grid[kx][kz];
+      if ((t === CellType.CORRIDOR || t === CellType.ROOM_LARGE || t === CellType.ROOM_SMALL) && !(kx < 8 && kz < 8)) {
+        this.keyGridX = kx; this.keyGridZ = kz;
+        break;
+      }
+    }
+    if (this.keyGridX < 0) { this.keyGridX = 12; this.keyGridZ = 12; this.grid[12][12] = CellType.CORRIDOR; }
+  }
+
+  /** Hazard-striped floor for Level 1 "ramp" connector cells. */
+  private getRampFloorMaterial(): THREE.Material {
+    return this.sharedMat("ramp_floor", () => {
+      const c = document.createElement("canvas");
+      c.width = 64; c.height = 64;
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = "#2b2b30"; ctx.fillRect(0, 0, 64, 64);
+      ctx.strokeStyle = "#c8992f"; ctx.lineWidth = 10;
+      for (let i = -64; i < 128; i += 22) {
+        ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i + 64, 64); ctx.stroke();
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      this.sharedTextures.push(tex);
+      return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, metalness: 0.15 });
+    });
+  }
+
+  private getRampLipMaterial(): THREE.Material {
+    return this.sharedMat("ramp_lip_mat", () => new THREE.MeshStandardMaterial({ color: 0xd7a233, emissive: 0x2a1c05, roughness: 0.7 }));
+  }
+
+  /** World-space centre of a grid cell. */
+  private cellCenter(gx: number, gz: number): [number, number] {
+    return [gx * this.cellSize + this.cellSize / 2, gz * this.cellSize + this.cellSize / 2];
+  }
+
+  /**
+   * Floor elevation (metres) under a world position — 0 everywhere except
+   * Level 1's stacked sectors/ramps. Used by the player controller, entities
+   * and smilers so everything actually standing on a given floor renders and
+   * moves at that floor's height, not just the 2D grid position.
+   */
+  public getFloorHeightAt(worldX: number, worldZ: number): number {
+    const gx = Math.floor(worldX / this.cellSize);
+    const gz = Math.floor(worldZ / this.cellSize);
+    if (gx < 0 || gz < 0 || gx >= this.gridSize || gz >= this.gridSize) return 0;
+    return this.floorHeight[gx][gz] || 0;
+  }
+
+  /**
+   * A residential-style panelled door leaf (frame + slab + recessed panels +
+   * knob). Built around a hinge at its left edge so `group.rotation.y` swings
+   * it open. `width` is the opening width in metres.
+   */
+  private createHouseDoor(colorHex: number, width = 3.4): THREE.Group {
+    const grp = new THREE.Group();
+    const h = 2.9;
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0xdad2c0, roughness: 0.7 });
+    const slabMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.55, metalness: 0.05 });
+    const panelMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.5, metalness: 0.05 });
+
+    // Casing (stays put — added to the leaf group but not rotated visually much)
+    const jamb = new THREE.BoxGeometry(0.18, h + 0.2, 0.22);
+    const left = new THREE.Mesh(jamb, frameMat); left.position.set(-width / 2 - 0.09, h / 2, 0); grp.add(left);
+    const right = new THREE.Mesh(jamb, frameMat); right.position.set(width / 2 + 0.09, h / 2, 0); grp.add(right);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(width + 0.5, 0.18, 0.22), frameMat);
+    head.position.set(0, h + 0.09, 0); grp.add(head);
+
+    // The swinging leaf, hinged at x = -width/2
+    const leaf = new THREE.Group();
+    leaf.position.set(-width / 2, 0, 0);
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(width, h, 0.09), slabMat);
+    slab.position.set(width / 2, h / 2, 0);
+    leaf.add(slab);
+    // recessed rectangular panels, classic 6-panel interior door
+    const pw = width * 0.34, ph = h * 0.24;
+    for (const px of [width * 0.28, width * 0.72]) {
+      for (const py of [h * 0.22, h * 0.52, h * 0.8]) {
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(pw, ph, 0.04), panelMat);
+        panel.position.set(px, py, 0.055);
+        leaf.add(panel);
+      }
+    }
+    // brass knob
+    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 10), new THREE.MeshStandardMaterial({ color: 0xc9a24b, metalness: 0.8, roughness: 0.3 }));
+    knob.position.set(width * 0.9, h * 0.5, 0.12);
+    leaf.add(knob);
+    grp.add(leaf);
+    (grp as THREE.Object3D & { _leaf?: THREE.Object3D })._leaf = leaf;
+    return grp;
+  }
+
+  /** Swings a stored door leaf. `target` in radians; ProceduralMap.update lerps. */
+  private beginDoorSwing(doorGroup: THREE.Object3D | null, target: number) {
+    if (!doorGroup) return;
+    const leaf = (doorGroup as THREE.Object3D & { _leaf?: THREE.Object3D })._leaf;
+    if (leaf) (leaf as THREE.Object3D & { _swingTarget?: number; _swingT?: number })._swingTarget = target;
+    if (leaf) (leaf as THREE.Object3D & { _swingTarget?: number; _swingT?: number })._swingT = 0;
+  }
+
+  /**
+   * Builds the Level 0 gateway props: a locked house door at the maze entrance
+   * and the two painted, shut house doors in the choice chamber. Each gets a
+   * blocking obstacle. Called by GameEngine once the map exists.
+   */
+  public buildLevel0Gateway(scene: THREE.Scene) {
+    if (this.level !== 0 || this.gateGridX < 0) return;
+
+    // --- Locked gate: a heavy house door across the maze entrance -----------
+    const [gcx, gcz] = this.cellCenter(this.gateGridX, this.gateGridZ);
+    const gate = this.createHouseDoor(0x7a5a35);
+    gate.rotation.y = Math.PI / 2; // face along X (the passage runs along X)
+    gate.position.set(gcx - this.cellSize / 2, 0, gcz);
+    scene.add(gate);
+    this.gateLeafMesh = gate;
+    this.gatewayMeshes.push(gate);
+
+    const g = this.obstacleGrid[this.gateGridX]?.[this.gateGridZ] ?? [];
+    g.push({ x: gcx - this.cellSize / 2 + 0.2, z: gcz, radius: 2.6 });
+    if (this.obstacleGrid[this.gateGridX]) this.obstacleGrid[this.gateGridX][this.gateGridZ] = g;
+
+    // --- Choice chamber: two shut, painted house doors --------------------
+    const aHex = this.correctDoorIsA ? this.doorMarkerHex.correct : this.doorMarkerHex.wrong;
+    const bHex = this.correctDoorIsA ? this.doorMarkerHex.wrong : this.doorMarkerHex.correct;
+
+    const makeChoiceDoor = (gx: number, gz: number, hex: number, facingSouth: boolean) => {
+      const [cx, cz] = this.cellCenter(gx, gz);
+      const door = this.createHouseDoor(hex);
+      door.rotation.y = facingSouth ? 0 : Math.PI; // leaf spans X, opens away from the chamber
+      door.position.set(cx, 0, cz);
+      scene.add(door);
+      this.gatewayMeshes.push(door);
+      const obs = this.obstacleGrid[gx]?.[gz] ?? [];
+      obs.push({ x: cx, z: cz, radius: 2.4 });
+      if (this.obstacleGrid[gx]) this.obstacleGrid[gx][gz] = obs;
+      return door;
+    };
+    // door A is the chamber's north wall (opens north), door B the south wall
+    this.doorALeaf = makeChoiceDoor(this.doorAGridX, this.doorAGridZ, aHex, false);
+    this.doorBLeaf = makeChoiceDoor(this.doorBGridX, this.doorBGridZ, bHex, true);
+  }
+
+  /** Consumes the key: removes the gate obstacle and swings the gate open. */
+  public unlockLevel0Gate() {
+    if (this.gateUnlocked || this.gateGridX < 0) return;
+    this.gateUnlocked = true;
+    if (this.obstacleGrid[this.gateGridX]) this.obstacleGrid[this.gateGridX][this.gateGridZ] = null;
+    this.beginDoorSwing(this.gateLeafMesh, -Math.PI * 0.62);
+  }
+
+  /**
+   * Opens choice door A or B: swings it, clears its obstacle, then seals the
+   * chamber-entry corridor with a wall so the player can't go back and try the
+   * other one.
+   */
+  public openLevel0ChoiceDoor(which: "A" | "B", scene: THREE.Scene) {
+    if (this.gatewayCommitted) return;
+    this.gatewayCommitted = true;
+
+    const gx = which === "A" ? this.doorAGridX : this.doorBGridX;
+    const gz = which === "A" ? this.doorAGridZ : this.doorBGridZ;
+    if (this.obstacleGrid[gx]) this.obstacleGrid[gx][gz] = null;
+    if (which === "A") { this.doorAOpened = true; this.beginDoorSwing(this.doorALeaf, -Math.PI * 0.62); }
+    else { this.doorBOpened = true; this.beginDoorSwing(this.doorBLeaf, -Math.PI * 0.62); }
+
+    // Seal the way back: wall the entry cell and drop a slab there.
+    if (this.chamberEntryX >= 0) {
+      this.grid[this.chamberEntryX][this.chamberEntryZ] = CellType.SOLID;
+      const [ex, ez] = this.cellCenter(this.chamberEntryX, this.chamberEntryZ);
+      const wall = new THREE.Mesh(
+        new THREE.BoxGeometry(0.5, 3.0, this.cellSize),
+        new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.9 })
+      );
+      wall.position.set(ex + this.cellSize / 2, 1.5, ez);
+      scene.add(wall);
+      this.gatewayMeshes.push(wall);
+      const obs = this.obstacleGrid[this.chamberEntryX]?.[this.chamberEntryZ] ?? [];
+      obs.push({ x: ex + this.cellSize / 2, z: ez, radius: 2.4 });
+      if (this.obstacleGrid[this.chamberEntryX]) this.obstacleGrid[this.chamberEntryX][this.chamberEntryZ] = obs;
+    }
+  }
+
+  /** Tears down gateway props on level transition. */
+  public disposeGateway(scene: THREE.Scene) {
+    for (const m of this.gatewayMeshes) {
+      scene.remove(m);
+      m.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose?.();
+        const mat = mesh.material;
+        if (mat) (Array.isArray(mat) ? mat : [mat]).forEach((mm) => mm.dispose());
+      });
+    }
+    this.gatewayMeshes = [];
+    this.gateLeafMesh = null;
+  }
+
+  /**
+   * Level 1: carve the three-sector spine as three real, physically stacked
+   * storeys — each sector is a taller floor than the last (floorHeight), not
+   * just a different X band. Sector 1 (x < level1Sector2X) is ground level;
+   * sector 2 is one storey up, reached by climbing Ramp A; sector 3 (the
+   * sealed smiler hall holding the exit) is a second storey up, reached only
+   * by the long "extensive ramp" the player has to find. Both dividers are
+   * solid walls except at their one ramp mouth.
+   */
+  private partitionLevel1Sectors() {
+    const gs = this.gridSize;
+    const divX2 = this.level1Sector2X; // 17 — sector 1 -> sector 2
+    const divX3 = this.level1Sector3X; // 33 — sector 2 -> sector 3 (sealed)
+    const rampZ = gs - 4;              // 44 — ramp B runs along the south edge
+    const H1 = 0, H2 = 3.2, H3 = 6.4;  // storey heights, ~one real floor apart
+
+    // 0. Base elevation per sector (ramps overridden below).
+    for (let x = 2; x < gs - 2; x++) {
+      for (let z = 2; z < gs - 2; z++) {
+        this.floorHeight[x][z] = x < divX2 ? H1 : x < divX3 ? H2 : H3;
+      }
+    }
+
+    // 1. Wall sector 1 off from sector 2 — only Ramp A's mouth (z 19-21) is open.
+    for (let z = 2; z < gs - 2; z++) {
+      if (z < 19 || z > 21) this.grid[divX2][z] = CellType.SOLID;
+    }
+    // Ramp A: climbs H1 -> H2 over x 13..21, stepped one storey per cell.
+    for (let x = 13; x <= 21; x++) {
+      const t = (x - 13) / (21 - 13);
+      const h = H1 + (H2 - H1) * t;
+      for (let z = 19; z <= 21; z++) {
+        this.grid[x][z] = CellType.CORRIDOR;
+        this.floorHeight[x][z] = h;
+        this.rampCells.add(`${x},${z}`);
+        if (x > 13) this.rampRiserX.add(`${x},${z}`); // riser on the -X edge of each climbing step
+      }
+    }
+
+    // 2. Wall off sector 3, leaving only the Ramp B mouth open (z = rampZ-1..rampZ).
+    for (let z = 2; z < gs - 2; z++) {
+      if (z < rampZ - 1) this.grid[divX3][z] = CellType.SOLID;
+    }
+
+    // 3. Ramp B ("the extensive ramp"): a long narrow corridor hugging the south
+    //    wall, climbing H2 -> H3 over its full run from sector 2 into sector 3.
+    for (let x = 18; x <= gs - 4; x++) {
+      const t = Math.min(1, (x - 18) / (divX3 - 18));
+      const h = H2 + (H3 - H2) * t;
+      for (let z = rampZ - 1; z <= rampZ; z++) {
+        this.grid[x][z] = CellType.CORRIDOR;
+        this.floorHeight[x][z] = h;
+        this.rampCells.add(`${x},${z}`);
+        if (x > 18) this.rampRiserX.add(`${x},${z}`);
+      }
+    }
+    // a short spur so the ramp mouth is reachable from the central field's south edge —
+    // flat, at sector 2's own height (it isn't climbing, just leading to the ramp).
+    for (let z = 38; z <= rampZ; z++) {
+      this.grid[20][z] = CellType.CORRIDOR;
+      this.floorHeight[20][z] = H2;
+      this.rampCells.add(`${20},${z}`);
+    }
+
+    // 4. Sector 3: an open hall for the smilers, with the exit at its far north end.
+    for (let x = divX3 + 1; x <= gs - 3; x++) {
+      for (let z = 4; z <= rampZ; z++) {
+        this.grid[x][z] = CellType.OPEN_AREA;
+        this.floorHeight[x][z] = H3;
+      }
+    }
+    this.exitGridX = gs - 4;
+    this.exitGridZ = 6;
+    this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
   }
 
   /**
@@ -1979,6 +2422,12 @@ export class ProceduralMap {
     const height = 3.0; // Backrooms standard height: 3.0 meters
     const posX = gx * hSize + hSize / 2;
     const posZ = gz * hSize + hSize / 2;
+    // This cell's floor elevation (0 except Level 1's stacked sectors/ramps).
+    // Everything below is built with locally-relative Y and gets carried up by
+    // offsetting the whole group at the end — except registerLight(), whose
+    // x/y/z are absolute world coordinates handed straight to the LightPool,
+    // so those calls add fY explicitly.
+    const fY = this.floorHeight[gx]?.[gz] ?? 0;
 
     // 1. CARPET (Floor pane) - Use shared floorGeo, or custom pit layouts
     if (cellType === CellType.PIT_ROOM) {
@@ -2052,11 +2501,51 @@ export class ProceduralMap {
         }
       }
     } else {
-      const mat = (cellType === CellType.RED_ROOM) ? this.redCarpetMaterial : this.carpetMaterial;
+      const isRamp = this.level === 1 && this.rampCells.has(`${gx},${gz}`);
+      const mat = (cellType === CellType.RED_ROOM)
+        ? this.redCarpetMaterial
+        : (isRamp ? this.getRampFloorMaterial() : this.carpetMaterial);
       const floorMesh = new THREE.Mesh(this.floorGeo, mat);
       floorMesh.position.set(posX, 0, posZ);
       floorMesh.receiveShadow = true;
       group.add(floorMesh);
+
+      if (isRamp) {
+        // Raised hazard-yellow lips at the cell's ends read as incline steps.
+        const lipGeo = this.sharedGeo("ramp_lip", () => new THREE.BoxGeometry(this.cellSize, 0.13, 0.32));
+        for (const oz of [-this.cellSize / 2 + 0.18, this.cellSize / 2 - 0.18]) {
+          const lip = new THREE.Mesh(lipGeo, this.getRampLipMaterial());
+          lip.position.set(posX, 0.07, posZ + oz);
+          group.add(lip);
+        }
+
+        // Step riser: this cell's floor sits above its -X neighbour's, so cover
+        // the gap with a short riser wall (the two floors are on separate
+        // group offsets and would otherwise show a seam).
+        if (this.rampRiserX.has(`${gx},${gz}`) && gx > 0) {
+          const rise = this.floorHeight[gx][gz] - this.floorHeight[gx - 1][gz];
+          if (rise > 0.02) {
+            const riser = new THREE.Mesh(
+              new THREE.BoxGeometry(0.12, rise, hSize),
+              this.getRampLipMaterial()
+            );
+            riser.position.set(posX - hSize / 2 + 0.06, -rise / 2, posZ);
+            group.add(riser);
+          }
+        }
+      }
+
+      // Level 3 ("Lights Out"): a small self-lit waypoint — the only thing
+      // visible in the whole maze without your own flashlight, and the whole
+      // point is that turning that flashlight on has a cost (see GameEngine's
+      // entity-summon logic).
+      if (this.level === 3 && this.pathLightCells.has(`${gx},${gz}`)) {
+        const glowMat = this.sharedMat("lightsout_waypoint", () => new THREE.MeshBasicMaterial({ color: 0xbfe6ff }));
+        const orb = new THREE.Mesh(this.sharedGeo("lightsout_orb", () => new THREE.SphereGeometry(0.11, 8, 8)), glowMat);
+        orb.position.set(posX, 0.55, posZ);
+        group.add(orb);
+        this.registerLight(gx, gz, posX, 0.55, posZ, 0x9fd4ff, 1.1, 4.0, 1.4);
+      }
     }
 
     // 2. CEILING (Acoustic ceiling panels) - Use shared ceilGeo
@@ -2111,7 +2600,7 @@ export class ProceduralMap {
       group.add(ceilPipe2);
 
       // Add soft glowing hot red/orange lights under the pipes (pooled)
-      this.registerLight(gx, gz, posX, height - 0.4, posZ, 0xff4400, 1.6, 4.5, 1.2);
+      this.registerLight(gx, gz, posX, fY + height - 0.4, posZ, 0xff4400, 1.6, 4.5, 1.2);
     }
 
     // Level 2: Pipe Dreams - Intense red/copper pipes running along walls and ceilings in all cells!
@@ -2170,9 +2659,10 @@ export class ProceduralMap {
         this.addObstacle(gx, gz, boilerMesh.position.x, boilerMesh.position.z, 0.75);
       }
 
-      // Tense orange/red emergency warning light inside the cells
-      if ((gx + gz) % 4 === 0) {
-        this.registerLight(gx, gz, posX, height - 0.4, posZ, 0xff2200, 2.5, 8.0, 1.5);
+      // Tense orange/red emergency warning light inside the cells (never in the
+      // secret "Lights Out" corridor — it has to stay genuinely unlit)
+      if ((gx + gz) % 4 === 0 && !this.forcedDarkCells.has(`${gx},${gz}`)) {
+        this.registerLight(gx, gz, posX, fY + height - 0.4, posZ, 0xff2200, 2.5, 8.0, 1.5);
 
         // A small glass/cage emergency light fixture on the ceiling
         const fixtureGeo = this.sharedGeo("emergency_bulb", () => new THREE.CylinderGeometry(0.1, 0.1, 0.15, 6));
@@ -2184,9 +2674,6 @@ export class ProceduralMap {
     }
 
     // 3. WALLS - Evaluate cardinal neighbors. If the neighbor is SOLID, we build a wall panel!
-    const pathIdx = this.exitPath.findIndex(([x, z]) => x === gx && z === gz);
-    const shouldDrawArrow = pathIdx !== -1 && pathIdx % 30 === 0 && pathIdx > 0;
-    let arrowPlacedCurrCell = false;
 
     // NORTH WALL (Z-direction offset -1)
     if (gz === 0 || this.grid[gx][gz - 1] === CellType.SOLID) {
@@ -2200,16 +2687,6 @@ export class ProceduralMap {
       const base = new THREE.Mesh(this.baseGeo, this.skirtingBoardMaterial);
       base.position.set(0, 0.06, -hSize / 2 + 0.02);
       panel.add(base);
-
-      if (shouldDrawArrow && !arrowPlacedCurrCell) {
-        const dir = this.getPathArrowDirection(gx, gz, 'N');
-        if (dir) {
-          const wallArrow = this.createWallArrowMesh(dir);
-          wallArrow.position.set(0, 1.45, -hSize / 2 + 0.012);
-          panel.add(wallArrow);
-          arrowPlacedCurrCell = true;
-        }
-      }
 
       panel.position.set(posX, 0, posZ);
       group.add(panel);
@@ -2230,17 +2707,6 @@ export class ProceduralMap {
       base.rotateY(Math.PI);
       panel.add(base);
 
-      if (shouldDrawArrow && !arrowPlacedCurrCell) {
-        const dir = this.getPathArrowDirection(gx, gz, 'S');
-        if (dir) {
-          const wallArrow = this.createWallArrowMesh(dir);
-          wallArrow.position.set(0, 1.45, hSize / 2 - 0.012);
-          wallArrow.rotateY(Math.PI);
-          panel.add(wallArrow);
-          arrowPlacedCurrCell = true;
-        }
-      }
-
       panel.position.set(posX, 0, posZ);
       group.add(panel);
     }
@@ -2260,17 +2726,6 @@ export class ProceduralMap {
       base.rotateY(Math.PI / 2);
       panel.add(base);
 
-      if (shouldDrawArrow && !arrowPlacedCurrCell) {
-        const dir = this.getPathArrowDirection(gx, gz, 'W');
-        if (dir) {
-          const wallArrow = this.createWallArrowMesh(dir);
-          wallArrow.position.set(-hSize / 2 + 0.012, 1.45, 0);
-          wallArrow.rotateY(Math.PI / 2);
-          panel.add(wallArrow);
-          arrowPlacedCurrCell = true;
-        }
-      }
-
       panel.position.set(posX, 0, posZ);
       group.add(panel);
     }
@@ -2289,17 +2744,6 @@ export class ProceduralMap {
       base.position.set(hSize / 2 - 0.02, 0.06, 0);
       base.rotateY(-Math.PI / 2);
       panel.add(base);
-
-      if (shouldDrawArrow && !arrowPlacedCurrCell) {
-        const dir = this.getPathArrowDirection(gx, gz, 'E');
-        if (dir) {
-          const wallArrow = this.createWallArrowMesh(dir);
-          wallArrow.position.set(hSize / 2 - 0.012, 1.45, 0);
-          wallArrow.rotateY(-Math.PI / 2);
-          panel.add(wallArrow);
-          arrowPlacedCurrCell = true;
-        }
-      }
 
       panel.position.set(posX, 0, posZ);
       group.add(panel);
@@ -2631,10 +3075,13 @@ export class ProceduralMap {
 
     // 6. FLUORESCENT LIGHT LUMINAIRE FIXTURE (Deterministic placement)
     // Place a fluorescent lightbox on the ceiling. (45% probability on corridor cells or room centers)
+    // Level 3 ("Lights Out") never gets one — total darkness is the whole level.
+    // Level 2's secret dark corridor is force-excluded the same way.
+    const isForcedDark = this.level === 3 || this.forcedDarkCells.has(`${gx},${gz}`);
     const lightRand = new SeededRandom(this.seed + gx * 7 + gz * 13);
-    const shouldSpawnLight = cellType === CellType.CORRIDOR 
-      ? lightRand.next() > 0.65 
-      : lightRand.next() > 0.55;
+    const shouldSpawnLight = !isForcedDark && (cellType === CellType.CORRIDOR
+      ? lightRand.next() > 0.65
+      : lightRand.next() > 0.55);
 
     // We do NOT spawn fluorescent lighting in the exit cell to preserve the dramatic crimson visual contrast
     if (shouldSpawnLight && !(gx === this.exitGridX && gz === this.exitGridZ)) {
@@ -2669,7 +3116,7 @@ export class ProceduralMap {
 
       // The lamp is only *declared* here; the LightPool decides which lamps get
       // a real GPU light, keeping the visible light count small and constant.
-      const light = this.registerLight(gx, gz, posX, height - 0.15, posZ, lightColor, lightIntensity, 7.5, 1.0);
+      const light = this.registerLight(gx, gz, posX, fY + height - 0.15, posZ, lightColor, lightIntensity, 7.5, 1.0);
 
       // Local floating dust cloud directly under the fluorescent light fixture
       const dustCloud = this.quality.fixtureDustParticles > 0 ? this.createLocalDustCloud() : undefined;
@@ -3046,7 +3493,7 @@ export class ProceduralMap {
             const initialY = 1.0 + propRng.nextRange(0, 0.5);
 
             // Flickering glitch neon green point light (pooled)
-            this.registerLight(gx, gz, posX + rx, initialY, posZ + rz, 0x1aff80, 2.0, 5, 0.8);
+            this.registerLight(gx, gz, posX + rx, fY + initialY, posZ + rz, 0x1aff80, 2.0, 5, 0.8);
 
             anomalyGroup.position.set(posX + rx, initialY, posZ + rz);
             group.add(anomalyGroup);
@@ -3163,11 +3610,22 @@ export class ProceduralMap {
       group.add(archGroup);
     }
 
-    // 9. SPAWN SCATTERED COLLECTIBLES (Old Photo and Rusty Key)
+    // 9a. GUARANTEED RUSTY KEY (Level 0) — exactly one per map, placed by
+    // carveLevel0Gateway() in the main lobby, well away from the locked gate.
+    if (gx === this.keyGridX && gz === this.keyGridZ) {
+      const keyMesh = this.createRustyKeyMesh();
+      const ky = 0.45;
+      keyMesh.position.set(posX, ky, posZ);
+      group.add(keyMesh);
+      this.consumables.push({ mesh: keyMesh, initialY: ky, collected: false, type: "rusty_key", x: posX, z: posZ, gridX: gx, gridZ: gz });
+      this.animatingMeshes.push({ mesh: keyMesh, type: "spin", initialY: ky, phase: 0, gridX: gx, gridZ: gz });
+    }
+
+    // 9. SPAWN SCATTERED COLLECTIBLES (mementos, lore fragments, hazards)
     // On both Level 0 and Level 1, there is a sparse chance (e.g., 3.5%) to spawn a collectible item in a cell
     const itemRng = new SeededRandom(this.seed + gx * 83 + gz * 109);
     // Don't spawn collectibles at the exit or spawning point (0,0) or solid cells
-    if (itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
+    if (!(gx === this.keyGridX && gz === this.keyGridZ) && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
       const itemTypeRoll = itemRng.next();
       // Keep it within the cell boundaries (so + hSize/2 is center, range is -hSize/2 + 0.5 to hSize/2 - 0.5)
       const maxOffset = hSize / 2 - 0.6;
@@ -3190,20 +3648,20 @@ export class ProceduralMap {
         selectedType = "scrap_of_note";
         spawnedMesh = this.createScrapOfNoteMesh();
       } else {
+        // rusty_key is excluded here — the one key per map is placed
+        // deterministically by carveLevel0Gateway(); its old share is spread
+        // across the remaining mementos.
         const adjustedRoll = isRoom ? (itemTypeRoll - 0.45) / 0.55 : itemTypeRoll;
-        if (adjustedRoll < 0.25) {
+        if (adjustedRoll < 0.30) {
           selectedType = "old_photo";
           spawnedMesh = this.createOldPhotoMesh();
-        } else if (adjustedRoll < 0.50) {
-          selectedType = "rusty_key";
-          spawnedMesh = this.createRustyKeyMesh();
-        } else if (adjustedRoll < 0.65) {
+        } else if (adjustedRoll < 0.52) {
           selectedType = "cassette_tape";
           spawnedMesh = this.createCassetteTapeMesh();
-        } else if (adjustedRoll < 0.80) {
+        } else if (adjustedRoll < 0.72) {
           selectedType = "strange_crystal";
           spawnedMesh = this.createStrangeCrystalMesh();
-        } else if (adjustedRoll < 0.90) {
+        } else if (adjustedRoll < 0.87) {
           selectedType = "liquid_pain";
           spawnedMesh = this.createLiquidPainMesh();
         } else {
@@ -3297,6 +3755,11 @@ export class ProceduralMap {
         }
       }
     }
+
+    // Everything above was placed with world X/Z but locally-relative Y (0 at
+    // this cell's own floor) — offsetting the whole group is what actually
+    // puts Level 1's higher sectors and ramp steps at their real elevation.
+    if (fY !== 0) group.position.y = fY;
 
     return group;
   }
@@ -4115,6 +4578,17 @@ export class ProceduralMap {
         anim.mesh.scale.set(scaleChance, scaleChance, scaleChance);
       }
     });
+
+    // 4. Swing any Level 0 door leaf (gate / choice doors) toward its target.
+    for (const doorGroup of this.gatewayMeshes) {
+      const leaf = (doorGroup as THREE.Object3D & { _leaf?: THREE.Object3D })._leaf as
+        (THREE.Object3D & { _swingTarget?: number; _swingT?: number }) | undefined;
+      if (!leaf || leaf._swingTarget === undefined) continue;
+      leaf._swingT = Math.min(1, (leaf._swingT ?? 0) + delta * 1.4);
+      const t = leaf._swingT;
+      const ease = t * t * (3 - 2 * t);
+      leaf.rotation.y = leaf._swingTarget * ease;
+    }
   }
 
   /**
@@ -4177,9 +4651,10 @@ export class ProceduralMap {
           }
 
           if (!cellGroup.userData.aabb) {
+            const fY = this.floorHeight[gx]?.[gz] ?? 0;
             cellGroup.userData.aabb = new THREE.Box3(
-              new THREE.Vector3(gx * hSize, -0.5, gz * hSize),
-              new THREE.Vector3((gx + 1) * hSize, 3.5, (gz + 1) * hSize)
+              new THREE.Vector3(gx * hSize, fY - 0.5, gz * hSize),
+              new THREE.Vector3((gx + 1) * hSize, fY + 3.5, (gz + 1) * hSize)
             );
           }
           culling.push({ group: cellGroup, box: cellGroup.userData.aabb });
@@ -4312,8 +4787,8 @@ export class ProceduralMap {
     });
     this.cellGroups.clear();
     this.cellObstacles.clear();
-    this.obstacleGrid = Array.from({ length: 48 }, () => Array(48).fill(null));
-    this.cellGroupGrid = Array.from({ length: 48 }, () => Array(48).fill(null));
+    this.obstacleGrid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill(null));
+    this.cellGroupGrid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill(null));
     this.lightFixtures = [];
     this.animatingMeshes = [];
     this.waterDrips = [];

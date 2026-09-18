@@ -28,12 +28,14 @@ export interface GameEngineCallbacks {
   onStateChange: (state: string) => void;
   onFlashlightChange: (state: boolean) => void;
   onEscapeTrigger?: () => void;
+  /** Fired once, when the player reaches the end of Level 2's secret dark corridor. */
+  onSecretLevelFound?: () => void;
   onRedRoomExposureChange?: (val: number) => void;
   onHUDNotification?: (msg: string) => void;
   onSectorChange?: (sector: string) => void;
   onInventoryChange?: (items: string[]) => void;
   onSanityChange?: (val: number) => void;
-  onScrapOfNoteCollected?: (seed: number) => void;
+  onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   /** Smoothed FPS and current render scale, emitted about twice a second. */
   onPerformanceSample?: (fps: number, renderScale: number) => void;
 }
@@ -98,8 +100,10 @@ export class GameEngine {
   private frameCounter = 0;
 
   // Smilers system
-  public smilers: { mesh: THREE.Mesh; gridX: number; gridZ: number; spawnTime: number }[] = [];
+  public smilers: { mesh: THREE.Mesh; gridX: number; gridZ: number; spawnTime: number; gazeTimer: number }[] = [];
   private smilerSpawnCheckTimer = 0;
+  /** Level 3 ("Lights Out"): seconds the flashlight has been held on continuously. */
+  private lightsOutSummonTimer = 0;
   
   // Exposure timer in the mysterious Level 0 Red Rooms (60 seconds to collapse)
   public redRoomExposure = 0;
@@ -116,12 +120,13 @@ export class GameEngine {
   private onStateChange: (state: string) => void;
   private onFlashlightChange: (state: boolean) => void;
   private onEscapeTrigger?: () => void;
+  private onSecretLevelFound?: () => void;
   private onRedRoomExposureChange?: (val: number) => void;
   public onHUDNotification?: (msg: string) => void;
   public onSectorChange?: (sector: string) => void;
   public onInventoryChange?: (items: string[]) => void;
   private onSanityChange?: (val: number) => void;
-  public onScrapOfNoteCollected?: (seed: number) => void;
+  public onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   private onPerformanceSample?: (fps: number, renderScale: number) => void;
 
   // Sanity system
@@ -153,6 +158,7 @@ export class GameEngine {
     this.onStateChange = callbacks.onStateChange;
     this.onFlashlightChange = callbacks.onFlashlightChange;
     this.onEscapeTrigger = callbacks.onEscapeTrigger;
+    this.onSecretLevelFound = callbacks.onSecretLevelFound;
     this.onRedRoomExposureChange = callbacks.onRedRoomExposureChange;
     this.onHUDNotification = callbacks.onHUDNotification;
     this.onSectorChange = callbacks.onSectorChange;
@@ -362,7 +368,7 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === 2 ? 0.045 : (level === 1 ? 0.020 : 0.024);
+    const authored = level === 3 ? 0.075 : (level === 2 ? 0.045 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
@@ -386,6 +392,7 @@ export class GameEngine {
 
     // Instantiate Procedural Level 0 or 1 Map
     this.map = new ProceduralMap(seed, this.level, this.quality);
+    this.map.buildLevel0Gateway(this.scene);
 
     // Fixed pool of real point lights shared by every lamp in the level.
     this.lightPool = new LightPool(this.scene, this.quality.lightBudget, this.quality.lightRange);
@@ -423,55 +430,11 @@ export class GameEngine {
     this.flashlight.target = this.flashlightTarget;
     this.camera.add(this.flashlight);
 
-    // Instantiate multiple official Wandering Entities on Level 1
+    // Instantiate the Level 1 sector 1/2 monsters (no smilers here — they live
+    // only in sector 3).
+    this.entities = [];
     if (this.level === 1) {
-      this.entities = [];
-      const types = [
-        EntityType.HOUND,
-        EntityType.DULLER,
-        EntityType.CLUMP,
-        EntityType.SKIN_STEALER,
-        EntityType.WRETCH
-      ];
-      
-      const targetQuads = [
-        [41, 41],
-        [15, 40],
-        [40, 15],
-        [24, 24],
-        [32, 32]
-      ];
-
-      for (let i = 0; i < types.length; i++) {
-        const type = types[i];
-        const [qx, qz] = targetQuads[i];
-        
-        let entGX = qx;
-        let entGZ = qz;
-        let found = false;
-        
-        for (let r = 0; r < 12 && !found; r++) {
-          for (let dx = -r; dx <= r && !found; dx++) {
-            for (let dz = -r; dz <= r && !found; dz++) {
-              const nx = qx + dx;
-              const nz = qz + dz;
-              if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2) {
-                if (this.map.grid[nx][nz] !== 0) {
-                  entGX = nx;
-                  entGZ = nz;
-                  found = true;
-                }
-              }
-            }
-          }
-        }
-        
-        const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, type, this.scene);
-        this.entities.push(entity);
-        console.log(`[GameEngine] ${type} spawned at grid (${entGX}, ${entGZ})`);
-      }
-    } else {
-      this.entities = [];
+      this.spawnLevel1Entities();
     }
 
     // Initial first-turn map culler tick
@@ -594,6 +557,46 @@ export class GameEngine {
       // Tick player controllers
       this.player.update(delta);
 
+      // Level 0 locked gate: walking up to it with the rusty key uses it
+      // automatically (no interact key exists — same convention as pickups).
+      if (this.level === 0 && this.map && this.player && this.map.gateGridX >= 0 && !this.map.gateUnlocked) {
+        if (this.inventory.includes("rusty_key")) {
+          const gcx = this.map.gateGridX * this.map.cellSize + this.map.cellSize / 2;
+          const gcz = this.map.gateGridZ * this.map.cellSize + this.map.cellSize / 2;
+          const ddx = this.player.position.x - gcx;
+          const ddz = this.player.position.z - gcz;
+          if (ddx * ddx + ddz * ddz < 9.0) { // within ~3m of the gate cell centre
+            const ki = this.inventory.indexOf("rusty_key");
+            if (ki !== -1) this.inventory.splice(ki, 1);
+            this.map.unlockLevel0Gate();
+            if (this.onInventoryChange) this.onInventoryChange([...this.inventory]);
+            if (this.onHUDNotification) this.onHUDNotification("CHAVE ENFERRUJADA USADA: O portão trancado cede com um estalo metálico.");
+            if (this.audio) this.audio.playGlitchNoclipSound();
+            unlockAchievement("gate_unlocked");
+          }
+        }
+      }
+
+      // Level 0 choice chamber: walking into one of the two shut doors opens it
+      // and seals the way back — the choice is final.
+      if (this.level === 0 && this.map && this.player && !this.map.gatewayCommitted && this.map.doorAGridX >= 0) {
+        const near = (gx: number, gz: number) => {
+          const cx = gx * this.map.cellSize + this.map.cellSize / 2;
+          const cz = gz * this.map.cellSize + this.map.cellSize / 2;
+          const dx = this.player.position.x - cx;
+          const dz = this.player.position.z - cz;
+          return dx * dx + dz * dz < 4.0; // within ~2m
+        };
+        let picked: "A" | "B" | null = null;
+        if (near(this.map.doorAGridX, this.map.doorAGridZ)) picked = "A";
+        else if (near(this.map.doorBGridX, this.map.doorBGridZ)) picked = "B";
+        if (picked) {
+          this.map.openLevel0ChoiceDoor(picked, this.scene);
+          if (this.audio) this.audio.playGlitchNoclipSound();
+          if (this.onHUDNotification) this.onHUDNotification("A PORTA RANGE E SE ABRE. Atrás de você, a passagem se fecha com um baque. Não há volta.");
+        }
+      }
+
       // Detect if explorer has entered creeping crimson Red Rooms
       let inRedRoom = false;
       if (this.level === 0 && this.map && this.player) {
@@ -658,18 +661,12 @@ export class GameEngine {
 
         // 1. Sector Identification and Notification (Level 1 only)
         if (this.level === 1) {
-          let sec = "";
-          if (gx >= 18 && gx <= 30 && gz >= 18 && gz <= 30) {
-            sec = "Construction Sector";
-          } else if (gx < 24 && gz < 24) {
-            sec = "Aquila Sector";
-          } else if (gx >= 24 && gz < 24) {
-            sec = "Gild Sector";
-          } else if (gx < 24 && gz >= 24) {
-            sec = "Crate Warehouse";
-          } else {
-            sec = "Gothic Sector";
-          }
+          const s = this.getCurrentSector(gx, gz);
+          const sec = s === 1
+            ? "Setor 1 // Corredores Baixos"
+            : s === 2
+              ? "Setor 2 // Passarelas Superiores"
+              : "Setor 3 // Salão dos Sorridentes";
 
           if (sec && sec !== this.currentSector) {
             const oldSector = this.currentSector;
@@ -773,7 +770,10 @@ export class GameEngine {
                 }
                 if (this.onScrapOfNoteCollected) {
                   const noteSeed = Math.floor(Math.abs(item.x * 313 + item.z * 719) % 100000) || Math.floor(Math.random() * 100000);
-                  this.onScrapOfNoteCollected(noteSeed);
+                  // The clue marker is a per-map (per-seed) fact, so it is the
+                  // same on every note in this room; only the flavour text varies.
+                  const marker = this.level === 0 ? this.map.correctDoorMarker : "";
+                  this.onScrapOfNoteCollected(noteSeed, marker);
                 }
               }
             }
@@ -839,6 +839,9 @@ export class GameEngine {
       // Update psychological Smilers
       this.updateSmilers(delta);
 
+      // Level 3 ("Lights Out"): turning the flashlight on summons stalkers.
+      this.updateLightsOutSummons(delta);
+
       // Sanity system depletion & recovery calculation
       if (this.player && this.map) {
         const px = this.player.position.x;
@@ -853,18 +856,19 @@ export class GameEngine {
           const dist = Math.sqrt(dx * dx + dz * dz);
           if (dist < 8.0) {
             nearMonster = true;
-            monsterDepletionSum += (8.0 - dist) * 0.022; // closer = faster (slower depletion coefficient)
+            monsterDepletionSum += (8.0 - dist) * 0.008; // closer = faster (retuned ~3x slower)
           }
         });
 
-        // 2. Distance check to active smilers
+        // 2. Distance check to active smilers (ambient dread from mere proximity,
+        //    separate from and stacking with the sustained-gaze drain in updateSmilers)
         this.smilers.forEach(s => {
           const dx = s.mesh.position.x - px;
           const dz = s.mesh.position.z - pz;
           const dist = Math.sqrt(dx * dx + dz * dz);
           if (dist < 6.0) {
             nearMonster = true;
-            monsterDepletionSum += (6.0 - dist) * 0.03; // slower depletion coefficient
+            monsterDepletionSum += (6.0 - dist) * 0.010; // retuned ~3x slower
           }
         });
 
@@ -873,22 +877,37 @@ export class GameEngine {
         const isFlashlightOn = this.player.isFlashlightOn;
         if (!isFlashlightOn) {
           if (this.map.globalEventState === "blackout") {
-            darknessDepletion = 0.038; // completed blackout is terrifying (slower depletion coefficient)
+            darknessDepletion = 0.014; // completed blackout is terrifying (retuned ~3x slower)
+          } else if (this.level === 3) {
+            darknessDepletion = 0.010; // "Lights Out": genuinely unlit by design, worse than mere no-flashlight elsewhere
           } else if (this.level === 1 || this.level === 2) {
-            darknessDepletion = 0.02; // dark industrial environments (slower depletion coefficient)
+            darknessDepletion = 0.008; // dark industrial environments (retuned ~3x slower)
           } else {
-            darknessDepletion = 0.006; // normal level 0 with fluorescent lights on but flashlight off (slower depletion coefficient)
+            darknessDepletion = 0.003; // normal level 0 with fluorescent lights on but flashlight off (retuned ~2x slower)
           }
         }
 
-        // Apply depletion or recovery
+        // Apply depletion or recovery. Sanity now falls slowly, but hitting zero
+        // still kills the player (App.tsx onSanityChange -> GAME_OVER).
         if (nearMonster) {
           this.sanity = Math.max(0.0, this.sanity - (monsterDepletionSum + darknessDepletion) * delta);
         } else if (darknessDepletion > 0) {
           this.sanity = Math.max(0.0, this.sanity - darknessDepletion * delta);
         } else {
-          // Recover sanity in normal illuminated space
-          this.sanity = Math.min(1.0, this.sanity + 0.018 * delta);
+          // Recover sanity in normal illuminated space (trimmed only slightly, so a
+          // careful player still recovers at close to the old pace)
+          this.sanity = Math.min(1.0, this.sanity + 0.014 * delta);
+        }
+      }
+
+      // Level 2's secret entrance: walk to the dead end of the unlit side
+      // corridor and the "Lights Out" transition fires — purely local (not a
+      // room-wide level_transition_request), since it's an optional solo detour.
+      if (this.level === 2 && this.map && this.map.secretGridX >= 0 && this.onSecretLevelFound) {
+        const pgX = Math.floor(this.player.position.x / this.map.cellSize);
+        const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
+        if (pgX === this.map.secretGridX && pgZ === this.map.secretGridZ) {
+          this.onSecretLevelFound();
         }
       }
 
@@ -899,7 +918,7 @@ export class GameEngine {
 
         if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ) {
           // Player is in the instability cell!
-          if (this.level === 1 || this.level === 2) {
+          if (this.level === 1 || this.level === 2 || this.level === 3) {
             // Direct entry transition! No blocking wall!
             this.audio.playGlitchNoclipSound();
             if (this.onEscapeTrigger) {
@@ -1095,11 +1114,12 @@ export class GameEngine {
    * Spawns a beautiful, stylized retro Hazmat Explorer (Yellow Anti-contamination Suit) made of THREE primitive blocks.
    * Super light weight, no assets loading slowdown!
    */
-  private createHazmatExplorer(name: string): THREE.Group {
+  private createHazmatExplorer(name: string, suitColor?: string): THREE.Group {
     const group = new THREE.Group();
 
-    // Yellow Hazmat Fabric Material (flat shading to enhance vintage polygon rendering)
-    const suitMat = new THREE.MeshStandardMaterial({ color: 0xdeb81d, roughness: 0.9, metalness: 0.1 });
+    // Hazmat suit fabric — colour picked in the customization screen, defaults
+    // to the classic Level 0 yellow (flat shading keeps the vintage polygon look)
+    const suitMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(suitColor || "#deb81d"), roughness: 0.9, metalness: 0.1 });
     
     // Visor Glass: Shiny dark glass block
     const visorMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.9, roughness: 0.1 });
@@ -1202,11 +1222,11 @@ export class GameEngine {
   /**
    * Spawns a remote explorer visual node and sets up their shoulder spotlight.
    */
-  public spawnRemotePlayer(id: string, name: string, x: number, y: number, z: number) {
+  public spawnRemotePlayer(id: string, name: string, x: number, y: number, z: number, suitColor?: string) {
     if (this.remotePlayerGroups.has(id)) return;
 
     // Create Hazmat Group Mesh
-    const group = this.createHazmatExplorer(name);
+    const group = this.createHazmatExplorer(name, suitColor);
     group.position.set(x, this.remoteFloorY(y), z);
     this.scene.add(group);
     this.remotePlayerGroups.set(id, group);
@@ -1277,7 +1297,7 @@ export class GameEngine {
 
     const group = this.remotePlayerGroups.get(id);
     if (!group) {
-      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z);
+      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor);
       return;
     }
 
@@ -1525,6 +1545,7 @@ export class GameEngine {
     
     // 1. Terminate current map mesh references
     if (this.map) {
+      this.map.disposeGateway(this.scene);
       this.map.clearAll(this.scene);
     }
     
@@ -1538,21 +1559,24 @@ export class GameEngine {
       this.scene.remove(this.ambientLight);
     }
     
-    // Level 2 Pipe Dreams: tense dark reddish brown. Level 1 warehouse: brighter industrial. Level 0: classic yellow.
-    const ambientColor = level === 2 ? 0x522312 : (level === 1 ? 0xaab5bd : 0xeae2c2);
-    const ambientInt = level === 2 ? 0.75 : (level === 1 ? 1.35 : 1.05);
+    // Level 3 "Lights Out": as close to zero ambient as still renders. Level 2
+    // Pipe Dreams: tense dark reddish brown. Level 1 warehouse: brighter
+    // industrial. Level 0: classic yellow.
+    const ambientColor = level === 3 ? 0x0a0a0f : (level === 2 ? 0x522312 : (level === 1 ? 0xaab5bd : 0xeae2c2));
+    const ambientInt = level === 3 ? 0.035 : (level === 2 ? 0.75 : (level === 1 ? 1.35 : 1.05));
     this.ambientLight = new THREE.AmbientLight(ambientColor, ambientInt);
     this.scene.add(this.ambientLight);
-    
+
     // Adjust psychological fog
     if (this.scene.fog) {
-      const fogColor = level === 2 ? 0x240902 : (level === 1 ? 0x8a9299 : 0xede4c0);
+      const fogColor = level === 3 ? 0x000000 : (level === 2 ? 0x240902 : (level === 1 ? 0x8a9299 : 0xede4c0));
       this.scene.background = new THREE.Color(fogColor);
       this.scene.fog = new THREE.FogExp2(fogColor, this.fogDensityFor(level));
     }
 
     // 4. Instantiate new level's ProceduralMap
     this.map = new ProceduralMap(seed, level, this.quality);
+    this.map.buildLevel0Gateway(this.scene);
     this.lightPool.invalidate();
     
     // Pre-create/load the entire proximity map meshes before placing/spawning the player
@@ -1583,52 +1607,9 @@ export class GameEngine {
     this.entities.forEach(entity => entity.returnToPool(this.scene));
     this.entities = [];
 
-    // Spawn new Wandering Stalker Entities on Level 1
+    // Spawn new Wandering Stalker Entities on Level 1 (sectors 1 & 2 only)
     if (level === 1) {
-      const types = [
-        EntityType.HOUND,
-        EntityType.DULLER,
-        EntityType.CLUMP,
-        EntityType.SKIN_STEALER,
-        EntityType.WRETCH
-      ];
-      
-      const targetQuads = [
-        [41, 41],
-        [15, 40],
-        [40, 15],
-        [24, 24],
-        [32, 32]
-      ];
-
-      for (let i = 0; i < types.length; i++) {
-        const type = types[i];
-        const [qx, qz] = targetQuads[i];
-        
-        let entGX = qx;
-        let entGZ = qz;
-        let found = false;
-        
-        for (let r = 0; r < 12 && !found; r++) {
-          for (let dx = -r; dx <= r && !found; dx++) {
-            for (let dz = -r; dz <= r && !found; dz++) {
-              const nx = qx + dx;
-              const nz = qz + dz;
-              if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2) {
-                if (this.map.grid[nx][nz] !== 0) {
-                  entGX = nx;
-                  entGZ = nz;
-                  found = true;
-                }
-              }
-            }
-          }
-        }
-        
-        const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, type, this.scene);
-        this.entities.push(entity);
-        console.log(`[GameEngine] ${type} spawned on transition at grid (${entGX}, ${entGZ})`);
-      }
+      this.spawnLevel1Entities();
     }
 
     // Spawn multiple chasing entities on Level 2 (Pipe Dreams)
@@ -1825,17 +1806,20 @@ export class GameEngine {
     const geo = new THREE.PlaneGeometry(1.8, 1.8);
     const mesh = new THREE.Mesh(geo, mat);
 
-    // Place at 1.15m height (chest level)
+    // Place at 1.15m height (chest level) above this cell's floor — sector 3
+    // (the only sector smilers spawn in) is a real elevated storey.
     const worldX = gx * hSize + hSize / 2;
     const worldZ = gz * hSize + hSize / 2;
-    mesh.position.set(worldX, 1.15, worldZ);
+    const floorY = this.map ? this.map.getFloorHeightAt(worldX, worldZ) : 0;
+    mesh.position.set(worldX, floorY + 1.15, worldZ);
 
     this.scene.add(mesh);
     this.smilers.push({
       mesh,
       gridX: gx,
       gridZ: gz,
-      spawnTime: this.totalPlayTime
+      spawnTime: this.totalPlayTime,
+      gazeTimer: 0,
     });
 
     console.log(`[Smiler] Spawned creepily at grid (${gx}, ${gz}) - Distance: ${Math.sqrt((worldX - px)**2 + (worldZ - pz)**2).toFixed(1)}m`);
@@ -1855,11 +1839,122 @@ export class GameEngine {
     this.smilerSpawnCheckTimer = 0;
   }
 
+  /**
+   * Which of Level 1's three sequential sectors (real stacked storeys) a grid
+   * cell is in. 1 = ground floor, 2 = the storey up Ramp A, 3 = the sealed
+   * smiler hall two storeys up (holds the exit, reached via the "extensive
+   * ramp"). Each pair of sectors is walled apart except at its one ramp mouth.
+   */
+  public getCurrentSector(gx: number, gz: number): 1 | 2 | 3 {
+    const divX2 = this.map ? this.map.level1Sector2X : 17;
+    const divX3 = this.map ? this.map.level1Sector3X : 33;
+    if (gx >= divX3) return 3;
+    if (gx < divX2) return 1;
+    return 2;
+  }
+
+  /**
+   * Spawns Level 1's roaming monsters. They live in sectors 1 & 2 only —
+   * sector 3 is the smiler hall. Shared by the first level load and every
+   * transitionToLevel(1) so the two spawn sites can't drift apart.
+   */
+  private spawnLevel1Entities() {
+    if (!this.map) return;
+    const types = [
+      EntityType.HOUND,
+      EntityType.DULLER,
+      EntityType.CLUMP,
+      EntityType.SKIN_STEALER,
+      EntityType.WRETCH,
+    ];
+    // All targets sit inside sectors 1 & 2 (x < level1Sector3X).
+    const targetQuads = [[8, 10], [10, 30], [24, 12], [26, 30], [30, 22]];
+
+    for (let i = 0; i < types.length; i++) {
+      const [qx, qz] = targetQuads[i];
+      let entGX = qx, entGZ = qz, found = false;
+      for (let r = 0; r < 12 && !found; r++) {
+        for (let dx = -r; dx <= r && !found; dx++) {
+          for (let dz = -r; dz <= r && !found; dz++) {
+            const nx = qx + dx, nz = qz + dz;
+            if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2 && nx < this.map.level1Sector3X) {
+              if (this.map.grid[nx][nz] !== 0) { entGX = nx; entGZ = nz; found = true; }
+            }
+          }
+        }
+      }
+      const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, types[i], this.scene);
+      this.entities.push(entity);
+    }
+  }
+
+  /**
+   * Level 3 ("Lights Out"): the maze is only navigable by its sparse glowing
+   * waypoints — you don't need the flashlight to see them. Turning it on
+   * anyway (to see the walls, out of habit or panic) is what the level
+   * punishes: held on continuously, it summons a stalker every few seconds,
+   * up to a small cap. Switching it back off lets the timer cool down before
+   * the next one comes.
+   */
+  private updateLightsOutSummons(delta: number) {
+    if (this.level !== 3 || !this.player || !this.map) {
+      this.lightsOutSummonTimer = 0;
+      return;
+    }
+
+    const SUMMON_INTERVAL = 6.0;
+    const MAX_STALKERS = 5;
+
+    if (this.player.isFlashlightOn) {
+      this.lightsOutSummonTimer += delta;
+      if (this.lightsOutSummonTimer >= SUMMON_INTERVAL) {
+        this.lightsOutSummonTimer = 0;
+        if (this.entities.length < MAX_STALKERS) {
+          this.spawnLightsOutStalker();
+        }
+      }
+    } else {
+      this.lightsOutSummonTimer = Math.max(0, this.lightsOutSummonTimer - delta * 2);
+    }
+  }
+
+  private spawnLightsOutStalker() {
+    if (!this.player || !this.map) return;
+    const pgX = Math.floor(this.player.position.x / this.map.cellSize);
+    const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
+
+    const types = [EntityType.DULLER, EntityType.SKIN_STEALER, EntityType.WRETCH, EntityType.HOUND];
+    const type = types[Math.floor(Math.random() * types.length)];
+
+    // A walkable cell 8-14 cells out in a random direction — close enough to
+    // feel like it answered the light, far enough to not spawn on top of you.
+    let entGX = -1, entGZ = -1;
+    for (let attempt = 0; attempt < 24 && entGX < 0; attempt++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 8 + Math.random() * 6;
+      const nx = Math.round(pgX + Math.cos(angle) * dist);
+      const nz = Math.round(pgZ + Math.sin(angle) * dist);
+      if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2 && this.map.grid[nx][nz] !== 0) {
+        entGX = nx; entGZ = nz;
+      }
+    }
+    if (entGX < 0) return; // couldn't find a spot this time — try again next interval
+
+    const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, type, this.scene);
+    this.entities.push(entity);
+    if (this.onHUDNotification) {
+      this.onHUDNotification("A luz atraiu algo na escuridão...");
+    }
+  }
+
   private updateSmilers(delta: number) {
     if (!this.player || !this.map) return;
 
-    // Level 0 should NOT have entities (Smilers)
-    if (this.level !== 1) {
+    // Smilers live only in Level 1's sector 3 (the final hall). Anywhere else,
+    // clear them out.
+    const pgx = Math.floor(this.player.position.x / this.map.cellSize);
+    const pgz = Math.floor(this.player.position.z / this.map.cellSize);
+    if (this.level !== 1 || this.getCurrentSector(pgx, pgz) !== 3) {
       if (this.smilers.length > 0) {
         this.clearAllSmilers();
       }
@@ -1927,26 +2022,23 @@ export class GameEngine {
         continue;
       }
 
-      // 3. Glancing check: Did the player look directly at the Smiler?
+      // 3. Sustained-gaze drain. Looking straight at a smiler no longer makes
+      //    it vanish — instead your sanity bleeds for as long as you keep
+      //    staring, and the drain rate ramps up the longer you hold the look.
+      //    Glance away and gazeTimer decays fast, so a brief look is forgiving.
       const dirToSmiler = new THREE.Vector3().subVectors(mesh.position, this.camera.position).normalize();
       const dot = camDir.dot(dirToSmiler);
+      const gazing = dot > 0.90 && dist < 20.0; // ~25 deg cone, 20 m range
 
-      // Look direction dot product > 0.94 represents roughly 20 degrees central field of view
-      if (dot > 0.94) {
-        // Player locked eyes! They vanish instantly!
-        this.scene.remove(mesh);
-        mesh.geometry.dispose();
-        if (Array.isArray(mesh.material)) {
-          mesh.material.forEach(m => m.dispose());
-        } else if (mesh.material) {
-          mesh.material.dispose();
+      if (gazing) {
+        smiler.gazeTimer += delta;
+        const drainRate = 0.010 + Math.min(smiler.gazeTimer, 8) * 0.006; // ~0.01/s -> ~0.058/s after 8s
+        this.sanity = Math.max(0.0, this.sanity - drainRate * delta);
+        if (Math.random() < delta * 0.18) {
+          this.audio.triggerHumFlicker(90);
         }
-
-        // Psychic interference details: flicker the ambient master hum or flashlight momentarily
-        // this triggers genuine paranoia!
-        this.audio.triggerHumFlicker(180);
-        console.log(`[Smiler] Explorer spotted smiler at (${smiler.gridX}, ${smiler.gridZ})! Vanished and triggered hum feedback.`);
-        continue;
+      } else {
+        smiler.gazeTimer = Math.max(0, smiler.gazeTimer - delta * 0.6);
       }
 
       activeSmilers.push(smiler);
@@ -2016,6 +2108,7 @@ export class GameEngine {
     }
 
     if (this.map) {
+      this.map.disposeGateway(this.scene);
       this.map.clearAll(this.scene);
     }
 

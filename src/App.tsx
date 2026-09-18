@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { GameSettings, ConnectionPhase, RemotePlayer, ChatMessage } from "./types/game";
+import { GameSettings, ConnectionPhase, RemotePlayer, ChatMessage, DEFAULT_SUIT_COLOR } from "./types/game";
 import { GameEngine } from "./game/GameEngine";
 import { MainMenu } from "./components/MainMenu";
 import { GameHUD } from "./components/GameHUD";
@@ -28,7 +28,8 @@ const defaultSettings: GameSettings = {
   port: "0",
   quality: "auto",
   adaptiveResolution: true,
-  showFps: false,
+  showFps: true,
+  suitColor: DEFAULT_SUIT_COLOR,
 };
 
 /**
@@ -128,9 +129,12 @@ export default function App() {
 
   // Live FPS readout fed by the engine (never drives a re-render on its own).
   const [perf, setPerf] = useState({ fps: 0, scale: 1 });
+  // Round-trip latency to the relay, in ms — measured for real via ping/pong.
+  const [latency, setLatency] = useState<number | undefined>(undefined);
 
   // Core references
   const socketRef = useRef<WebSocket | null>(null);
+  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const engineRef = useRef<GameEngine | null>(null);
 
   /**
@@ -278,8 +282,19 @@ export default function App() {
           type: "join",
           room: roomKeyFor(settings),
           name: settings.name,
+          suitColor: settings.suitColor,
           requestedSeed: forceSeed,
         }));
+
+        // Real round-trip latency for the HUD's PING readout — echoed straight
+        // back by the server (see server.ts's "ping"/"pong" handling), not
+        // routed through the room tick, so it reflects actual relay latency.
+        if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "ping", t: Date.now() }));
+          }
+        }, 4000);
       };
 
       socket.onmessage = (event) => {
@@ -287,14 +302,18 @@ export default function App() {
           const data = JSON.parse(event.data);
           const { type } = data;
 
-          if (type === "room_full") {
+          if (type === "pong") {
+            if (typeof data.t === "number") setLatency(Date.now() - data.t);
+          }
+
+          else if (type === "room_full") {
             setErrorMessage(data.error || "A sala de infiltração selecionada atingiu o limite de 4 exploradores.");
             setPhase(ConnectionPhase.ERROR);
             socket.close();
           }
 
           else if (type === "joined") {
-            const { id: myId, seed, players: currentOn } = data;
+            const { id: myId, seed, players: currentOn, level: roomLevel = 0 } = data;
             console.log(`Infiltration confirmed! Seed acquired: ${seed}. Connecting visuals...`);
             setClientId(myId);
             clientIdRef.current = myId;
@@ -331,36 +350,19 @@ export default function App() {
                       if (!engine) return;
 
                       if (engine.level === 0 || engine.level === 1) {
-                        const nextLevel = engine.level + 1;
-                        console.log(`Explorer successfully noclipped into Level ${nextLevel}!`);
-                        if (nextLevel === 1) unlockAchievement("noclip_master");
-
-                        setLoadingMap(true);
-                        setLoadingProgress(0);
-                        setCurrentLevel(nextLevel);
-                        engine.transitionToLevel(nextLevel, seed, settings);
-
-                        if (engine.player) {
-                          engine.player.mapFullyLoaded = false;
+                        // Ask the server to advance the whole room together instead
+                        // of transitioning just this client: previously each player
+                        // who found the exit noclipped into their own next level,
+                        // leaving the group split across levels. The actual
+                        // transition now runs for every player (this one included)
+                        // when the server's "level_transition" broadcast comes back
+                        // — see that handler below.
+                        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+                          socketRef.current.send(JSON.stringify({
+                            type: "level_transition_request",
+                            level: engine.level + 1,
+                          }));
                         }
-
-                        engine.precreateMap((p) => {
-                          setLoadingProgress(Math.round(p * 100));
-                        }).then(() => {
-                          setLoadingProgress(100);
-                          setTimeout(() => {
-                            setLoadingMap(false);
-                            if (engineRef.current?.player) {
-                              engineRef.current.player.mapFullyLoaded = true; // Unlock controls!
-                            }
-                          }, 350);
-                        }).catch((err) => {
-                          console.error(`Error during Level ${nextLevel} precreation:`, err);
-                          setLoadingMap(false);
-                          if (engineRef.current?.player) {
-                            engineRef.current.player.mapFullyLoaded = true;
-                          }
-                        });
                       } else {
                         console.log("Explorer successfully escaped the Backrooms!");
                         unlockAchievement("absolute_survivor");
@@ -374,6 +376,42 @@ export default function App() {
                           socketRef.current = null;
                         }
                       }
+                    },
+                    onSecretLevelFound: () => {
+                      // Purely local — an optional solo detour off Level 2, not a
+                      // room-wide progression event, so no server round-trip.
+                      const engine = engineRef.current;
+                      if (!engine || engine.level !== 2) return;
+
+                      console.log("Found the dark corridor... entering Level 6: Lights Out.");
+                      unlockAchievement("secret_level_found");
+
+                      setLoadingMap(true);
+                      setLoadingProgress(0);
+                      setCurrentLevel(3);
+                      engine.transitionToLevel(3, seed, settings);
+
+                      if (engine.player) {
+                        engine.player.mapFullyLoaded = false;
+                      }
+
+                      engine.precreateMap((p) => {
+                        setLoadingProgress(Math.round(p * 100));
+                      }).then(() => {
+                        setLoadingProgress(100);
+                        setTimeout(() => {
+                          setLoadingMap(false);
+                          if (engineRef.current?.player) {
+                            engineRef.current.player.mapFullyLoaded = true;
+                          }
+                        }, 350);
+                      }).catch((err) => {
+                        console.error("Error during Level 6 (Lights Out) precreation:", err);
+                        setLoadingMap(false);
+                        if (engineRef.current?.player) {
+                          engineRef.current.player.mapFullyLoaded = true;
+                        }
+                      });
                     },
                     onRedRoomExposureChange: (exp) => setRedRoomExposure(exp),
                     onHUDNotification: (msg) => triggerNotification(msg),
@@ -394,8 +432,13 @@ export default function App() {
                         }
                       }
                     },
-                    onScrapOfNoteCollected: (noteSeed) => {
+                    onScrapOfNoteCollected: (noteSeed, doorMarker) => {
                       const lore = generateProceduralLore(noteSeed);
+                      // Same clue on every note this seed, appended to the body
+                      // (never the title, so the dedupe-by-title below still works).
+                      if (doorMarker) {
+                        lore.content += `\n\n"Rabiscado na margem: a porta certa é a pintada de ${doorMarker}. A outra só leva de volta ao vermelho — e depois que você abre uma, não dá pra voltar."`;
+                      }
                       setCollectedNotes((prev) => {
                         if (prev.some((n) => n.title === lore.title)) return prev;
                         return [...prev, lore];
@@ -406,6 +449,14 @@ export default function App() {
                   }
                 );
 
+                // The room had already moved past Level 0 by the time we joined
+                // (the rest of the group found an exit earlier) — catch up to that
+                // same level instead of spawning alone back on Level 0.
+                if (roomLevel > 0) {
+                  engineRef.current.transitionToLevel(roomLevel, seed, settings);
+                  setCurrentLevel(roomLevel);
+                }
+
                 // Set player lock state during generation to guarantee no movement
                 if (engineRef.current && engineRef.current.player) {
                   engineRef.current.player.mapFullyLoaded = false;
@@ -413,7 +464,7 @@ export default function App() {
 
                 // Instantly spawn existing players
                 currentOn.forEach((p: RemotePlayer) => {
-                  engineRef.current?.spawnRemotePlayer(p.id, p.name, p.x, p.y, p.z);
+                  engineRef.current?.spawnRemotePlayer(p.id, p.name, p.x, p.y, p.z, p.suitColor);
                 });
 
                 // Track real asynchronous map precreation cells loading progress for Level 0
@@ -443,6 +494,46 @@ export default function App() {
             }, 50);
           }
 
+          // Server-authoritative "the room advanced to the next level" broadcast —
+          // fires for every player in the room (including whoever triggered it),
+          // so the group always transitions together onto the same level.
+          else if (type === "level_transition") {
+            const engine = engineRef.current;
+            const nextLevel = data.level;
+            const roomSeed = data.seed;
+            if (!engine || typeof nextLevel !== "number" || nextLevel <= engine.level) return;
+
+            console.log(`Group noclipped into Level ${nextLevel}!`);
+            if (nextLevel === 1) unlockAchievement("noclip_master");
+
+            setLoadingMap(true);
+            setLoadingProgress(0);
+            setCurrentLevel(nextLevel);
+            engine.transitionToLevel(nextLevel, roomSeed, settings);
+
+            if (engine.player) {
+              engine.player.mapFullyLoaded = false;
+            }
+
+            engine.precreateMap((p) => {
+              setLoadingProgress(Math.round(p * 100));
+            }).then(() => {
+              setLoadingProgress(100);
+              setTimeout(() => {
+                setLoadingMap(false);
+                if (engineRef.current?.player) {
+                  engineRef.current.player.mapFullyLoaded = true; // Unlock controls!
+                }
+              }, 350);
+            }).catch((err) => {
+              console.error(`Error during Level ${nextLevel} precreation:`, err);
+              setLoadingMap(false);
+              if (engineRef.current?.player) {
+                engineRef.current.player.mapFullyLoaded = true;
+              }
+            });
+          }
+
           else if (type === "player_joined") {
             const { player } = data;
             if (!playersRef.current.some((p) => p.id === player.id)) {
@@ -452,7 +543,7 @@ export default function App() {
 
             // Update 3D engine world
             if (engineRef.current) {
-              engineRef.current.spawnRemotePlayer(player.id, player.name, player.x, player.y, player.z);
+              engineRef.current.spawnRemotePlayer(player.id, player.name, player.x, player.y, player.z, player.suitColor);
             }
 
             // Standard terminal join announcement message
@@ -518,6 +609,11 @@ export default function App() {
 
       socket.onclose = () => {
         console.log("Relay socket connection severed by remote.");
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
+        setLatency(undefined);
         // If we were active in game, transition back gracefully reporting connection issues
         if (phase === ConnectionPhase.PLAYING) {
           disconnect(true, "A ligação com a fenda do Level 0 foi interrompida.");
@@ -865,7 +961,7 @@ export default function App() {
                     Inicializando Fenda Dimensional...
                   </div>
                    <h2 className="text-lg font-black tracking-widest text-[#deb81d] uppercase select-none flex items-center justify-between">
-                    <span>DESCOMPRIMINDO LEVEL {currentLevel}</span>
+                    <span>DESCOMPRIMINDO LEVEL {currentLevel === 3 ? "6 · LIGHTS OUT" : currentLevel}</span>
                     <span className="text-[#a28e3b] text-sm font-semibold">{loadingProgress}%</span>
                   </h2>
                 </div>
@@ -883,21 +979,27 @@ export default function App() {
                   <div className={loadingProgress >= 5 ? "opacity-100" : "opacity-0"}>[OK] Conectando ao terminal de infiltração...</div>
                   <div className={loadingProgress >= 28 ? "opacity-100 animate-pulse" : "opacity-0"}>[OK] Sincronizando com a semente {currentSeed}...</div>
                   <div className={loadingProgress >= 50 ? "opacity-100 font-bold" : "opacity-0"}>
-                    {currentLevel === 1 
-                      ? "[OK] Construindo usinas termoelétricas de concreto e encanamentos brutais..." 
-                      : "[OK] Gerando labirinto infinito de papel de parede..."
+                    {currentLevel === 3
+                      ? "[OK] Desligando toda fonte de luz do setor..."
+                      : currentLevel === 1
+                        ? "[OK] Construindo usinas termoelétricas de concreto e encanamentos brutais..."
+                        : "[OK] Gerando labirinto infinito de papel de parede..."
                     }
                   </div>
                   <div className={loadingProgress >= 72 ? "opacity-100" : "opacity-0"}>
-                    {currentLevel === 1 
-                      ? "[OK] Distribuição de tonéis industriais e vazamentos de vapor estocásticos..." 
-                      : "[OK] Construindo marcadores de emergência no carpete..."
+                    {currentLevel === 3
+                      ? "[OK] Calibrando pontos de luz residual ao longo da rota..."
+                      : currentLevel === 1
+                        ? "[OK] Distribuição de tonéis industriais e vazamentos de vapor estocásticos..."
+                        : "[OK] Construindo marcadores de emergência no carpete..."
                     }
                   </div>
                   <div className={loadingProgress >= 92 ? "opacity-100" : "opacity-0"}>
-                    {currentLevel === 1 
-                      ? "[OK] Injetando ruídos industriais e drone pesado de caldeira..." 
-                      : "[OK] Canal de áudio fluorescente ativo (60Hz Subhum)..."
+                    {currentLevel === 3
+                      ? "[AVISO] Não acenda a lanterna sem necessidade. Algo vai notar."
+                      : currentLevel === 1
+                        ? "[OK] Injetando ruídos industriais e drone pesado de caldeira..."
+                        : "[OK] Canal de áudio fluorescente ativo (60Hz Subhum)..."
                     }
                   </div>
                 </div>
@@ -921,6 +1023,7 @@ export default function App() {
             playersRef={playersRef}
             perf={perf}
             showFps={settings.showFps}
+            latency={latency}
             chatMessages={chatMessages}
             onSendMessage={handleSendMessage}
             onDisconnect={() => disconnect(false)}
