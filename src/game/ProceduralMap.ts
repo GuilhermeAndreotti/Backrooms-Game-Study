@@ -215,8 +215,6 @@ export class ProceduralMap {
 
   /** Level 1: cells belonging to a "ramp" connector, dressed to read as an incline. */
   public rampCells = new Set<string>();
-  /** Level 1: ramp cells that step up from their -X neighbour — gets a riser panel. */
-  public rampRiserX = new Set<string>();
   /** Level 1: X column dividing sector 1 from sector 2. */
   public level1Sector2X = 17;
   /** Level 1: X column dividing sector 2 from the sealed sector 3 (smiler hall). */
@@ -2265,7 +2263,6 @@ export class ProceduralMap {
         this.grid[x][z] = CellType.CORRIDOR;
         this.floorHeight[x][z] = h;
         this.rampCells.add(`${x},${z}`);
-        if (x > 13) this.rampRiserX.add(`${x},${z}`); // riser on the -X edge of each climbing step
       }
     }
 
@@ -2283,7 +2280,6 @@ export class ProceduralMap {
         this.grid[x][z] = CellType.CORRIDOR;
         this.floorHeight[x][z] = h;
         this.rampCells.add(`${x},${z}`);
-        if (x > 18) this.rampRiserX.add(`${x},${z}`);
       }
     }
     // a short spur so the ramp mouth is reachable from the central field's south edge —
@@ -2518,21 +2514,6 @@ export class ProceduralMap {
           lip.position.set(posX, 0.07, posZ + oz);
           group.add(lip);
         }
-
-        // Step riser: this cell's floor sits above its -X neighbour's, so cover
-        // the gap with a short riser wall (the two floors are on separate
-        // group offsets and would otherwise show a seam).
-        if (this.rampRiserX.has(`${gx},${gz}`) && gx > 0) {
-          const rise = this.floorHeight[gx][gz] - this.floorHeight[gx - 1][gz];
-          if (rise > 0.02) {
-            const riser = new THREE.Mesh(
-              new THREE.BoxGeometry(0.12, rise, hSize),
-              this.getRampLipMaterial()
-            );
-            riser.position.set(posX - hSize / 2 + 0.06, -rise / 2, posZ);
-            group.add(riser);
-          }
-        }
       }
 
       // Level 3 ("Lights Out"): a small self-lit waypoint — the only thing
@@ -2674,11 +2655,35 @@ export class ProceduralMap {
     }
 
     // 3. WALLS - Evaluate cardinal neighbors. If the neighbor is SOLID, we build a wall panel!
+    //
+    // Level 1's stacked sectors/ramps mean two WALKABLE neighbors can still sit
+    // at different floor heights (e.g. the 3-wide ramp band next to the flat
+    // sector floor beside it, or a step from one ramp cell to the next) — no
+    // wall panel gets built there since neither cell is SOLID, so without this
+    // the mismatched floor/ceiling planes just show a gap you can see/fall
+    // through. buildStepRiser closes that gap with a short panel sized to
+    // exactly the height difference, on whichever side is the lower cell.
+    const buildStepRiser = (nx: number, nz: number, axis: "z" | "x", sign: 1 | -1) => {
+      if (this.level !== 1) return;
+      if (nx < 0 || nz < 0 || nx >= this.gridSize || nz >= this.gridSize) return;
+      if (this.grid[nx][nz] === CellType.SOLID) return;
+      const neighborH = this.floorHeight[nx]?.[nz] ?? 0;
+      const delta = neighborH - fY;
+      if (delta <= 0.05) return; // this cell is the higher (or equal) one — nothing to cover from here
+      const edgeOffset = hSize / 2 - 0.06;
+      const riser = new THREE.Mesh(
+        new THREE.BoxGeometry(axis === "z" ? hSize : 0.12, delta, axis === "z" ? 0.12 : hSize),
+        this.getRampLipMaterial()
+      );
+      if (axis === "z") riser.position.set(posX, delta / 2, posZ + sign * edgeOffset);
+      else riser.position.set(posX + sign * edgeOffset, delta / 2, posZ);
+      group.add(riser);
+    };
 
     // NORTH WALL (Z-direction offset -1)
     if (gz === 0 || this.grid[gx][gz - 1] === CellType.SOLID) {
       const panel = new THREE.Group();
-      
+
       const wall = new THREE.Mesh(this.wallGeo, this.wallMaterial);
       wall.position.set(0, height / 2, -hSize / 2);
       wall.receiveShadow = true;
@@ -2690,6 +2695,8 @@ export class ProceduralMap {
 
       panel.position.set(posX, 0, posZ);
       group.add(panel);
+    } else {
+      buildStepRiser(gx, gz - 1, "z", -1);
     }
 
     // SOUTH WALL (Z-direction offset +1)
@@ -2709,6 +2716,8 @@ export class ProceduralMap {
 
       panel.position.set(posX, 0, posZ);
       group.add(panel);
+    } else {
+      buildStepRiser(gx, gz + 1, "z", 1);
     }
 
     // WEST WALL (X-direction offset -1)
@@ -2728,6 +2737,8 @@ export class ProceduralMap {
 
       panel.position.set(posX, 0, posZ);
       group.add(panel);
+    } else {
+      buildStepRiser(gx - 1, gz, "x", -1);
     }
 
     // EAST WALL (X-direction offset +1)
@@ -2747,6 +2758,8 @@ export class ProceduralMap {
 
       panel.position.set(posX, 0, posZ);
       group.add(panel);
+    } else {
+      buildStepRiser(gx + 1, gz, "x", 1);
     }
 
     // 4. OPEN AREA - Columns / Pillars
