@@ -252,6 +252,7 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
       playersRef.current.forEach((p) => {
         // Only render teammates who are currently exploring the same level
         if (p.level !== undefined && p.level !== level) return;
+        if (p.dead) return; // spectators leave the map
 
         const rx = p.x - px;
         const rz = p.z - pz;

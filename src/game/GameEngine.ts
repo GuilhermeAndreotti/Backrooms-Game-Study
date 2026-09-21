@@ -42,7 +42,9 @@ export interface GameEngineCallbacks {
   onInventoryChange?: (items: string[]) => void;
   onSanityChange?: (val: number) => void;
   /** This explorer died (sanity at zero, ...); the app tells the room and shows the spectator UI. */
-  onPlayerDeath?: (cause: "sanity") => void;
+  onPlayerDeath?: (cause: "sanity" | "caught") => void;
+  /** Back from the dead (level change / room reset): the app clears its spectator UI. */
+  onPlayerRevive?: () => void;
   onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   /** Smoothed FPS and current render scale, emitted about twice a second. */
   onPerformanceSample?: (fps: number, renderScale: number) => void;
@@ -250,7 +252,8 @@ export class GameEngine {
   public onSectorChange?: (sector: string) => void;
   public onInventoryChange?: (items: string[]) => void;
   private onSanityChange?: (val: number) => void;
-  private onPlayerDeath?: (cause: "sanity") => void;
+  private onPlayerDeath?: (cause: "sanity" | "caught") => void;
+  private onPlayerRevive?: () => void;
   public onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   private onPerformanceSample?: (fps: number, renderScale: number) => void;
 
@@ -292,6 +295,7 @@ export class GameEngine {
     this.onInventoryChange = callbacks.onInventoryChange;
     this.onSanityChange = callbacks.onSanityChange;
     this.onPlayerDeath = callbacks.onPlayerDeath;
+    this.onPlayerRevive = callbacks.onPlayerRevive;
     this.onScrapOfNoteCollected = callbacks.onScrapOfNoteCollected;
     this.onPerformanceSample = callbacks.onPerformanceSample;
 
@@ -939,28 +943,9 @@ export class GameEngine {
 
         this.updateMonsterAudio(delta);
 
-        if (caught) {
-          // Sound effect!
-          this.audio.playEntityCatchSound();
-
-          // Level G has one monster and no mercy: every catch costs sanity,
-          // and sanity at zero is the existing game over.
-          if (this.level === 4) {
-            this.sanity = Math.max(0, this.sanity - 0.3);
-            if (this.onHUDNotification) this.onHUDNotification("OS DEDOS TE ALCANÇARAM...");
-          }
-
-          // Reset player parameters cleanly
-          this.player.spawnSafely();
-
-          // Relocate ALL entities far away to give the player a fresh starting chance
-          const playerGX = Math.floor(this.player.position.x / this.map.cellSize);
-          const playerGZ = Math.floor(this.player.position.z / this.map.cellSize);
-          this.relocateEntitiesAwayFrom(playerGX, playerGZ);
-
-          // Force a full map culling update instantly
-          this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z, true);
-        }
+        // Being caught is fatal: the monster got you. You spectate until the
+        // group advances a level (or, if everyone is dead, resets).
+        if (caught) this.die("caught");
       }
 
       // Update psychological Smilers
@@ -1456,7 +1441,7 @@ export class GameEngine {
   private spectateId: string | null = null;
   private remoteDead = new Set<string>();
 
-  private die(cause: "sanity") {
+  private die(cause: "sanity" | "caught") {
     if (this.isDead) return;
     this.isDead = true;
     this.player.isFlashlightOn = false;
@@ -1472,13 +1457,18 @@ export class GameEngine {
 
   /** Brings this explorer back (level change or room reset): fresh mind, fresh legs. */
   private revive() {
+    // Teammates revive with us: forget stale "dead" flags until snapshots refresh them.
     this.remoteDead.clear();
-    if (!this.isDead) return;
+    this.remoteStates.forEach((st) => { st.dead = false; });
+    const wasDead = this.isDead;
     this.isDead = false;
     this.spectateId = null;
-    this.sanity = 0.5;
-    this.lastReportedSanity = -1; // force the HUD to pick up the new value
+    if (wasDead) {
+      this.sanity = Math.max(this.sanity, 0.5); // died of sanity: half a mind back; caught: unchanged
+      this.lastReportedSanity = -1; // force the HUD to pick up the new value
+    }
     this.refreshRemoteVisibility();
+    this.onPlayerRevive?.();
   }
 
   /** Marks a teammate dead/alive (server broadcast); dead ones vanish from the scene. */

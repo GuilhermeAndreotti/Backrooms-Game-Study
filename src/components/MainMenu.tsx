@@ -11,16 +11,14 @@ import { Settings, Play, Users, LogOut, Check, Sliders, Volume2, MonitorCog, Shi
 interface MainMenuProps {
   settings: GameSettings;
   onUpdateSettings: (settings: GameSettings) => void;
-  onHost: () => void;
-  onJoin: () => void;
+  onPlay: () => void;
   onCloseApp?: () => void;
 }
 
 export const MainMenu: React.FC<MainMenuProps> = ({
   settings,
   onUpdateSettings,
-  onHost,
-  onJoin,
+  onPlay,
   onCloseApp
 }) => {
   const [localSettings, setLocalSettings] = useState<GameSettings>({ ...settings });
@@ -183,10 +181,10 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 {/* Elegant Button Stack */}
                 <div className="space-y-4 pt-2">
                   <button
-                    id="btn-host"
+                    id="btn-join"
                     onClick={() => {
                       onUpdateSettings(localSettings);
-                      onHost();
+                      onPlay();
                     }}
                     disabled={!localSettings.name.trim()}
                     className="group w-full text-left transition-all disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
@@ -194,25 +192,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                     <div className="flex items-center gap-4 text-[#F2E8CF]/80 group-hover:text-white transition-colors">
                       <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">01</span>
                       <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
-                        Host Game
-                      </span>
-                    </div>
-                    <div className="h-[1px] w-full bg-white/10 group-hover:bg-[#deb81d]/30 mt-2 transition-colors"></div>
-                  </button>
-
-                  <button
-                    id="btn-join"
-                    onClick={() => {
-                      onUpdateSettings(localSettings);
-                      onJoin();
-                    }}
-                    disabled={!localSettings.name.trim() || !localSettings.ipAddress.trim()}
-                    className="group w-full text-left transition-all disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
-                  >
-                    <div className="flex items-center gap-4 text-[#F2E8CF]/80 group-hover:text-white transition-colors">
-                      <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">02</span>
-                      <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
-                        Join Game
+                        Play Game
                       </span>
                     </div>
                     <div className="h-[1px] w-full bg-white/10 group-hover:bg-[#deb81d]/30 mt-2 transition-colors"></div>
@@ -225,7 +205,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                     className="group w-full text-left transition-all cursor-pointer"
                   >
                     <div className="flex items-center gap-4 text-[#F2E8CF]/80 group-hover:text-white transition-colors">
-                      <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">03</span>
+                      <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">02</span>
                       <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
                         Settings
                       </span>
@@ -240,7 +220,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                     className="group w-full text-left transition-all cursor-pointer"
                   >
                     <div className="flex items-center gap-4 text-[#F2E8CF]/80 group-hover:text-white transition-colors">
-                      <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">04</span>
+                      <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">03</span>
                       <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
                         Personalizar Explorador
                       </span>
@@ -255,7 +235,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                       className="group w-full text-left transition-all cursor-pointer"
                     >
                       <div className="flex items-center gap-4 text-red-400/80 group-hover:text-red-400 transition-colors">
-                        <span className="font-mono text-xs opacity-50 bg-red-400/5 px-2 py-0.5 rounded">05</span>
+                        <span className="font-mono text-xs opacity-50 bg-red-400/5 px-2 py-0.5 rounded">04</span>
                         <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
                           Exit Terminal
                         </span>

@@ -294,6 +294,9 @@ export default function App() {
     setPhase(ConnectionPhase.CONNECTING);
     setErrorMessage("");
     setChatMessages([]);
+    setIsDead(false);
+    setAllDead(false);
+    setSpectateName(null);
     setConnectedPlayers([]);
     playersRef.current = [];
 
@@ -353,6 +356,9 @@ export default function App() {
             clientIdRef.current = myId;
             setLevelGEnding("none");
             setIsTerminalOpen(false);
+            setIsDead(false);
+            setAllDead(false);
+            setSpectateName(null);
             playersRef.current = currentOn;
             setConnectedPlayers(currentOn);
             setCurrentSeed(seed);
@@ -470,6 +476,12 @@ export default function App() {
                     onSectorChange: (sec) => setCurrentSector(sec),
                     onInventoryChange: (items) => setInventory(items),
                     onSanityChange: (san) => setSanity(san),
+                    onPlayerRevive: () => {
+                      setIsDead(false);
+                      setAllDead(false);
+                      setSpectateName(null);
+                      playersRef.current.forEach((p) => { p.dead = false; });
+                    },
                     onPlayerDeath: () => {
                       setIsDead(true);
                       setSpectateName(engineRef.current?.spectateName() ?? null);
@@ -810,8 +822,7 @@ export default function App() {
         <MainMenu
           settings={settings}
           onUpdateSettings={handleUpdateSettings}
-          onHost={connectToLobby}
-          onJoin={connectToLobby}
+          onPlay={connectToLobby}
           onCloseApp={handleCloseApp}
         />
       )}
