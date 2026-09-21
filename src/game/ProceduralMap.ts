@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { LOBBY, LOBBY_LEVEL } from "./Lobby";
+import { t } from "../i18n";
 import * as THREE from "three";
 import { DynamicLightSource } from "./LightPool";
 import { QualityProfile, getQualityProfile } from "./Quality";
@@ -71,6 +73,7 @@ export const LEVEL_G_DOOR_OPEN_ANGLE = -Math.PI * 0.55;
 
 export function gridSizeForLevel(level: number): number {
   if (level === 4) return 18; // Level G: a small office, on purpose
+  if (level === LOBBY_LEVEL) return 24; // the room lobby
   return level === 0 ? 64 : 48;
 }
 
@@ -210,6 +213,11 @@ export class ProceduralMap {
   }[] = [];
 
   // Exit point properties (the Far Exit)
+  /** Where explorers appear (grid cell). The lobby moves it off the corner. */
+  public spawnGridX = 2;
+  public spawnGridZ = 2;
+  /** Trampolines (world XZ + radius): standing on one makes the player bounce. */
+  public trampolines: { x: number; z: number; r: number }[] = [];
   public exitGridX = 0;
   public exitGridZ = 0;
 
@@ -543,7 +551,7 @@ export class ProceduralMap {
 
     // Level G: no breadcrumbs, drafts or wet trails to the exit — finding the
     // emergency door (and earning it) is the level.
-    if (this.level === 4) foundPath = [];
+    if (this.level === 4 || this.level === LOBBY_LEVEL) foundPath = [];
 
     this.exitPath = foundPath;
     this.exitPathSet.clear();
@@ -592,25 +600,20 @@ export class ProceduralMap {
   public exitPaperNote(): { title: string; lines: string[] } | null {
     if (this.level === 1) {
       return {
-        title: "ACESSO DE MANUTENÇÃO (LEVEL 2)",
-        lines: [
-          "O vapor e o metal enferrujado cobrem este setor.",
-          "Este corredor estreito leva ao temido Level 2.",
-          "Ao encontrar o portal de metal e vapor à frente,",
-          "atravesse-o para seguir adiante.",
-        ],
+        title: t("paper.l1.title"),
+        lines: [0, 1, 2, 3].map((n) => t(`paper.l1.${n}`)),
       };
     }
     if (this.level === 0) {
       const wall = this.noclipKind === "wall";
       return {
-        title: "COMO ESCAPAR DESTAS PAREDES (LEVEL 0)",
+        title: t("paper.l0.title"),
         lines: [
-          "Este labirinto é uma simulação dimensional.",
-          "Não existem portas ou saídas físicas normais.",
-          wall ? "A saída é uma PAREDE sem física, aqui perto," : "A saída é um CHÃO sem física, aqui perto,",
-          "cercada de fita isolante amarela e preta.",
-          wall ? "ATRAVESSE a parede para trocar de nível." : "AFUNDE nesse chão para trocar de nível.",
+          t("paper.l0.0"),
+          t("paper.l0.1"),
+          t(wall ? "paper.l0.wall" : "paper.l0.floor"),
+          t("paper.l0.tape"),
+          t(wall ? "paper.l0.doWall" : "paper.l0.doFloor"),
         ],
       };
     }
@@ -1767,6 +1770,8 @@ export class ProceduralMap {
 
     } else if (this.level === 4) {
       this.carveLevelG();
+    } else if (this.level === LOBBY_LEVEL) {
+      this.carveLobby();
     } else if (this.level === 3) {
       // LEVEL 3 ("Lights Out" — secret level, found through a dark corridor on
       // Level 1). A real perfect maze, pitch black: no fluorescent fixtures are
@@ -2007,7 +2012,7 @@ export class ProceduralMap {
 
     // Level G is hand-laid; the generic spawn clearing below would punch
     // through its reception walls.
-    if (this.level === 4) return;
+    if (this.level === 4 || this.level === LOBBY_LEVEL) return;
 
     // Ensure spawn around (2,2) is safe, walkable, and fully cleared
     for (let dx = -1; dx <= 2; dx++) {
@@ -2371,6 +2376,19 @@ export class ProceduralMap {
         }
       }
     }
+  }
+
+  /** The room lobby: one big open hall, no exit; props are added by Lobby. */
+  private carveLobby() {
+    const h = LOBBY.hall;
+    for (let x = h.minCell; x <= h.maxCellX; x++) {
+      for (let z = h.minCell; z <= h.maxCellZ; z++) this.grid[x][z] = CellType.CORRIDOR;
+    }
+    this.exitGridX = 0;
+    this.exitGridZ = 0;
+    this.spawnGridX = LOBBY.spawnCell.x;
+    this.spawnGridZ = LOBBY.spawnCell.z;
+    this.trampolines = [{ x: LOBBY.trampoline.x, z: LOBBY.trampoline.z, r: LOBBY.trampoline.r }];
   }
 
   /** Hazard-striped floor for Level 1 "ramp" connector cells. */
@@ -2821,7 +2839,7 @@ export class ProceduralMap {
     }
 
     const hSize = this.cellSize;
-    const height = 3.0; // Backrooms standard height: 3.0 meters
+    const height = this.level === LOBBY_LEVEL ? 7.0 : 3.0; // Backrooms standard height: 3.0 meters (the lobby is tall enough to jump on a trampoline)
     const posX = gx * hSize + hSize / 2;
     const posZ = gz * hSize + hSize / 2;
     // This cell's floor elevation (0 except Level 1's stacked sectors/ramps).
@@ -3613,7 +3631,7 @@ export class ProceduralMap {
     const isSpawnZone = (gx < 5 && gz < 5);
     const isExitZone = this.isKeepClearCell(gx, gz);
 
-    if (this.level !== 1 && this.level !== 4 && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
+    if (this.level !== 1 && this.level !== 4 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
       const wallRng = new SeededRandom(this.seed + gx * 11 + gz * 23);
       if (wallRng.next() < 0.16) {
         let addedDivider = false;
@@ -4062,7 +4080,7 @@ export class ProceduralMap {
     // On both Level 0 and Level 1, there is a sparse chance (e.g., 3.5%) to spawn a collectible item in a cell
     const itemRng = new SeededRandom(this.seed + gx * 83 + gz * 109);
     // Don't spawn collectibles at the exit or spawning point (0,0) or solid cells
-    if (this.level !== 4 && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
+    if (this.level !== 4 && this.level !== LOBBY_LEVEL && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
       const itemTypeRoll = itemRng.next();
       // Keep it within the cell boundaries (so + hSize/2 is center, range is -hSize/2 + 0.5 to hSize/2 - 0.5)
       const maxOffset = hSize / 2 - 0.6;
@@ -4342,7 +4360,7 @@ export class ProceduralMap {
       if (ctx) {
         ctx.fillStyle = "#0f7a36"; ctx.fillRect(0, 0, 256, 64);
         ctx.fillStyle = "#e9ffe9"; ctx.font = "bold 22px Arial"; ctx.textAlign = "center";
-        ctx.fillText("SAÍDA DE EMERGÊNCIA", 128, 40);
+        ctx.fillText(t("sign.emergencyExit"), 128, 40);
       }
       const signTex = new THREE.CanvasTexture(canvas);
       this.sharedTextures.push(signTex);

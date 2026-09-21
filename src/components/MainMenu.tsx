@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { t, useLanguage, LANGUAGES } from "../i18n";
 import React, { useState, useEffect } from "react";
 import { GameSettings, SUIT_COLORS } from "../types/game";
 import { FaceEditor } from "./FaceEditor";
@@ -11,19 +12,29 @@ import { Settings, Play, Users, LogOut, Check, Sliders, Volume2, MonitorCog, Shi
 interface MainMenuProps {
   settings: GameSettings;
   onUpdateSettings: (settings: GameSettings) => void;
-  onPlay: () => void;
+  /** Creates a new room (and its invite code). */
+  onCreate: () => void;
+  /** Joins an existing room by its invite code. */
+  onJoin: (code: string) => void;
+  /** Code from an invite link (yoursite/AB4D3X), pre-filled. */
+  initialCode?: string;
   onCloseApp?: () => void;
 }
 
 export const MainMenu: React.FC<MainMenuProps> = ({
   settings,
   onUpdateSettings,
-  onPlay,
+  onCreate,
+  onJoin,
+  initialCode = "",
   onCloseApp
 }) => {
   const [localSettings, setLocalSettings] = useState<GameSettings>({ ...settings });
   const [showSettings, setShowSettings] = useState(false);
+  const [joinCode, setJoinCode] = useState(initialCode);
+  const cleanCode = joinCode.toUpperCase().replace(/[^A-Z0-9]/g, "");
   const [showCharacter, setShowCharacter] = useState(false);
+  const [language, setLanguage] = useLanguage();
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   // Sync state if parent settings shift
@@ -121,7 +132,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
               <span className="text-[#F2E8CF]/80 font-mono text-[10px] uppercase tracking-wide">
-                Network Status: Stable
+                {t("menu.networkStatus")}
               </span>
             </div>
             <span className="text-white/30 font-mono text-[10px]">v1.0.4-BETA</span>
@@ -139,7 +150,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
               <div className="space-y-6 font-mono">
                 {/* Header title inside box */}
                 <div className="border-b border-white/10 pb-4">
-                  <span className="text-[#F2E8CF]/40 text-xs uppercase tracking-widest font-bold">Infiltração Cooperativa</span>
+                  <span className="text-[#F2E8CF]/40 text-xs uppercase tracking-widest font-bold">{t("menu.tagline")}</span>
                   <h2 className="text-xl font-bold text-[#F2E8CF] tracking-wide mt-1">THE BACKROOMS</h2>
                 </div>
 
@@ -147,33 +158,33 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 <div className="space-y-4">
                   <div>
                     <label className="block text-xs uppercase text-[#F2E8CF]/70 tracking-wider mb-1.5">
-                      Identificação do Explorador
+                      {t("menu.explorerId")}
                     </label>
                     <input
                       type="text"
                       maxLength={15}
                       value={localSettings.name}
                       onChange={(e) => handleChange("name", e.target.value)}
-                      placeholder="Nome do Jogador"
+                      placeholder={t("menu.namePlaceholder")}
                       className="w-full bg-black/50 border border-white/15 text-[#F2E8CF] outline-none px-3 py-2 text-sm rounded focus:border-[#deb81d] transition-all font-mono"
                     />
                   </div>
 
                   <div>
                     <label className="block text-xs uppercase text-[#F2E8CF]/70 tracking-wider mb-1.5">
-                      Código da Sala
+                      {initialCode ? t("menu.invitedTo", { code: initialCode.toUpperCase() }) : t("menu.codeLabel")}
                     </label>
                     <input
                       type="text"
-                      maxLength={24}
-                      value={localSettings.ipAddress}
-                      onChange={(e) => handleChange("ipAddress", e.target.value)}
-                      placeholder="sala-principal"
-                      className="w-full bg-black/50 border border-white/15 text-[#F2E8CF] outline-none px-3 py-2 text-sm rounded focus:border-[#deb81d] transition-all font-mono"
+                      id="input-room-code"
+                      maxLength={12}
+                      value={joinCode}
+                      onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                      placeholder={t("menu.codePlaceholder")}
+                      className="w-full bg-black/50 border border-white/15 text-[#F2E8CF] outline-none px-3 py-2 text-sm rounded focus:border-[#deb81d] transition-all font-mono tracking-[0.3em] uppercase"
                     />
                     <p className="text-[10px] text-[#F2E8CF]/40 mt-1.5 leading-relaxed">
-                      Quem digitar o mesmo código entra no mesmo mapa (até 4 exploradores).
-                      Não é preciso IP: o servidor é o próprio site.
+                      {t("menu.roomHint2")}
                     </p>
                   </div>
                 </div>
@@ -181,10 +192,10 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 {/* Elegant Button Stack */}
                 <div className="space-y-4 pt-2">
                   <button
-                    id="btn-join"
+                    id="btn-create-room"
                     onClick={() => {
                       onUpdateSettings(localSettings);
-                      onPlay();
+                      onCreate();
                     }}
                     disabled={!localSettings.name.trim()}
                     className="group w-full text-left transition-all disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
@@ -192,7 +203,25 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                     <div className="flex items-center gap-4 text-[#F2E8CF]/80 group-hover:text-white transition-colors">
                       <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">01</span>
                       <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
-                        Play Game
+                        {t("menu.createRoom")}
+                      </span>
+                    </div>
+                    <div className="h-[1px] w-full bg-white/10 group-hover:bg-[#deb81d]/30 mt-2 transition-colors"></div>
+                  </button>
+
+                  <button
+                    id="btn-join-room"
+                    onClick={() => {
+                      onUpdateSettings(localSettings);
+                      onJoin(cleanCode);
+                    }}
+                    disabled={!localSettings.name.trim() || cleanCode.length < 4}
+                    className="group w-full text-left transition-all disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
+                  >
+                    <div className="flex items-center gap-4 text-[#F2E8CF]/80 group-hover:text-white transition-colors">
+                      <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">02</span>
+                      <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
+                        {t("menu.joinRoom")}
                       </span>
                     </div>
                     <div className="h-[1px] w-full bg-white/10 group-hover:bg-[#deb81d]/30 mt-2 transition-colors"></div>
@@ -205,9 +234,9 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                     className="group w-full text-left transition-all cursor-pointer"
                   >
                     <div className="flex items-center gap-4 text-[#F2E8CF]/80 group-hover:text-white transition-colors">
-                      <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">02</span>
+                      <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">03</span>
                       <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
-                        Settings
+                        {t("menu.settings")}
                       </span>
                     </div>
                     <div className="h-[1px] w-full bg-white/10 group-hover:bg-[#deb81d]/30 mt-2 transition-colors"></div>
@@ -220,9 +249,9 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                     className="group w-full text-left transition-all cursor-pointer"
                   >
                     <div className="flex items-center gap-4 text-[#F2E8CF]/80 group-hover:text-white transition-colors">
-                      <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">03</span>
+                      <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">04</span>
                       <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
-                        Personalizar Explorador
+                        {t("menu.character")}
                       </span>
                     </div>
                     <div className="h-[1px] w-full bg-white/10 group-hover:bg-[#deb81d]/30 mt-2 transition-colors"></div>
@@ -235,9 +264,9 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                       className="group w-full text-left transition-all cursor-pointer"
                     >
                       <div className="flex items-center gap-4 text-red-400/80 group-hover:text-red-400 transition-colors">
-                        <span className="font-mono text-xs opacity-50 bg-red-400/5 px-2 py-0.5 rounded">04</span>
+                        <span className="font-mono text-xs opacity-50 bg-red-400/5 px-2 py-0.5 rounded">05</span>
                         <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
-                          Exit Terminal
+                          {t("menu.exit")}
                         </span>
                       </div>
                       <div className="h-[1px] w-full bg-red-400/10 group-hover:bg-red-400/30 mt-2 transition-colors"></div>
@@ -246,21 +275,21 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 </div>
 
                 <div className="text-center text-[10px] text-white/30 pt-2 cursor-default font-mono uppercase tracking-wider">
-                  BACKROOMS EXPLORATION // LOCAL STORAGE SECURED
+                  {t("menu.footer")}
                 </div>
               </div>
             ) : (
               <form onSubmit={handleSave} className="space-y-6">
                 <h2 className="text-lg font-bold text-[#F2E8CF] flex items-center gap-2 border-b border-white/10 pb-3 uppercase tracking-wider">
                   <Sliders className="w-5 h-5 text-[#deb81d]" />
-                  Internal Config
+                  {t("menu.internalConfig")}
                 </h2>
 
                 <div className="space-y-4 text-sm text-[#F2E8CF]">
                   {/* Sensitivity */}
                   <div>
                     <div className="flex justify-between text-xs text-[#F2E8CF]/60 mb-1 uppercase tracking-wider">
-                      <span>Mouse Sensitivity</span>
+                      <span>{t("menu.mouseSens")}</span>
                       <span className="text-[#deb81d]">{Math.round(localSettings.mouseSensitivity * 10)} / 10</span>
                     </div>
                     <input
@@ -277,7 +306,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                   {/* FOV */}
                   <div>
                     <div className="flex justify-between text-xs text-[#F2E8CF]/60 mb-1 uppercase tracking-wider">
-                      <span>Field of View (FOV)</span>
+                      <span>{t("menu.fov")}</span>
                       <span className="text-[#deb81d]">{localSettings.fov}°</span>
                     </div>
                     <input
@@ -293,20 +322,44 @@ export const MainMenu: React.FC<MainMenuProps> = ({
 
                   <div className="h-[1px] bg-white/10 my-1" />
 
+                  {/* Language */}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-[11px] text-[#F2E8CF]/60 uppercase tracking-wider">
+                      {t("menu.language")}
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {LANGUAGES.map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          id={`btn-lang-${opt.id}`}
+                          onClick={() => setLanguage(opt.id)}
+                          className={`py-1.5 rounded text-[10px] font-bold uppercase tracking-wider border transition-all cursor-pointer ${
+                            language === opt.id
+                              ? "bg-[#deb81d] text-black border-[#deb81d]"
+                              : "bg-black/40 text-[#F2E8CF]/60 border-white/15 hover:border-[#deb81d]/40"
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   {/* Graphics / performance */}
                   <div className="text-xs uppercase text-[#F2E8CF]/60 tracking-widest flex items-center gap-1.5 mb-1">
                     <MonitorCog className="w-3.5 h-3.5" />
-                    Desempenho Gráfico
+                    {t("menu.graphics")}
                   </div>
 
                   <div>
                     <div className="text-xs text-[#F2E8CF]/50 mb-1.5">Preset de Qualidade</div>
                     <div className="grid grid-cols-4 gap-1.5">
                       {([
-                        { id: "auto", label: "Auto" },
-                        { id: "low", label: "Baixo" },
-                        { id: "medium", label: "Médio" },
-                        { id: "high", label: "Alto" },
+                        { id: "auto", label: t("menu.q.auto") },
+                        { id: "low", label: t("menu.q.low") },
+                        { id: "medium", label: t("menu.q.medium") },
+                        { id: "high", label: t("menu.q.high") },
                       ] as const).map((option) => (
                         <button
                           key={option.id}
@@ -323,16 +376,15 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                       ))}
                     </div>
                     <p className="text-[10px] text-[#F2E8CF]/40 mt-1.5 leading-relaxed">
-                      Controla resolução interna, sombras, alcance de visão e o número de luzes
-                      dinâmicas. <span className="text-[#deb81d]/70">Auto</span> escolhe pelo seu aparelho.
+                      {t("menu.graphicsHint")} <span className="text-[#deb81d]/70">Auto</span> {t("menu.graphicsHintAuto")}
                     </p>
                   </div>
 
                   <label className="flex items-center justify-between gap-3 cursor-pointer">
                     <span className="text-xs text-[#F2E8CF]/50 leading-snug">
-                      Resolução adaptativa
+                      {t("menu.adaptive")}
                       <span className="block text-[10px] text-[#F2E8CF]/30">
-                        Reduz a resolução automaticamente quando o FPS cai.
+                        {t("menu.adaptiveHint")}
                       </span>
                     </span>
                     <input
@@ -344,7 +396,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                   </label>
 
                   <label className="flex items-center justify-between gap-3 cursor-pointer">
-                    <span className="text-xs text-[#F2E8CF]/50">Mostrar FPS no HUD</span>
+                    <span className="text-xs text-[#F2E8CF]/50">{t("menu.showFps")}</span>
                     <input
                       type="checkbox"
                       checked={localSettings.showFps}
@@ -358,13 +410,13 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                   {/* Audio Volume Controls */}
                   <div className="text-xs uppercase text-[#F2E8CF]/60 tracking-widest flex items-center gap-1.5 mb-1">
                     <Volume2 className="w-3.5 h-3.5" />
-                    Audio Channels
+                    {t("menu.audio")}
                   </div>
 
                   {/* Master Volume */}
                   <div>
                     <div className="flex justify-between text-xs text-[#F2E8CF]/50 mb-1">
-                      <span>Master Volume</span>
+                      <span>{t("menu.volMaster")}</span>
                       <span>{Math.round(localSettings.volumeMaster * 100)}%</span>
                     </div>
                     <input
@@ -381,7 +433,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                   {/* Fluorescent Hum Volume */}
                   <div>
                     <div className="flex justify-between text-xs text-[#F2E8CF]/50 mb-1">
-                      <span>Fluorescent Hum</span>
+                      <span>{t("menu.volHum")}</span>
                       <span>{Math.round(localSettings.volumeHum * 100)}%</span>
                     </div>
                     <input
@@ -398,7 +450,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                   {/* SFX Volume */}
                   <div>
                     <div className="flex justify-between text-xs text-[#F2E8CF]/50 mb-1">
-                      <span>SFX Feedback</span>
+                      <span>{t("menu.volSfx")}</span>
                       <span>{Math.round(localSettings.volumeSfx * 100)}%</span>
                     </div>
                     <input
@@ -424,7 +476,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                     }}
                     className="flex-1 bg-transparent border border-white/20 text-[#F2E8CF]/80 hover:text-white py-2 rounded hover:bg-white/5 uppercase tracking-wider text-xs font-semibold transition-all cursor-pointer"
                   >
-                    Cancel
+                    {t("menu.cancel")}
                   </button>
 
                   <button
@@ -435,10 +487,10 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                     {saveSuccess ? (
                       <>
                         <Check className="w-4 h-4 text-black" />
-                        Saved
+                        {t("menu.saved")}
                       </>
                     ) : (
-                      "Save"
+                      t("menu.save")
                     )}
                   </button>
                 </div>
@@ -454,13 +506,13 @@ export const MainMenu: React.FC<MainMenuProps> = ({
           {/* Player Status Simulation */}
           <div className="flex gap-8 bg-black/30 border border-white/5 backdrop-blur-sm self-start px-5 py-3 rounded">
             <div className="flex flex-col gap-1.5">
-              <span className="text-white/40 text-[9px] uppercase font-bold tracking-widest font-mono">Stamina Status</span>
+              <span className="text-white/40 text-[9px] uppercase font-bold tracking-widest font-mono">{t("menu.stamina")}</span>
               <div className="w-48 h-1 bg-white/10 relative rounded-full">
                 <div className="absolute top-0 left-0 h-full bg-[#E2D08E] w-[88%] rounded-full"></div>
               </div>
             </div>
             <div className="flex flex-col gap-1">
-              <span className="text-white/40 text-[9px] uppercase font-bold tracking-widest font-mono">Light Radiation</span>
+              <span className="text-white/40 text-[9px] uppercase font-bold tracking-widest font-mono">{t("menu.lightRadiation")}</span>
               <div className="flex gap-1">
                 <div className="w-1.5 h-3 bg-[#E2D08E]"></div>
                 <div className="w-1.5 h-3 bg-[#E2D08E]"></div>
@@ -468,27 +520,6 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 <div className="w-1.5 h-3 bg-[#E2D08E]/30"></div>
                 <div className="w-1.5 h-3 bg-[#E2D08E]/30"></div>
               </div>
-            </div>
-          </div>
-
-          {/* Join Overlay Code Quick-Connect Peek */}
-          <div className="bg-black/45 border border-white/10 p-4 w-full md:w-64 backdrop-blur-md rounded-lg self-end shadow-lg">
-            <span className="text-[10px] text-[#F2E8CF]/50 uppercase font-mono block mb-2 tracking-wider">Join Quick-Connect</span>
-            <div className="flex flex-col gap-2">
-              <div className="flex justify-between items-center bg-black/40 border border-white/5 p-2 text-[10px] font-mono text-white/80">
-                <span>sala-principal</span>
-                <span className="text-green-500 animate-pulse">Available</span>
-              </div>
-              <button 
-                type="button"
-                onClick={() => {
-                  handleChange("ipAddress", "sala-principal");
-                  handleChange("port", "0");
-                }}
-                className="w-full py-1.5 bg-white/10 hover:bg-white/20 text-[10px] text-white uppercase font-bold transition-all rounded cursor-pointer"
-              >
-                Use Preset
-              </button>
             </div>
           </div>
 
@@ -504,11 +535,11 @@ export const MainMenu: React.FC<MainMenuProps> = ({
 
             <h2 className="text-lg font-bold text-[#F2E8CF] flex items-center gap-2 border-b border-white/10 pb-3 uppercase tracking-wider">
               <Shirt className="w-5 h-5 text-[#deb81d]" />
-              Traje do Explorador
+              {t("menu.suitTitle")}
             </h2>
 
             <p className="text-[11px] text-[#F2E8CF]/50 mt-3 leading-relaxed uppercase tracking-wider">
-              A cor do seu traje anti-contaminação e o rosto desenhado no capacete. Os outros exploradores da sala veem os dois.
+              {t("menu.suitHint")}
             </p>
 
             <div className="grid grid-cols-4 gap-3 mt-5">
@@ -518,7 +549,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                   <button
                     key={color}
                     type="button"
-                    aria-label={`Cor ${color}`}
+                    aria-label={t("menu.colorLabel", { color })}
                     onClick={() => handleChange("suitColor", color)}
                     className={`aspect-square rounded border-2 transition-all cursor-pointer ${
                       selected ? "border-[#deb81d] scale-105 shadow-[0_0_14px_rgba(222,184,29,0.4)]" : "border-white/10 hover:border-white/40"
@@ -547,7 +578,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 }}
                 className="flex-1 bg-transparent border border-white/20 text-[#F2E8CF]/80 hover:text-white py-2 rounded hover:bg-white/5 uppercase tracking-wider text-xs font-semibold transition-all cursor-pointer"
               >
-                Cancelar
+                {t("menu.cancel")}
               </button>
               <button
                 type="button"
@@ -562,7 +593,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 }}
                 className="flex-1 flex items-center justify-center gap-2 bg-[#deb81d] hover:bg-[#ebd255] text-black py-2 rounded uppercase tracking-wider text-xs font-bold transition-all cursor-pointer"
               >
-                {saveSuccess ? (<><Check className="w-4 h-4 text-black" />Salvo</>) : "Salvar"}
+                {saveSuccess ? (<><Check className="w-4 h-4 text-black" />{t("menu.saved")}</>) : t("menu.save")}
               </button>
             </div>
           </div>

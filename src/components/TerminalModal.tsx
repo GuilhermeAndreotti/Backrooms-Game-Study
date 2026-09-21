@@ -5,6 +5,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Monitor, X } from "lucide-react";
+import { t, useLanguage } from "../i18n";
 
 interface TerminalModalProps {
   /** Digits revealed by the documents found so far (null = not found yet). */
@@ -20,6 +21,7 @@ interface TerminalModalProps {
  * the Finger King doesn't wait while you type.
  */
 export const TerminalModal: React.FC<TerminalModalProps> = ({ digits, onSubmit, onClose }) => {
+  useLanguage();
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<"idle" | "denied">("idle");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -56,7 +58,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({ digits, onSubmit, 
         <button
           type="button"
           onClick={onClose}
-          aria-label="Fechar terminal"
+          aria-label={t("term.close")}
           className="absolute top-3 right-3 text-[#3cff7a]/60 hover:text-[#3cff7a] cursor-pointer"
         >
           <X className="w-4 h-4" />
@@ -64,15 +66,15 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({ digits, onSubmit, 
 
         <div className="flex items-center gap-2 text-[#3cff7a] border-b border-[#1f7a3a]/60 pb-2">
           <Monitor className="w-4 h-4" />
-          <span className="text-xs font-bold uppercase tracking-widest">SISADM v2.1 — Terminal 04</span>
+          <span className="text-xs font-bold uppercase tracking-widest">{t("term.title")}</span>
         </div>
 
         <p className="mt-4 text-[11px] text-[#3cff7a]/80 uppercase leading-relaxed">
-          Liberação da porta de emergência bloqueada. Insira o código de autorização de 3 dígitos.
+          {t("term.prompt")}
         </p>
 
         <div className="mt-4 text-[11px] text-[#3cff7a]/60 uppercase tracking-wider">
-          Registros encontrados ({found}/3):{" "}
+          {t("term.found", { n: found })}{" "}
           <span className="text-[#3cff7a] tracking-[0.4em] font-bold">
             {digits.map((d) => (d === null ? "_" : d)).join("")}
           </span>
@@ -87,13 +89,13 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({ digits, onSubmit, 
           }}
           inputMode="numeric"
           autoComplete="off"
-          aria-label="Código de 3 dígitos"
+          aria-label={t("term.codeAria")}
           className="mt-4 w-full bg-black border border-[#1f7a3a] text-[#3cff7a] text-3xl text-center tracking-[0.6em] py-3 rounded outline-none focus:border-[#3cff7a]"
           placeholder="___"
         />
 
         <div className="h-5 mt-2 text-[11px] uppercase tracking-wider text-center">
-          {status === "denied" && <span className="text-red-500 font-bold">Acesso negado</span>}
+          {status === "denied" && <span className="text-red-500 font-bold">{t("term.denied")}</span>}
         </div>
 
         <button
@@ -101,9 +103,9 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({ digits, onSubmit, 
           disabled={code.length !== 3}
           className="mt-2 w-full bg-[#1f7a3a] hover:bg-[#2a9b4b] disabled:opacity-40 disabled:cursor-not-allowed text-black font-extrabold uppercase tracking-widest py-2.5 rounded text-xs cursor-pointer"
         >
-          Autorizar
+          {t("term.authorize")}
         </button>
-        <div className="mt-3 text-[9px] text-[#3cff7a]/40 uppercase text-center">[ESC] para sair do terminal</div>
+        <div className="mt-3 text-[9px] text-[#3cff7a]/40 uppercase text-center">{t("term.esc")}</div>
       </form>
     </div>
   );

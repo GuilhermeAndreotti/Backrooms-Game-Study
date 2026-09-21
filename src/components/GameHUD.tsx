@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { t, useLanguage } from "../i18n";
 import React, { useState, useEffect, useRef } from "react";
 import { Flashlight, ShieldAlert, Send, MessageSquare, Terminal, Backpack, Trophy } from "lucide-react";
 import { ChatMessage, RemotePlayer } from "../types/game";
@@ -23,7 +24,6 @@ interface GameHUDProps {
   showFps?: boolean;
   chatMessages: ChatMessage[];
   onSendMessage: (msg: string) => void;
-  onDisconnect: () => void;
   latency?: number; // Real round-trip ms to the relay (undefined until the first pong arrives)
   level?: number;
   engineRef: React.MutableRefObject<GameEngine | null>;
@@ -50,7 +50,6 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
   showFps = false,
   chatMessages,
   onSendMessage,
-  onDisconnect,
   latency,
   level = 0,
   engineRef,
@@ -62,6 +61,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
   onOpenAchievements,
   levelGProgress
 }) => {
+  useLanguage();
   const [inputText, setInputText] = useState("");
   const [showChat, setShowChat] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -154,28 +154,28 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
         <div className="flex flex-col gap-1 items-start">
           <div className="flex items-center gap-2 bg-[#0b0a05]/75 border border-[#a28e3b]/20 px-3 py-1.5 rounded">
             <span className="w-2.5 h-2.5 bg-red-600 rounded-full animate-ping duration-1000 inline-block" />
-            <span className="font-bold text-xs tracking-widest text-[#deb81d]">● INFILTRANDO</span>
+            <span className="font-bold text-xs tracking-widest text-[#deb81d]">{t("hud.infiltrating")}</span>
             <span className="text-[#a28e3b] px-1 border-l border-[#a28e3b]/30">{formatTime(elapsedSeconds)}</span>
             {showFps && perf && (
               <span
                 className={`px-1 border-l border-[#a28e3b]/30 tabular-nums ${
                   perf.fps >= 50 ? "text-green-400" : perf.fps >= 30 ? "text-amber-400" : "text-red-400"
                 }`}
-                title="Quadros por segundo • resolução interna de renderização"
+                title={t("hud.fpsTitle")}
               >
                 {Math.round(perf.fps)} FPS · {Math.round(perf.scale * 100)}%
               </span>
             )}
           </div>
           <div className="text-[10px] text-[#a28e3b]/60 px-1 font-semibold uppercase tracking-wider flex items-center gap-2 flex-wrap max-w-lg">
-            <span>Explorador: <span className="text-[#deb81d]">{playerName}</span></span>
+            <span>{t("hud.explorer")} <span className="text-[#deb81d]">{playerName}</span></span>
             <span className="text-[#a28e3b]/30">•</span>
-            <span>Localização: <span className="text-[#deb81d]">{level === 4 ? "LEVEL G (The Small Office)" : level === 3 ? "Level 6 (Lights Out)" : (level === 2 ? "Level 2 (Pipe Dreams)" : (level === 1 ? "Level 1 (Habitable Zone)" : "Level 0 (The Lobby)"))}</span></span>
+            <span>{t("hud.location")} <span className="text-[#deb81d]">{level === 4 ? "LEVEL G (The Small Office)" : level === 3 ? "Level 6 (Lights Out)" : (level === 2 ? "Level 2 (Pipe Dreams)" : (level === 1 ? "Level 1 (Habitable Zone)" : "Level 0 (The Lobby)"))}</span></span>
             {(level === 1 || level === 4) && currentSector && (
               <>
                 <span className="text-[#a28e3b]/30">•</span>
                 <span className="text-[#deb81d] font-bold bg-[#deb81d]/10 px-1 border border-[#deb81d]/20 rounded tracking-widest text-[9px] animate-pulse">
-                   SETOR: {currentSector.toUpperCase()}
+                   {t("hud.sector", { name: currentSector.toUpperCase() })}
                 </span>
               </>
             )}
@@ -187,15 +187,15 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
                 : "text-[#3cff7a] bg-black/60 border-[#1f7a3a]/60"
             }`}>
               {levelGProgress.alarm ? (
-                <span>Porta de emergência aberta — corra!</span>
+                <span>{t("hud.alarmOpen")}</span>
               ) : (
                 <>
-                  <span>Código: <span className="tracking-[0.35em]">{levelGProgress.digits.map((d) => (d === null ? "_" : d)).join("")}</span></span>
+                  <span>{t("hud.code")} <span className="tracking-[0.35em]">{levelGProgress.digits.map((d) => (d === null ? "_" : d)).join("")}</span></span>
                   <span className="text-[#3cff7a]/50">•</span>
                   <span className="text-[#3cff7a]/70">
                     {levelGProgress.digits.every((d) => d !== null)
-                      ? "Use o computador da sala principal [E]"
-                      : `Documentos ${levelGProgress.digits.filter((d) => d !== null).length}/3`}
+                      ? t("hud.useComputer")
+                      : t("hud.documents", { n: levelGProgress.digits.filter((d) => d !== null).length })}
                   </span>
                 </>
               )}
@@ -207,10 +207,10 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
         <div className="flex flex-col items-end gap-1">
           <div className="bg-[#0b0a05]/75 border border-[#a28e3b]/20 px-3 py-1 rounded text-right text-xs">
             <div className="uppercase tracking-wider font-semibold text-xs text-[#a28e3b]">
-              Lobby: <span className="text-[#deb81d]">{roomKey}</span>
+              {t("hud.lobby")} <span className="text-[#deb81d]">{roomKey}</span>
             </div>
             <div className="text-[10px] text-[#a28e3b]/70 flex items-center justify-end gap-2 mt-0.5">
-              <span>EXPLORADORES: {connectedPlayers.length + 1} / 4</span>
+              <span>{t("hud.explorers", { n: connectedPlayers.length + 1 })}</span>
               {latency !== undefined && (
                 <span
                   className={`px-1 rounded border tabular-nums ${
@@ -220,9 +220,9 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
                         ? "bg-amber-400/10 text-amber-400 border-amber-400/20"
                         : "bg-red-400/10 text-red-400 border-red-400/20"
                   }`}
-                  title="Ida-e-volta até o servidor do relay"
+                  title={t("hud.pingTitle")}
                 >
-                  PING: {latency}ms
+                  {t("hud.ping", { ms: latency })}
                 </span>
               )}
             </div>
@@ -231,12 +231,12 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
           {/* Connected players roster list */}
           <div className="flex flex-col gap-1 items-end pt-1">
             <div className="text-[9px] text-[#a28e3b]/50 uppercase font-bold px-1 select-none">
-              Infiltrados na fenda:
+              {t("hud.roster")}
             </div>
             <div className="text-[10px] bg-[#0b0a05]/50 px-2 py-1 border border-[#a28e3b]/10 rounded flex flex-col gap-0.5">
               <div className="text-[#deb81d] flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
-                {playerName} (VOCÊ) — <span className="uppercase text-[8px] opacity-75">{playerState}</span>
+                {playerName} {t("hud.you")} — <span className="uppercase text-[8px] opacity-75">{playerState}</span>
               </div>
               {connectedPlayers.map((p) => (
                 <div key={p.id} className="text-[#a28e3b] flex items-center gap-1.5">
@@ -259,7 +259,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
             className="flex items-center gap-2 bg-[#0b0a05]/85 hover:bg-[#141208] text-[#a28e3b] hover:text-[#deb81d] border border-[#a28e3b]/20 hover:border-[#deb81d]/40 rounded px-2.5 py-1.5 text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer"
           >
             <MessageSquare className="w-4 h-4" />
-            Comunicador
+            {t("hud.chat")}
             {chatMessages.length > 0 && (
               <span className="px-1.5 py-0.2 bg-[#deb81d] text-black font-extrabold rounded-full text-[9px]">
                 {chatMessages.length}
@@ -275,7 +275,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
               className="flex items-center gap-2 bg-[#0b0a05]/85 hover:bg-[#141208] text-[#a28e3b] hover:text-[#deb81d] border border-[#a28e3b]/20 hover:border-[#deb81d]/40 rounded px-2.5 py-1.5 text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer animate-pulse hover:animate-none"
             >
               <Backpack className="w-4 h-4 text-[#deb81d]" />
-              Inventário [I]
+              {t("hud.inventory")}
               {inventoryCount > 0 && (
                 <span className="px-1.5 py-0.2 bg-[#deb81d] text-black font-extrabold rounded-full text-[9px]">
                   {inventoryCount}
@@ -292,7 +292,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
               className="flex items-center gap-2 bg-[#0b0a05]/85 hover:bg-[#141208] text-[#a28e3b] hover:text-[#deb81d] border border-[#a28e3b]/20 hover:border-[#deb81d]/40 rounded px-2.5 py-1.5 text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer"
             >
               <Trophy className="w-4 h-4 text-[#deb81d]" />
-              Conquistas [K]
+              {t("hud.achievements")}
             </button>
           )}
         </div>
@@ -303,7 +303,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
             <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-[#a28e3b]/20 pr-1 space-y-1.5 text-xs select-text">
               {chatMessages.length === 0 ? (
                 <div className="text-[#a28e3b]/40 text-center py-6 text-[10px] italic">
-                  SINAL ESTÁVEL. NENHUMA MENSAGEM ENVIADA.
+                  {t("hud.noMessages")}
                 </div>
               ) : (
                 chatMessages.map((m) => (
@@ -326,7 +326,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
                 maxLength={45}
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
-                placeholder="Enviar mensagem para o grupo..."
+                placeholder={t("hud.chatPlaceholder")}
                 className="flex-1 bg-[#12110a] border border-[#a28e3b]/30 text-xs px-2.5 py-1.5 rounded outline-none text-[#deb81d] focus:border-[#deb81d]"
               />
               <button
@@ -352,24 +352,16 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
 
       {/* 3. BOTTOM PANEL HUD (STAMINA + DISCONNECT + FLASHLIGHT) */}
       <div className="flex justify-between items-end pointer-events-auto">
-        {/* Escape disconnect trigger */}
-        <div>
-          <button
-            onClick={onDisconnect}
-            id="btn-hud-leave"
-            className="flex items-center gap-2 bg-[#1c0808]/75 pointer-events-auto hover:bg-red-950/90 text-red-400 hover:text-red-300 border border-red-950 px-4 py-2 text-xs uppercase tracking-widest rounded transition-all cursor-pointer shadow-md"
-          >
-            Abortar Infiltração
-          </button>
-        </div>
+        {/* ("Abort infiltration" lives in the pause menu now.) */}
+        <div />
 
         {/* Diagnostic widgets */}
         <div className="flex flex-col gap-1 text-[10px] text-[#a28e3b]/40 select-none">
           <div className="flex items-center gap-1.5 justify-end">
             <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse inline-block" />
-            VHF TRANSMISSÃO ATIVA
+            {t("hud.vhfActive")}
           </div>
-          <div>BATERIA EQUIP: 86% // CAMERA AUTO</div>
+          <div>{t("hud.battery")}</div>
         </div>
 
         {/* Dynamic HUD components */}
@@ -380,7 +372,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
             <div className={`p-2 rounded-full border transition-all ${isFlashlightOn ? "bg-[#deb81d]/10 border-[#deb81d] text-[#deb81d]" : "bg-black/30 border-gray-800 text-gray-700"}`}>
               <Flashlight className={`w-4 h-4 ${isFlashlightOn ? "animate-pulse" : ""}`} />
             </div>
-            <span className="text-[8px] uppercase tracking-wider font-extrabold">LANTERNA [F]</span>
+            <span className="text-[8px] uppercase tracking-wider font-extrabold">{t("hud.flashlight")}</span>
           </div>
 
           <div className="h-8 w-[1px] bg-[#a28e3b]/20" />
@@ -388,7 +380,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
           {/* Stamina bar */}
           <div className="flex-1 flex flex-col gap-1.5 justify-center">
             <div className="flex justify-between text-[10px] font-bold tracking-widest uppercase">
-              <span className="text-[#a28e3b]">STAMINA:</span>
+              <span className="text-[#a28e3b]">{t("hud.stamina")}</span>
               <span className={isStaminaLow ? "text-red-500 font-black animate-pulse" : "text-[#deb81d]"}>
                 {Math.round(stamina * 100)}%
               </span>
@@ -405,7 +397,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
             {isStaminaLow && (
               <div className="text-[8px] text-red-500 font-extrabold flex items-center gap-1 mt-0.5">
                 <ShieldAlert className="w-3 h-3 animate-ping" />
-                EXAUSTÃO IMINENTE!
+                {t("hud.exhaustion")}
               </div>
             )}
           </div>
@@ -415,7 +407,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
           {/* Sanity bar */}
           <div className="flex-1 flex flex-col gap-1.5 justify-center">
             <div className="flex justify-between text-[10px] font-bold tracking-widest uppercase">
-              <span className="text-[#a28e3b]">SANIDADE:</span>
+              <span className="text-[#a28e3b]">{t("hud.sanity")}</span>
               <span className={isSanityLow ? "text-red-500 font-black animate-pulse" : "text-[#deb81d]"}>
                 {Math.round(sanity * 100)}%
               </span>
@@ -432,7 +424,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
             {isSanityLow && (
               <div className="text-[8px] text-red-500 font-extrabold flex items-center gap-1 mt-0.5">
                 <ShieldAlert className="w-3 h-3 animate-bounce" />
-                DANO MENTAL SEVERO!
+                {t("hud.mentalDamage")}
               </div>
             )}
           </div>

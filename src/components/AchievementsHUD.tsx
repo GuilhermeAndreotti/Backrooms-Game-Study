@@ -8,6 +8,7 @@ import { X, Trophy, Compass, Sparkles, Activity, Key, Skull, FileText, Lock, Unl
 import { motion } from "motion/react";
 import { Achievement } from "../types/achievements";
 import { loadAchievements } from "../utils/achievements";
+import { t, useLanguage } from "../i18n";
 
 interface AchievementsHUDProps {
   isOpen: boolean;
@@ -15,13 +16,14 @@ interface AchievementsHUDProps {
 }
 
 export const AchievementsHUD: React.FC<AchievementsHUDProps> = ({ isOpen, onClose }) => {
+  const [lang] = useLanguage();
   const [achievements, setAchievements] = useState<Achievement[]>([]);
 
   useEffect(() => {
     if (isOpen) {
       setAchievements(loadAchievements());
     }
-  }, [isOpen]);
+  }, [isOpen, lang]);
 
   if (!isOpen) return null;
 
@@ -60,10 +62,10 @@ export const AchievementsHUD: React.FC<AchievementsHUDProps> = ({ isOpen, onClos
             <Trophy className="w-6 h-6 text-[#deb81d] animate-bounce" />
             <div>
               <h2 className="text-sm font-black uppercase tracking-widest text-[#deb81d]">
-                Menu de Conquistas
+                {t("ach.menuTitle")}
               </h2>
               <p className="text-[9px] text-[#a28e3b]/60 uppercase tracking-wide">
-                Seu progresso de sobrevivência nas fendas
+                {t("ach.subtitle")}
               </p>
             </div>
           </div>
@@ -119,7 +121,7 @@ export const AchievementsHUD: React.FC<AchievementsHUDProps> = ({ isOpen, onClos
                   </h3>
                   {ach.unlocked && ach.unlockedAt && (
                     <span className="text-[8px] text-zinc-500 uppercase font-semibold">
-                      Desbloqueado: {ach.unlockedAt}
+                      {t("ach.unlockedAt", { date: ach.unlockedAt })}
                     </span>
                   )}
                 </div>
@@ -133,7 +135,7 @@ export const AchievementsHUD: React.FC<AchievementsHUDProps> = ({ isOpen, onClos
 
         {/* Footer info instructions */}
         <div className="p-4 border-t border-[#deb81d]/15 bg-black/40 text-center text-[10px] text-[#a28e3b]/50">
-          <span>TECLA [K] OU CLIQUE NO X PARA FECHAR</span>
+          <span>{t("ach.close")}</span>
         </div>
       </motion.div>
     </div>

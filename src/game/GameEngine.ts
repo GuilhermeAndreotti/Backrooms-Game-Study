@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { Lobby, LOBBY_LEVEL, BallNetState } from "./Lobby";
+import { t } from "../i18n";
 import * as THREE from "three";
 import { ProceduralMap, LEVEL_G_DOOR_OPEN_ANGLE } from "./ProceduralMap";
 import { PlayerController, PLAYER_STANDING_HEIGHT, PLAYER_CROUCH_HEIGHT } from "./PlayerController";
@@ -32,7 +34,7 @@ export interface GameEngineCallbacks {
   /** Fired once, when the player reaches the end of Level 1's secret dark corridor. */
   /** A secret entrance was reached: 3 = Level 6 "Lights Out" (from Level 1), 4 = Level G (from Level 0). */
   onSecretLevelFound?: (level: number) => void;
-  /** Context hint for the crosshair area, e.g. "[E] Empurrar caixa"; null clears it. */
+  /** Context hint for the crosshair area, e.g. t("act.pushBox"); null clears it. */
   onInteractPrompt?: (text: string | null) => void;
   /** Level G: digits found so far (null = missing) and whether the final alarm is on. */
   onLevelGProgress?: (progress: LevelGProgress) => void;
@@ -56,6 +58,8 @@ const SANITY_DRAIN_SCALE = 0.6;
 /** Ambient light and fog per level, shared by level setup and the per-frame event code. */
 function levelAtmosphere(level: number) {
   switch (level) {
+    case LOBBY_LEVEL: // room lobby: bright and calm
+      return { ambientColor: 0xf1ead0, ambientIntensity: 1.5, fogColor: 0xd8d2b4, dimmedFogColor: 0x6a664f };
     case 4: // Level G: dim, cold office under failing tubes
       return { ambientColor: 0x9aa4ad, ambientIntensity: 0.5, fogColor: 0x23272a, dimmedFogColor: 0x0b0c0d };
     case 3: // "Lights Out": all but pitch black — the waypoints and your flashlight are it
@@ -76,9 +80,9 @@ export interface LevelGProgress {
 
 /** What each Level G document says; `d` is the digit it gives away. */
 const LEVEL_G_DOCUMENTS = [
-  (d: number) => `MEMORANDO INTERNO: "Primeiro dígito do terminal: ${d}. Não deixe ele ver você anotando."`,
-  (d: number) => `FICHA DO ARQUIVO: "Segundo dígito: ${d}. Os dedos batem na parede antes de ele chegar."`,
-  (d: number) => `RELATÓRIO DE TURNO: "Último dígito: ${d}. Saia pela porta vermelha. Não olhe para trás."`,
+  (d: number) => t("eng.doc1", { d }),
+  (d: number) => t("eng.doc2", { d }),
+  (d: number) => t("eng.doc3", { d }),
 ];
 
 /** Eye height below which an explorer counts as crouched (floor at 0, as on Level G). */
@@ -500,7 +504,7 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === 4 ? 0.06 : level === 3 ? 0.11 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
+    const authored = level === LOBBY_LEVEL ? 0.008 : level === 4 ? 0.06 : level === 3 ? 0.11 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
@@ -525,8 +529,8 @@ export class GameEngine {
     this.lightPool = new LightPool(this.scene, this.quality.lightBudget, this.quality.lightRange);
 
     // Pre-create/load the entire proximity map meshes before placing/spawning the player
-    const spawnX = 2 * this.map.cellSize + this.map.cellSize / 2;
-    const spawnZ = 2 * this.map.cellSize + this.map.cellSize / 2;
+    const spawnX = this.map.spawnGridX * this.map.cellSize + this.map.cellSize / 2;
+    const spawnZ = this.map.spawnGridZ * this.map.cellSize + this.map.cellSize / 2;
     this.map.performProximityCulling(this.scene, spawnX, spawnZ, true);
 
     // Local Footstep triggers
@@ -539,6 +543,7 @@ export class GameEngine {
     this.player = new PlayerController(this.camera, this.renderer.domElement, this.map, triggerAudioFootstep);
     this.player.setMouseSensitivity(settings.mouseSensitivity);
     this.player.spawnSafely();
+    this.setupLobby();
 
     // Spotlight representing local F key Flashlight
     this.flashlight = new THREE.SpotLight(0xfffaec, 2.8, 16, Math.PI / 5, 0.45, 1.0);
@@ -684,6 +689,7 @@ export class GameEngine {
       // Tick player controllers
       if (this.isDead) this.updateSpectator(delta);
       else this.player.update(delta);
+      this.updateLobby(delta);
       this.updateInteractPrompt(delta);
 
 
@@ -752,17 +758,17 @@ export class GameEngine {
           let sec: string;
           if (this.level === 4) {
             const s = this.map.levelGSectorOf(gx, gz);
-            sec = s === 1 ? "Setor 1 // Recepção"
-              : s === 2 ? "Setor 2 // Arquivo"
-              : s === 3 ? "Setor 3 // Sala Principal"
+            sec = s === 1 ? t("sector.g1")
+              : s === 2 ? t("sector.g2")
+              : s === 3 ? t("sector.g3")
               : this.currentSector; // corridors between sectors: keep the last one
           } else {
             const s = this.getCurrentSector(gx, gz);
             sec = s === 1
-              ? "Setor 1 // Corredores Baixos"
+              ? t("sector.1")
               : s === 2
-                ? "Setor 2 // Passarelas Superiores"
-                : "Setor 3 // Salão dos Sorridentes";
+                ? t("sector.2")
+                : t("sector.3");
           }
 
           if (sec && sec !== this.currentSector) {
@@ -772,7 +778,7 @@ export class GameEngine {
               this.onSectorChange(sec);
             }
             if (oldSector && this.onHUDNotification) {
-              this.onHUDNotification(`ENTERING ${sec.toUpperCase()}`);
+              this.onHUDNotification(t("eng.entering", { name: sec.toUpperCase() }));
             }
           }
         }
@@ -794,7 +800,7 @@ export class GameEngine {
               if (item.type === "almond_water") {
                 this.inventory.push("almond_water");
                 if (this.onHUDNotification) {
-                  this.onHUDNotification("ALMOND WATER COLLECTED: Added to Inventory");
+                  this.onHUDNotification(t("eng.almond"));
                 }
                 if (this.onInventoryChange) {
                   this.onInventoryChange([...this.inventory]);
@@ -803,12 +809,12 @@ export class GameEngine {
                 this.player.stamina = Math.min(this.player.maxStamina, this.player.stamina + 0.25);
                 this.sanity = Math.min(1.0, this.sanity + 0.15);
                 if (this.onHUDNotification) {
-                  this.onHUDNotification("ENERGY BAR COLLECTED: +25% Stamina, +15% Sanity");
+                  this.onHUDNotification(t("eng.energy"));
                 }
               } else if (item.type === "old_photo") {
                 this.inventory.push("old_photo");
                 if (this.onHUDNotification) {
-                  this.onHUDNotification("OLD PHOTO COLLECTED: Faded Memory added to Inventory");
+                  this.onHUDNotification(t("eng.photo"));
                 }
                 unlockAchievement("collector_extraordinary");
                 if (this.onInventoryChange) {
@@ -817,7 +823,7 @@ export class GameEngine {
               } else if (item.type === "rusty_key") {
                 this.inventory.push("rusty_key");
                 if (this.onHUDNotification) {
-                  this.onHUDNotification("RUSTY KEY COLLECTED: Heavy Iron Key added to Inventory");
+                  this.onHUDNotification(t("eng.key"));
                 }
                 unlockAchievement("key_finder");
                 if (this.onInventoryChange) {
@@ -826,7 +832,7 @@ export class GameEngine {
               } else if (item.type === "cassette_tape") {
                 this.inventory.push("cassette_tape");
                 if (this.onHUDNotification) {
-                  this.onHUDNotification("CASSETTE TAPE COLLECTED: Fita Gravada adicionada ao Inventário");
+                  this.onHUDNotification(t("eng.tape"));
                 }
                 unlockAchievement("collector_extraordinary");
                 if (this.onInventoryChange) {
@@ -835,7 +841,7 @@ export class GameEngine {
               } else if (item.type === "strange_crystal") {
                 this.inventory.push("strange_crystal");
                 if (this.onHUDNotification) {
-                  this.onHUDNotification("STRANGE CRYSTAL COLLECTED: Cristal Luminescente no Inventário");
+                  this.onHUDNotification(t("eng.crystal"));
                 }
                 unlockAchievement("collector_extraordinary");
                 if (this.onInventoryChange) {
@@ -846,7 +852,7 @@ export class GameEngine {
                 this.player.stamina = Math.max(0.05, this.player.stamina - 0.15);
                 this.sanity = Math.max(0.0, this.sanity - 0.12);
                 if (this.onHUDNotification) {
-                  this.onHUDNotification("DOR LÍQUIDA COLETADA: Queimação severa! Stamina -15%, Sanidade -12%");
+                  this.onHUDNotification(t("eng.pain"));
                 }
                 unlockAchievement("pain_survivor");
                 if (this.onInventoryChange) {
@@ -855,7 +861,7 @@ export class GameEngine {
               } else if (item.type === "diary_page") {
                 this.inventory.push("diary_page");
                 if (this.onHUDNotification) {
-                  this.onHUDNotification("DIARY PAGE COLLECTED: Notas de Explorador no Inventário");
+                  this.onHUDNotification(t("eng.diary"));
                 }
                 unlockAchievement("collector_extraordinary");
                 if (this.onInventoryChange) {
@@ -867,12 +873,12 @@ export class GameEngine {
                 this.levelGDigits[i] = digit;
                 const found = this.levelGDigits.filter((d) => d !== null).length;
                 if (this.onHUDNotification) {
-                  this.onHUDNotification(`DOCUMENTO ${found}/3 — ${LEVEL_G_DOCUMENTS[i](digit)}`);
+                  this.onHUDNotification(t("eng.doc", { n: found, text: LEVEL_G_DOCUMENTS[i](digit) }));
                 }
                 this.emitLevelGProgress();
               } else if (item.type === "scrap_of_note") {
                 if (this.onHUDNotification) {
-                  this.onHUDNotification("SCRAP OF NOTE COLLECTED: Fragmento de Relatório Encontrado!");
+                  this.onHUDNotification(t("eng.scrap"));
                 }
                 if (this.onScrapOfNoteCollected) {
                   const noteSeed = Math.floor(Math.abs(item.x * 313 + item.z * 719) % 100000) || Math.floor(Math.random() * 100000);
@@ -989,7 +995,7 @@ export class GameEngine {
         // 3. Darkness check
         let darknessDepletion = 0;
         const isFlashlightOn = this.player.isFlashlightOn;
-        if (!isFlashlightOn) {
+        if (!isFlashlightOn && this.level !== LOBBY_LEVEL) {
           if (this.map.globalEventState === "blackout") {
             darknessDepletion = 0.014; // completed blackout is terrifying (retuned ~3x slower)
           } else if (this.level === 3) {
@@ -1080,7 +1086,7 @@ export class GameEngine {
 
       // Flickering fluorescent tubes ticks. Only the level's authority rolls
       // blackouts/flicker storms; it broadcasts each one as it starts.
-      this.map.rollGlobalEvents = this.isWorldAuthority;
+      this.map.rollGlobalEvents = this.isWorldAuthority && this.level !== LOBBY_LEVEL;
       const eventBefore = this.map.globalEventState;
       this.map.updateLights(
         delta,
@@ -1435,6 +1441,70 @@ export class GameEngine {
   /** Dead explorers spectate a living teammate (first-person) until the room revives everyone. */
   public isDead = false;
   private noclipDwell = 0;
+
+  // ---------------------------------------------------------------------------
+  // Room lobby (soccer field + trampoline)
+  // ---------------------------------------------------------------------------
+
+  private lobby: Lobby | null = null;
+  private lobbySendTimer = 0;
+  private lastBounceCount = 0;
+
+  /** (Re)builds the lobby props when the current level is the lobby; tears them down otherwise. */
+  private setupLobby() {
+    if (this.lobby) { this.lobby.dispose(this.scene); this.lobby = null; }
+    if (this.level === LOBBY_LEVEL) {
+      this.lobby = new Lobby(this.scene);
+      this.lastBounceCount = this.player?.bounceCount ?? 0;
+    }
+  }
+
+  private updateLobby(delta: number) {
+    if (!this.lobby || !this.player) return;
+    const authority = this.isWorldAuthority;
+    this.lobby.update(delta, {
+      authority,
+      px: this.player.position.x, pz: this.player.position.z,
+      pvx: this.player.velX, pvz: this.player.velZ,
+      onKick: (vx, vz) => {
+        if (!authority) this.sendToServer({ type: "ball_kick", level: this.level, vx, vz });
+      },
+      onGoal: () => {
+        this.onHUDNotification?.(t("lobby.goal"));
+        this.audio.playGlitchNoclipSound();
+      },
+    });
+
+    if (this.player.bounceCount !== this.lastBounceCount) {
+      this.lastBounceCount = this.player.bounceCount;
+      this.lobby.squashPad();
+      this.audio.playBoxPush();
+    }
+
+    // The ball's authority streams it to everyone else in the lobby.
+    if (authority && this.remoteStates.size > 0) {
+      this.lobbySendTimer += delta;
+      if (this.lobbySendTimer >= 1 / 15) {
+        this.lobbySendTimer = 0;
+        this.sendToServer({ type: "ball", level: this.level, ...this.lobby.getState() });
+      }
+    }
+  }
+
+  /** Ball frame from the lobby's authority. */
+  public applyBallState(msg: BallNetState & { level: number }) {
+    if (!this.lobby || msg.level !== this.level || this.isWorldAuthority) return;
+    if (this.lobby.applyState(msg) > 0) {
+      this.onHUDNotification?.(t("lobby.goal"));
+      this.audio.playGlitchNoclipSound();
+    }
+  }
+
+  /** A teammate kicked the ball (forwarded to the authority, which owns the simulation). */
+  public applyBallKick(msg: { level: number; vx: number; vz: number }) {
+    if (!this.lobby || msg.level !== this.level || !this.isWorldAuthority) return;
+    this.lobby.applyKick(msg.vx, msg.vz);
+  }
   private spectateId: string | null = null;
   private remoteDead = new Set<string>();
 
@@ -1905,8 +1975,8 @@ export class GameEngine {
     this.lightPool.invalidate();
     
     // Pre-create/load the entire proximity map meshes before placing/spawning the player
-    const spawnX = 2 * this.map.cellSize + this.map.cellSize / 2;
-    const spawnZ = 2 * this.map.cellSize + this.map.cellSize / 2;
+    const spawnX = this.map.spawnGridX * this.map.cellSize + this.map.cellSize / 2;
+    const spawnZ = this.map.spawnGridZ * this.map.cellSize + this.map.cellSize / 2;
     this.map.performProximityCulling(this.scene, spawnX, spawnZ, true);
 
     // 5. Update audio settings with new level selection to change background ambient hums/gains
@@ -1922,6 +1992,7 @@ export class GameEngine {
     this.player.spawnSafely();
     this.player.mapFullyLoaded = false; // start with map loading animation!
     this.revive();
+    this.setupLobby();
 
     // Reset total play time for the new layout
     this.totalPlayTime = 0;
@@ -1944,7 +2015,7 @@ export class GameEngine {
     this.resetLevelG();
     if (level === 4) {
       this.spawnLevelGEntities();
-      this.onHUDNotification?.("LEVEL G. Um escritório pequeno demais. Encontre os 3 documentos... e ouça os dedos.");
+      this.onHUDNotification?.(t("eng.levelG"));
     }
 
     // Spawn multiple chasing entities on Level 2 (Pipe Dreams)
@@ -2137,8 +2208,8 @@ export class GameEngine {
     this.localHideSeconds = localIn ? this.localHideSeconds + delta : 0;
     const nextState = !localIn ? "out" : this.localHideSeconds < this.levelGHideLimit ? "hidden" : "found";
     if (nextState !== this.localHideState) {
-      if (nextState === "hidden") this.onHUDNotification?.("ESCONDIDO. Fique abaixado e em silêncio...");
-      if (nextState === "found") this.onHUDNotification?.("ELE SABE ONDE VOCÊ ESTÁ. SAIA DAÍ.");
+      if (nextState === "hidden") this.onHUDNotification?.(t("eng.hidden"));
+      if (nextState === "found") this.onHUDNotification?.(t("eng.found"));
       this.localHideState = nextState;
     }
 
@@ -2193,7 +2264,7 @@ export class GameEngine {
     // --- Prompt when walking up to the terminal
     const atTerminal = this.tryInteract() === "terminal";
     if (atTerminal && !this.nearTerminal && !this.levelGAlarm) {
-      this.onHUDNotification?.("Um computador antigo ainda ligado. Pressione [E] para usar.");
+      this.onHUDNotification?.(t("eng.computer"));
     }
     this.nearTerminal = atTerminal;
 
@@ -2261,7 +2332,7 @@ export class GameEngine {
 
     const dest = this.map.pushMovable(m, px, pz, this.scene);
     if (!dest) {
-      this.onHUDNotification?.("Não há espaço para empurrar a caixa.");
+      this.onHUDNotification?.(t("eng.noRoom"));
       return true;
     }
     this.audio.playBoxPush();
@@ -2286,7 +2357,7 @@ export class GameEngine {
     if (this.map && this.player && this.player.mapFullyLoaded && (this.player.isLocked || this.player.isOverrideActive)) {
       const [fx, fz] = this.lookDirectionXZ();
       if (this.nearExitDesk()) {
-        text = "[E] Ler o papel da mesa";
+        text = t("act.readPaper");
       } else if (this.map.findPushable(this.player.position.x, this.player.position.z, fx, fz)) {
         text = "[E] Empurrar caixa";
       }
@@ -2333,7 +2404,7 @@ export class GameEngine {
     if (ok) {
       this.startLevelGAlarm(true);
     } else {
-      this.onHUDNotification?.("ACESSO NEGADO. Algo ouviu o terminal...");
+      this.onHUDNotification?.(t("eng.denied"));
       if (this.isWorldAuthority) this.levelGAlertTimer = 10;
       else this.sendToServer({ type: "levelg_code", ok: false });
     }
@@ -2358,7 +2429,7 @@ export class GameEngine {
     this.map.emergencyDoorOpen = true;
     this.map.startGlobalEvent("flicker_storm", 1e6);
     this.audio.startAlarm();
-    this.onHUDNotification?.("ALARME! A PORTA DE EMERGÊNCIA DESTRAVOU. CORRA!");
+    this.onHUDNotification?.(t("eng.alarm"));
     this.emitLevelGProgress();
 
     if (this.isWorldAuthority) {
@@ -2471,7 +2542,7 @@ export class GameEngine {
         entity.netId = s.id;
         this.entities.push(entity);
         if (this.level === 3 && this.onHUDNotification) {
-          this.onHUDNotification("A luz atraiu algo na escuridão...");
+          this.onHUDNotification(t("eng.lightAttract"));
         }
       }
       entity.applyNetState(s);
@@ -2736,7 +2807,7 @@ export class GameEngine {
     entity.netId = this.nextEntityNetId++;
     this.entities.push(entity);
     if (this.onHUDNotification) {
-      this.onHUDNotification("A luz atraiu algo na escuridão...");
+      this.onHUDNotification(t("eng.lightAttract"));
     }
   }
 
@@ -2842,7 +2913,7 @@ export class GameEngine {
       }
       
       if (this.onHUDNotification) {
-        this.onHUDNotification("ALMOND WATER CONSUMED: +20% Sanity, +15% Stamina");
+        this.onHUDNotification(t("eng.almondUsed"));
       }
 
       unlockAchievement("restored_mind");
@@ -2873,6 +2944,7 @@ export class GameEngine {
 
     this.entities.forEach(entity => entity.returnToPool(this.scene));
     this.entities = [];
+    if (this.lobby) { this.lobby.dispose(this.scene); this.lobby = null; }
 
     window.removeEventListener("resize", this.handleResize);
     

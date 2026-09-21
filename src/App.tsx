@@ -15,6 +15,7 @@ import { addAchievementListener, removeAchievementListener, unlockAchievement } 
 import { isTypingInField, lockGameInput } from "./utils/input";
 import { EMPTY_FACE } from "./utils/face";
 import { BackroomsLore, generateProceduralLore } from "./utils/lore";
+import { t, useLanguage, localeTag } from "./i18n";
 import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, X, FileText, Compass, Skull } from "lucide-react";
 
 const SETTINGS_STORAGE_KEY = "backrooms_lvl0_settings";
@@ -46,17 +47,21 @@ const defaultSettings: GameSettings = {
  */
 const ROSTER_REFRESH_MS = 250;
 
-/**
- * Lobby identifier. The game is now served from a single host, so the old
- * "IP + port" pair only ever acted as a room name — this normalises it into one.
- */
-function roomKeyFor(settings: GameSettings): string {
-  const raw = (settings.ipAddress || "").trim().toLowerCase();
-  const cleaned = raw.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
-  return cleaned || "sala-principal";
+/** Room code from an invite link path (yoursite/AB4D3X), or "". */
+function roomCodeFromUrl(): string {
+  const m = window.location.pathname.match(/^\/([A-Za-z0-9]{4,12})\/?$/);
+  return m ? m[1].toUpperCase() : "";
+}
+
+/** How to enter the relay: make a new room, or join one by its invite code. */
+type JoinRequest = { create: true } | { code: string };
+
+function inviteLink(code: string): string {
+  return `${window.location.origin}/${code}`;
 }
 
 export default function App() {
+  useLanguage(); // re-render everything when the language changes
   const [settings, setSettings] = useState<GameSettings>(defaultSettings);
   const [phase, setPhase] = useState<ConnectionPhase>(ConnectionPhase.MENU);
   const [errorMessage, setErrorMessage] = useState("");
@@ -67,6 +72,13 @@ export default function App() {
   const [sanity, setSanity] = useState(1.0);
   // Death: a dead explorer spectates a living teammate; when everyone is dead
   // the group picks how the room starts over.
+  // Room: invite code, who hosts (starts the expedition from the lobby)
+  const [roomCode, setRoomCode] = useState("");
+  const [hostId, setHostId] = useState("");
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [inviteCode] = useState(() => roomCodeFromUrl());
+  const lastJoinRef = useRef<JoinRequest>({ create: true });
+  const hostIdRef = useRef("");
   const [isDead, setIsDead] = useState(false);
   const [spectateName, setSpectateName] = useState<string | null>(null);
   const [allDead, setAllDead] = useState(false);
@@ -228,6 +240,12 @@ export default function App() {
       // Typing a chat message: "i"/"k" should land in the message, not pop
       // open the inventory/achievements panels over it.
       if (isTypingInField()) return;
+      // Lobby: the host starts the expedition.
+      if (e.key === "Enter" && !e.repeat && engineRef.current?.level === 5 && clientIdRef.current && clientIdRef.current === hostIdRef.current) {
+        e.preventDefault();
+        socketRef.current?.send(JSON.stringify({ type: "start_game" }));
+        return;
+      }
       // Spectating: arrows flip between the teammates still alive.
       if (engineRef.current?.isDead && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         e.preventDefault();
@@ -258,7 +276,7 @@ export default function App() {
         if (note) {
           setActiveLoreNote({
             title: note.title,
-            author: "Desconhecido",
+            author: t("note.paperAuthor"),
             date: "—",
             location: `Level ${engineRef.current.level}`,
             content: note.content,
@@ -303,8 +321,32 @@ export default function App() {
     return () => document.removeEventListener("pointerlockchange", handleLock);
   }, [phase]);
 
+  // Back on the menu: forget the room and take its code out of the address bar.
+  useEffect(() => {
+    if (phase === ConnectionPhase.MENU) {
+      setRoomCode("");
+      setHostId("");
+      try { window.history.replaceState(null, "", "/"); } catch { /* not critical */ }
+    }
+  }, [phase]);
+
+  const copyInviteLink = () => {
+    if (!roomCode) return;
+    const link = inviteLink(roomCode);
+    const done = () => {
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    };
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(link).then(done, done);
+    else done();
+  };
+
+  hostIdRef.current = hostId;
+  const isHost = !!clientId && clientId === hostId;
+
   // 2. Network connection setup
-  const connectToLobby = (forceSeed?: number) => {
+  const connectToLobby = (req: JoinRequest = { create: true }, forceSeed?: number) => {
+    lastJoinRef.current = req;
     setPhase(ConnectionPhase.CONNECTING);
     setErrorMessage("");
     setChatMessages([]);
@@ -329,7 +371,7 @@ export default function App() {
         console.log("WebSocket open. Requesting lobby infiltration...");
         socket.send(JSON.stringify({
           type: "join",
-          room: roomKeyFor(settings),
+          ...("create" in req ? { create: true } : { room: req.code }),
           name: settings.name,
           suitColor: settings.suitColor,
           face: settings.face,
@@ -356,14 +398,20 @@ export default function App() {
             if (typeof data.t === "number") setLatency(Date.now() - data.t);
           }
 
+          else if (type === "room_not_found") {
+            setErrorMessage(t("err.notFound"));
+            setPhase(ConnectionPhase.ERROR);
+            socket.close();
+          }
+
           else if (type === "room_full") {
-            setErrorMessage(data.error || "A sala de infiltração selecionada atingiu o limite de 4 exploradores.");
+            setErrorMessage(data.reason === "server" ? t("err.serverFull") : t("err.roomCap", { n: data.capacity ?? 4 }));
             setPhase(ConnectionPhase.ERROR);
             socket.close();
           }
 
           else if (type === "joined") {
-            const { id: myId, seed, players: currentOn, level: roomLevel = 0, authority = {} } = data;
+            const { id: myId, seed, players: currentOn, level: roomLevel = 0, authority = {}, code: joinedCode = "", hostId: joinedHost = "" } = data;
             worldAuthorityRef.current = authority;
             console.log(`Infiltration confirmed! Seed acquired: ${seed}. Connecting visuals...`);
             setClientId(myId);
@@ -376,6 +424,9 @@ export default function App() {
             playersRef.current = currentOn;
             setConnectedPlayers(currentOn);
             setCurrentSeed(seed);
+            setRoomCode(joinedCode);
+            setHostId(joinedHost);
+            try { window.history.replaceState(null, "", `/${joinedCode}`); } catch { /* not critical */ }
             setPhase(ConnectionPhase.PLAYING);
 
             // Progressive map loader ("Só deixe jogar quando o mapa carregar completamente")
@@ -506,14 +557,12 @@ export default function App() {
                       // Same clue on every note this seed, appended to the body
                       // (never the title, so the dedupe-by-title below still works).
                       if (doorMarker) {
-                        lore.content += `\n\n"Rabiscado na margem: das duas passagens no fim do labirinto, a certa é a que tem uma mesa com um papel. A outra só leva de volta ao vermelho."`;
+                        lore.content += `\n\n${t("note.margin")}`;
                       }
                       setCollectedNotes((prev) => {
                         if (prev.some((n) => n.title === lore.title)) return prev;
                         return [...prev, lore];
                       });
-                      setActiveLoreNote(lore);
-                      document.exitPointerLock?.();
                     },
                   }
                 );
@@ -563,7 +612,7 @@ export default function App() {
                 });
               } catch (err) {
                 console.error("Critical crash during game initialization:", err);
-                setErrorMessage("Falha de alocação no motor gráfico 3D.");
+                setErrorMessage(t("err.engine"));
                 setPhase(ConnectionPhase.ERROR);
               }
             }, 50);
@@ -579,12 +628,10 @@ export default function App() {
             // A respawn (whole room died, group chose a reset) may repeat or
             // go back to an earlier level; a plain transition only moves forward.
             const forced = type === "respawn";
-            if (!engine || typeof nextLevel !== "number" || (!forced && nextLevel <= engine.level)) return;
+            if (!engine || typeof nextLevel !== "number" || (!forced && !data.start && nextLevel <= engine.level)) return;
 
             if (forced) {
-              logSystemMessage(data.scratch
-                ? "[GRUPO REINICIADO]: TODOS VOLTAM AO LEVEL 0."
-                : `[GRUPO REINICIADO]: TODOS RENASCEM NO LEVEL ${nextLevel}.`);
+              logSystemMessage(data.toLobby ? t("sys.resetLobby") : data.scratch ? t("sys.resetScratch") : t("sys.resetLevel", { n: nextLevel }));
             } else {
               console.log(`Group noclipped into Level ${nextLevel}!`);
               if (nextLevel === 1) unlockAchievement("noclip_master");
@@ -594,7 +641,7 @@ export default function App() {
             setIsDead(false);
             setAllDead(false);
             setSpectateName(null);
-            if (forced && data.scratch) {
+            if (forced && (data.scratch || data.toLobby)) {
               setInventory([]);
               engine.inventory = [];
             }
@@ -627,13 +674,25 @@ export default function App() {
             });
           }
 
+          else if (type === "host") {
+            setHostId(data.id);
+          }
+
+          else if (type === "ball") {
+            engineRef.current?.applyBallState(data);
+          }
+
+          else if (type === "ball_kick") {
+            engineRef.current?.applyBallKick(data);
+          }
+
           else if (type === "player_died") {
             const { id: deadId } = data;
             const who = playersRef.current.find((p) => p.id === deadId);
             if (who) who.dead = true;
             engineRef.current?.setRemoteDead(deadId, true);
             if (deadId !== clientIdRef.current) {
-              logSystemMessage(`[SINAL DE EXPEDIÇÃO PERDIDO]: ${(who?.name ?? "UM EXPLORADOR").toUpperCase()} SUCUMBIU.`);
+              logSystemMessage(t("sys.died", { name: (who?.name ?? t("sys.someone")).toUpperCase() }));
             }
             touchRoster();
           }
@@ -656,7 +715,7 @@ export default function App() {
             }
 
             // Standard terminal join announcement message
-            logSystemMessage(`[SINAL DE EXPEDIÇÃO DETECTADO]: ${player.name.toUpperCase()} REUNIU-SE AO GRUPO.`);
+            logSystemMessage(t("sys.joined", { name: player.name.toUpperCase() }));
           }
 
           else if (type === "players_snapshot") {
@@ -688,7 +747,7 @@ export default function App() {
             const { id: leftId } = data;
             const departing = playersRef.current.find((p) => p.id === leftId);
             if (departing) {
-              logSystemMessage(`[SINAL DE EXPEDIÇÃO PERDIDO]: ${departing.name.toUpperCase()} DESCONECTOU-SE DESTE SETOR.`);
+              logSystemMessage(t("sys.left", { name: departing.name.toUpperCase() }));
             }
             playersRef.current = playersRef.current.filter((p) => p.id !== leftId);
             touchRoster();
@@ -726,7 +785,7 @@ export default function App() {
 
           else if (type === "chat_message") {
             const { sender, text } = data;
-            const timeStr = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+            const timeStr = new Date().toLocaleTimeString(localeTag(), { hour: "2-digit", minute: "2-digit" });
             setChatMessages((prev) => [
               ...prev,
               {
@@ -752,19 +811,19 @@ export default function App() {
         setLatency(undefined);
         // If we were active in game, transition back gracefully reporting connection issues
         if (phase === ConnectionPhase.PLAYING) {
-          disconnect(true, "A ligação com a fenda do Level 0 foi interrompida.");
+          disconnect(true, t("err.linkLost"));
         }
       };
 
       socket.onerror = (e) => {
         console.error("Networking Socket Error reported:", e);
-        setErrorMessage("Erro de requisição na fenda de rede. Verifique o servidor.");
+        setErrorMessage(t("err.request"));
         setPhase(ConnectionPhase.ERROR);
       };
 
     } catch (e) {
       console.error(e);
-      setErrorMessage("Não foi possível estabelecer contato com o servidor.");
+      setErrorMessage(t("err.noContact"));
       setPhase(ConnectionPhase.ERROR);
     }
   };
@@ -779,7 +838,7 @@ export default function App() {
   };
 
   const logSystemMessage = (text: string) => {
-    const timeStr = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    const timeStr = new Date().toLocaleTimeString(localeTag(), { hour: "2-digit", minute: "2-digit" });
     setChatMessages((prev) => [
       ...prev,
       {
@@ -816,7 +875,7 @@ export default function App() {
     setPointerLockedOverride(false);
     
     if (hasError) {
-      setErrorMessage(errorMsg || "Desconectado do servidor.");
+      setErrorMessage(errorMsg || t("err.disconnected"));
       setPhase(ConnectionPhase.ERROR);
     } else {
       setPhase(ConnectionPhase.MENU);
@@ -836,7 +895,9 @@ export default function App() {
         <MainMenu
           settings={settings}
           onUpdateSettings={handleUpdateSettings}
-          onPlay={connectToLobby}
+          onCreate={() => connectToLobby({ create: true })}
+          onJoin={(code) => connectToLobby({ code })}
+          initialCode={inviteCode}
           onCloseApp={handleCloseApp}
         />
       )}
@@ -849,13 +910,13 @@ export default function App() {
           <div className="max-w-md w-full border border-[#a28e3b]/30 bg-[#14130a] p-8 rounded text-center relative space-y-6 shadow-2xl">
             <Loader2 className="w-12 h-12 text-[#deb81d] animate-spin mx-auto" />
             <div className="space-y-2">
-              <h2 className="text-xl font-bold tracking-widest uppercase">CONECTANDO À FENDA...</h2>
+              <h2 className="text-xl font-bold tracking-widest uppercase">{t("connect.title")}</h2>
               <p className="text-xs text-[#a28e3b] uppercase leading-relaxed">
-                Estabilizando sinal de rádio e preparando geração do mapa do Level 0. Por favor, aguarde.
+                {t("connect.text")}
               </p>
             </div>
             <div className="text-[10px] bg-[#0b0a05] text-[#a28e3b]/70 border border-[#a28e3b]/10 py-2.5 rounded">
-              SALA: {roomKeyFor(settings)}
+              {roomCode ? `${t("hud.lobby").toUpperCase()} ${roomCode}` : ""}
             </div>
           </div>
         </div>
@@ -891,7 +952,7 @@ export default function App() {
                 <div className="flex items-center justify-between border-b border-[#a28e3b]/30 bg-[#0c0b05]/95 px-6 py-4">
                   <div className="flex items-center gap-3">
                     <div className="w-2.5 h-2.5 bg-red-600 rounded-full animate-ping" />
-                    <span className="font-extrabold text-sm tracking-widest uppercase">MENU DE PAUSA / TELEMETRIA</span>
+                    <span className="font-extrabold text-sm tracking-widest uppercase">{t("pause.title")}</span>
                   </div>
                   
                   {/* Tabs */}
@@ -904,7 +965,7 @@ export default function App() {
                           : "bg-black/40 text-[#a28e3b] border-transparent hover:border-[#a28e3b]/30"
                       }`}
                     >
-                      Controles
+                      {t("pause.tabControls")}
                     </button>
                     <button
                       onClick={() => setPauseMenuTab("diario")}
@@ -914,7 +975,7 @@ export default function App() {
                           : "bg-black/40 text-[#a28e3b] border-transparent hover:border-[#a28e3b]/30"
                       }`}
                     >
-                      Diário
+                      {t("pause.tabJournal")}
                       {collectedNotes.length > 0 && (
                         <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-extrabold ${
                           pauseMenuTab === "diario" ? "bg-black text-[#deb81d]" : "bg-[#deb81d] text-black"
@@ -934,10 +995,10 @@ export default function App() {
                       <div className="flex-1 text-center md:text-left space-y-4">
                         <div className="flex items-center justify-center md:justify-start gap-2 text-[#deb81d]">
                           <HelpCircle className="w-8 h-8 animate-pulse" />
-                          <h3 className="text-lg font-black uppercase tracking-wider">Controle Desfocado</h3>
+                          <h3 className="text-lg font-black uppercase tracking-wider">{t("pause.unfocused")}</h3>
                         </div>
                         <p className="text-xs text-[#a28e3b] uppercase leading-relaxed max-w-sm">
-                          O cursor foi liberado. Clique na tela para retornar à infiltração 3D ou ative o modo de compatibilidade para jogar diretamente.
+                          {t("pause.unfocusedText")}
                         </p>
                         
                         <div className="space-y-3">
@@ -951,26 +1012,26 @@ export default function App() {
                             }}
                             className="w-full md:w-auto bg-[#deb81d] hover:bg-[#ebd255] text-black font-extrabold uppercase tracking-wider py-3 px-6 rounded text-xs transition-all cursor-pointer shadow-lg hover:shadow-[#deb81d]/10"
                           >
-                            Ativar Jogabilidade Sem Trava
+                            {t("pause.noLock")}
                           </button>
                           <p className="text-[10px] text-[#a28e3b]/60 uppercase tracking-wider">
-                            (Arraste na tela para girar a câmera • WASD para mover)
+                            {t("pause.noLockHint")}
                           </p>
                         </div>
                       </div>
 
                       <div className="w-full md:w-[320px] text-xs text-left text-[#a28e3b]/85 bg-[#0b0a05] border border-[#a28e3b]/20 p-5 rounded space-y-2.5 shadow-inner">
                         <div className="font-extrabold border-b border-[#a28e3b]/25 pb-1.5 mb-2 text-[#deb81d] uppercase tracking-wider">
-                          Guia de Operações
+                          {t("pause.guide")}
                         </div>
-                        <div className="flex justify-between"><span>Mover Explorador</span><span className="text-[#deb81d] font-bold">W, A, S, D / Setas</span></div>
-                        <div className="flex justify-between"><span>Olhar ao Redor</span><span className="text-[#deb81d] font-bold">Mover Mouse</span></div>
-                        <div className="flex justify-between"><span>Correr</span><span className="text-[#deb81d] font-bold">L-SHIFT</span></div>
-                        <div className="flex justify-between"><span>Agachar</span><span className="text-[#deb81d] font-bold">CTRL / C</span></div>
-                        <div className="flex justify-between"><span>Lanterna</span><span className="text-[#deb81d] font-bold">F</span></div>
-                        <div className="flex justify-between"><span>Inventário</span><span className="text-[#deb81d] font-bold">I</span></div>
-                        <div className="flex justify-between"><span>Conquistas</span><span className="text-[#deb81d] font-bold">K</span></div>
-                        <div className="flex justify-between"><span>Liberar Mouse</span><span className="text-[#deb81d] font-bold">ESC</span></div>
+                        <div className="flex justify-between"><span>{t("controls.moveExplorer")}</span><span className="text-[#deb81d] font-bold">W, A, S, D / Setas</span></div>
+                        <div className="flex justify-between"><span>{t("controls.look")}</span><span className="text-[#deb81d] font-bold">{t("controls.lookKey")}</span></div>
+                        <div className="flex justify-between"><span>{t("controls.run")}</span><span className="text-[#deb81d] font-bold">L-SHIFT</span></div>
+                        <div className="flex justify-between"><span>{t("controls.crouch")}</span><span className="text-[#deb81d] font-bold">CTRL / C</span></div>
+                        <div className="flex justify-between"><span>{t("controls.flashlight")}</span><span className="text-[#deb81d] font-bold">F</span></div>
+                        <div className="flex justify-between"><span>{t("controls.inventory")}</span><span className="text-[#deb81d] font-bold">I</span></div>
+                        <div className="flex justify-between"><span>{t("controls.achievements")}</span><span className="text-[#deb81d] font-bold">K</span></div>
+                        <div className="flex justify-between"><span>{t("controls.release")}</span><span className="text-[#deb81d] font-bold">ESC</span></div>
                       </div>
                     </div>
                   ) : (
@@ -979,12 +1040,12 @@ export default function App() {
                       {/* Sidebar list of notes */}
                       <div className="w-[240px] border-r border-[#a28e3b]/20 bg-black/40 flex flex-col">
                         <div className="p-3 border-b border-[#a28e3b]/10 text-[10px] text-[#a28e3b] uppercase font-bold tracking-widest text-center bg-[#14130a]/50">
-                          LOGS DE ATIVIDADE ({collectedNotes.length})
+                          {t("pause.logs", { n: collectedNotes.length })}
                         </div>
                         <div className="flex-1 overflow-y-auto divide-y divide-[#a28e3b]/10 scrollbar-thin scrollbar-thumb-amber-500/20">
                           {collectedNotes.length === 0 ? (
                             <div className="p-4 text-center text-[10px] text-[#a28e3b]/50 italic uppercase leading-relaxed pt-12">
-                              Nenhum fragmento coletado neste ciclo.
+                              {t("pause.noNotes")}
                             </div>
                           ) : (
                             collectedNotes.map((note) => {
@@ -1025,9 +1086,9 @@ export default function App() {
                               <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-3">
                                 <FileText className="w-12 h-12 text-[#a28e3b]/30 animate-pulse" />
                                 <div className="space-y-1">
-                                  <h4 className="text-xs font-bold text-[#deb81d] uppercase tracking-widest">Diário Vazio</h4>
+                                  <h4 className="text-xs font-bold text-[#deb81d] uppercase tracking-widest">{t("pause.emptyJournal")}</h4>
                                   <p className="text-[10px] text-[#a28e3b]/70 uppercase max-w-xs leading-relaxed">
-                                    Encontre os fragmentos de papéis flutuantes (Scrap of Note) nas salas para extrair registros antigos de sobreviventes.
+                                    {t("pause.emptyJournalText")}
                                   </p>
                                 </div>
                               </div>
@@ -1039,12 +1100,12 @@ export default function App() {
                               {/* Metadata */}
                               <div className="border-b border-[#a28e3b]/25 pb-3 mb-4 space-y-1 bg-black/25 p-3 rounded border border-[#a28e3b]/10">
                                 <div className="flex justify-between items-center text-[10px] text-[#a28e3b] font-bold">
-                                  <span>AUTOR: <span className="text-stone-200">{activeNote.author}</span></span>
-                                  <span>REGISTRO: <span className="text-stone-200">{activeNote.date}</span></span>
+                                  <span>{t("pause.author")} <span className="text-stone-200">{activeNote.author}</span></span>
+                                  <span>{t("pause.record")} <span className="text-stone-200">{activeNote.date}</span></span>
                                 </div>
                                 <div className="text-[10px] text-[#a28e3b] font-bold truncate uppercase flex items-center gap-1">
                                   <Compass className="w-3 h-3 text-[#deb81d]" />
-                                  <span>LOCAL: <span className="text-[#deb81d]">{activeNote.location}</span></span>
+                                  <span>{t("pause.place")} <span className="text-[#deb81d]">{activeNote.location}</span></span>
                                 </div>
                               </div>
 
@@ -1062,7 +1123,17 @@ export default function App() {
 
                 {/* Footer close info */}
                 <div className="border-t border-[#a28e3b]/20 bg-[#0c0b05]/95 px-6 py-3.5 flex justify-between items-center">
-                  <span className="text-[9px] text-[#a28e3b] uppercase">Pressione [ESC] ou clique fora para retornar à infiltração</span>
+                  <span className="text-[9px] text-[#a28e3b] uppercase">{t("pause.footer")}</span>
+                  <div className="flex items-center">
+                  {roomCode && (
+                    <button
+                      id="btn-pause-copy"
+                      onClick={copyInviteLink}
+                      className="mr-3 border border-[#a28e3b]/40 text-[#a28e3b] hover:text-[#deb81d] hover:border-[#deb81d]/50 font-bold uppercase tracking-wider px-3 py-2 rounded cursor-pointer transition-all text-xs"
+                    >
+                      {linkCopied ? t("lobby.copied") : `${t("pause.roomCode", { code: roomCode })} · ${t("pause.copyLink")}`}
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       // Lock mouse back or trigger override if pointer lock is unavailable
@@ -1075,8 +1146,16 @@ export default function App() {
                     }}
                     className="bg-[#deb81d] hover:bg-[#ebd255] text-black font-black uppercase tracking-wider px-5 py-2 rounded cursor-pointer transition-all text-xs"
                   >
-                    Retomar Infiltração
+                    {t("pause.resume")}
                   </button>
+                  <button
+                    id="btn-pause-abort"
+                    onClick={() => disconnect(false)}
+                    className="ml-3 bg-[#1c0808]/75 hover:bg-red-950/90 text-red-400 hover:text-red-300 border border-red-950 font-bold uppercase tracking-wider px-4 py-2 rounded cursor-pointer transition-all text-xs"
+                  >
+                    {t("pause.abort")}
+                  </button>
+                  </div>
                 </div>
 
               </div>
@@ -1093,10 +1172,10 @@ export default function App() {
               <div className="max-w-md w-full border border-[#a28e3b]/30 bg-[#14130a]/95 p-8 rounded shadow-2xl relative space-y-6">
                 <div className="text-left space-y-1">
                   <div className="text-[10px] text-[#a28e3b]/60 uppercase tracking-widest font-extrabold select-none">
-                    Inicializando Fenda Dimensional...
+                    {t("loading.init")}
                   </div>
                    <h2 className="text-lg font-black tracking-widest text-[#deb81d] uppercase select-none flex items-center justify-between">
-                    <span>DESCOMPRIMINDO LEVEL {currentLevel === 3 ? "6 · LIGHTS OUT" : currentLevel}</span>
+                    <span>{t("loading.decompress", { name: currentLevel === 3 ? "6 · LIGHTS OUT" : String(currentLevel) })}</span>
                     <span className="text-[#a28e3b] text-sm font-semibold">{loadingProgress}%</span>
                   </h2>
                 </div>
@@ -1111,36 +1190,36 @@ export default function App() {
 
                 {/* Fake loading logging sequences */}
                 <div className="text-[10px] text-[#a28e3b] border border-[#a28e3b]/10 bg-[#090804] px-4 py-3 rounded text-left space-y-1 h-28 overflow-hidden select-text text-[11px] tracking-wide">
-                  <div className={loadingProgress >= 5 ? "opacity-100" : "opacity-0"}>[OK] Conectando ao terminal de infiltração...</div>
+                  <div className={loadingProgress >= 5 ? "opacity-100" : "opacity-0"}>{t("loading.connect")}</div>
                   <div className={loadingProgress >= 28 ? "opacity-100 animate-pulse" : "opacity-0"}>[OK] Sincronizando com a semente {currentSeed}...</div>
                   <div className={loadingProgress >= 50 ? "opacity-100 font-bold" : "opacity-0"}>
                     {currentLevel === 3
-                      ? "[OK] Desligando toda fonte de luz do setor..."
+                      ? t("loading.l3a")
                       : currentLevel === 1
-                        ? "[OK] Construindo usinas termoelétricas de concreto e encanamentos brutais..."
-                        : "[OK] Gerando labirinto infinito de papel de parede..."
+                        ? t("loading.l1a")
+                        : t("loading.l0a")
                     }
                   </div>
                   <div className={loadingProgress >= 72 ? "opacity-100" : "opacity-0"}>
                     {currentLevel === 3
-                      ? "[OK] Calibrando pontos de luz residual ao longo da rota..."
+                      ? t("loading.l3b")
                       : currentLevel === 1
-                        ? "[OK] Distribuição de tonéis industriais e vazamentos de vapor estocásticos..."
-                        : "[OK] Construindo marcadores de emergência no carpete..."
+                        ? t("loading.l1b")
+                        : t("loading.l0b")
                     }
                   </div>
                   <div className={loadingProgress >= 92 ? "opacity-100" : "opacity-0"}>
                     {currentLevel === 3
-                      ? "[AVISO] Não acenda a lanterna sem necessidade. Algo vai notar."
+                      ? t("loading.l3c")
                       : currentLevel === 1
-                        ? "[OK] Injetando ruídos industriais e drone pesado de caldeira..."
-                        : "[OK] Canal de áudio fluorescente ativo (60Hz Subhum)..."
+                        ? t("loading.l1c")
+                        : t("loading.l0c")
                     }
                   </div>
                 </div>
 
                 <div className="text-[9px] text-[#a28e3b]/50 uppercase tracking-widest leading-relaxed">
-                  Não mude de guia. O noclip dimensional está sendo calibrado.
+                  {t("loading.dontSwitch")}
                 </div>
               </div>
             </div>
@@ -1150,25 +1229,25 @@ export default function App() {
           {isDead && !allDead && (
             <div className="absolute top-20 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 font-mono select-none pointer-events-none">
               <div className="flex items-center gap-2 text-red-500 font-black tracking-[0.3em] text-sm uppercase animate-pulse">
-                <Skull className="w-4 h-4" /> Você morreu
+                <Skull className="w-4 h-4" /> {t("dead.title")}
               </div>
               <div className="flex items-center gap-3 bg-black/70 border border-red-950 rounded px-4 py-2 pointer-events-auto">
                 <button
                   onClick={() => engineRef.current?.cycleSpectate(-1)}
                   className="text-[#deb81d] hover:text-white px-2 cursor-pointer"
-                  aria-label="Explorador anterior"
+                  aria-label={t("dead.prev")}
                 >◀</button>
                 <span className="text-[11px] text-stone-300 uppercase tracking-widest min-w-[10rem] text-center">
-                  {spectateName ? <>Espectando: <b className="text-[#deb81d]">{spectateName}</b></> : "Ninguém para espectar"}
+                  {spectateName ? <>{t("dead.spectating")} <b className="text-[#deb81d]">{spectateName}</b></> : t("dead.nobody")}
                 </span>
                 <button
                   onClick={() => engineRef.current?.cycleSpectate(1)}
                   className="text-[#deb81d] hover:text-white px-2 cursor-pointer"
-                  aria-label="Próximo explorador"
+                  aria-label={t("dead.next")}
                 >▶</button>
               </div>
               <div className="text-[9px] text-stone-400 uppercase tracking-widest">
-                Setas ← → trocam de câmera · você renasce quando o grupo passar de nível
+                {t("dead.hint")}
               </div>
             </div>
           )}
@@ -1178,25 +1257,67 @@ export default function App() {
             <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/85 px-4 font-mono select-none">
               <div className="max-w-md w-full border border-red-950 bg-[#090303] p-8 rounded text-center space-y-5 shadow-[0_0_40px_rgba(220,38,38,0.2)]">
                 <Skull className="w-10 h-10 text-red-600 mx-auto" />
-                <h2 className="text-2xl font-black tracking-[0.2em] text-red-600 uppercase">Todos morreram</h2>
+                <h2 className="text-2xl font-black tracking-[0.2em] text-red-600 uppercase">{t("alldead.title")}</h2>
                 <p className="text-xs text-stone-400 uppercase leading-relaxed font-sans">
-                  Ninguém restou para continuar a expedição. Como o grupo quer recomeçar?
+                  {t("alldead.text")}
                 </p>
                 <div className="grid gap-3">
                   <button
                     onClick={() => socketRef.current?.send(JSON.stringify({ type: "room_reset", mode: "level" }))}
                     className="w-full bg-red-700 hover:bg-red-600 text-white font-extrabold uppercase tracking-widest py-3 px-4 rounded text-xs transition-colors cursor-pointer border border-red-600/30"
                   >
-                    Reiniciar no nível atual (Level {currentLevel})
+                    {t("alldead.level", { n: currentLevel })}
                   </button>
                   <button
                     onClick={() => socketRef.current?.send(JSON.stringify({ type: "room_reset", mode: "scratch" }))}
                     className="w-full bg-transparent hover:bg-red-950/40 text-red-400 font-extrabold uppercase tracking-widest py-3 px-4 rounded text-xs transition-colors cursor-pointer border border-red-900"
                   >
-                    Recomeçar do zero (Level 0)
+                    {t("alldead.scratch")}
+                  </button>
+                  <button
+                    onClick={() => socketRef.current?.send(JSON.stringify({ type: "room_reset", mode: "lobby" }))}
+                    className="w-full bg-transparent hover:bg-red-950/40 text-stone-300 font-extrabold uppercase tracking-widest py-3 px-4 rounded text-xs transition-colors cursor-pointer border border-stone-700"
+                  >
+                    {t("alldead.lobby")}
                   </button>
                 </div>
-                <p className="text-[9px] text-stone-500 uppercase tracking-widest">Qualquer jogador pode escolher; vale para toda a sala.</p>
+                <p className="text-[9px] text-stone-500 uppercase tracking-widest">{t("alldead.anyone")}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Room lobby: invite code, who's here, and the host's start button */}
+          {currentLevel === 5 && !loadingMap && (
+            <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 w-[min(92vw,26rem)] font-mono select-none">
+              <div className="border border-[#a28e3b]/40 bg-[#0c0b05]/85 backdrop-blur-sm rounded p-4 space-y-3 text-center pointer-events-auto">
+                <div className="text-[10px] tracking-[0.3em] text-[#a28e3b] uppercase">{t("lobby.title")}</div>
+                <div>
+                  <div className="text-[9px] text-[#a28e3b]/70 uppercase tracking-widest">{t("lobby.code")}</div>
+                  <div id="lobby-room-code" className="text-3xl font-black tracking-[0.35em] text-[#deb81d]">{roomCode}</div>
+                </div>
+                <button
+                  id="btn-lobby-copy"
+                  onClick={copyInviteLink}
+                  className="text-[10px] uppercase tracking-wider border border-[#deb81d]/40 text-[#deb81d] hover:bg-[#deb81d]/10 px-3 py-1.5 rounded cursor-pointer transition-all"
+                >
+                  {linkCopied ? t("lobby.copied") : t("lobby.copyLink")}
+                </button>
+                <div className="text-[10px] text-stone-400">{t("lobby.invite")}</div>
+                <div className="text-[10px] text-stone-300 uppercase tracking-wider">
+                  {t("lobby.players", { n: connectedPlayers.length + 1 })}
+                </div>
+                {isHost ? (
+                  <button
+                    id="btn-lobby-start"
+                    onClick={() => socketRef.current?.send(JSON.stringify({ type: "start_game" }))}
+                    className="w-full bg-[#deb81d] hover:bg-[#ebd255] text-black font-black uppercase tracking-wider px-4 py-2 rounded cursor-pointer transition-all text-xs"
+                  >
+                    {t("lobby.startKey")}
+                  </button>
+                ) : (
+                  <div className="text-[10px] text-[#a28e3b] uppercase tracking-wider animate-pulse">{t("lobby.waitHost")}</div>
+                )}
+                <div className="text-[9px] text-stone-500 leading-relaxed">{t("lobby.tips")}</div>
               </div>
             </div>
           )}
@@ -1208,7 +1329,7 @@ export default function App() {
             isFlashlightOn={isFlashlightOn}
             playerState={playerState}
             playerName={settings.name}
-            roomKey={roomKeyFor(settings)}
+            roomKey={roomCode}
             connectedPlayers={connectedPlayers}
             playersRef={playersRef}
             perf={perf}
@@ -1216,7 +1337,6 @@ export default function App() {
             latency={latency}
             chatMessages={chatMessages}
             onSendMessage={handleSendMessage}
-            onDisconnect={() => disconnect(false)}
             level={currentLevel}
             engineRef={engineRef}
             currentSector={currentSector}
@@ -1273,7 +1393,7 @@ export default function App() {
                   <Trophy className="w-5 h-5 text-[#deb81d]" />
                 </div>
                 <div>
-                  <div className="text-[10px] uppercase tracking-widest text-[#a28e3b] font-bold">Conquista Desbloqueada!</div>
+                  <div className="text-[10px] uppercase tracking-widest text-[#a28e3b] font-bold">{t("ach.toast")}</div>
                   <div className="text-xs font-black uppercase text-[#ebd255] tracking-wider mt-0.5">{(achievementToast as any).title}</div>
                   <div className="text-[9px] text-stone-300 font-sans mt-1 leading-tight">{(achievementToast as any).description}</div>
                 </div>
@@ -1298,7 +1418,7 @@ export default function App() {
                       <FileText className="w-5 h-5 text-[#deb81d]" />
                     </div>
                     <div>
-                      <div className="text-[9px] uppercase tracking-widest text-[#a28e3b]">Documento Encontrado</div>
+                      <div className="text-[9px] uppercase tracking-widest text-[#a28e3b]">{t("note.found")}</div>
                       <h3 className="text-sm font-black text-[#deb81d] uppercase tracking-wider">{activeLoreNote.title}</h3>
                     </div>
                   </div>
@@ -1328,7 +1448,7 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-1.5 col-span-2">
                     <Compass className="w-3.5 h-3.5 text-[#a28e3b]" />
-                    <span className="text-[#a28e3b] font-bold">LOCALIZAÇÃO REGISTRADA:</span>
+                    <span className="text-[#a28e3b] font-bold">{t("note.location")}</span>
                     <span className="text-[#deb81d]">{activeLoreNote.location}</span>
                   </div>
                 </div>
@@ -1352,7 +1472,7 @@ export default function App() {
                     }}
                     className="bg-[#deb81d] hover:bg-[#ebd255] text-black font-black uppercase px-4 py-2 rounded cursor-pointer transition-all pointer-events-auto text-[10px]"
                   >
-                    CONCLUIR LEITURA
+                    {t("note.finish")}
                   </button>
                 </div>
               </div>
@@ -1370,9 +1490,9 @@ export default function App() {
           <div className="max-w-md w-full border border-red-500/20 bg-[#1c0808]/92 p-8 rounded text-center relative space-y-6 shadow-2xl">
             <AlertCircle className="w-12 h-12 text-red-500 mx-auto" />
             <div className="space-y-2">
-              <h2 className="text-lg font-bold tracking-widest text-[#deb81d] uppercase">SINAL INTERROMPIDO</h2>
+              <h2 className="text-lg font-bold tracking-widest text-[#deb81d] uppercase">{t("err.title")}</h2>
               <p className="text-xs text-red-400 uppercase leading-relaxed">
-                {errorMessage || "Não foi possível manter contato com a fenda espaço-temporal do Level 0."}
+                {errorMessage || t("err.default")}
               </p>
             </div>
 
@@ -1382,15 +1502,15 @@ export default function App() {
                 onClick={() => setPhase(ConnectionPhase.MENU)}
                 className="flex-1 bg-transparent border border-red-500/40 hover:bg-red-500/10 text-red-400 py-3 rounded text-xs uppercase tracking-wider font-semibold transition-colors cursor-pointer"
               >
-                Menu Principal
+                {t("err.menu")}
               </button>
               <button
                 id="btn-error-retry"
-                onClick={connectToLobby}
+                onClick={() => connectToLobby(lastJoinRef.current)}
                 className="flex-1 flex items-center justify-center gap-2 bg-[#deb81d] hover:bg-[#ebd255] text-black py-3 rounded text-xs uppercase tracking-wider font-bold transition-colors cursor-pointer"
               >
                 <RefreshCw className="w-4 h-4" />
-                Repetir Tentativa
+                {t("err.retry")}
               </button>
             </div>
           </div>
@@ -1407,20 +1527,20 @@ export default function App() {
           {levelGEnding === "message" ? (
             <div className="max-w-xl w-full text-center relative space-y-7 animate-fade-in px-4">
               <h2 className="text-4xl md:text-5xl font-black tracking-[0.3em] text-[#e9ffe9] uppercase drop-shadow-[0_0_18px_rgba(60,255,122,0.45)]">
-                LEVEL G ESCAPED
+                {t("esc.gTitle")}
               </h2>
               <div className="space-y-3 text-sm md:text-base text-stone-300 font-sans leading-relaxed">
-                <p>Você encontrou uma saída que não deveria existir.</p>
-                <p>O escritório... uhum... ficou para trás.</p>
+                <p>{t("esc.g1")}</p>
+                <p>{t("esc.g2")}</p>
               </div>
-              <p className="text-2xl font-black tracking-widest text-[#3cff7a] uppercase">Você venceu.</p>
-              <p className="text-xs text-stone-500 italic font-sans">Mas talvez o Level G ainda esteja procurando por você.</p>
+              <p className="text-2xl font-black tracking-widest text-[#3cff7a] uppercase">{t("esc.g3")}</p>
+              <p className="text-xs text-stone-500 italic font-sans">{t("esc.g4")}</p>
               <button
                 id="btn-level-g-continue"
                 onClick={() => setLevelGEnding("done")}
                 className="mt-4 px-8 bg-[#1f7a3a] hover:bg-[#2a9b4b] text-black font-extrabold uppercase tracking-widest py-3 rounded text-xs transition-colors cursor-pointer"
               >
-                Continuar
+                {t("esc.continue")}
               </button>
             </div>
           ) : currentLevel === 1 ? (
@@ -1431,25 +1551,25 @@ export default function App() {
               </div>
               
               <div className="space-y-4">
-                <h2 className="text-2xl font-black tracking-widest text-orange-400 uppercase">LEVEL 2 ALCANÇADO: PIPE DREAMS</h2>
+                <h2 className="text-2xl font-black tracking-widest text-orange-400 uppercase">{t("esc.l2Title")}</h2>
                 
                 <div className="p-4 bg-black/60 border border-orange-950/60 rounded text-left space-y-3 text-xs leading-relaxed font-sans text-gray-300">
                   <div className="font-bold text-orange-400 border-b border-orange-950/60 pb-1 font-mono uppercase tracking-widest">
-                    DESCRIÇÃO DO SETOR (LEVEL 2):
+                    {t("esc.l2DescTitle")}
                   </div>
                   <p>
-                    Level 2, commonly known as "Pipe Dreams", is the 3rd level of the Backrooms. It features endless concrete maintenance tunnels lined with hot pipes, intense heat, and a high presence of hostile entities. Survival is classified as Class 2 (Unsafe), demanding constant vigilance to avoid boiling steam, dangerous entities, and extreme temperatures.
+                    {t("esc.l2Desc")}
                   </p>
                 </div>
                 
                 <div className="p-4 bg-black/60 border border-orange-950/60 rounded text-left space-y-1.5 text-xs text-[#a28e3b]/80 font-mono">
                   <div className="font-bold text-orange-400 border-b border-orange-950/60 pb-1 mb-1 uppercase">
-                    RELATÓRIO DE INFILTRAÇÃO:
+                    {t("esc.reportInfil")}
                   </div>
-                  <div>• STATUS DO EXPEDICIONÁRIO: <span className="text-orange-400 font-bold">VIVO / SOB COAÇÃO</span></div>
-                  <div>• DESTINO ALCANÇADO: <span className="text-white">LEVEL 2 (PIPE DREAMS)</span></div>
-                  <div>• SINAL DE CONTATO VIRTUAL: <span className="text-[#deb81d]">{settings.name}</span></div>
-                  <div>• SEED DE GERAÇÃO: <span className="text-gray-400">{currentSeed}</span></div>
+                  <div>• {t("esc.statusAlive")} <span className="text-orange-400 font-bold">{t("esc.aliveDuress")}</span></div>
+                  <div>• {t("esc.destination")} <span className="text-white">{t("esc.destL2")}</span></div>
+                  <div>• {t("esc.contactSignal")} <span className="text-[#deb81d]">{settings.name}</span></div>
+                  <div>• {t("esc.seed")} <span className="text-gray-400">{currentSeed}</span></div>
                 </div>
               </div>
 
@@ -1459,7 +1579,7 @@ export default function App() {
                   onClick={() => setPhase(ConnectionPhase.MENU)}
                   className="w-full bg-orange-600 hover:bg-orange-500 text-black font-extrabold uppercase tracking-widest py-3 rounded text-xs transition-colors cursor-pointer shadow-lg hover:shadow-orange-600/10"
                 >
-                  Voltar ao Menu Principal
+                  {t("esc.backMenu")}
                 </button>
               </div>
             </div>
@@ -1471,19 +1591,19 @@ export default function App() {
               </div>
               
               <div className="space-y-4">
-                <h2 className="text-2xl font-black tracking-widest text-green-400 uppercase">INFILTRAÇÃO CONCLUÍDA</h2>
+                <h2 className="text-2xl font-black tracking-widest text-green-400 uppercase">{t("esc.doneTitle")}</h2>
                 <p className="text-sm text-green-300 uppercase leading-relaxed font-sans">
-                  Parabéns! Você encontrou o ponto de escape e conseguiu romper as barreiras dimensionais do <span className="text-[#deb81d] font-bold">Level 0: The Backrooms</span>, retornando em segurança à realidade conhecida.
+                  {t("esc.doneText2")}
                 </p>
                 
                 <div className="p-4 bg-black/60 border border-green-950/60 rounded text-left space-y-1.5 text-xs text-[#a28e3b]/80">
                   <div className="font-bold text-green-400 border-b border-green-950/60 pb-1 mb-1">
-                    RELATÓRIO DE EXTRAÇÃO:
+                    {t("esc.reportExtract")}
                   </div>
-                  <div>• STATUS DO EXPEDICIONÁRIO: <span className="text-green-400 font-bold">VIVO E SEGURO</span></div>
-                  <div>• SETOR RETOMADO: <span className="text-white">{levelGEnding === "done" ? "LEVEL G // SAÍDA DE EMERGÊNCIA" : "COUT-SPACE L0-45"}</span></div>
-                  <div>• SINAL DE CONTATO VIRTUAL: <span className="text-[#deb81d]">{settings.name}</span></div>
-                  <div>• SEED DE GERAÇÃO: <span className="text-gray-400">{currentSeed}</span></div>
+                  <div>• {t("esc.statusAlive")} <span className="text-green-400 font-bold">{t("esc.aliveSafe")}</span></div>
+                  <div>• {t("esc.sector")} <span className="text-white">{levelGEnding === "done" ? t("esc.sectorG") : "COUT-SPACE L0-45"}</span></div>
+                  <div>• {t("esc.contactSignal")} <span className="text-[#deb81d]">{settings.name}</span></div>
+                  <div>• {t("esc.seed")} <span className="text-gray-400">{currentSeed}</span></div>
                 </div>
               </div>
 
@@ -1493,71 +1613,11 @@ export default function App() {
                   onClick={() => setPhase(ConnectionPhase.MENU)}
                   className="w-full bg-green-600 hover:bg-green-500 text-black font-extrabold uppercase tracking-widest py-3 rounded text-xs transition-colors cursor-pointer shadow-lg hover:shadow-green-600/10"
                 >
-                  Voltar ao Menu Principal
+                  {t("esc.backMenu")}
                 </button>
               </div>
             </div>
           )}
-        </div>
-      )}
-
-      {/* PHASE 6: GAME OVER SCREEN */}
-      {phase === ConnectionPhase.GAME_OVER && (
-        <div className="w-full h-screen flex flex-col items-center justify-center bg-[#090303] text-red-500 px-6 select-none relative animate-fade-in font-mono">
-          {/* Bleak blood vignette overlay */}
-          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(80,0,0,0.3)_0%,rgba(0,0,0,0.98)_100%)] pointer-events-none" />
-          <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.08),rgba(0,0,0,0),rgba(255,0,0,0.08))] bg-[size:100%_4px,6px_100%] pointer-events-none opacity-60" />
-
-          <div className="max-w-xl w-full border border-red-950 bg-black/90 p-8 rounded text-center relative space-y-6 shadow-[0_0_40px_rgba(220,38,38,0.2)]">
-            <div className="w-16 h-16 bg-red-950/40 border border-red-500/40 rounded-full flex items-center justify-center mx-auto relative animate-pulse">
-              <span className="w-12 h-12 bg-red-600 rounded-full animate-ping absolute opacity-10" />
-              <Skull className="w-8 h-8 text-red-600" />
-            </div>
-            
-            <div className="space-y-4">
-              <h2 className="text-3xl font-black tracking-[0.25em] text-red-600 uppercase animate-pulse">SANIDADE ZERO</h2>
-              <p className="text-xs text-stone-400 uppercase leading-relaxed font-sans max-w-md mx-auto">
-                Sua mente sucumbiu ao terror absoluto dos Backrooms. A realidade se desfez, restando apenas um vazio silencioso no labirinto infinito de paredes amarelas.
-              </p>
-              
-              <div className="p-4 bg-red-950/10 border border-red-950 rounded text-left space-y-2 text-xs text-stone-400 font-mono">
-                <div className="font-bold text-red-500 border-b border-red-950/60 pb-1 mb-1 uppercase tracking-wider">
-                  RELATÓRIO POST-MORTEM:
-                </div>
-                <div>• STATUS DO EXPLORADOR: <span className="text-red-600 font-bold">REPROVADO / PERDIDO</span></div>
-                <div>• ÚLTIMO LOCAL REGISTRADO: <span className="text-white">LEVEL {currentLevel} ({currentLevel === 0 ? "THE BACKROOMS" : currentLevel === 1 ? "HABITABLE ZONE" : "PIPE DREAMS"})</span></div>
-                <div>• IDENTIFICADOR: <span className="text-stone-300">{settings.name}</span></div>
-                <div>• SEED DA SESSÃO: <span className="text-stone-300 font-bold">{currentSeed}</span></div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-              <button
-                id="btn-gameover-restart"
-                onClick={() => {
-                  setSanity(1.0);
-                  setStamina(1.0);
-                  setCurrentLevel(0);
-                  setInventory([]);
-                  setCollectedNotes([]);
-                  // Reconnect using the EXACT same seed
-                  connectToLobby(currentSeed);
-                }}
-                className="w-full bg-red-700 hover:bg-red-600 text-white font-extrabold uppercase tracking-widest py-3 px-4 rounded text-xs transition-colors cursor-pointer flex items-center justify-center gap-2 border border-red-600/30"
-              >
-                <RefreshCw className="w-4 h-4 animate-spin-slow" />
-                Reiniciar (Mesmo Seed)
-              </button>
-
-              <button
-                id="btn-gameover-menu"
-                onClick={() => setPhase(ConnectionPhase.MENU)}
-                className="w-full bg-stone-900 hover:bg-stone-800 text-stone-400 hover:text-stone-300 font-extrabold uppercase tracking-widest py-3 px-4 rounded text-xs transition-colors cursor-pointer border border-stone-800"
-              >
-                Menu Principal
-              </button>
-            </div>
-          </div>
         </div>
       )}
 

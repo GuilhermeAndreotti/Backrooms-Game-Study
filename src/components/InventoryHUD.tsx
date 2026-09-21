@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { t, useLanguage } from "../i18n";
 import React, { useState } from "react";
 import { X, Backpack, Search, Calendar, Landmark, Info, Key, Image, Volume2, Sparkles, AlertTriangle, FileText, GlassWater } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
@@ -31,6 +32,7 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
   onClose,
   onUseItem
 }) => {
+  useLanguage();
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
 
   // If the inventory is closed, reset selected item
@@ -43,73 +45,73 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
   const itemsMap: Record<string, ItemDetails> = {
     old_photo: {
       id: "old_photo",
-      name: "Foto Antiga Desbotada",
-      type: "MEMENTO / REGISTRO",
+      name: t("item.old_photo.name"),
+      type: t("item.old_photo.type"),
       icon: <Image className="w-5 h-5 text-amber-300" />,
-      description: "Uma fotografia Polaroid analógica dos anos 90, com as bordas amareladas pela humidade severa e manchas de infiltração do carpete.",
-      lore: "A imagem retrata uma família de três pessoas sorrindo de forma amigável em frente a uma residência suburbana típica da época. No entanto, todos os três rostos foram violentamente riscados e desfigurados com rabiscos pretos de caneta esferográfica, impossibilitando qualquer identificação.",
-      clueTitle: "INSCRIÇÃO NO VERSO (EM TINTA VERMELHA SECA):",
-      clueText: "\"ELES OUVEM O SILÊNCIO. QUANDO AS LUZES COMEÇAREM A PISCAR, NÃO FIQUE PARADO. CONTINUE MOVENDO-SE.\""
+      description: t("item.old_photo.desc"),
+      lore: t("item.old_photo.lore"),
+      clueTitle: t("item.old_photo.clueTitle"),
+      clueText: t("item.old_photo.clueText")
     },
     rusty_key: {
       id: "rusty_key",
-      name: "Chave de Ferro Enferrujada",
-      type: "ARTEFATO / CHAVE",
+      name: t("item.rusty_key.name"),
+      type: t("item.rusty_key.type"),
       icon: <Key className="w-5 h-5 text-amber-500" />,
-      description: "Uma chave pesada de ferro fundido antigo, completamente corroída por uma espessa camada de ferrugem vermelha áspera ao toque.",
-      lore: "Ao segurar a chave por tempo suficiente, você percebe que o metal está anormalmente frio, quase congelante. Mais estranho ainda é uma vibração de alta frequência pulsando no cabo da chave — um zumbido mecânico perpétuo que se alinha perfeitamente com a frequência das lâmpadas fluorescentes.",
-      clueTitle: "NOTA EXTRAPOLADA DO EXPLORADOR:",
-      clueText: "\"O metal está anormalmente frio, quase congelante, e não abre nada que eu já tenha encontrado por aqui. Talvez sirva pra alguma coisa mais adiante. Talvez não sirva pra nada.\""
+      description: t("item.rusty_key.desc"),
+      lore: t("item.rusty_key.lore"),
+      clueTitle: t("item.rusty_key.clueTitle"),
+      clueText: t("item.rusty_key.clueText")
     },
     cassette_tape: {
       id: "cassette_tape",
-      name: "Fita Cassete Danificada",
-      type: "MEMENTO / GRAVAÇÃO",
+      name: t("item.cassette_tape.name"),
+      type: t("item.cassette_tape.type"),
       icon: <Volume2 className="w-5 h-5 text-amber-400" />,
-      description: "Uma fita cassete antiga de fita magnética marrom exposta. A carcaça de plástico preta está riscada e rachada nas bordas.",
-      lore: "Ao aproximá-la do ouvido, você ouve ruídos de estática magnética pesada misturados com vozes distorcidas murmurando coordenadas incoerentes. Em uma etiqueta descascada lê-se: 'PROTOCOLO DE INFILTRAÇÃO 109'.",
-      clueTitle: "GRAVAÇÃO DE ÁUDIO DECODIFICADA:",
-      clueText: "\"Não confie nas sombras que se movem. A fenda é real. Nas duas passagens ao fim do labirinto, confie na marca pintada, não no medo...\""
+      description: t("item.cassette_tape.desc"),
+      lore: t("item.cassette_tape.lore"),
+      clueTitle: t("item.cassette_tape.clueTitle"),
+      clueText: t("item.cassette_tape.clueText")
     },
     strange_crystal: {
       id: "strange_crystal",
-      name: "Cristal Luminescente",
-      type: "ARTEFATO / ANOMALIA",
+      name: t("item.strange_crystal.name"),
+      type: t("item.strange_crystal.type"),
       icon: <Sparkles className="w-5 h-5 text-cyan-400" />,
-      description: "Um fragmento cristalino geométrico que emite uma pulsação constante de luz ciano/turquesa brilhante.",
-      lore: "O cristal não projeta sombra e parece flutuar milímetros acima de superfícies sólidas. Sua temperatura interna está sempre exatamente a zero graus, agindo como um dissipador térmico perfeito.",
-      clueTitle: "PROPRIEDADES DA MATÉRIA ANÔMALA:",
-      clueText: "\"Energia pura cristalizada a partir das dobras dimensionais. Sua mera presença repele distorções e clareia a visão de quem o segura.\""
+      description: t("item.strange_crystal.desc"),
+      lore: t("item.strange_crystal.lore"),
+      clueTitle: t("item.strange_crystal.clueTitle"),
+      clueText: t("item.strange_crystal.clueText")
     },
     liquid_pain: {
       id: "liquid_pain",
-      name: "Frasco de Dor Líquida",
-      type: "SUBSTÂNCIA PERIGOSA",
+      name: t("item.liquid_pain.name"),
+      type: t("item.liquid_pain.type"),
       icon: <AlertTriangle className="w-5 h-5 text-red-500 animate-pulse" />,
-      description: "Um pequeno frasco químico contendo um líquido viscoso vermelho-sangue que ferve e borbulha constantemente sem calor.",
-      lore: "É uma substância de extrema toxicidade encontrada apenas em fendas profundas. O contato direto com a pele causa queimação severa e alucinações auditivas agudas.",
-      clueTitle: "ALERTA SANITÁRIO DA M.E.G.:",
-      clueText: "\"NÃO CONSUMA. NÃO ABRA O FRASCO. O contato corrói a integridade neural do explorador, reduzindo drasticamente sua resistência física.\""
+      description: t("item.liquid_pain.desc"),
+      lore: t("item.liquid_pain.lore"),
+      clueTitle: t("item.liquid_pain.clueTitle"),
+      clueText: t("item.liquid_pain.clueText")
     },
     diary_page: {
       id: "diary_page",
-      name: "Página de Diário Rasgada",
-      type: "MEMENTO / DIÁRIO",
+      name: t("item.diary_page.name"),
+      type: t("item.diary_page.type"),
       icon: <FileText className="w-5 h-5 text-yellow-300" />,
-      description: "Um pedaço amarelado e rasgado de papel pautado arrancado de um diário de campo, manchado de óleo industrial preto.",
-      lore: "O autor parece descrever os primeiros dias após o 'no-clip' acidental. A caligrafia começa firme, mas se deteriora em garranchos desesperados ao longo das linhas finais.",
-      clueTitle: "NOTAS DE UM EXPLORADOR PERDIDO:",
-      clueText: "\"Dia 12. As tubulações do Nível 2 não param de ranger. Os Hounds estão caçando em bandos agora. Corra. Se você ouvir algo atrás de você, não olhe. Apenas corra até o fim do portão.\""
+      description: t("item.diary_page.desc"),
+      lore: t("item.diary_page.lore"),
+      clueTitle: t("item.diary_page.clueTitle"),
+      clueText: t("item.diary_page.clueText")
     },
     almond_water: {
       id: "almond_water",
-      name: "Água de Amêndoas (Almond Water)",
-      type: "CONSUMÍVEL / SURVIVAL",
+      name: t("item.almond_water.name"),
+      type: t("item.almond_water.type"),
       icon: <GlassWater className="w-5 h-5 text-amber-300" />,
-      description: "Uma garrafa de água de sabor doce e aroma suave de amêndoas, encontrada fluindo de tubulações e fendas.",
-      lore: "A Água de Amêndoas é um recurso de sobrevivência indispensável nas Backrooms. Ela tem a incrível propriedade de acalmar os nervos, clarear a mente e reverter os efeitos paranoicos causados pela escuridão profunda e pela presença de entidades como os Smilers.",
-      clueTitle: "EFEITO TERAPÊUTICO:",
-      clueText: "\"Consumir este frasco restaura instantaneamente 20% da sua Sanidade mental e alivia parte da fadiga física acumulada.\""
+      description: t("item.almond_water.desc"),
+      lore: t("item.almond_water.lore"),
+      clueTitle: t("item.almond_water.clueTitle"),
+      clueText: t("item.almond_water.clueText")
     }
   };
 
@@ -141,11 +143,11 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
             <div className="flex items-center gap-2">
               <Backpack className="w-5 h-5 text-[#deb81d] animate-pulse" />
               <h2 className="text-sm font-black uppercase tracking-widest text-[#deb81d]">
-                Inventário do Explorador
+                {t("inv.title")}
               </h2>
             </div>
             <span className="text-[10px] text-[#a28e3b]/60 uppercase bg-[#deb81d]/5 px-2 py-0.5 rounded border border-[#deb81d]/10">
-              {inventory.length} Item(s)
+              {t("inv.count", { n: inventory.length })}
             </span>
           </div>
 
@@ -156,10 +158,10 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
               </div>
               <div className="space-y-1">
                 <p className="text-xs text-[#deb81d] font-bold uppercase tracking-wider">
-                  Inventário Vazio
+                  {t("inv.empty")}
                 </p>
                 <p className="text-[10px] text-[#a28e3b]/60 uppercase max-w-xs leading-relaxed">
-                  Não há registros ou artefatos no seu inventário. Explore as salas procedurais para coletar pistas e mementos.
+                  {t("inv.emptyText")}
                 </p>
               </div>
             </div>
@@ -201,7 +203,7 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
                     
                     <div className="flex items-center gap-1 mt-3 text-[9px] text-[#deb81d] opacity-80 group">
                       <Search className="w-3 h-3 group-hover:scale-125 transition-transform" />
-                      <span>INSPECIONAR ITEM</span>
+                      <span>{t("inv.inspect")}</span>
                     </div>
                   </button>
                 );
@@ -211,8 +213,8 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
 
           {/* Controls instructions */}
           <div className="mt-4 pt-3 border-t border-[#deb81d]/15 flex items-center justify-between text-[10px] text-[#a28e3b]/50">
-            <span>TECLA [I] OU CLIQUE NO X PARA FECHAR</span>
-            <span>EQUIPAMENTO DE PESQUISA</span>
+            <span>{t("inv.close")}</span>
+            <span>{t("inv.gear")}</span>
           </div>
         </div>
 
@@ -231,10 +233,10 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
             <div className="flex-1 flex flex-col items-center justify-center text-center p-6 text-[#a28e3b]/40">
               <Search className="w-10 h-10 mb-2 stroke-1 text-[#a28e3b]/30" />
               <p className="text-[11px] uppercase tracking-wider font-bold">
-                Nenhum Item Selecionado
+                {t("inv.noneSelected")}
               </p>
               <p className="text-[9px] uppercase max-w-xs mt-1">
-                Selecione um artefato à esquerda para ler anotações, decifrar inscrições e inspecionar detalhes em alta resolução.
+                {t("inv.noneSelectedText")}
               </p>
             </div>
           ) : (
@@ -380,13 +382,13 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
                     >
                       <div className="flex-1 border-l border-red-400/50 pl-2 select-text text-[7px] text-stone-700 leading-tight space-y-1">
                         <div className="text-[5px] text-stone-400 text-right uppercase tracking-wider font-bold">PAGE 47</div>
-                        <p className="italic">"...não pare por nada..."</p>
-                        <p className="italic">"...as paredes respiram..."</p>
-                        <p className="italic">"...confie na cor da porta certa..."</p>
-                        <p className="italic">"...corra..."</p>
+                        <p className="italic">{t("inv.diary0")}</p>
+                        <p className="italic">{t("inv.diary1")}</p>
+                        <p className="italic">{t("inv.diary2")}</p>
+                        <p className="italic">{t("inv.diary3")}</p>
                       </div>
                       <div className="h-0.5 bg-gradient-to-r from-transparent via-stone-400/40 to-transparent" />
-                      <div className="text-[6px] text-stone-400 uppercase text-center tracking-widest font-semibold italic">DIÁRIO PERDIDO</div>
+                      <div className="text-[6px] text-stone-400 uppercase text-center tracking-widest font-semibold italic">{t("inv.diaryLabel")}</div>
                     </motion.div>
                   )}
 
@@ -455,7 +457,7 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
                     }}
                     className="bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 border border-amber-300 text-black text-[11px] uppercase font-black px-5 py-2 rounded cursor-pointer transition-all shadow-[0_0_15px_rgba(245,158,11,0.3)] animate-pulse pointer-events-auto"
                   >
-                    CONSUMIR ÁGUA DE AMÊNDOAS (+20% Sanidade)
+                    {t("inv.consume")}
                   </button>
                 )}
 
@@ -463,7 +465,7 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
                   onClick={() => setSelectedItem(null)}
                   className="bg-stone-900 border border-stone-700 hover:border-[#deb81d] text-[10px] uppercase font-bold text-stone-400 hover:text-[#deb81d] px-4 py-2 rounded cursor-pointer transition-all pointer-events-auto"
                 >
-                  Voltar à Lista de Itens
+                  {t("inv.back")}
                 </button>
               </div>
             </div>

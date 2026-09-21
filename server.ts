@@ -118,6 +118,8 @@ interface Room {
    * their own separate next level.
    */
   level: number;
+  /** Player who can start the expedition from the lobby (first to join; passes on when they leave). */
+  hostId: string;
   players: Map<string, PlayerState>;
   /** Sockets in this room, so a broadcast never scans unrelated connections. */
   connections: Set<Connection>;
@@ -142,10 +144,26 @@ function sanitizeText(value: unknown, maxLength: number): string {
   return value.replace(CONTROL_CHARS, "").trim().slice(0, maxLength);
 }
 
-function sanitizeRoomKey(value: unknown): string {
-  const raw = sanitizeText(value, 40).toLowerCase();
-  const cleaned = raw.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
-  return cleaned || "sala-principal";
+/** Level id of the room lobby (see src/game/Lobby.ts): where every room starts. */
+const LOBBY_LEVEL = 5;
+
+/** Invite codes: 6 characters, no lookalikes (0/O, 1/I). Example: AB4D3X. */
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const CODE_LENGTH = 6;
+
+function generateRoomCode(): string {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    let code = "";
+    for (let i = 0; i < CODE_LENGTH; i++) code += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
+    if (!rooms.has(code)) return code;
+  }
+  return Date.now().toString(36).toUpperCase().slice(-CODE_LENGTH);
+}
+
+/** Uppercased alphanumeric code, or "" if the input can't be a room code. */
+function sanitizeRoomCode(value: unknown): string {
+  const raw = typeof value === "string" ? value.toUpperCase().replace(/[^A-Z0-9]/g, "") : "";
+  return raw.length >= 4 && raw.length <= 12 ? raw : "";
 }
 
 function finiteNumber(value: unknown, fallback: number): number {
@@ -283,6 +301,10 @@ function removeConnection(conn: Connection) {
   room.connections.delete(conn);
   room.players.delete(conn.player.id);
   room.dirty.delete(conn.player.id);
+  if (room.hostId === conn.player.id) {
+    room.hostId = room.players.keys().next().value ?? "";
+    if (room.hostId) broadcastToRoom(room, { type: "host", id: room.hostId });
+  }
 
   broadcastToRoom(room, { type: "player_left", id: conn.player.id });
   refreshAuthority(room);
@@ -336,29 +358,39 @@ async function startServer() {
       if (type === "join") {
         if (conn) return; // already joined; ignore duplicates
 
-        const roomKey = sanitizeRoomKey(data.room);
-        let room = rooms.get(roomKey);
-
-        if (!room) {
+        // Creating makes a fresh room with a new invite code; joining needs an existing code.
+        let roomKey: string;
+        let room: Room | undefined;
+        if (data.create === true) {
           if (rooms.size >= MAX_ROOMS) {
-            send(ws, { type: "room_full", error: "O servidor atingiu o limite de salas ativas." });
+            send(ws, { type: "room_full", reason: "server" });
             ws.close();
             return;
           }
+          roomKey = generateRoomCode();
           const requestedSeed = data.requestedSeed;
           const seed =
             typeof requestedSeed === "number" && requestedSeed > 0 && Number.isFinite(requestedSeed)
               ? Math.floor(requestedSeed)
               : Math.floor(Math.random() * 999999) + 1;
-          room = { seed, level: 0, players: new Map(), connections: new Set(), dirty: new Set(), authorityKey: "" };
+          room = { seed, level: LOBBY_LEVEL, hostId: "", players: new Map(), connections: new Set(), dirty: new Set(), authorityKey: "" };
           rooms.set(roomKey, room);
           console.log(`Created new room "${roomKey}" with seed ${seed}`);
+        } else {
+          roomKey = sanitizeRoomCode(data.room);
+          room = roomKey ? rooms.get(roomKey) : undefined;
+          if (!room) {
+            send(ws, { type: "room_not_found" });
+            ws.close();
+            return;
+          }
         }
 
         if (room.players.size >= ROOM_CAPACITY) {
           send(ws, {
             type: "room_full",
-            error: `Esta sala atingiu o limite de ${ROOM_CAPACITY} jogadores.`,
+            reason: "capacity",
+            capacity: ROOM_CAPACITY,
           });
           ws.close();
           return;
@@ -376,7 +408,7 @@ async function startServer() {
           pitch: 0,
           flashlight: false,
           state: "idle",
-          level: 0,
+          level: room.level,
           suitColor: sanitizeSuitColor(data.suitColor),
           dead: false,
           face: sanitizeFace(data.face),
@@ -386,6 +418,7 @@ async function startServer() {
         connections.set(ws, conn);
         room.connections.add(conn);
         room.players.set(playerId, player);
+        if (!room.hostId) room.hostId = playerId;
 
         // 1. Confirm join to self: client id, shared map seed, current roster and
         // level — a room the rest of the group already advanced past Level 0 in
@@ -395,6 +428,8 @@ async function startServer() {
           id: playerId,
           seed: room.seed,
           level: room.level,
+          code: roomKey,
+          hostId: room.hostId,
           players: Array.from(room.players.values()).filter((p) => p.id !== playerId),
           authority: computeAuthority(room),
         });
@@ -505,6 +540,44 @@ async function startServer() {
         return;
       }
 
+      // --- lobby ------------------------------------------------------------------
+      // The host starts the expedition: everyone leaves the lobby for Level 0.
+      if (type === "start_game") {
+        if (room.level !== LOBBY_LEVEL || room.hostId !== conn.player.id) return;
+        room.level = 0;
+        reviveAll(room);
+        room.players.forEach((p) => { p.level = 0; });
+        refreshAuthority(room);
+        broadcastToRoom(room, { type: "level_transition", level: 0, seed: room.seed, start: true });
+        return;
+      }
+
+      // The lobby's soccer ball: the level's authority simulates and streams it;
+      // everyone else forwards their kicks to the authority.
+      if (type === "ball") {
+        const level = conn.player.level;
+        if (level !== LOBBY_LEVEL || data.level !== level) return;
+        if (computeAuthority(room)[String(level)] !== conn.player.id) return;
+        const n = (v: unknown, max: number) => Math.max(-max, Math.min(max, finiteNumber(v, 0)));
+        broadcastToLevel(room, level, {
+          type, level,
+          x: n(data.x, 200), z: n(data.z, 200), vx: n(data.vx, 40), vz: n(data.vz, 40),
+          g: Math.max(0, Math.min(9999, Math.floor(finiteNumber(data.g, 0)))),
+        }, conn);
+        return;
+      }
+      if (type === "ball_kick") {
+        const level = conn.player.level;
+        const authorityId = computeAuthority(room)[String(level)];
+        if (level !== LOBBY_LEVEL || data.level !== level || !authorityId || authorityId === conn.player.id) return;
+        const vx = Math.max(-20, Math.min(20, finiteNumber(data.vx, 0)));
+        const vz = Math.max(-20, Math.min(20, finiteNumber(data.vz, 0)));
+        room.connections.forEach((c) => {
+          if (c.player.id === authorityId) send(c.ws, { type: "ball_kick", level, vx, vz });
+        });
+        return;
+      }
+
       // --- death / spectating ---------------------------------------------------
       if (type === "died") {
         if (conn.player.dead) return;
@@ -521,11 +594,13 @@ async function startServer() {
       if (type === "room_reset") {
         for (const p of room.players.values()) if (!p.dead) return;
         const scratch = data.mode === "scratch";
+        const toLobby = data.mode === "lobby";
         if (scratch) room.level = 0;
+        if (toLobby) room.level = LOBBY_LEVEL;
         reviveAll(room);
         room.players.forEach((p) => { p.level = room.level; });
         refreshAuthority(room);
-        broadcastToRoom(room, { type: "respawn", level: room.level, seed: room.seed, scratch });
+        broadcastToRoom(room, { type: "respawn", level: room.level, seed: room.seed, scratch, toLobby });
         return;
       }
 

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { t, useLanguage } from "../i18n";
 import React, { useEffect, useRef, useState } from "react";
 import { GameEngine } from "../game/GameEngine";
 import { RemotePlayer } from "../types/game";
@@ -28,7 +29,7 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [coords, setCoords] = useState({ x: 0.0, z: 0.0 });
-  const [vhsSignal, setVhsSignal] = useState("SINAL ESTÁVEL");
+  const [vhsSignal, setVhsSignal] = useState("radar.stable");
   const [headingDegrees, setHeadingDegrees] = useState(0);
 
   useEffect(() => {
@@ -80,8 +81,8 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
         ctx.fillStyle = "#deb81d";
         ctx.font = "bold 11px Courier New, monospace";
         ctx.textAlign = "center";
-        ctx.fillText("VHF TELEMETRIA", cx, cy - 20);
-        ctx.fillText("RECONECTANDO...", cx, cy);
+        ctx.fillText(t("radar.telemetry"), cx, cy - 20);
+        ctx.fillText(t("radar.reconnecting"), cx, cy);
 
         // Blinking signal block
         if (Math.sin(Date.now() * 0.007) > 0) {
@@ -120,14 +121,14 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
           });
 
           if (nearestDist < 8.0) {
-            setVhsSignal("CRÍTICO: RUIDO MAGNÉTICO");
+            setVhsSignal("radar.critical");
           } else if (nearestDist < 18.0) {
-            setVhsSignal("SINAL COM INTERFERÊNCIA");
+            setVhsSignal("radar.interference");
           } else {
-            setVhsSignal("VHF FLUTUANTE IPX1");
+            setVhsSignal("radar.fluctuating");
           }
         } else {
-          setVhsSignal(level === 0 ? "NÍVEL 0: AMBIENTE SEGURO" : "SINAL NOMINAL VHF-2");
+          setVhsSignal(level === 0 ? "radar.safeEnv" : "radar.nominal");
         }
       }
 
@@ -160,17 +161,20 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
       ctx.textAlign = "center";
       
       if (level === 2) {
-        ctx.fillText("NÍVEL 2: RUN!", cx, cy - 25);
-        ctx.fillText("ALERTA: EVACUAR", cx, cy + 25);
+        ctx.fillText(t("radar.l2a"), cx, cy - 25);
+        ctx.fillText(t("radar.l2b"), cx, cy + 25);
       } else if (level === 0) {
-        ctx.fillText("NÍVEL 0: THE LOBBY", cx, cy - 25);
-        ctx.fillText("STATUS: SEGURO", cx, cy + 25);
+        ctx.fillText(t("radar.l0a"), cx, cy - 25);
+        ctx.fillText(t("radar.l0b"), cx, cy + 25);
+      } else if (level === 5) {
+        ctx.fillText(t("radar.l5a"), cx, cy - 25);
+        ctx.fillText(t("radar.l5b"), cx, cy + 25);
       } else if (level === 4) {
-        ctx.fillText("LEVEL G: ESCRITÓRIO", cx, cy - 25);
-        ctx.fillText("SINAL: INTERFERÊNCIA", cx, cy + 25);
+        ctx.fillText(t("radar.lga"), cx, cy - 25);
+        ctx.fillText(t("radar.lgb"), cx, cy + 25);
       } else {
-        ctx.fillText("NÍVEL 1: HABITABLE", cx, cy - 25);
-        ctx.fillText("ANOMALIA PRESENTE", cx, cy + 25);
+        ctx.fillText(t("radar.l1a"), cx, cy - 25);
+        ctx.fillText(t("radar.l1b"), cx, cy + 25);
       }
 
       // 3. Render Maze Walls
@@ -244,7 +248,7 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
           ctx.fillStyle = "#4ade80";
           ctx.font = "bold 8px Courier New, monospace";
           ctx.textAlign = "center";
-          ctx.fillText("SAÍDA", rX, rY - 8);
+          ctx.fillText(t("radar.exit"), rX, rY - 8);
         }
       }
 
@@ -360,12 +364,12 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
               case "CLUMP":
                 colorFill = `rgba(236, 72, 153, ${0.45 + pulse * 0.55})`; // pink Clump cluster
                 colorStroke = "#f472b6";
-                label = "CLUMP (ATENÇÃO)";
+                label = t("radar.clump");
                 break;
               case "SKIN_STEALER":
                 colorFill = `rgba(234, 179, 8, ${0.45 + pulse * 0.55})`; // yellow mimic
                 colorStroke = "#facc15";
-                label = "MIMÉTICO (ALERTA)";
+                label = t("radar.mimic");
                 break;
               case "WRETCH":
                 colorFill = `rgba(185, 28, 28, ${0.50 + pulse * 0.50})`; // deep blood red
@@ -375,7 +379,7 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
               default:
                 colorFill = `rgba(239, 68, 68, ${0.45 + pulse * 0.55})`;
                 colorStroke = "#f87171";
-                label = "ANOMALIA DETECTADA";
+                label = t("radar.anomaly");
                 break;
             }
 
@@ -563,7 +567,7 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
                 ? "text-yellow-400 bg-yellow-500/10 border-yellow-500/20 animate-pulse" 
                 : "text-amber-500 bg-amber-600/10 border-amber-600/20")
         }`}>
-          {level === 4 ? "LEVEL G: ESCRITÓRIO" : level === 3 ? "NÍVEL 6: LIGHTS OUT" : level === 2 ? "NÍVEL 2: PIPE DREAMS" : (level === 1 ? "NÍVEL 1: ARMAZÉM" : "NÍVEL 0: O SAGUÃO")}
+          {t(`radar.title.${level}`)}
         </span>
       </div>
 
@@ -582,21 +586,21 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
       {/* Technical telemetry diagnostics panel */}
       <div className="text-[9px] bg-[#12110a] px-2.5 py-2 border border-[#a28e3b]/15 rounded divide-y divide-[#a28e3b]/10 flex flex-col gap-1 text-[#a28e3b]/85">
         <div className="flex justify-between pb-1 font-semibold uppercase">
-          <span>COORDENADAS EXP:</span>
+          <span>{t("radar.coords")}</span>
           <span className="text-[#deb81d]">
             X: {coords.x.toFixed(1)} / Z: {coords.z.toFixed(1)}
           </span>
         </div>
         <div className="flex justify-between py-1 font-semibold uppercase">
-          <span>BÚSSOLA HEADING:</span>
+          <span>{t("radar.heading")}</span>
           <span className="text-[#deb81d] flex items-center gap-1">
             <Compass className="w-3 h-3 text-[#deb81d]/60 inline" /> {headingDegrees}° {headingDegrees >= 337.5 || headingDegrees < 22.5 ? "N" : headingDegrees >= 22.5 && headingDegrees < 67.5 ? "NE" : headingDegrees >= 67.5 && headingDegrees < 112.5 ? "E" : headingDegrees >= 112.5 && headingDegrees < 157.5 ? "SE" : headingDegrees >= 157.5 && headingDegrees < 202.5 ? "S" : headingDegrees >= 202.5 && headingDegrees < 247.5 ? "SW" : headingDegrees >= 247.5 && headingDegrees < 292.5 ? "W" : "NW"}
           </span>
         </div>
         <div className="flex justify-between pt-1 font-semibold uppercase items-center">
-          <span>SINAL RECEPTOR:</span>
-          <span className={`text-[8px] font-bold whitespace-nowrap tracking-wider text-right uppercase ${vhsSignal.startsWith("CRÍTICO") ? "text-red-500 animate-pulse" : "text-[#deb81d]"}`}>
-            {vhsSignal}
+          <span>{t("radar.signalRx")}</span>
+          <span className={`text-[8px] font-bold whitespace-nowrap tracking-wider text-right uppercase ${vhsSignal === "radar.critical" ? "text-red-500 animate-pulse" : "text-[#deb81d]"}`}>
+            {t(vhsSignal)}
           </span>
         </div>
       </div>

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { t } from "../i18n";
 import * as THREE from "three";
 import { ProceduralMap, CellType } from "./ProceduralMap";
 
@@ -477,7 +478,7 @@ export class WanderingEntity {
     const ctx = canvas.getContext("2d")!;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    const text = this.currentSpeechText;
+    const text = t(this.currentSpeechText);
     ctx.font = "bold 15px Courier New, monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -711,15 +712,7 @@ export class WanderingEntity {
         if (distanceMeters > 5.5) {
           // Innocent explorer mimicking phrases
           this.isAgitated = false;
-          const mimics = [
-            "Olá? Tem alguém aí?",
-            "Socorro... Acho que rompi ligamentos.",
-            "Encontrei água de amêndoas por aqui!",
-            "Me chamo Lucas. Você faz parte do M.E.G.?",
-            "Ufa, passos de gente! Venha me ajudar!",
-            "Estou perto da saída do Level 1!",
-            "Socorro! Estão pegando na minha bingola!!"
-          ];
+          const mimics = [0, 1, 2, 3, 4, 5].map((n) => `sp.stealer.m${n}`);
           this.currentSpeechText = mimics[Math.floor(Math.random() * mimics.length)];
           this.moveSpeed = 1.0; // Slow friendly pace
         } else {
@@ -728,49 +721,42 @@ export class WanderingEntity {
             this.isAgitated = true;
             console.warn("[Skin-Stealer] Mask slipped! Attacking voyager.");
           }
-          const hostiles = [
-            "SUA PELE... ME DÁ ELA!",
-            "NÃO ADIANTA REZAR!",
-            "VOCÊ CHEIRA TÃO BEM...",
-            "ROSTO DE VERDADE... EU QUERO!",
-            "SOU HUMANO SIM! VENHA AQUI!",
-            "OVO COMER TEU CUUUU"
-          ];
+          const hostiles = [0, 1, 2, 3, 4].map((n) => `sp.stealer.h${n}`);
           this.currentSpeechText = hostiles[Math.floor(Math.random() * hostiles.length)];
           this.moveSpeed = 3.1; // Aggressive lunge speed!
         }
       } else if (this.type === EntityType.HOUND) {
         if (this.intimidatedTimer > 0.1) {
-          this.currentSpeechText = "*ROSNADO AMEDRONTADO*";
+          this.currentSpeechText = "sp.hound.scared";
         } else if (this.isChasing) {
-          this.currentSpeechText = "*LATIDOS HISTÉRICOS*";
+          this.currentSpeechText = "sp.hound.chase";
         } else {
-          this.currentSpeechText = "*PASSOS RÁPIDOS NA ESCURIDÃO*";
+          this.currentSpeechText = "sp.hound.idle";
         }
       } else if (this.type === EntityType.DULLER) {
         if (this.map.grid[this.gridX][this.gridZ] === CellType.SOLID) {
-          this.currentSpeechText = "*RUÍDOS DE PAREDE RASPANDO*";
+          this.currentSpeechText = "sp.duller.wall";
         } else {
           this.currentSpeechText = "...";
         }
       } else if (this.type === EntityType.CLUMP) {
         if (this.isChasing) {
-          this.currentSpeechText = "*BATIDAS DE MEMBROS CORRENDO*";
+          this.currentSpeechText = "sp.clump.chase";
         } else {
-          this.currentSpeechText = "*ARRANHÕES EMBALADOS*";
+          this.currentSpeechText = "sp.clump.idle";
         }
       } else if (this.type === EntityType.WRETCH) {
         if (this.isChasing) {
-          this.currentSpeechText = "NÃO ESCAPE DA CRISE!";
+          this.currentSpeechText = "sp.wretch.chase";
         } else {
-          this.currentSpeechText = "*MURMÚRIOS INSANOS*";
+          this.currentSpeechText = "sp.wretch.idle";
         }
       } else if (this.type === EntityType.FINGER_KING) {
         // Mostly silent — the taps (GameEngine) carry the warning, not text.
         if (this.hunting) {
-          this.currentSpeechText = "*DEDOS ARRASTANDO NAS PAREDES*";
+          this.currentSpeechText = "sp.king.hunt";
         } else if (this.isChasing) {
-          this.currentSpeechText = "*tec tec tec tec*";
+          this.currentSpeechText = "sp.king.chase";
         } else {
           this.currentSpeechText = "";
         }

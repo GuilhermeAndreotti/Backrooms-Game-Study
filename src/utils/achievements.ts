@@ -4,81 +4,87 @@
  */
 
 import { Achievement } from "../types/achievements";
+import { t, localeTag } from "../i18n";
 
 const ACHIEVEMENTS_STORAGE_KEY = "backrooms_achievements_list";
 
 export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
   {
     id: "first_steps",
-    title: "Primeiros Passos",
-    description: "Iniciou a infiltração nos corredores amarelos do Nível 0.",
+    title: "",
+    description: "",
     iconName: "Compass",
     unlocked: false,
   },
   {
     id: "restored_mind",
-    title: "Mente Alerta",
-    description: "Consumiu Água de Amêndoa para restaurar sua stamina e limpar a mente.",
+    title: "",
+    description: "",
     iconName: "Activity",
     unlocked: false,
   },
   {
     id: "noclip_master",
-    title: "Noclipper Experiente",
-    description: "Atravessou a parede instável do Nível 0 e alcançou o Nível 1.",
+    title: "",
+    description: "",
     iconName: "Unlock",
     unlocked: false,
   },
   {
     id: "key_finder",
-    title: "Mestre das Chaves",
-    description: "Encontrou a pesada Chave de Ferro Enferrujada escondida nas profundezas.",
+    title: "",
+    description: "",
     iconName: "Key",
     unlocked: false,
   },
   {
     id: "collector_extraordinary",
-    title: "Pesquisador do Extraordinário",
-    description: "Encontrou um memento antigo ou um fragmento de fita cassete perdida.",
+    title: "",
+    description: "",
     iconName: "FileText",
     unlocked: false,
   },
   {
     id: "pain_survivor",
-    title: "Sobrevivente da Dor",
-    description: "Coletou um frasco de Dor Líquida e resistiu aos seus efeitos colaterais severos.",
+    title: "",
+    description: "",
     iconName: "AlertTriangle",
     unlocked: false,
   },
   {
     id: "absolute_survivor",
-    title: "Fuga do Labirinto",
-    description: "Completou o Nível 2 e escapou da perseguição mortal das entidades.",
+    title: "",
+    description: "",
     iconName: "Skull",
     unlocked: false,
   },
   {
     id: "secret_level_found",
-    title: "Luzes Apagadas",
-    description: "Seguiu um corredor sem nenhuma luz até o fim e encontrou o Nível 6: Lights Out.",
+    title: "",
+    description: "",
     iconName: "Sparkles",
     unlocked: false,
   },
   {
     id: "level_g_found",
-    title: "Horário de Expediente",
-    description: "Atravessou uma porta de escritório que não deveria existir no Nível 0 e chegou ao LEVEL G.",
+    title: "",
+    description: "",
     iconName: "FileText",
     unlocked: false,
   },
   {
     id: "level_g_escaped",
-    title: "Saída de Emergência",
-    description: "Digitou o código, sobreviveu ao Finger King e escapou do LEVEL G.",
+    title: "",
+    description: "",
     iconName: "Trophy",
     unlocked: false,
   }
 ];
+
+/** Achievement with its title/description in the current language. */
+function localized(ach: Achievement): Achievement {
+  return { ...ach, title: t(`ach.${ach.id}.title`), description: t(`ach.${ach.id}.desc`) };
+}
 
 export function loadAchievements(): Achievement[] {
   try {
@@ -87,19 +93,19 @@ export function loadAchievements(): Achievement[] {
       const parsed = JSON.parse(raw) as Record<string, string>;
       return DEFAULT_ACHIEVEMENTS.map(ach => {
         if (parsed[ach.id]) {
-          return {
+          return localized({
             ...ach,
             unlocked: true,
             unlockedAt: parsed[ach.id]
-          };
+          });
         }
-        return ach;
+        return localized(ach);
       });
     }
   } catch (e) {
     console.warn("Failed to load achievements:", e);
   }
-  return [...DEFAULT_ACHIEVEMENTS];
+  return DEFAULT_ACHIEVEMENTS.map(localized);
 }
 
 type AchievementListener = (ach: Achievement) => void;
@@ -119,7 +125,7 @@ export function unlockAchievement(id: string): Achievement | null {
   if (index === -1) return null;
   if (current[index].unlocked) return null;
 
-  const timestamp = new Date().toLocaleString("pt-BR");
+  const timestamp = new Date().toLocaleString(localeTag());
   
   // Save to localStorage
   try {

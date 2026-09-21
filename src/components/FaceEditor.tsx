@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { t, useLanguage } from "../i18n";
 import React, { useEffect, useRef, useState } from "react";
 import { Eraser, Trash2 } from "lucide-react";
 import { EMPTY_FACE, FACE_PALETTE, FACE_SIZE } from "../utils/face";
@@ -16,6 +17,7 @@ interface FaceEditorProps {
 
 /** 16x16 pixel-art pad for the explorer's helmet face. Click or drag to paint. */
 export const FaceEditor: React.FC<FaceEditorProps> = ({ face: rawFace, suitColor, onChange }) => {
+  useLanguage();
   // A stale/corrupt saved value would render the wrong number of cells.
   const face = rawFace?.length === FACE_SIZE * FACE_SIZE ? rawFace : EMPTY_FACE;
   const [colorIndex, setColorIndex] = useState(1);
@@ -43,13 +45,13 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ face: rawFace, suitColor
   return (
     <div className="mt-6">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] text-[#F2E8CF]/50 uppercase tracking-wider">Rosto no capacete</span>
+        <span className="text-[11px] text-[#F2E8CF]/50 uppercase tracking-wider">{t("face.title")}</span>
         <button
           type="button"
           onClick={() => onChange(EMPTY_FACE)}
           className="flex items-center gap-1 text-[10px] text-[#F2E8CF]/60 hover:text-white uppercase tracking-wider cursor-pointer"
         >
-          <Trash2 className="w-3 h-3" /> Limpar
+          <Trash2 className="w-3 h-3" /> {t("face.clear")}
         </button>
       </div>
 
@@ -83,7 +85,7 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ face: rawFace, suitColor
             <button
               key={i}
               type="button"
-              aria-label={color ? `Pincel ${color}` : "Borracha"}
+              aria-label={color ? t("face.brush", { color }) : t("face.eraser")}
               onClick={() => setColorIndex(i)}
               className={`w-7 h-7 rounded border-2 flex items-center justify-center transition-all cursor-pointer ${
                 selected ? "border-[#deb81d] scale-110" : "border-white/10 hover:border-white/40"
