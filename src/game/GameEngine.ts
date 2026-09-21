@@ -520,7 +520,6 @@ export class GameEngine {
 
     // Instantiate Procedural Level 0 or 1 Map
     this.map = new ProceduralMap(seed, this.level, this.quality);
-    this.map.buildLevel0Gateway(this.scene);
 
     // Fixed pool of real point lights shared by every lamp in the level.
     this.lightPool = new LightPool(this.scene, this.quality.lightBudget, this.quality.lightRange);
@@ -1045,38 +1044,30 @@ export class GameEngine {
         }
       }
 
-      // Check if player is near the escape exit door and jumping against the glitching wall
-      if (this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
-        const pgX = Math.floor(this.player.position.x / this.map.cellSize);
-        const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
-
-        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ) {
-          // Player is in the instability cell!
-          // (Level G's exit cell can't be entered until the emergency door opens.)
-          if (this.level === 1 || this.level === 2 || this.level === 3 || this.level === 4) {
-            // Direct entry transition! No blocking wall!
+      // Level 0: the exit is a taped wall/floor with no physics — pass through it.
+      if (this.level === 0 && this.map && this.map.noclipCellX >= 0) {
+        if (this.map.isInNoclipExit(this.player.position.x, this.player.position.z)) {
+          this.noclipDwell += delta;
+          if (Math.random() < delta * 6) this.audio.triggerHumFlicker(60);
+          // The floor swallows you a moment after stepping on it; the wall is instant.
+          if (this.noclipDwell >= (this.map.noclipKind === "floor" ? 0.45 : 0.05)) {
+            this.noclipDwell = 0;
             this.audio.playGlitchNoclipSound();
-            if (this.onEscapeTrigger) {
-              this.onEscapeTrigger();
-            }
-          } else {
-            // Every time they press space (jumps increase), flicker the ambient buzz slightly
-            if (this.player.spacePressCount > 0 && Math.random() < 0.28) {
-              this.audio.triggerHumFlicker(80);
-            }
-
-            // Must register 6 space jumps inside the cell while pushing against boundary to trigger noclip
-            if (this.player.spacePressCount >= 6) {
-              this.player.spacePressCount = 0; // reset
-              this.audio.playGlitchNoclipSound();
-              if (this.onEscapeTrigger) {
-                this.onEscapeTrigger();
-              }
-            }
+            this.onEscapeTrigger?.();
           }
         } else {
-          // If they leave the exit cell, reset jump streak
-          this.player.spacePressCount = 0;
+          this.noclipDwell = 0;
+        }
+      }
+
+      // Other levels: stepping into the exit cell is enough (Level G's can't be
+      // entered until the emergency door opens).
+      if (this.level !== 0 && this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
+        const pgX = Math.floor(this.player.position.x / this.map.cellSize);
+        const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
+        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ) {
+          this.audio.playGlitchNoclipSound();
+          this.onEscapeTrigger?.();
         }
       }
 
@@ -1302,9 +1293,14 @@ export class GameEngine {
 
     // Head (Suit Hood helmet sphere)
     const headGeo = new THREE.SphereGeometry(0.2, 10, 10);
+    // Everything on the head hangs off a pivot at the neck so the whole head
+    // (helmet, visor, drawn face) tilts up/down with where the player looks.
+    const headPivot = new THREE.Group();
+    headPivot.name = "head";
+    headPivot.position.set(0, 1.3, 0);
+    group.add(headPivot);
     const head = new THREE.Mesh(headGeo, suitMat);
-    head.position.set(0, 1.3, 0);
-    group.add(head);
+    headPivot.add(head);
 
     // Distinctive Level 0 reflective Visor Mask — skipped when the player has
     // drawn a custom face, so the drawing shows through the hood opening
@@ -1313,8 +1309,8 @@ export class GameEngine {
       const visorGeo = new THREE.BoxGeometry(0.22, 0.1, 0.12);
       const visor = new THREE.Mesh(visorGeo, visorMat);
       // Face the positive Z direction as default orientation
-      visor.position.set(0, 1.33, 0.14);
-      group.add(visor);
+      visor.position.set(0, 0.03, 0.14);
+      headPivot.add(visor);
     }
 
     // Visual shoulders
@@ -1378,8 +1374,8 @@ export class GameEngine {
         faceTexture.colorSpace = THREE.SRGBColorSpace;
         const faceMat = new THREE.MeshStandardMaterial({ map: faceTexture, alphaTest: 0.5, roughness: 0.7 });
         const facePlane = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.26), faceMat);
-        facePlane.position.set(0, 1.31, 0.215);
-        group.add(facePlane);
+        facePlane.position.set(0, 0.01, 0.215);
+        headPivot.add(facePlane);
       }
     }
 
@@ -1438,6 +1434,7 @@ export class GameEngine {
 
   /** Dead explorers spectate a living teammate (first-person) until the room revives everyone. */
   public isDead = false;
+  private noclipDwell = 0;
   private spectateId: string | null = null;
   private remoteDead = new Set<string>();
 
@@ -1675,6 +1672,13 @@ export class GameEngine {
           target.position.z = Math.cos(pitch) * 4;
         }
 
+        // Head follows the look pitch (the model faces +Z, so looking up tilts back: -x)
+        const headPivot = group.getObjectByName("head");
+        if (headPivot) {
+          const targetTilt = -THREE.MathUtils.clamp(pitch, -1.2, 1.2);
+          headPivot.rotation.x += (targetTilt - headPivot.rotation.x) * Math.min(1, 15 * delta);
+        }
+
         // Bobbing legs representation for walking/running
         const state = anyG.animState || 'idle';
         if (state === 'walking' || state === 'running') {
@@ -1898,7 +1902,6 @@ export class GameEngine {
 
     // 4. Instantiate new level's ProceduralMap
     this.map = new ProceduralMap(seed, level, this.quality);
-    this.map.buildLevel0Gateway(this.scene);
     this.lightPool.invalidate();
     
     // Pre-create/load the entire proximity map meshes before placing/spawning the player
@@ -2282,7 +2285,9 @@ export class GameEngine {
     let text: string | null = null;
     if (this.map && this.player && this.player.mapFullyLoaded && (this.player.isLocked || this.player.isOverrideActive)) {
       const [fx, fz] = this.lookDirectionXZ();
-      if (this.map.findPushable(this.player.position.x, this.player.position.z, fx, fz)) {
+      if (this.nearExitDesk()) {
+        text = "[E] Ler o papel da mesa";
+      } else if (this.map.findPushable(this.player.position.x, this.player.position.z, fx, fz)) {
         text = "[E] Empurrar caixa";
       }
     }
@@ -2292,9 +2297,25 @@ export class GameEngine {
     }
   }
 
-  /** The one interactable on Level G: the main-room terminal, within reach. */
-  public tryInteract(): "terminal" | null {
-    if (this.isDead || this.level !== 4 || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
+  /** Within arm's reach of the desk that holds the exit paper (Levels 0 and 1). */
+  private nearExitDesk(): boolean {
+    if (!this.map || !this.player || this.map.exitDeskX < 0) return false;
+    const dx = this.player.position.x - this.map.exitDeskX;
+    const dz = this.player.position.z - this.map.exitDeskZ;
+    return dx * dx + dz * dz < 2.2 * 2.2;
+  }
+
+  /** The exit desk's paper as a readable note, or null. */
+  public exitPaperNote(): { title: string; content: string } | null {
+    const note = this.map?.exitPaperNote();
+    return note ? { title: note.title, content: note.lines.join("\n") } : null;
+  }
+
+  /** The interactables: the exit desk's paper (Levels 0/1) and Level G's terminal. the main-room terminal, within reach. */
+  public tryInteract(): "terminal" | "paper" | null {
+    if (this.isDead) return null;
+    if (this.nearExitDesk()) return "paper";
+    if (this.level !== 4 || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
     const cs = this.map.cellSize;
     const dx = this.player.position.x - (this.map.levelGTerminalX * cs + cs / 2);
     const dz = this.player.position.z - (this.map.levelGTerminalZ * cs + cs / 2);

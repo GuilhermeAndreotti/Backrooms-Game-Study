@@ -222,10 +222,23 @@ export class ProceduralMap {
   public gatewayJunctionX = -1; public gatewayJunctionZ = -1;
   /** Which passage leads onward vs. into the red rooms — decided by the seed. */
   public correctDoorIsA = true;
-  /** Colour-name painted above the correct passage; repeated in every note's clue. */
+  /** Non-empty on Level 0: scrap-of-note clue flag (the correct passage is the one with the desk, not the red room). */
   public correctDoorMarker = "";
-  /** Colour-name painted above the wrong (red-room) passage. */
-  public wrongDoorMarker = "";
+
+  // --- Level 0 exit: a noclip wall or floor patch ringed with hazard tape ------
+  /** Whether the way out is a stretch of wall or of floor (the paper on the desk says which). */
+  public noclipKind: "wall" | "floor" = "wall";
+  /** Which edge of the exit cell the wall patch sits on ('N' = towards -z, 'S' = +z). */
+  public noclipDir: "N" | "S" = "N";
+  /** Desk (world XZ) holding the exit paper on levels that have one; -1 when none. */
+  public exitDeskX = -1;
+  public exitDeskZ = -1;
+  /** Wall variant: the solid cell (behind the exit cell) the player is allowed to walk into. */
+  public noclipCellX = -1;
+  public noclipCellZ = -1;
+  /** Floor variant: world centre of the taped patch. */
+  public noclipPatchX = 0;
+  public noclipPatchZ = 0;
   /** Placard/light props at the two passages, kept in the scene for the level's life. */
   public gatewayMeshes: THREE.Object3D[] = [];
 
@@ -575,6 +588,35 @@ export class ProceduralMap {
     }
   }
 
+  /** The text on the exit desk's paper (also shown when the player reads it), or null on levels without one. */
+  public exitPaperNote(): { title: string; lines: string[] } | null {
+    if (this.level === 1) {
+      return {
+        title: "ACESSO DE MANUTENÇÃO (LEVEL 2)",
+        lines: [
+          "O vapor e o metal enferrujado cobrem este setor.",
+          "Este corredor estreito leva ao temido Level 2.",
+          "Ao encontrar o portal de metal e vapor à frente,",
+          "atravesse-o para seguir adiante.",
+        ],
+      };
+    }
+    if (this.level === 0) {
+      const wall = this.noclipKind === "wall";
+      return {
+        title: "COMO ESCAPAR DESTAS PAREDES (LEVEL 0)",
+        lines: [
+          "Este labirinto é uma simulação dimensional.",
+          "Não existem portas ou saídas físicas normais.",
+          wall ? "A saída é uma PAREDE sem física, aqui perto," : "A saída é um CHÃO sem física, aqui perto,",
+          "cercada de fita isolante amarela e preta.",
+          wall ? "ATRAVESSE a parede para trocar de nível." : "AFUNDE nesse chão para trocar de nível.",
+        ],
+      };
+    }
+    return null;
+  }
+
   /**
    * Generates a wooden table with a note written in Portuguese (instructing how to noclip)
    */
@@ -635,29 +677,12 @@ export class ProceduralMap {
 
       ctx.fillStyle = "#1e1b17"; // handwritten ink
       ctx.textAlign = "center";
-      
-      if (this.level === 1) {
+      const note = this.exitPaperNote();
+      if (note) {
         ctx.font = "bold 17px Courier New, monospace";
-        ctx.fillText("ACESSO DE MANUTENCAO (LEVEL 2)", 256, 38);
-        
+        ctx.fillText(note.title, 256, 38);
         ctx.font = "bold 13px Courier New, monospace";
-        ctx.fillText("O vapor e o metal enferrujado cobrem este setor.", 256, 75);
-        ctx.fillText("Este corredor estreito leva ao temido Level 2.", 256, 105);
-        ctx.fillText("Ao encontrar o portal de metal e vapor a frente,", 256, 135);
-        ctx.fillText("empurre-o com forca, corra em sua direcao", 256, 165);
-        ctx.fillText("e comece a PULAR repetidamente para atravessar.", 256, 195);
-        ctx.fillText("Rompendo o espaco fisico, voce avancara!", 256, 225);
-      } else {
-        ctx.font = "bold 17px Courier New, monospace";
-        ctx.fillText("COMO ESCAPAR DESTAS PAREDES (LEVEL 0)", 256, 38);
-        
-        ctx.font = "bold 13px Courier New, monospace";
-        ctx.fillText("Este labirinto e uma simulacao dimensional.", 256, 75);
-        ctx.fillText("Nao existem portas ou saidas fisicas normais.", 256, 105);
-        ctx.fillText("Para fazer o NOCLIP (FLIPAR) na parede verde,", 256, 135);
-        ctx.fillText("voce deve correr e se chocar contra ela,", 256, 165);
-        ctx.fillText("ficando PULANDO SEM PARAR ate atravessar.", 256, 195);
-        ctx.fillText("Continue pulando e empurrando a parede!", 256, 225);
+        note.lines.forEach((line, i) => ctx.fillText(line, 256, 75 + i * 30));
       }
     }
     const paperTex = new THREE.CanvasTexture(canvas);
@@ -2218,9 +2243,6 @@ export class ProceduralMap {
     }
   }
 
-  /** Placard colours for the two choice doors, set by carveLevel0Gateway(). */
-  private doorMarkerHex = { correct: 0xffffff, wrong: 0xffffff };
-
   /**
    * Randomized recursive-backtracker perfect maze over [x0..x1] x [z0..z1].
    * The region must already be SOLID. Room cells are those an even number of
@@ -2312,19 +2334,7 @@ export class ProceduralMap {
     const doorRng = new SeededRandom(((this.seed ^ 0x9e3779b9) >>> 0) + 55555);
     doorRng.next(); doorRng.next(); doorRng.next();
     this.correctDoorIsA = doorRng.next() < 0.5;
-    const palette = [
-      { name: "ÂMBAR", hex: 0xe0b93a },
-      { name: "AZUL", hex: 0x3d7fa6 },
-      { name: "VERDE", hex: 0x4c9a4c },
-      { name: "VERMELHO", hex: 0xc0392b },
-      { name: "VIOLETA", hex: 0x8e44ad },
-    ];
-    const iCorrect = doorRng.nextInt(0, palette.length);
-    let iWrong = doorRng.nextInt(0, palette.length);
-    if (iWrong === iCorrect) iWrong = (iWrong + 1) % palette.length;
-    this.correctDoorMarker = palette[iCorrect].name;
-    this.wrongDoorMarker = palette[iWrong].name;
-    this.doorMarkerHex = { correct: palette[iCorrect].hex, wrong: palette[iWrong].hex };
+    this.correctDoorMarker = "mesa"; // notes point at the passage with the desk instead of a painted colour
 
     // 6. A small room behind each passage. The correct one holds the exit; the
     //    wrong one is a red room. (Passage cells were carved above.)
@@ -2339,9 +2349,19 @@ export class ProceduralMap {
     // passage A room: z 22..26 (north).  passage B room: z 38..42 (south).
     carveRoom(22, 26, aIsExit ? CellType.CORRIDOR : CellType.RED_ROOM);
     carveRoom(38, 42, aIsExit ? CellType.RED_ROOM : CellType.CORRIDOR);
+    // The exit is the far end of its room, up against solid rock, so a
+    // noclip wall has something to pass through.
     this.exitGridX = 60;
-    this.exitGridZ = aIsExit ? 23 : 41;
+    this.exitGridZ = aIsExit ? 22 : 42;
+    this.noclipDir = aIsExit ? "N" : "S";
+    const kindRng = new SeededRandom(((this.seed ^ 0x51ed270b) >>> 0) + 777);
+    kindRng.next(); kindRng.next();
+    this.noclipKind = kindRng.next() < 0.5 ? "wall" : "floor";
     this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
+    this.noclipCellX = this.exitGridX;
+    this.noclipCellZ = this.exitGridZ + (aIsExit ? -1 : 1);
+    this.noclipPatchX = (this.exitGridX + 0.5) * this.cellSize;
+    this.noclipPatchZ = (this.exitGridZ + 0.5) * this.cellSize + (aIsExit ? 0.7 : -0.7);
 
     // 7. A few more red-room clearings scattered through the maze.
     for (const [rx, rz] of [[49, 13], [54, 47], [51, 27]] as [number, number][]) {
@@ -2391,34 +2411,6 @@ export class ProceduralMap {
     const gz = Math.floor(worldZ / this.cellSize);
     if (gx < 0 || gz < 0 || gx >= this.gridSize || gz >= this.gridSize) return 0;
     return this.floorHeight[gx][gz] || 0;
-  }
-
-  /**
-   * Builds the Level 0 maze-exit props: just a coloured placard + soft glow
-   * above each of the two open passages, so the clue in your notes has
-   * something to point at. No doors, no obstacles — the corridor is open.
-   * Called by GameEngine once the map exists.
-   */
-  public buildLevel0Gateway(scene: THREE.Scene) {
-    if (this.level !== 0 || this.doorAGridX < 0) return;
-
-    const aHex = this.correctDoorIsA ? this.doorMarkerHex.correct : this.doorMarkerHex.wrong;
-    const bHex = this.correctDoorIsA ? this.doorMarkerHex.wrong : this.doorMarkerHex.correct;
-
-    const makePlacard = (gx: number, gz: number, hex: number) => {
-      const [cx, cz] = this.cellCenter(gx, gz);
-      const mat = new THREE.MeshStandardMaterial({ color: hex, emissive: hex, emissiveIntensity: 0.6, roughness: 0.5 });
-      const panel = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.9, 0.2), mat);
-      panel.position.set(cx, 2.7, cz);
-      scene.add(panel);
-      this.gatewayMeshes.push(panel);
-      const glow = new THREE.PointLight(hex, 1.4, 7, 1.4);
-      glow.position.set(cx, 2.3, cz);
-      scene.add(glow);
-      this.gatewayMeshes.push(glow);
-    };
-    makePlacard(this.doorAGridX, this.doorAGridZ, aHex);
-    makePlacard(this.doorBGridX, this.doorBGridZ, bHex);
   }
 
   /** Tears down the passage placards on level transition. */
@@ -2509,6 +2501,51 @@ export class ProceduralMap {
     this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
   }
 
+  /** Yellow-and-black diagonal hazard tape; the stripes repeat every ~0.4 m along the tape. */
+  private hazardTapeMaterial(length: number, along: "x" | "y" | "z"): THREE.Material {
+    return this.sharedMat(`hazard_tape_${length.toFixed(2)}_${along}`, () => {
+      const c = document.createElement("canvas");
+      c.width = 64; c.height = 64;
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = "#111111"; ctx.fillRect(0, 0, 64, 64);
+      ctx.fillStyle = "#f2c500";
+      for (let i = -64; i < 128; i += 32) {
+        ctx.beginPath();
+        ctx.moveTo(i, 64); ctx.lineTo(i + 16, 64); ctx.lineTo(i + 80, 0); ctx.lineTo(i + 64, 0);
+        ctx.closePath(); ctx.fill();
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      const n = Math.max(1, length / 0.4);
+      tex.repeat.set(along === "x" ? n : 1, along === "x" ? 1 : n);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      this.sharedTextures.push(tex);
+      return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6, emissive: 0x2a2200, emissiveIntensity: 0.6 });
+    });
+  }
+
+  /** Level 0's noclip wall: the solid cell behind the exit, but only the taped stretch of it. */
+  private isNoclipSlab(gx: number, gz: number, x: number): boolean {
+    if (this.level !== 0 || this.noclipKind !== "wall" || gx !== this.noclipCellX || gz !== this.noclipCellZ) return false;
+    return Math.abs(x - (this.exitGridX + 0.5) * this.cellSize) < 0.8;
+  }
+
+  /**
+   * Level 0's exit: true once the explorer is far enough into the taped wall
+   * (or standing on the taped floor patch) to have passed through it.
+   */
+  public isInNoclipExit(x: number, z: number): boolean {
+    if (this.level !== 0 || this.noclipCellX < 0) return false;
+    const cs = this.cellSize;
+    if (this.noclipKind === "wall") {
+      if (Math.abs(x - (this.exitGridX + 0.5) * cs) >= 0.8) return false;
+      const edge = this.noclipDir === "N" ? this.exitGridZ * cs : (this.exitGridZ + 1) * cs;
+      const depth = this.noclipDir === "N" ? edge - z : z - edge;
+      return depth > 0.5;
+    }
+    return Math.abs(x - this.noclipPatchX) < 0.8 && Math.abs(z - this.noclipPatchZ) < 0.8;
+  }
+
   /**
    * Checks player bounding cylinder/box against solid cell blocks.
    * Player position (world space) is checked against the 2D grid matrix.
@@ -2529,6 +2566,7 @@ export class ProceduralMap {
     for (let gx = minGridX; gx <= maxGridX; gx++) {
       for (let gz = minGridZ; gz <= maxGridZ; gz++) {
         if (this.grid[gx][gz] === CellType.SOLID) {
+          if (this.isNoclipSlab(gx, gz, x)) continue; // the taped wall has no physics
           return true;
         }
         // Level G's emergency exit is a locked door until the code goes in
@@ -3312,11 +3350,13 @@ export class ProceduralMap {
 
       const wallPrng = new SeededRandom(this.seed + gx * 37 + gz * 73);
       // On Level 1, the exit is at the end of the straight corridor running west-to-east. So force chosenDir to 'E'!
-      const chosenDir = this.level === 2 ? 'N' : (this.level === 1 ? 'E' : (adjacentSolids.length > 0
+      const chosenDir = this.level === 2 ? 'N' : (this.level === 1 ? 'E' : this.level === 0 ? this.noclipDir : (adjacentSolids.length > 0
         ? adjacentSolids[wallPrng.nextInt(0, adjacentSolids.length - 1)]
         : 'S'));
+      // Group yaw for that direction (N default, S half-turn, W/E quarter-turns)
+      const chosenRot = chosenDir === 'S' ? Math.PI : chosenDir === 'W' ? Math.PI / 2 : chosenDir === 'E' ? -Math.PI / 2 : 0;
 
-      let glitchWall: THREE.Mesh;
+      let glitchWall: THREE.Mesh | null = null;
 
       if (this.level === 2) {
         // LEVEL 2: CYAN ESCAPE PORTAL LEADING TO VICTORY!
@@ -3416,29 +3456,61 @@ export class ProceduralMap {
         const deskWithPaper = this.createDeskWithPaperMesh();
         deskWithPaper.position.set(0, 0, -hSize / 2 + 1.2);
         exitGroup.add(deskWithPaper);
+        this.exitDeskX = posX + (-hSize / 2 + 1.2) * Math.sin(chosenRot);
+        this.exitDeskZ = posZ + (-hSize / 2 + 1.2) * Math.cos(chosenRot);
       } else {
-        // LEVEL 0: Classic fluorescent glitch wall
-        const glitchWallMat = new THREE.MeshBasicMaterial({
-          color: 0x1aff80, // Ghostly neon green
-          wireframe: true,
-          transparent: true,
-          opacity: 0.75
-        });
-        glitchWall = new THREE.Mesh(this.unitBoxGeo, glitchWallMat);
-        glitchWall.scale.set(hSize, height, 0.15);
-        glitchWall.position.set(0, height / 2, -hSize / 2 + 0.05);
-        exitGroup.add(glitchWall);
+        // LEVEL 0: a stretch of wall or floor with no physics, ringed with
+        // yellow-and-black hazard tape, next to a desk whose paper says which.
+        const wallZ = -hSize / 2;
+        const taped = this.noclipKind === "wall";
+        const patchMat = this.sharedMat("noclip_patch", () => new THREE.MeshBasicMaterial({
+          color: 0x07090d, transparent: true, opacity: 0.92, side: THREE.DoubleSide,
+        }));
+        const bar = (w: number, h: number, d: number, x: number, y: number, z: number, along: "x" | "y" | "z") => {
+          const len = along === "x" ? w : along === "y" ? h : d;
+          const mat = this.hazardTapeMaterial(len, along);
+          const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+          m.position.set(x, y, z);
+          exitGroup.add(m);
+        };
+        if (taped) {
+          const pw = 1.6, ph = 2.4, t = 0.12, zf = wallZ + 0.04;
+          const patch = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), patchMat);
+          patch.position.set(0, ph / 2, zf - 0.005);
+          exitGroup.add(patch);
+          bar(pw + 2 * t, t, 0.05, 0, ph + t / 2, zf, "x");
+          bar(pw + 2 * t, t, 0.05, 0, t / 2, zf, "x");
+          bar(t, ph + t, 0.05, -(pw + t) / 2, (ph + t) / 2, zf, "y");
+          bar(t, ph + t, 0.05, (pw + t) / 2, (ph + t) / 2, zf, "y");
+        } else {
+          const pw = 1.6, t = 0.12, cz = 0.7;
+          const patch = new THREE.Mesh(new THREE.PlaneGeometry(pw, pw), patchMat);
+          patch.rotation.x = -Math.PI / 2;
+          patch.position.set(0, 0.012, cz);
+          exitGroup.add(patch);
+          bar(pw + 2 * t, 0.02, t, 0, 0.011, cz - (pw + t) / 2, "x");
+          bar(pw + 2 * t, 0.02, t, 0, 0.011, cz + (pw + t) / 2, "x");
+          bar(t, 0.02, pw, -(pw + t) / 2, 0.011, cz, "z");
+          bar(t, 0.02, pw, (pw + t) / 2, 0.011, cz, "z");
+        }
 
-        // PointLight in front of the glitch wall
-        const portalLight = new THREE.PointLight(0x1aff80, 5.0, 9, 0.8);
-        portalLight.position.set(0, height / 2, -hSize / 2 + 0.5);
-        exitGroup.add(portalLight);
-
-        // Office desk with instructions paper in front of the glitched wall
+        // Desk with the paper, beside the taped patch (not in front of it)
         const deskWithPaper = this.createDeskWithPaperMesh();
-        deskWithPaper.position.set(0, 0, -hSize / 2 + 1.0); // sitting close to the wall but accessible
-        deskWithPaper.rotation.y = 0; // rotated to face player approaching from south towards north wall
+        deskWithPaper.position.set(1.45, 0, wallZ + 1.0);
+        deskWithPaper.rotation.y = Math.PI / 2;
         exitGroup.add(deskWithPaper);
+        this.exitDeskX = posX + 1.45 * Math.cos(chosenRot) + (wallZ + 1.0) * Math.sin(chosenRot);
+        this.exitDeskZ = posZ - 1.45 * Math.sin(chosenRot) + (wallZ + 1.0) * Math.cos(chosenRot);
+
+        // A warm lamp-yellow glow so the taped patch is easy to spot (pooled light)
+        const lx = taped ? 0 : 0, lz = taped ? wallZ + 0.9 : 0.7;
+        this.registerLight(
+          gx, gz,
+          posX + lx * Math.cos(chosenRot) + lz * Math.sin(chosenRot),
+          taped ? 1.6 : 1.2,
+          posZ - lx * Math.sin(chosenRot) + lz * Math.cos(chosenRot),
+          0xffc94a, 1.8, 6, 1.2
+        );
       }
 
       // Set position of the parent group
@@ -3458,14 +3530,16 @@ export class ProceduralMap {
       group.add(exitGroup);
 
       // Add to animating meshes so it glitches out beautifully
-      this.animatingMeshes.push({
-        mesh: glitchWall,
-        type: "glitch",
-        initialY: height / 2,
-        phase: 0,
-        gridX: gx,
-        gridZ: gz,
-      });
+      if (glitchWall) {
+        this.animatingMeshes.push({
+          mesh: glitchWall,
+          type: "glitch",
+          initialY: height / 2,
+          phase: 0,
+          gridX: gx,
+          gridZ: gz,
+        });
+      }
     }
 
     // 6. FLUORESCENT LIGHT LUMINAIRE FIXTURE (Deterministic placement)
@@ -3880,39 +3954,8 @@ export class ProceduralMap {
             } else {
               this.registerMovable(gx, gz, box1, box1Obstacle);
             }
-          } 
-          else {
-            // Spawn Spooky Spacetime Spatial Anomaly! Glitching green energy core!
-            const anomalyGroup = new THREE.Group();
-
-            // Outer wireframe glowing block
-            const outerMesh = new THREE.Mesh(this.anomalyOuterGeo, this.anomalyMaterial);
-            anomalyGroup.add(outerMesh);
-
-            // Inner solid glowing warning ring
-            const innerMesh = new THREE.Mesh(this.anomalyInnerGeo, this.fluorescentGlassOn); // glows bright white-yellow
-            anomalyGroup.add(innerMesh);
-
-            const rx = propRng.nextRange(-0.8, 0.8);
-            const rz = propRng.nextRange(-0.8, 0.8);
-            const initialY = 1.0 + propRng.nextRange(0, 0.5);
-
-            // Flickering glitch neon green point light (pooled)
-            this.registerLight(gx, gz, posX + rx, fY + initialY, posZ + rz, 0x1aff80, 2.0, 5, 0.8);
-
-            anomalyGroup.position.set(posX + rx, initialY, posZ + rz);
-            group.add(anomalyGroup);
-            this.addObstacle(gx, gz, posX + rx, posZ + rz, 0.5);
-
-            this.animatingMeshes.push({
-              mesh: anomalyGroup,
-              type: "glitch",
-              initialY: initialY,
-              phase: propRng.nextRange(0, Math.PI * 2),
-              gridX: gx,
-              gridZ: gz,
-            });
           }
+          // (The glowing green "spatial anomaly" orbs that used to spawn here are gone.)
         }
       }
     }

@@ -251,6 +251,20 @@ export default function App() {
         setIsAchievementsOpen(false);
         setIsTerminalOpen(true);
         document.exitPointerLock?.();
+      } else if ((e.key === "e" || e.key === "E") && engineRef.current?.tryInteract() === "paper") {
+        // The paper on the exit desk
+        e.preventDefault();
+        const note = engineRef.current.exitPaperNote();
+        if (note) {
+          setActiveLoreNote({
+            title: note.title,
+            author: "Desconhecido",
+            date: "—",
+            location: `Level ${engineRef.current.level}`,
+            content: note.content,
+          });
+          document.exitPointerLock?.();
+        }
       } else if ((e.key === "e" || e.key === "E") && !e.repeat && engineRef.current?.tryPushBox()) {
         // Shove the box in front of you out of the way
         e.preventDefault();
@@ -492,7 +506,7 @@ export default function App() {
                       // Same clue on every note this seed, appended to the body
                       // (never the title, so the dedupe-by-title below still works).
                       if (doorMarker) {
-                        lore.content += `\n\n"Rabiscado na margem: das duas passagens no fim do labirinto, a certa é a pintada de ${doorMarker}. A outra só leva de volta ao vermelho."`;
+                        lore.content += `\n\n"Rabiscado na margem: das duas passagens no fim do labirinto, a certa é a que tem uma mesa com um papel. A outra só leva de volta ao vermelho."`;
                       }
                       setCollectedNotes((prev) => {
                         if (prev.some((n) => n.title === lore.title)) return prev;
