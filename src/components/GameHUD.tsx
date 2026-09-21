@@ -7,7 +7,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { Flashlight, ShieldAlert, Send, MessageSquare, Terminal, Backpack, Trophy } from "lucide-react";
 import { ChatMessage, RemotePlayer } from "../types/game";
 import { RadarHUD } from "./RadarHUD";
-import { GameEngine } from "../game/GameEngine";
+import { GameEngine, LevelGProgress } from "../game/GameEngine";
 
 interface GameHUDProps {
   stamina: number; // 0 to 1
@@ -33,6 +33,8 @@ interface GameHUDProps {
   onOpenInventory?: () => void;
   inventoryCount?: number;
   onOpenAchievements?: () => void;
+  /** Level G: code digits found so far and whether the final alarm is on. */
+  levelGProgress?: LevelGProgress;
 }
 
 const GameHUDComponent: React.FC<GameHUDProps> = ({
@@ -57,7 +59,8 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
   notificationKey = 0,
   onOpenInventory,
   inventoryCount = 0,
-  onOpenAchievements
+  onOpenAchievements,
+  levelGProgress
 }) => {
   const [inputText, setInputText] = useState("");
   const [showChat, setShowChat] = useState(false);
@@ -167,8 +170,8 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
           <div className="text-[10px] text-[#a28e3b]/60 px-1 font-semibold uppercase tracking-wider flex items-center gap-2 flex-wrap max-w-lg">
             <span>Explorador: <span className="text-[#deb81d]">{playerName}</span></span>
             <span className="text-[#a28e3b]/30">•</span>
-            <span>Localização: <span className="text-[#deb81d]">{level === 3 ? "Level 6 (Lights Out)" : (level === 2 ? "Level 2 (Pipe Dreams)" : (level === 1 ? "Level 1 (Habitable Zone)" : "Level 0 (The Lobby)"))}</span></span>
-            {level === 1 && currentSector && (
+            <span>Localização: <span className="text-[#deb81d]">{level === 4 ? "LEVEL G (The Small Office)" : level === 3 ? "Level 6 (Lights Out)" : (level === 2 ? "Level 2 (Pipe Dreams)" : (level === 1 ? "Level 1 (Habitable Zone)" : "Level 0 (The Lobby)"))}</span></span>
+            {(level === 1 || level === 4) && currentSector && (
               <>
                 <span className="text-[#a28e3b]/30">•</span>
                 <span className="text-[#deb81d] font-bold bg-[#deb81d]/10 px-1 border border-[#deb81d]/20 rounded tracking-widest text-[9px] animate-pulse">
@@ -177,6 +180,27 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
               </>
             )}
           </div>
+          {level === 4 && levelGProgress && (
+            <div className={`mt-1 ml-1 inline-flex items-center gap-2 px-2 py-1 rounded border text-[10px] font-bold uppercase tracking-widest ${
+              levelGProgress.alarm
+                ? "text-red-400 bg-red-950/60 border-red-600/50 animate-pulse"
+                : "text-[#3cff7a] bg-black/60 border-[#1f7a3a]/60"
+            }`}>
+              {levelGProgress.alarm ? (
+                <span>Porta de emergência aberta — corra!</span>
+              ) : (
+                <>
+                  <span>Código: <span className="tracking-[0.35em]">{levelGProgress.digits.map((d) => (d === null ? "_" : d)).join("")}</span></span>
+                  <span className="text-[#3cff7a]/50">•</span>
+                  <span className="text-[#3cff7a]/70">
+                    {levelGProgress.digits.every((d) => d !== null)
+                      ? "Use o computador da sala principal [E]"
+                      : `Documentos ${levelGProgress.digits.filter((d) => d !== null).length}/3`}
+                  </span>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Room configuration and connection matrix */}

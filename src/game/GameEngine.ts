@@ -4,11 +4,11 @@
  */
 
 import * as THREE from "three";
-import { ProceduralMap } from "./ProceduralMap";
+import { ProceduralMap, LEVEL_G_DOOR_OPEN_ANGLE } from "./ProceduralMap";
 import { PlayerController, PLAYER_STANDING_HEIGHT, PLAYER_CROUCH_HEIGHT } from "./PlayerController";
 import { FACE_SIZE, drawFace, hasFace } from "../utils/face";
 import { AudioManager } from "./AudioManager";
-import { WanderingEntity, EntityType } from "./WanderingEntity";
+import { WanderingEntity, EntityType, EntityNetState } from "./WanderingEntity";
 import { GameSettings, RemotePlayer } from "../types/game";
 import { unlockAchievement } from "../utils/achievements";
 import { LightPool } from "./LightPool";
@@ -30,7 +30,12 @@ export interface GameEngineCallbacks {
   onFlashlightChange: (state: boolean) => void;
   onEscapeTrigger?: () => void;
   /** Fired once, when the player reaches the end of Level 1's secret dark corridor. */
-  onSecretLevelFound?: () => void;
+  /** A secret entrance was reached: 3 = Level 6 "Lights Out" (from Level 1), 4 = Level G (from Level 0). */
+  onSecretLevelFound?: (level: number) => void;
+  /** Context hint for the crosshair area, e.g. "[E] Empurrar caixa"; null clears it. */
+  onInteractPrompt?: (text: string | null) => void;
+  /** Level G: digits found so far (null = missing) and whether the final alarm is on. */
+  onLevelGProgress?: (progress: LevelGProgress) => void;
   onRedRoomExposureChange?: (val: number) => void;
   onHUDNotification?: (msg: string) => void;
   onSectorChange?: (sector: string) => void;
@@ -40,6 +45,81 @@ export interface GameEngineCallbacks {
   /** Smoothed FPS and current render scale, emitted about twice a second. */
   onPerformanceSample?: (fps: number, renderScale: number) => void;
 }
+
+/** Ambient light and fog per level, shared by level setup and the per-frame event code. */
+function levelAtmosphere(level: number) {
+  switch (level) {
+    case 4: // Level G: dim, cold office under failing tubes
+      return { ambientColor: 0x9aa4ad, ambientIntensity: 0.5, fogColor: 0x23272a, dimmedFogColor: 0x0b0c0d };
+    case 3: // "Lights Out": all but pitch black — the waypoints and your flashlight are it
+      return { ambientColor: 0x05050a, ambientIntensity: 0.008, fogColor: 0x000000, dimmedFogColor: 0x000000 };
+    case 2: // Pipe Dreams: tense dark reddish brown
+      return { ambientColor: 0x522312, ambientIntensity: 0.75, fogColor: 0x240902, dimmedFogColor: 0x120401 };
+    case 1: // warehouse: brighter industrial
+      return { ambientColor: 0xaab5bd, ambientIntensity: 1.35, fogColor: 0x8a9299, dimmedFogColor: 0x24282c };
+    default: // Level 0: classic yellow
+      return { ambientColor: 0xeae2c2, ambientIntensity: 1.05, fogColor: 0xede4c0, dimmedFogColor: 0x5c5740 };
+  }
+}
+
+export interface LevelGProgress {
+  digits: (number | null)[];
+  alarm: boolean;
+}
+
+/** What each Level G document says; `d` is the digit it gives away. */
+const LEVEL_G_DOCUMENTS = [
+  (d: number) => `MEMORANDO INTERNO: "Primeiro dígito do terminal: ${d}. Não deixe ele ver você anotando."`,
+  (d: number) => `FICHA DO ARQUIVO: "Segundo dígito: ${d}. Os dedos batem na parede antes de ele chegar."`,
+  (d: number) => `RELATÓRIO DE TURNO: "Último dígito: ${d}. Saia pela porta vermelha. Não olhe para trás."`,
+];
+
+/** Eye height below which an explorer counts as crouched (floor at 0, as on Level G). */
+const CROUCHED_EYE_HEIGHT = (PLAYER_STANDING_HEIGHT + PLAYER_CROUCH_HEIGHT) / 2;
+
+/** Seconds on Level G until the Finger King reaches full aggression. */
+const LEVEL_G_FULL_AGGRESSION_S = 240;
+
+/** An explorer the monsters can hunt: the local player or a same-level teammate. */
+interface AiTarget {
+  /** "local" for this client's explorer, otherwise the teammate's id. */
+  id: string;
+  /** Level G: crouched in a closet, not yet found out. */
+  hidden: boolean;
+  /**
+   * Crouched, judged from eye height: `state` only reads "crouching" while
+   * moving — someone crouched and still reports "idle".
+   */
+  crouched: boolean;
+  x: number;
+  z: number;
+  state: "idle" | "walking" | "running" | "crouching";
+  dir: THREE.Vector3;
+  flashlight: boolean;
+}
+
+function nearestTarget(targets: AiTarget[], x: number, z: number): { target: AiTarget; distSq: number } {
+  let best = targets[0];
+  let bestDistSq = Infinity;
+  for (const t of targets) {
+    const dx = t.x - x;
+    const dz = t.z - z;
+    const d = dx * dx + dz * dz;
+    if (d < bestDistSq) {
+      bestDistSq = d;
+      best = t;
+    }
+  }
+  return { target: best, distSq: bestDistSq };
+}
+
+/** Like nearestTarget, but anyone still visible beats anyone hidden. */
+function nearestHuntable(targets: AiTarget[], x: number, z: number): { target: AiTarget; distSq: number } {
+  const visible = targets.filter((t) => !t.hidden);
+  return nearestTarget(visible.length > 0 ? visible : targets, x, z);
+}
+
+const ENTITY_TYPES = new Set<string>(Object.values(EntityType));
 
 export class GameEngine {
   private containerID: string;
@@ -101,7 +181,7 @@ export class GameEngine {
   private frameCounter = 0;
 
   // Smilers system
-  public smilers: { mesh: THREE.Mesh; gridX: number; gridZ: number; spawnTime: number; gazeTimer: number }[] = [];
+  public smilers: { netId: number; mesh: THREE.Mesh; gridX: number; gridZ: number; spawnTime: number; gazeTimer: number }[] = [];
   private smilerSpawnCheckTimer = 0;
   /** Level 3 ("Lights Out"): seconds the flashlight has been held on continuously. */
   private lightsOutSummonTimer = 0;
@@ -116,12 +196,50 @@ export class GameEngine {
     return this.entities[0] || null;
   }
 
+  // --- Replicated world (see "World authority" in server.ts) ---------------
+  // Per level, one client simulates the monsters, smilers and blackout rolls
+  // and streams them; the rest render that stream instead of running their own.
+  /** This client's id in the room, set by App once joined. */
+  public localPlayerId: string | null = null;
+  /** Level -> id of the client simulating that level. */
+  private worldAuthority: Record<string, string> = {};
+  /** Latest movement update of each teammate on this level (AI targets). */
+  private remoteStates = new Map<string, RemotePlayer>();
+  /** Ids handed out in spawn order, identical on every client for fixed spawns. */
+  private nextEntityNetId = 0;
+  private nextSmilerNetId = 0;
+  private worldSendTimer = 0;
+  private readonly worldSendInterval = 0.1; // 10 Hz
+  private scratchRemoteDirs: THREE.Vector3[] = [];
+
+  // --- Level G ("The Small Office") ----------------------------------------
+  /** Seconds spent on Level G: drives the Finger King's aggression. */
+  private levelGTime = 0;
+  public levelGDigits: (number | null)[] = [null, null, null];
+  /** Right code entered: alarm, flickering lights, open emergency door, final chase. */
+  public levelGAlarm = false;
+  /** Seconds each explorer has been crouched in a closet (authority's view). */
+  private levelGHideSeconds = new Map<string, number>();
+  /** This client's own closet timer, for its HUD warnings. */
+  private localHideSeconds = 0;
+  private localHideState: "out" | "hidden" | "found" = "out";
+  private levelGAmbushTimer = 25;
+  /** A wrong code sends the Finger King straight at you for a while. */
+  private levelGAlertTimer = 0;
+  private fingerTapTimer = 0;
+  private nearTerminal = false;
+  private scratchRight = new THREE.Vector3();
+
   // UI callbacks
   private onStaminaChange: (val: number) => void;
   private onStateChange: (state: string) => void;
   private onFlashlightChange: (state: boolean) => void;
   private onEscapeTrigger?: () => void;
-  private onSecretLevelFound?: () => void;
+  private onSecretLevelFound?: (level: number) => void;
+  private onInteractPrompt?: (text: string | null) => void;
+  private lastInteractPrompt: string | null = null;
+  private interactPromptTimer = 0;
+  private onLevelGProgress?: (progress: LevelGProgress) => void;
   private onRedRoomExposureChange?: (val: number) => void;
   public onHUDNotification?: (msg: string) => void;
   public onSectorChange?: (sector: string) => void;
@@ -160,6 +278,8 @@ export class GameEngine {
     this.onFlashlightChange = callbacks.onFlashlightChange;
     this.onEscapeTrigger = callbacks.onEscapeTrigger;
     this.onSecretLevelFound = callbacks.onSecretLevelFound;
+    this.onInteractPrompt = callbacks.onInteractPrompt;
+    this.onLevelGProgress = callbacks.onLevelGProgress;
     this.onRedRoomExposureChange = callbacks.onRedRoomExposureChange;
     this.onHUDNotification = callbacks.onHUDNotification;
     this.onSectorChange = callbacks.onSectorChange;
@@ -369,22 +489,18 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === 3 ? 0.075 : (level === 2 ? 0.045 : (level === 1 ? 0.020 : 0.024));
+    const authored = level === 4 ? 0.06 : level === 3 ? 0.11 : (level === 2 ? 0.045 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
   }
 
   private initWorld(seed: number, settings: GameSettings) {
-    // Configure background fog based on level (brighter, clearer, lower density on Level 0 and Level 1)
-    const fogColor = this.level === 1 ? 0x8a9299 : 0xede4c0;
-    this.scene.background = new THREE.Color(fogColor);
-    this.scene.fog = new THREE.FogExp2(fogColor, this.fogDensityFor(this.level));
+    const atmosphere = levelAtmosphere(this.level);
+    this.scene.background = new THREE.Color(atmosphere.fogColor);
+    this.scene.fog = new THREE.FogExp2(atmosphere.fogColor, this.fogDensityFor(this.level));
 
-    // Soft overhead ambient glow (brighter light values for supreme clarity and navigation ease)
-    const ambientColor = this.level === 1 ? 0xaab5bd : 0xeae2c2;
-    const ambientInt = this.level === 1 ? 1.35 : 1.05;
-    this.ambientLight = new THREE.AmbientLight(ambientColor, ambientInt);
+    this.ambientLight = new THREE.AmbientLight(atmosphere.ambientColor, atmosphere.ambientIntensity);
     this.scene.add(this.ambientLight);
 
     // Pass level to both map and audio
@@ -557,6 +673,7 @@ export class GameEngine {
 
       // Tick player controllers
       this.player.update(delta);
+      this.updateInteractPrompt(delta);
 
 
       // Detect if explorer has entered creeping crimson Red Rooms
@@ -599,9 +716,7 @@ export class GameEngine {
           // Relocate hostile entities far away
           const playerGX = Math.floor(this.player.position.x / this.map.cellSize);
           const playerGZ = Math.floor(this.player.position.z / this.map.cellSize);
-          this.entities.forEach(ent => {
-            ent.relocateFarAway(playerGX, playerGZ);
-          });
+          this.relocateEntitiesAwayFrom(playerGX, playerGZ);
 
           // Core culling update
           this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z, true);
@@ -621,14 +736,23 @@ export class GameEngine {
         const gx = Math.floor(px / this.map.cellSize);
         const gz = Math.floor(pz / this.map.cellSize);
 
-        // 1. Sector Identification and Notification (Level 1 only)
-        if (this.level === 1) {
-          const s = this.getCurrentSector(gx, gz);
-          const sec = s === 1
-            ? "Setor 1 // Corredores Baixos"
-            : s === 2
-              ? "Setor 2 // Passarelas Superiores"
-              : "Setor 3 // Salão dos Sorridentes";
+        // 1. Sector Identification and Notification (Level 1 and Level G)
+        if (this.level === 1 || this.level === 4) {
+          let sec: string;
+          if (this.level === 4) {
+            const s = this.map.levelGSectorOf(gx, gz);
+            sec = s === 1 ? "Setor 1 // Recepção"
+              : s === 2 ? "Setor 2 // Arquivo"
+              : s === 3 ? "Setor 3 // Sala Principal"
+              : this.currentSector; // corridors between sectors: keep the last one
+          } else {
+            const s = this.getCurrentSector(gx, gz);
+            sec = s === 1
+              ? "Setor 1 // Corredores Baixos"
+              : s === 2
+                ? "Setor 2 // Passarelas Superiores"
+                : "Setor 3 // Salão dos Sorridentes";
+          }
 
           if (sec && sec !== this.currentSector) {
             const oldSector = this.currentSector;
@@ -726,6 +850,15 @@ export class GameEngine {
                 if (this.onInventoryChange) {
                   this.onInventoryChange([...this.inventory]);
                 }
+              } else if (item.type === "g_document" && item.docIndex !== undefined) {
+                const i = item.docIndex;
+                const digit = Number(this.map.levelGCode[i]);
+                this.levelGDigits[i] = digit;
+                const found = this.levelGDigits.filter((d) => d !== null).length;
+                if (this.onHUDNotification) {
+                  this.onHUDNotification(`DOCUMENTO ${found}/3 — ${LEVEL_G_DOCUMENTS[i](digit)}`);
+                }
+                this.emitLevelGProgress();
               } else if (item.type === "scrap_of_note") {
                 if (this.onHUDNotification) {
                   this.onHUDNotification("SCRAP OF NOTE COLLECTED: Fragmento de Relatório Encontrado!");
@@ -746,63 +879,87 @@ export class GameEngine {
       // Update stamina-based procedural breath and heart-rate audio sweeps
       this.audio.updateBreathing(this.player.stamina, delta, this.sanity);
 
-      // Update Wandering Stalker Entities (multi-entity ecosystem)
+      // Update Wandering Stalker Entities (multi-entity ecosystem). The
+      // level's authority runs their AI against every explorer on the level;
+      // everyone else just follows the replicated stream.
+      const worldAuthority = this.isWorldAuthority;
+      const camDir = this.scratchCamDir;
+      this.camera.getWorldDirection(camDir);
+      const aiTargets = worldAuthority ? this.collectAiTargets(camDir) : null;
+
+      // Level G: closets, the Finger King's aggression/ambushes, its taps and
+      // the final alarm. Runs before the AI so hidden explorers are marked.
+      this.updateLevelG(delta, aiTargets);
+
       if (this.entities.length > 0 && this.player) {
         const px = this.player.position.x;
         const pz = this.player.position.z;
-        const pState = this.player.state;
-        const pFlashlight = this.player.isFlashlightOn;
-
-        const camDir = this.scratchCamDir;
-        this.camera.getWorldDirection(camDir);
+        let caught = false;
 
         this.entities.forEach(entity => {
-          // Entities far outside the fog are simulated at a reduced rate: their
-          // AI still runs, just not 60 times a second for something invisible.
-          const edx = entity.mesh.position.x - px;
-          const edz = entity.mesh.position.z - pz;
-          const entityDistSq = edx * edx + edz * edz;
-          if (entityDistSq > 1600 && (this.frameCounter & 3) !== 0) { // beyond 40m
-            return;
+          if (aiTargets) {
+            // Hunt whichever explorer is closest (on Level G, visible ones first).
+            const { target, distSq: entityDistSq } = this.level === 4
+              ? nearestHuntable(aiTargets, entity.mesh.position.x, entity.mesh.position.z)
+              : nearestTarget(aiTargets, entity.mesh.position.x, entity.mesh.position.z);
+            entity.targetHidden = target.hidden;
+
+            // Entities far from everyone are simulated at a reduced rate: their
+            // AI still runs, just not 60 times a second for something invisible.
+            if (entityDistSq > 1600 && (this.frameCounter & 3) !== 0) { // beyond 40m
+              return;
+            }
+            const entityDelta = entityDistSq > 1600 ? delta * 4 : delta;
+
+            entity.update(entityDelta, target.x, target.z, target.state, target.dir, target.flashlight);
+            // Billboard towards *our* camera, not the explorer it's hunting.
+            entity.mesh.lookAt(px, entity.mesh.position.y, pz);
+          } else {
+            entity.updateReplica(delta, px, pz);
           }
-          const entityDelta = entityDistSq > 1600 ? delta * 4 : delta;
 
-          entity.update(entityDelta, px, pz, pState, camDir, pFlashlight);
-
-          // Check if player gets too close to trigger reset state!
+          // Catches are judged locally: each client only checks its own explorer.
+          // Trigger reset when distance is less than 1.45 meters (squared is ~2.1)
           const dx = entity.mesh.position.x - px;
           const dz = entity.mesh.position.z - pz;
-          const distSq = dx * dx + dz * dz;
-
-          // Trigger reset when distance is less than 1.45 meters (squared is ~2.1)
-          if (distSq < 2.1) {
+          if (!caught && dx * dx + dz * dz < 2.1) {
+            caught = true;
             console.warn(`[GameEngine] Explorer CAUGHT by ${entity.type}! Reseting state...`);
-            
-            // Sound effect!
-            this.audio.playEntityCatchSound();
-
-            // Reset player parameters cleanly
-            this.player.spawnSafely();
-
-            // Relocate ALL entities far away to give the player a fresh starting chance
-            const playerGX = Math.floor(this.player.position.x / this.map.cellSize);
-            const playerGZ = Math.floor(this.player.position.z / this.map.cellSize);
-            
-            this.entities.forEach(ent => {
-              ent.relocateFarAway(playerGX, playerGZ);
-            });
-
-            // Force a full map culling update instantly
-            this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z, true);
           }
         });
+
+        if (caught) {
+          // Sound effect!
+          this.audio.playEntityCatchSound();
+
+          // Level G has one monster and no mercy: every catch costs sanity,
+          // and sanity at zero is the existing game over.
+          if (this.level === 4) {
+            this.sanity = Math.max(0, this.sanity - 0.3);
+            if (this.onHUDNotification) this.onHUDNotification("OS DEDOS TE ALCANÇARAM...");
+          }
+
+          // Reset player parameters cleanly
+          this.player.spawnSafely();
+
+          // Relocate ALL entities far away to give the player a fresh starting chance
+          const playerGX = Math.floor(this.player.position.x / this.map.cellSize);
+          const playerGZ = Math.floor(this.player.position.z / this.map.cellSize);
+          this.relocateEntitiesAwayFrom(playerGX, playerGZ);
+
+          // Force a full map culling update instantly
+          this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z, true);
+        }
       }
 
       // Update psychological Smilers
-      this.updateSmilers(delta);
+      this.updateSmilers(delta, aiTargets);
 
       // Level 3 ("Lights Out"): turning the flashlight on summons stalkers.
-      this.updateLightsOutSummons(delta);
+      this.updateLightsOutSummons(delta, aiTargets);
+
+      // Stream monsters/smilers to the rest of the level (authority only).
+      this.sendWorldState(delta);
 
       // Sanity system depletion & recovery calculation
       if (this.player && this.map) {
@@ -869,7 +1026,17 @@ export class GameEngine {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
         if (pgX === this.map.secretGridX && pgZ === this.map.secretGridZ) {
-          this.onSecretLevelFound();
+          this.onSecretLevelFound(3);
+        }
+      }
+
+      // Level 0's secret office door: stepping into the dark nook behind it
+      // takes you to Level G — a solo detour, like Lights Out.
+      if (this.level === 0 && this.map && this.map.officeDoorX >= 0 && this.onSecretLevelFound) {
+        const pgX = Math.floor(this.player.position.x / this.map.cellSize);
+        const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
+        if (pgX === this.map.officeDoorX && pgZ === this.map.officeDoorZ) {
+          this.onSecretLevelFound(4);
         }
       }
 
@@ -880,7 +1047,8 @@ export class GameEngine {
 
         if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ) {
           // Player is in the instability cell!
-          if (this.level === 1 || this.level === 2 || this.level === 3) {
+          // (Level G's exit cell can't be entered until the emergency door opens.)
+          if (this.level === 1 || this.level === 2 || this.level === 3 || this.level === 4) {
             // Direct entry transition! No blocking wall!
             this.audio.playGlitchNoclipSound();
             if (this.onEscapeTrigger) {
@@ -914,7 +1082,10 @@ export class GameEngine {
       // visible light count never changes, so materials are never recompiled.
       this.lightPool.update(this.map.dynamicLights, this.player.position.x, this.player.position.z, delta);
 
-      // Flickering fluorescent tubes ticks
+      // Flickering fluorescent tubes ticks. Only the level's authority rolls
+      // blackouts/flicker storms; it broadcasts each one as it starts.
+      this.map.rollGlobalEvents = this.isWorldAuthority;
+      const eventBefore = this.map.globalEventState;
       this.map.updateLights(
         delta,
         (dur) => this.audio.triggerHumFlicker(dur),
@@ -922,11 +1093,18 @@ export class GameEngine {
         this.player.position.x,
         this.player.position.z
       );
+      const eventNow = this.map.globalEventState;
+      if (this.map.rollGlobalEvents && eventBefore === "normal" && eventNow !== "normal") {
+        this.sendToServer({ type: "world_event", level: this.level, state: eventNow, duration: this.map.globalEventTimer });
+      }
 
       // Ambient light, fog, and background blackout event state reaction
       if (this.ambientLight) {
-        const baseInt = this.level === 1 ? 1.35 : 1.05;
-        const defaultFog = this.level === 1 ? 0x8a9299 : 0xede4c0;
+        // Per-level values: this runs every frame, so hardcoding Level 0/1
+        // here used to override Level 2/3's darker setup from transitionToLevel.
+        const atmosphere = levelAtmosphere(this.level);
+        const baseInt = atmosphere.ambientIntensity;
+        const defaultFog = atmosphere.fogColor;
         
         // The background colour is mutated in place. Allocating a THREE.Color
         // every frame produced ~3600 short-lived objects per minute and forced
@@ -947,7 +1125,7 @@ export class GameEngine {
           const flashOn = Math.random() > 0.45;
           this.ambientLight.intensity = flashOn ? baseInt : baseInt * 0.45;
 
-          const dimmedFog = this.level === 1 ? 0x24282c : 0x5c5740;
+          const dimmedFog = atmosphere.dimmedFogColor;
           const currentFogColor = flashOn ? defaultFog : dimmedFog;
           if (fog) fog.color.setHex(currentFogColor);
           background.setHex(currentFogColor);
@@ -956,6 +1134,16 @@ export class GameEngine {
           this.ambientLight.intensity = baseInt;
           if (fog) fog.color.setHex(defaultFog);
           background.setHex(defaultFog);
+        }
+
+        // Level G's final alarm: pulsing emergency red over the flickering tubes
+        if (this.level === 4 && this.levelGAlarm) {
+          const pulse = 0.5 + 0.5 * Math.sin(this.totalPlayTime * 6.5);
+          this.ambientLight.color.setHex(0xff2a1a);
+          this.ambientLight.intensity = 0.2 + 0.6 * pulse;
+          const alarmFog = pulse > 0.5 ? 0x2a0504 : 0x0d0202;
+          if (fog) fog.color.setHex(alarmFog);
+          background.setHex(alarmFog);
         }
       }
 
@@ -1113,12 +1301,16 @@ export class GameEngine {
     head.position.set(0, 1.3, 0);
     group.add(head);
 
-    // Distinctive Level 0 reflective Visor Mask
-    const visorGeo = new THREE.BoxGeometry(0.22, 0.1, 0.12);
-    const visor = new THREE.Mesh(visorGeo, visorMat);
-    // Face the positive Z direction as default orientation
-    visor.position.set(0, 1.33, 0.14);
-    group.add(visor);
+    // Distinctive Level 0 reflective Visor Mask — skipped when the player has
+    // drawn a custom face, so the drawing shows through the hood opening
+    // instead of sitting behind a dark glass plate.
+    if (!hasFace(face)) {
+      const visorGeo = new THREE.BoxGeometry(0.22, 0.1, 0.12);
+      const visor = new THREE.Mesh(visorGeo, visorMat);
+      // Face the positive Z direction as default orientation
+      visor.position.set(0, 1.33, 0.14);
+      group.add(visor);
+    }
 
     // Visual shoulders
     const lLegGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.45, 6);
@@ -1259,6 +1451,7 @@ export class GameEngine {
       });
 
       this.remotePlayerGroups.delete(id);
+      this.remoteStates.delete(id);
       this.remotePlayerLights.delete(id);
       this.remotePlayerLightTargets.delete(id);
       console.log(`Despawned remote player visual (${id})`);
@@ -1278,6 +1471,8 @@ export class GameEngine {
       }
       return;
     }
+
+    this.remoteStates.set(id, update);
 
     const group = this.remotePlayerGroups.get(id);
     if (!group) {
@@ -1545,19 +1740,14 @@ export class GameEngine {
       this.scene.remove(this.ambientLight);
     }
     
-    // Level 3 "Lights Out": as close to zero ambient as still renders. Level 2
-    // Pipe Dreams: tense dark reddish brown. Level 1 warehouse: brighter
-    // industrial. Level 0: classic yellow.
-    const ambientColor = level === 3 ? 0x0a0a0f : (level === 2 ? 0x522312 : (level === 1 ? 0xaab5bd : 0xeae2c2));
-    const ambientInt = level === 3 ? 0.035 : (level === 2 ? 0.75 : (level === 1 ? 1.35 : 1.05));
-    this.ambientLight = new THREE.AmbientLight(ambientColor, ambientInt);
+    const atmosphere = levelAtmosphere(level);
+    this.ambientLight = new THREE.AmbientLight(atmosphere.ambientColor, atmosphere.ambientIntensity);
     this.scene.add(this.ambientLight);
 
     // Adjust psychological fog
     if (this.scene.fog) {
-      const fogColor = level === 3 ? 0x000000 : (level === 2 ? 0x240902 : (level === 1 ? 0x8a9299 : 0xede4c0));
-      this.scene.background = new THREE.Color(fogColor);
-      this.scene.fog = new THREE.FogExp2(fogColor, this.fogDensityFor(level));
+      this.scene.background = new THREE.Color(atmosphere.fogColor);
+      this.scene.fog = new THREE.FogExp2(atmosphere.fogColor, this.fogDensityFor(level));
     }
 
     // 4. Instantiate new level's ProceduralMap
@@ -1592,10 +1782,19 @@ export class GameEngine {
     // Return previous Wandering stalkers back to static pool instead of destroying
     this.entities.forEach(entity => entity.returnToPool(this.scene));
     this.entities = [];
+    this.nextEntityNetId = 0;
+    this.nextSmilerNetId = 0;
 
     // Spawn new Wandering Stalker Entities on Level 1 (sectors 1 & 2 only)
     if (level === 1) {
       this.spawnLevel1Entities();
+    }
+
+    // Level G: fresh office, one Finger King
+    this.resetLevelG();
+    if (level === 4) {
+      this.spawnLevelGEntities();
+      this.onHUDNotification?.("LEVEL G. Um escritório pequeno demais. Encontre os 3 documentos... e ouça os dedos.");
     }
 
     // Spawn multiple chasing entities on Level 2 (Pipe Dreams)
@@ -1655,6 +1854,7 @@ export class GameEngine {
         }
         
         const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, type, this.scene);
+        entity.netId = this.nextEntityNetId++;
         this.entities.push(entity);
         console.log(`[GameEngine] Level 2 Escape Chaser ${type} spawned at grid (${entGX}, ${entGZ})`);
       }
@@ -1733,13 +1933,434 @@ export class GameEngine {
     return texture;
   }
 
-  private spawnSmiler() {
+  // ---------------------------------------------------------------------------
+  // Level G ("The Small Office")
+  // ---------------------------------------------------------------------------
+
+  private resetLevelG() {
+    this.levelGTime = 0;
+    this.levelGDigits = [null, null, null];
+    this.levelGAlarm = false;
+    this.levelGHideSeconds.clear();
+    this.localHideSeconds = 0;
+    this.localHideState = "out";
+    this.levelGAmbushTimer = 25;
+    this.levelGAlertTimer = 0;
+    this.fingerTapTimer = 0;
+    this.nearTerminal = false;
+    this.audio.stopAlarm();
+    this.emitLevelGProgress();
+  }
+
+  private emitLevelGProgress() {
+    this.onLevelGProgress?.({ digits: [...this.levelGDigits], alarm: this.levelGAlarm });
+  }
+
+  /** The Finger King starts in the east office, out of sight of the reception. */
+  private spawnLevelGEntities() {
+    if (!this.map) return;
+    const entity = WanderingEntity.getOrCreate(this.map, 13, 14, EntityType.FINGER_KING, this.scene);
+    entity.netId = this.nextEntityNetId++;
+    this.entities.push(entity);
+  }
+
+  private get levelGAggression(): number {
+    return Math.min(1, this.levelGTime / LEVEL_G_FULL_AGGRESSION_S);
+  }
+
+  /** How long crouching in a closet fools it; shrinks as it grows angrier. */
+  private get levelGHideLimit(): number {
+    return 15 - 8 * this.levelGAggression;
+  }
+
+  private inCloset(x: number, z: number): boolean {
+    if (!this.map) return false;
+    return this.map.hideCells.has(`${Math.floor(x / this.map.cellSize)},${Math.floor(z / this.map.cellSize)}`);
+  }
+
+  private updateLevelG(delta: number, targets: AiTarget[] | null) {
+    if (this.level !== 4 || !this.map || !this.player) return;
+    this.levelGTime += delta;
+
+    // --- This client's closet (HUD warnings; everyone runs this)
+    const localIn = this.inCloset(this.player.position.x, this.player.position.z) && this.player.position.y < CROUCHED_EYE_HEIGHT;
+    this.localHideSeconds = localIn ? this.localHideSeconds + delta : 0;
+    const nextState = !localIn ? "out" : this.localHideSeconds < this.levelGHideLimit ? "hidden" : "found";
+    if (nextState !== this.localHideState) {
+      if (nextState === "hidden") this.onHUDNotification?.("ESCONDIDO. Fique abaixado e em silêncio...");
+      if (nextState === "found") this.onHUDNotification?.("ELE SABE ONDE VOCÊ ESTÁ. SAIA DAÍ.");
+      this.localHideState = nextState;
+    }
+
+    // --- Authority: hidden flags, Finger King knobs, ambushes
+    if (targets) {
+      for (const t of targets) {
+        const inside = this.inCloset(t.x, t.z) && t.crouched;
+        const seconds = inside ? (this.levelGHideSeconds.get(t.id) ?? 0) + delta : 0;
+        if (inside) this.levelGHideSeconds.set(t.id, seconds); else this.levelGHideSeconds.delete(t.id);
+        t.hidden = inside && seconds < this.levelGHideLimit;
+      }
+
+      this.levelGAlertTimer = Math.max(0, this.levelGAlertTimer - delta);
+      const hunting = this.levelGAlarm || this.levelGAlertTimer > 0;
+      for (const e of this.entities) {
+        if (e.type !== EntityType.FINGER_KING) continue;
+        e.aggression = this.levelGAggression;
+        e.hunting = hunting;
+      }
+
+      this.levelGAmbushTimer -= delta;
+      if (this.levelGAmbushTimer <= 0) {
+        this.levelGAmbushTimer = 28 - 14 * this.levelGAggression + Math.random() * 6;
+        if (!hunting) this.tryLevelGAmbush(targets);
+      }
+    }
+
+    // --- Taps: the Finger King announces itself as it gets closer (everyone)
+    const finger = this.entities.find((e) => e.type === EntityType.FINGER_KING);
+    if (finger) {
+      const dx = finger.mesh.position.x - this.player.position.x;
+      const dz = finger.mesh.position.z - this.player.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      const HEAR = 24;
+      if (dist < HEAR) {
+        this.fingerTapTimer -= delta;
+        if (this.fingerTapTimer <= 0) {
+          const closeness = 1 - dist / HEAR;
+          const chasing = this.levelGAlarm || finger.toNetState().c;
+          this.fingerTapTimer = (0.25 + 1.9 * (dist / HEAR)) * (chasing ? 0.6 : 1) * (0.8 + Math.random() * 0.4);
+          // Pan from where it is relative to where we're looking
+          this.camera.getWorldDirection(this.scratchCamDir);
+          this.scratchRight.set(-this.scratchCamDir.z, 0, this.scratchCamDir.x).normalize();
+          const pan = dist > 0.01 ? (this.scratchRight.x * dx + this.scratchRight.z * dz) / dist : 0;
+          this.audio.playFingerTap(Math.pow(closeness, 1.6), pan);
+        }
+      } else {
+        this.fingerTapTimer = 0;
+      }
+    }
+
+    // --- Prompt when walking up to the terminal
+    const atTerminal = this.tryInteract() === "terminal";
+    if (atTerminal && !this.nearTerminal && !this.levelGAlarm) {
+      this.onHUDNotification?.("Um computador antigo ainda ligado. Pressione [E] para usar.");
+    }
+    this.nearTerminal = atTerminal;
+
+    // --- Emergency door swings open once the alarm is on
+    const leaf = this.map.emergencyDoorLeaf;
+    if (this.map.emergencyDoorOpen && leaf) {
+      leaf.rotation.y += (LEVEL_G_DOOR_OPEN_ANGLE - leaf.rotation.y) * Math.min(1, 3 * delta);
+    }
+  }
+
+  /**
+   * Moves the Finger King to lie in wait just past a door or at a corridor
+   * end ahead of someone — somewhere 10-20 m away that nobody is looking at,
+   * and only while nobody is looking at *it* either.
+   */
+  private tryLevelGAmbush(targets: AiTarget[]) {
+    if (!this.map) return;
+    const finger = this.entities.find((e) => e.type === EntityType.FINGER_KING);
+    if (!finger) return;
+    const hunted = targets.filter((t) => !t.hidden);
+    if (hunted.length === 0) return;
+
+    const seenBy = (x: number, z: number, maxDist: number) => hunted.some((t) => {
+      const dx = x - t.x, dz = z - t.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d > maxDist) return false;
+      const flat = Math.hypot(t.dir.x, t.dir.z) || 1;
+      return d < 3 || (t.dir.x * dx + t.dir.z * dz) / (flat * d) > 0.25;
+    });
+    if (seenBy(finger.mesh.position.x, finger.mesh.position.z, 16)) return;
+    const { distSq: fingerDistSq } = nearestTarget(hunted, finger.mesh.position.x, finger.mesh.position.z);
+    if (fingerDistSq < 8 * 8) return; // already close: let it keep stalking
+
+    const cs = this.map.cellSize;
+    const spots = this.map.ambushCells.filter(([gx, gz]) => {
+      const x = gx * cs + cs / 2, z = gz * cs + cs / 2;
+      const { distSq } = nearestTarget(hunted, x, z);
+      return distSq >= 10 * 10 && distSq <= 20 * 20 && !seenBy(x, z, 30);
+    });
+    if (spots.length === 0) return;
+    const [gx, gz] = spots[Math.floor(Math.random() * spots.length)];
+    finger.teleportTo(gx, gz);
+  }
+
+  /** Horizontal look direction (unit), from the camera. */
+  private lookDirectionXZ(): [number, number] {
+    const dir = this.camera.getWorldDirection(this.scratchCamDir);
+    const len = Math.hypot(dir.x, dir.z);
+    return len < 1e-3 ? [0, -1] : [dir.x / len, dir.z / len];
+  }
+
+  /**
+   * E: shove the box/crate you're facing out of your way. It slides a metre or
+   * two along the floor (around obstacles if the straight line is blocked) and
+   * the move is replicated to teammates so everyone sees the same room.
+   * Returns true if there was a box in reach (whether or not it could move).
+   */
+  public tryPushBox(): boolean {
+    if (!this.map || !this.player || !this.player.mapFullyLoaded) return false;
+    if (!this.player.isLocked && !this.player.isOverrideActive) return false;
+    const [fx, fz] = this.lookDirectionXZ();
+    const px = this.player.position.x, pz = this.player.position.z;
+    const m = this.map.findPushable(px, pz, fx, fz);
+    if (!m) return false;
+
+    const dest = this.map.pushMovable(m, px, pz, this.scene);
+    if (!dest) {
+      this.onHUDNotification?.("Não há espaço para empurrar a caixa.");
+      return true;
+    }
+    this.audio.playBoxPush();
+    this.sendToServer({ type: "box_push", level: this.level, id: m.id, x: dest.x, z: dest.z });
+    return true;
+  }
+
+  /** A teammate shoved a box on this level: replay the slide. */
+  public applyBoxPush(msg: { level: number; id: string; x: number; z: number }) {
+    if (!this.map || msg.level !== this.level) return;
+    const m = this.map.movables.get(msg.id);
+    if (!m || !Number.isFinite(msg.x) || !Number.isFinite(msg.z)) return;
+    this.map.slideMovableTo(m, msg.x, msg.z, this.scene);
+  }
+
+  /** Keeps the "[E] Empurrar caixa" hint in sync with what the player is facing (~10x/s). */
+  private updateInteractPrompt(delta: number) {
+    this.interactPromptTimer += delta;
+    if (this.interactPromptTimer < 0.1) return;
+    this.interactPromptTimer = 0;
+    let text: string | null = null;
+    if (this.map && this.player && this.player.mapFullyLoaded && (this.player.isLocked || this.player.isOverrideActive)) {
+      const [fx, fz] = this.lookDirectionXZ();
+      if (this.map.findPushable(this.player.position.x, this.player.position.z, fx, fz)) {
+        text = "[E] Empurrar caixa";
+      }
+    }
+    if (text !== this.lastInteractPrompt) {
+      this.lastInteractPrompt = text;
+      this.onInteractPrompt?.(text);
+    }
+  }
+
+  /** The one interactable on Level G: the main-room terminal, within reach. */
+  public tryInteract(): "terminal" | null {
+    if (this.level !== 4 || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
+    const cs = this.map.cellSize;
+    const dx = this.player.position.x - (this.map.levelGTerminalX * cs + cs / 2);
+    const dz = this.player.position.z - (this.map.levelGTerminalZ * cs + cs / 2);
+    return dx * dx + dz * dz < 2.4 * 2.4 ? "terminal" : null;
+  }
+
+  /**
+   * Checks a code typed into the terminal. Right: the final alarm. Wrong: a
+   * refusal buzz, and the Finger King comes straight for you for a while.
+   */
+  public submitLevelGCode(code: string): boolean {
+    if (this.level !== 4 || !this.map) return false;
+    const ok = code === this.map.levelGCode;
+    this.audio.playTerminalBeep(ok);
+    if (ok) {
+      this.startLevelGAlarm(true);
+    } else {
+      this.onHUDNotification?.("ACESSO NEGADO. Algo ouviu o terminal...");
+      if (this.isWorldAuthority) this.levelGAlertTimer = 10;
+      else this.sendToServer({ type: "levelg_code", ok: false });
+    }
+    return ok;
+  }
+
+  /** A teammate typed a code (authority only): alarm them all, or send it after them. */
+  public handleLevelGCodeRequest(msg: { level: number; ok: boolean }) {
+    if (msg.level !== 4 || this.level !== 4 || !this.isWorldAuthority) return;
+    if (msg.ok) this.startLevelGAlarm(true);
+    else this.levelGAlertTimer = 10;
+  }
+
+  /**
+   * The final chase: tubes flicker, the ambience turns to a klaxon, the
+   * emergency door unlocks and the Finger King is released behind you.
+   * `broadcast`: whether this call originates the alarm (vs. replaying one).
+   */
+  private startLevelGAlarm(broadcast: boolean) {
+    if (this.levelGAlarm || this.level !== 4 || !this.map) return;
+    this.levelGAlarm = true;
+    this.map.emergencyDoorOpen = true;
+    this.map.startGlobalEvent("flicker_storm", 1e6);
+    this.audio.startAlarm();
+    this.onHUDNotification?.("ALARME! A PORTA DE EMERGÊNCIA DESTRAVOU. CORRA!");
+    this.emitLevelGProgress();
+
+    if (this.isWorldAuthority) {
+      this.releaseFingerKingBehind();
+      if (broadcast) this.sendToServer({ type: "world_event", level: this.level, state: "levelg_alarm", duration: 0 });
+    } else if (broadcast) {
+      this.sendToServer({ type: "levelg_code", ok: true });
+    }
+  }
+
+  /** Puts the Finger King at the ambush spot furthest from the exit that's still ≥10 m from everyone. */
+  private releaseFingerKingBehind() {
+    if (!this.map || !this.player) return;
+    const finger = this.entities.find((e) => e.type === EntityType.FINGER_KING);
+    if (!finger) return;
+    const cs = this.map.cellSize;
+    const camDir = this.scratchCamDir;
+    this.camera.getWorldDirection(camDir);
+    const targets = this.collectAiTargets(camDir);
+    let best: [number, number] | null = null;
+    let bestScore = -Infinity;
+    for (const [gx, gz] of this.map.ambushCells) {
+      const x = gx * cs + cs / 2, z = gz * cs + cs / 2;
+      if (nearestTarget(targets, x, z).distSq < 10 * 10) continue;
+      const score = Math.abs(gx - this.map.exitGridX) + Math.abs(gz - this.map.exitGridZ);
+      if (score > bestScore) { bestScore = score; best = [gx, gz]; }
+    }
+    if (best) finger.teleportTo(best[0], best[1]);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Replicated world: monsters, smilers, blackouts
+  // ---------------------------------------------------------------------------
+
+  public setWorldAuthority(byLevel: Record<string, string>) {
+    this.worldAuthority = byLevel;
+  }
+
+  /**
+   * Whether this client simulates the monsters, smilers and blackout rolls on
+   * its level. Offline — or right after entering a level the server hasn't
+   * assigned anyone to yet — it simulates on its own.
+   */
+  private get isWorldAuthority(): boolean {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.localPlayerId) return true;
+    const id = this.worldAuthority[String(this.level)];
+    return id === undefined || id === this.localPlayerId;
+  }
+
+  private sendToServer(payload: unknown) {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(payload));
+    }
+  }
+
+  /** Everyone the monsters on this level can hunt: us plus same-level teammates. */
+  private collectAiTargets(camDir: THREE.Vector3): AiTarget[] {
+    const targets: AiTarget[] = [{
+      id: "local",
+      hidden: false,
+      crouched: this.player.position.y < CROUCHED_EYE_HEIGHT,
+      x: this.player.position.x,
+      z: this.player.position.z,
+      state: this.player.state,
+      dir: camDir,
+      flashlight: this.player.isFlashlightOn,
+    }];
+    let i = 0;
+    this.remoteStates.forEach((r, id) => {
+      let dir = this.scratchRemoteDirs[i];
+      if (!dir) dir = this.scratchRemoteDirs[i] = new THREE.Vector3();
+      i++;
+      // Camera forward for a YXZ yaw/pitch (the camera looks down -Z).
+      const cosPitch = Math.cos(r.pitch);
+      dir.set(-Math.sin(r.yaw) * cosPitch, Math.sin(r.pitch), -Math.cos(r.yaw) * cosPitch);
+      targets.push({ id, hidden: false, crouched: r.y < CROUCHED_EYE_HEIGHT, x: r.x, z: r.z, state: r.state, dir, flashlight: r.flashlight });
+    });
+    return targets;
+  }
+
+  /** Streams monsters and smilers to the rest of the level (authority only). */
+  private sendWorldState(delta: number) {
+    if (!this.isWorldAuthority || this.remoteStates.size === 0) return;
+    this.worldSendTimer += delta;
+    if (this.worldSendTimer < this.worldSendInterval) return;
+    this.worldSendTimer = 0;
+
+    this.sendToServer({
+      type: "entities",
+      level: this.level,
+      list: this.entities.map((e) => e.toNetState()),
+      smilers: this.smilers.map((s) => ({ id: s.netId, gx: s.gridX, gz: s.gridZ })),
+    });
+  }
+
+  /** Adopts a monsters/smilers frame from the level's authority. */
+  public applyWorldState(msg: { level: number; list: EntityNetState[]; smilers: { id: number; gx: number; gz: number }[] }) {
+    if (!this.map || msg.level !== this.level || this.isWorldAuthority) return;
+
+    const seenEntities = new Set<number>();
+    for (const s of msg.list) {
+      if (!ENTITY_TYPES.has(s.t)) continue;
+      let entity = this.entities.find((e) => e.netId === s.id);
+      if (!entity) {
+        entity = WanderingEntity.getOrCreate(this.map, s.gx, s.gz, s.t, this.scene);
+        entity.netId = s.id;
+        this.entities.push(entity);
+        if (this.level === 3 && this.onHUDNotification) {
+          this.onHUDNotification("A luz atraiu algo na escuridão...");
+        }
+      }
+      entity.applyNetState(s);
+      seenEntities.add(s.id);
+      // Keeps ids unique if this client takes over as authority later.
+      this.nextEntityNetId = Math.max(this.nextEntityNetId, s.id + 1);
+    }
+    this.entities = this.entities.filter((e) => {
+      if (seenEntities.has(e.netId)) return true;
+      e.returnToPool(this.scene);
+      return false;
+    });
+
+    const seenSmilers = new Set<number>();
+    for (const s of msg.smilers) {
+      if (!this.smilers.some((sm) => sm.netId === s.id)) this.addSmiler(s.gx, s.gz, s.id);
+      seenSmilers.add(s.id);
+      this.nextSmilerNetId = Math.max(this.nextSmilerNetId, s.id + 1);
+    }
+    this.smilers = this.smilers.filter((sm) => {
+      if (seenSmilers.has(sm.netId)) return true;
+      this.disposeSmiler(sm);
+      return false;
+    });
+  }
+
+  /** Plays a blackout/flicker storm the level's authority rolled. */
+  public applyWorldEvent(msg: { level: number; state: "flicker_storm" | "blackout" | "levelg_alarm"; duration: number }) {
+    if (!this.map || msg.level !== this.level || this.isWorldAuthority) return;
+    if (msg.state === "levelg_alarm") {
+      this.startLevelGAlarm(false);
+      return;
+    }
+    this.map.startGlobalEvent(msg.state, msg.duration);
+    this.audio.triggerHumFlicker(msg.state === "blackout" ? 400 : 600);
+  }
+
+  /**
+   * Pushes every monster on this level far from (gx, gz). Only the authority
+   * moves them; anyone else asks it to (its next frame carries the result).
+   */
+  private relocateEntitiesAwayFrom(gx: number, gz: number) {
+    if (this.isWorldAuthority) {
+      this.entities.forEach((ent) => ent.relocateFarAway(gx, gz));
+    } else {
+      this.sendToServer({ type: "entities_relocate", gx, gz });
+    }
+  }
+
+  /** A teammate got caught: relocate on their behalf (authority only). */
+  public handleRelocateRequest(msg: { level: number; gx: number; gz: number }) {
+    if (msg.level !== this.level || !this.isWorldAuthority) return;
+    this.entities.forEach((ent) => ent.relocateFarAway(msg.gx, msg.gz));
+  }
+
+  /** Spawns a smiler 14-28 m from the explorer at (px, pz), if a spot exists. */
+  private spawnSmiler(px: number, pz: number) {
     if (!this.map || !this.player) return;
 
     // Find all walkable coordinates 14 to 30 meters away from the explorer
     const hSize = this.map.cellSize;
-    const px = this.player.position.x;
-    const pz = this.player.position.z;
     
     const candidates: [number, number][] = [];
     const minDistSq = 14 * 14;
@@ -1778,6 +2399,14 @@ export class GameEngine {
     // Pick a candidate at random
     const idx = Math.floor(Math.random() * candidates.length);
     const [gx, gz] = candidates[idx];
+    this.addSmiler(gx, gz, this.nextSmilerNetId++);
+    console.log(`[Smiler] Spawned creepily at grid (${gx}, ${gz})`);
+  }
+
+  /** Builds a smiler billboard at a cell (spawned here or replicated from the authority). */
+  private addSmiler(gx: number, gz: number, netId: number) {
+    if (!this.map) return;
+    const hSize = this.map.cellSize;
 
     // Create Smiler Plane mesh (texture is shared across every smiler)
     const texture = this.getSmilerTexture();
@@ -1796,31 +2425,31 @@ export class GameEngine {
     // (the only sector smilers spawn in) is a real elevated storey.
     const worldX = gx * hSize + hSize / 2;
     const worldZ = gz * hSize + hSize / 2;
-    const floorY = this.map ? this.map.getFloorHeightAt(worldX, worldZ) : 0;
-    mesh.position.set(worldX, floorY + 1.15, worldZ);
+    mesh.position.set(worldX, this.map.getFloorHeightAt(worldX, worldZ) + 1.15, worldZ);
 
     this.scene.add(mesh);
     this.smilers.push({
+      netId,
       mesh,
       gridX: gx,
       gridZ: gz,
       spawnTime: this.totalPlayTime,
       gazeTimer: 0,
     });
+  }
 
-    console.log(`[Smiler] Spawned creepily at grid (${gx}, ${gz}) - Distance: ${Math.sqrt((worldX - px)**2 + (worldZ - pz)**2).toFixed(1)}m`);
+  private disposeSmiler(smiler: { mesh: THREE.Mesh }) {
+    this.scene.remove(smiler.mesh);
+    smiler.mesh.geometry.dispose();
+    if (Array.isArray(smiler.mesh.material)) {
+      smiler.mesh.material.forEach(m => m.dispose());
+    } else if (smiler.mesh.material) {
+      smiler.mesh.material.dispose();
+    }
   }
 
   private clearAllSmilers() {
-    this.smilers.forEach((smiler) => {
-      this.scene.remove(smiler.mesh);
-      if (smiler.mesh.geometry) smiler.mesh.geometry.dispose();
-      if (Array.isArray(smiler.mesh.material)) {
-        smiler.mesh.material.forEach(m => m.dispose());
-      } else if (smiler.mesh.material) {
-        smiler.mesh.material.dispose();
-      }
-    });
+    this.smilers.forEach((smiler) => this.disposeSmiler(smiler));
     this.smilers = [];
     this.smilerSpawnCheckTimer = 0;
   }
@@ -1870,6 +2499,7 @@ export class GameEngine {
         }
       }
       const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, types[i], this.scene);
+      entity.netId = this.nextEntityNetId++;
       this.entities.push(entity);
     }
   }
@@ -1882,8 +2512,10 @@ export class GameEngine {
    * up to a small cap. Switching it back off lets the timer cool down before
    * the next one comes.
    */
-  private updateLightsOutSummons(delta: number) {
-    if (this.level !== 3 || !this.player || !this.map) {
+  private updateLightsOutSummons(delta: number, targets: AiTarget[] | null) {
+    // Authority only (targets is null elsewhere): the summoned stalkers reach
+    // everyone else on the level through the replicated stream.
+    if (this.level !== 3 || !this.player || !this.map || !targets) {
       this.lightsOutSummonTimer = 0;
       return;
     }
@@ -1891,12 +2523,14 @@ export class GameEngine {
     const SUMMON_INTERVAL = 6.0;
     const MAX_STALKERS = 5;
 
-    if (this.player.isFlashlightOn) {
+    // Any explorer on the level holding a light counts, not just us.
+    const lit = targets.find((t) => t.flashlight);
+    if (lit) {
       this.lightsOutSummonTimer += delta;
       if (this.lightsOutSummonTimer >= SUMMON_INTERVAL) {
         this.lightsOutSummonTimer = 0;
         if (this.entities.length < MAX_STALKERS) {
-          this.spawnLightsOutStalker();
+          this.spawnLightsOutStalker(lit.x, lit.z);
         }
       }
     } else {
@@ -1904,11 +2538,11 @@ export class GameEngine {
     }
   }
 
-  private spawnLightsOutStalker() {
+  /** Summons a stalker 8-14 cells from the explorer whose light drew it, at (x, z). */
+  private spawnLightsOutStalker(x: number, z: number) {
     if (!this.player || !this.map) return;
-    const pgX = Math.floor(this.player.position.x / this.map.cellSize);
-    const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
-
+    const pgX = Math.floor(x / this.map.cellSize);
+    const pgZ = Math.floor(z / this.map.cellSize);
     const types = [EntityType.DULLER, EntityType.SKIN_STEALER, EntityType.WRETCH, EntityType.HOUND];
     const type = types[Math.floor(Math.random() * types.length)];
 
@@ -1927,38 +2561,53 @@ export class GameEngine {
     if (entGX < 0) return; // couldn't find a spot this time — try again next interval
 
     const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, type, this.scene);
+    entity.netId = this.nextEntityNetId++;
     this.entities.push(entity);
     if (this.onHUDNotification) {
       this.onHUDNotification("A luz atraiu algo na escuridão...");
     }
   }
 
-  private updateSmilers(delta: number) {
+  private updateSmilers(delta: number, targets: AiTarget[] | null) {
     if (!this.player || !this.map) return;
 
-    // Smilers live only in Level 1's sector 3 (the final hall). Anywhere else,
-    // clear them out.
-    const pgx = Math.floor(this.player.position.x / this.map.cellSize);
-    const pgz = Math.floor(this.player.position.z / this.map.cellSize);
-    if (this.level !== 1 || this.getCurrentSector(pgx, pgz) !== 3) {
-      if (this.smilers.length > 0) {
-        this.clearAllSmilers();
-      }
-      return;
-    }
+    const hSize = this.map.cellSize;
+    const inSector3 = (x: number, z: number) =>
+      this.getCurrentSector(Math.floor(x / hSize), Math.floor(z / hSize)) === 3;
 
-    // Check spawning conditions every 7 seconds on Level 1
-    this.smilerSpawnCheckTimer += delta;
-    if (this.smilerSpawnCheckTimer >= 7) {
-      this.smilerSpawnCheckTimer = 0;
-      
-      // Support up to 4 active smilers on Level 1 to increase psychological pressure
-      if (this.smilers.length < 4) {
-        // High 75% chance of spawning check passing
-        if (Math.random() < 0.75) {
-          this.spawnSmiler();
+    // Spawning and despawning are the authority's call (targets is null
+    // elsewhere), judged against every explorer on the level; the gaze drain
+    // below runs on every client for its own explorer.
+    if (targets) {
+      // Smilers live only in Level 1's sector 3 (the final hall). With nobody
+      // in there, clear them out.
+      const hunted = this.level === 1 ? targets.filter((t) => inSector3(t.x, t.z)) : [];
+      if (hunted.length === 0) {
+        if (this.smilers.length > 0) this.clearAllSmilers();
+        return;
+      }
+
+      // Check spawning conditions every 7 seconds
+      this.smilerSpawnCheckTimer += delta;
+      if (this.smilerSpawnCheckTimer >= 7) {
+        this.smilerSpawnCheckTimer = 0;
+        // Up to 4 active smilers, 75% chance per check, near a random explorer in the hall
+        if (this.smilers.length < 4 && Math.random() < 0.75) {
+          const t = hunted[Math.floor(Math.random() * hunted.length)];
+          this.spawnSmiler(t.x, t.z);
         }
       }
+
+      this.smilers = this.smilers.filter((smiler) => {
+        const { distSq } = nearestTarget(targets, smiler.mesh.position.x, smiler.mesh.position.z);
+        // Vanish silently when anyone walks up to it (< 4 m), avoiding direct
+        // confrontation; clean up once it's far from everyone (> 42 m).
+        if (distSq < 4.0 * 4.0 || distSq > 42.0 * 42.0) {
+          this.disposeSmiler(smiler);
+          return false;
+        }
+        return true;
+      });
     }
 
     const px = this.player.position.x;
@@ -1968,47 +2617,17 @@ export class GameEngine {
     const camDir = this.scratchCamDir;
     this.camera.getWorldDirection(camDir);
 
-    const activeSmilers: typeof this.smilers = [];
-
-    for (let i = 0; i < this.smilers.length; i++) {
-      const smiler = this.smilers[i];
+    for (const smiler of this.smilers) {
       const mesh = smiler.mesh;
 
       // 1. Billboard: Turn horizontally to face player head-on (creepy staring!)
       mesh.lookAt(px, mesh.position.y, pz);
 
-      // 2. Vector distance
       const dx = mesh.position.x - px;
       const dz = mesh.position.z - pz;
       const dist = Math.sqrt(dx * dx + dz * dz);
 
-      // De-spawn silently if player walks past and gets too close (< 4 meters)
-      // They vanish or step back, avoiding direct confrontation
-      if (dist < 4.0) {
-        this.scene.remove(mesh);
-        mesh.geometry.dispose();
-        if (Array.isArray(mesh.material)) {
-          mesh.material.forEach(m => m.dispose());
-        } else if (mesh.material) {
-          mesh.material.dispose();
-        }
-        console.log(`[Smiler] Player got too close to smiler at (${smiler.gridX}, ${smiler.gridZ}). Silently vanished.`);
-        continue;
-      }
-
-      // De-spawn or clean up if they are very far away (> 42.0m) due to performance / map transitions
-      if (dist > 42.0) {
-        this.scene.remove(mesh);
-        mesh.geometry.dispose();
-        if (Array.isArray(mesh.material)) {
-          mesh.material.forEach(m => m.dispose());
-        } else if (mesh.material) {
-          mesh.material.dispose();
-        }
-        continue;
-      }
-
-      // 3. Sustained-gaze drain. Looking straight at a smiler no longer makes
+      // 2. Sustained-gaze drain. Looking straight at a smiler no longer makes
       //    it vanish — instead your sanity bleeds for as long as you keep
       //    staring, and the drain rate ramps up the longer you hold the look.
       //    Glance away and gazeTimer decays fast, so a brief look is forgiving.
@@ -2026,11 +2645,7 @@ export class GameEngine {
       } else {
         smiler.gazeTimer = Math.max(0, smiler.gazeTimer - delta * 0.6);
       }
-
-      activeSmilers.push(smiler);
     }
-
-    this.smilers = activeSmilers;
   }
 
   /**

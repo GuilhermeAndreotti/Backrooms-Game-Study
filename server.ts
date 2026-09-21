@@ -117,6 +117,8 @@ interface Room {
   connections: Set<Connection>;
   /** Players whose state changed since the last tick. */
   dirty: Set<string>;
+  /** Last "authority" map broadcast (serialized), to only re-send on change. */
+  authorityKey: string;
 }
 
 const rooms = new Map<string, Room>();
@@ -158,6 +160,97 @@ function broadcastToRoom(room: Room, payload: unknown, exclude?: Connection) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// World authority (monsters, smilers, blackouts)
+// ---------------------------------------------------------------------------
+//
+// Monster AI and the level-wide blackout rolls used to run independently on
+// every client, off Math.random — so each explorer saw different monsters in
+// different places. Now, per level, exactly one client simulates them (the
+// longest-connected player on that level: room.players keeps join order) and
+// streams the result; everyone else on that level just renders it. When that
+// player leaves or changes level, the next one takes over seamlessly, since
+// every client already holds the full replicated state.
+
+/** Level (as a string key) -> id of the player simulating it. */
+function computeAuthority(room: Room): Record<string, string> {
+  const byLevel: Record<string, string> = {};
+  room.players.forEach((p) => {
+    const key = String(p.level);
+    if (!(key in byLevel)) byLevel[key] = p.id;
+  });
+  return byLevel;
+}
+
+/** Broadcasts the authority map if it changed since the last broadcast. */
+function refreshAuthority(room: Room) {
+  const byLevel = computeAuthority(room);
+  const key = JSON.stringify(byLevel);
+  if (key === room.authorityKey) return;
+  room.authorityKey = key;
+  broadcastToRoom(room, { type: "authority", byLevel });
+}
+
+/** Sends to every player in the room currently on `level`, except `exclude`. */
+function broadcastToLevel(room: Room, level: number, payload: unknown, exclude?: Connection) {
+  const raw = JSON.stringify(payload);
+  room.connections.forEach((conn) => {
+    if (conn === exclude || conn.player.level !== level) return;
+    if (conn.ws.readyState === WebSocket.OPEN) conn.ws.send(raw);
+  });
+}
+
+const ENTITY_TYPES = new Set(["DULLER", "HOUND", "CLUMP", "SKIN_STEALER", "WRETCH"]);
+const MAX_ENTITIES = 40;
+const MAX_SMILERS = 8;
+const MAX_SPEECH_LENGTH = 64;
+/** Level-wide events the authority may broadcast ("levelg_alarm": Level G's final alarm). */
+const GLOBAL_EVENTS = new Set(["flicker_storm", "blackout", "levelg_alarm"]);
+
+function gridInt(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < 256 ? value : null;
+}
+
+function netId(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < 1e9 ? value : null;
+}
+
+/** Rebuilds an "entities" frame from known fields only; null if malformed. */
+function sanitizeEntities(data: Record<string, unknown>) {
+  if (!Array.isArray(data.list) || data.list.length > MAX_ENTITIES) return null;
+  const smilersIn = Array.isArray(data.smilers) ? data.smilers.slice(0, MAX_SMILERS) : [];
+
+  const list = [];
+  for (const raw of data.list) {
+    if (!raw || typeof raw !== "object") return null;
+    const e = raw as Record<string, unknown>;
+    const id = netId(e.id);
+    const gx = gridInt(e.gx), gz = gridInt(e.gz), tx = gridInt(e.tx), tz = gridInt(e.tz);
+    if (id === null || gx === null || gz === null || tx === null || tz === null) return null;
+    if (typeof e.t !== "string" || !ENTITY_TYPES.has(e.t)) return null;
+    list.push({
+      id, t: e.t, gx, gz, tx, tz,
+      p: Math.min(1, Math.max(0, finiteNumber(e.p, 0))),
+      v: Math.min(10, Math.max(0, finiteNumber(e.v, 0))),
+      m: e.m === true,
+      a: e.a === true,
+      c: e.c === true,
+      s: sanitizeText(e.s, MAX_SPEECH_LENGTH),
+    });
+  }
+
+  const smilers = [];
+  for (const raw of smilersIn) {
+    if (!raw || typeof raw !== "object") return null;
+    const s = raw as Record<string, unknown>;
+    const id = netId(s.id), gx = gridInt(s.gx), gz = gridInt(s.gz);
+    if (id === null || gx === null || gz === null) return null;
+    smilers.push({ id, gx, gz });
+  }
+
+  return { list, smilers };
+}
+
 function removeConnection(conn: Connection) {
   connections.delete(conn.ws);
 
@@ -169,6 +262,7 @@ function removeConnection(conn: Connection) {
   room.dirty.delete(conn.player.id);
 
   broadcastToRoom(room, { type: "player_left", id: conn.player.id });
+  refreshAuthority(room);
 
   if (room.players.size === 0) {
     rooms.delete(conn.player.room);
@@ -232,7 +326,7 @@ async function startServer() {
             typeof requestedSeed === "number" && requestedSeed > 0 && Number.isFinite(requestedSeed)
               ? Math.floor(requestedSeed)
               : Math.floor(Math.random() * 999999) + 1;
-          room = { seed, level: 0, players: new Map(), connections: new Set(), dirty: new Set() };
+          room = { seed, level: 0, players: new Map(), connections: new Set(), dirty: new Set(), authorityKey: "" };
           rooms.set(roomKey, room);
           console.log(`Created new room "${roomKey}" with seed ${seed}`);
         }
@@ -277,6 +371,7 @@ async function startServer() {
           seed: room.seed,
           level: room.level,
           players: Array.from(room.players.values()).filter((p) => p.id !== playerId),
+          authority: computeAuthority(room),
         });
 
         // 2. Announce to the rest of the room.
@@ -307,6 +402,62 @@ async function startServer() {
         return;
       }
 
+      // --- replicated world (monsters, smilers, blackouts) --------------------
+      // Only accepted from the level's authority, and only for the level the
+      // server last saw it on; relayed to the other players on that level.
+      if (type === "entities" || type === "world_event") {
+        const level = conn.player.level;
+        if (data.level !== level) return;
+        if (computeAuthority(room)[String(level)] !== conn.player.id) return;
+
+        if (type === "entities") {
+          const frame = sanitizeEntities(data);
+          if (!frame) return;
+          broadcastToLevel(room, level, { type, level, ...frame }, conn);
+        } else {
+          if (typeof data.state !== "string" || !GLOBAL_EVENTS.has(data.state)) return;
+          const duration = Math.min(15, Math.max(0, finiteNumber(data.duration, 0)));
+          broadcastToLevel(room, level, { type, level, state: data.state, duration }, conn);
+        }
+        return;
+      }
+
+      // A player shoved a box/crate: replay it for everyone else on that level.
+      // The id is the prop's "gx,gz" cell (maps are seeded, so ids match on every client).
+      if (type === "box_push") {
+        const level = conn.player.level;
+        const x = data.x, z = data.z;
+        if (data.level !== level || typeof data.id !== "string" || !/^\d{1,3},\d{1,3}$/.test(data.id)) return;
+        if (typeof x !== "number" || typeof z !== "number" || !Number.isFinite(x) || !Number.isFinite(z)) return;
+        broadcastToLevel(room, level, { type: "box_push", level, id: data.id, x, z }, conn);
+        return;
+      }
+
+      // Level G: a non-authority player typed a code into the terminal. The
+      // authority decides (alarm for everyone, or sets the monster on them).
+      if (type === "levelg_code") {
+        const level = conn.player.level;
+        const authorityId = computeAuthority(room)[String(level)];
+        if (!authorityId || authorityId === conn.player.id) return;
+        room.connections.forEach((c) => {
+          if (c.player.id === authorityId) send(c.ws, { type: "levelg_code", level, ok: data.ok === true });
+        });
+        return;
+      }
+
+      // A non-authority player got caught: ask the authority to push every
+      // monster on that level away from where the player respawned.
+      if (type === "entities_relocate") {
+        const level = conn.player.level;
+        const authorityId = computeAuthority(room)[String(level)];
+        const gx = gridInt(data.gx), gz = gridInt(data.gz);
+        if (!authorityId || authorityId === conn.player.id || gx === null || gz === null) return;
+        room.connections.forEach((c) => {
+          if (c.player.id === authorityId) send(c.ws, { type: "entities_relocate", level, gx, gz });
+        });
+        return;
+      }
+
       // --- level transition ---------------------------------------------------
       // A player reached the exit and is asking to advance. Whoever's request
       // lands first wins; a duplicate/stale one (two players finding the exit
@@ -321,6 +472,7 @@ async function startServer() {
         room.players.forEach((p) => {
           p.level = room.level;
         });
+        refreshAuthority(room);
 
         broadcastToRoom(room, { type: "level_transition", level: room.level, seed: room.seed });
         return;
@@ -378,6 +530,9 @@ async function startServer() {
    */
   const tick = setInterval(() => {
     rooms.forEach((room) => {
+      // Players change level via their movement updates (e.g. the solo
+      // secret-level detour), so authority is re-checked every tick.
+      refreshAuthority(room);
       if (room.dirty.size === 0) return;
 
       const players: Omit<PlayerState, "face">[] = [];

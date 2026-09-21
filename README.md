@@ -27,6 +27,11 @@ Um grupo de até 4 jogadores (`ROOM_CAPACITY`) se conecta à mesma sala e explor
 
 O objetivo é encontrar a saída ("noclip") e escapar — o que leva o grupo ao próximo nível (Level 1 → Level 2, *Pipe Dreams*), cada um com sua própria ambientação e entidades (`DULLER`, `HOUND`, `CLUMP`, `SKIN_STEALER`, `WRETCH`).
 
+Há também dois níveis secretos, visitados individualmente:
+
+- **Level 6 — *Lights Out***: um corredor sem luz, escondido no Level 1, leva a um labirinto totalmente escuro.
+- **LEVEL G — *The Small Office***: uma pequena porta de escritório escondida em algum ponto do Level 0 leva a um escritório pequeno e abandonado, com três setores, onde o **Finger King** caça o jogador. Encontre os 3 documentos (cada um revela um dígito), digite o código no computador da sala principal e corra até a porta de emergência antes que ele te alcance. Escapar por ela é um final secreto que vence o jogo. Agache dentro dos armários para se esconder por um tempo.
+
 Todo o estado de posição/movimento é sincronizado por um servidor Node autoritativo via WebSocket (`/ws`), a ~20 snapshots/s por sala (`TICK_HZ`).
 
 ## Stack técnica
@@ -125,6 +130,7 @@ docker run -d -p 3000:3000 ghcr.io/guilhermeandreotti/backrooms-game-study:main
 | Lanterna | F |
 | Inventário | I |
 | Conquistas | K |
+| Interagir com itens | E |
 | Liberar mouse / pausar | Esc |
 
 ## Licença

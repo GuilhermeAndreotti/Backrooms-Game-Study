@@ -11,16 +11,46 @@ export enum EntityType {
   HOUND = "HOUND",
   CLUMP = "CLUMP",
   SKIN_STEALER = "SKIN_STEALER",
-  WRETCH = "WRETCH"
+  WRETCH = "WRETCH",
+  /** Level G's exclusive stalker. */
+  FINGER_KING = "FINGER_KING"
+}
+
+/**
+ * One monster's replicated state, streamed by the level's authority client
+ * (see GameEngine.isWorldAuthority). Short keys: this goes out ~10x a second.
+ */
+export interface EntityNetState {
+  id: number;
+  t: EntityType;
+  gx: number; gz: number; // current cell
+  tx: number; tz: number; // cell being walked into
+  p: number;  // progress along gx,gz -> tx,tz (0..1)
+  v: number;  // move speed (m/s), for dead-reckoning between frames
+  m: boolean; // moving
+  a: boolean; // agitated
+  c: boolean; // chasing
+  s: string;  // speech bubble text
 }
 
 export class WanderingEntity {
   // Static registry of inactive entities by type to power zero-allocation object pooling
   private static entityPool: Map<EntityType, WanderingEntity[]> = new Map();
 
-  public mesh: THREE.Mesh;
+  public mesh: THREE.Group;
   public type: EntityType;
   private map: ProceduralMap;
+  /** Stable id shared by every client in the room (assigned by GameEngine). */
+  public netId = -1;
+
+  // --- Finger King (Level G) knobs, driven each frame by GameEngine on the
+  // level's authority. Not replicated: only the AI reads them.
+  /** 0..1, grows with time spent on Level G: senses further, moves faster. */
+  public aggression = 0;
+  /** Final chase (or a wrong terminal code): heads straight for the target. */
+  public hunting = false;
+  /** The explorer it's after is crouched in a closet it hasn't seen through yet. */
+  public targetHidden = false;
   
   // Grid/logic position
   public gridX: number;
@@ -36,7 +66,6 @@ export class WanderingEntity {
   
   // Animations and visual states
   private bobTime = 0.0;
-  private canvasTexture: THREE.CanvasTexture | null = null;
   private glitchTimer = 0.0;
 
   // AI-Specific states
@@ -85,426 +114,378 @@ export class WanderingEntity {
       case EntityType.WRETCH:
         this.moveSpeed = 1.45;
         break;
+      case EntityType.FINGER_KING:
+        this.moveSpeed = 1.0;
+        break;
     }
   }
 
-  /**
-   * Generates custom high-contrast creepy canvas textures for each Backrooms Entity Type
-   */
-  /** Persistent drawing surface backing {@link canvasTexture}. */
-  private canvas: HTMLCanvasElement | null = null;
+  // ---------------------------------------------------------------------
+  // Real 3D bodies (primitives — cylinders/spheres/boxes), replacing the
+  // old flat hand-drawn billboard sprite. Geometry and any material that
+  // never needs per-instance tinting are cached class-wide (matCache/geoCache)
+  // so 40+ concurrent monsters of the same type don't allocate duplicate
+  // GPU buffers; materials that DO change per-instance (agitation tint,
+  // Finger King's chase-red eyes) are built fresh per entity and tracked
+  // below so state changes can retint them directly instead of redrawing.
+  // ---------------------------------------------------------------------
+  private static geoCache = new Map<string, THREE.BufferGeometry>();
+  private static matCache = new Map<string, THREE.Material>();
 
-  private createEntityTexture(): THREE.Texture {
-    if (!this.canvas) {
-      this.canvas = document.createElement("canvas");
-      this.canvas.width = 256;
-      this.canvas.height = 256;
-    }
-    const canvas = this.canvas;
-    const ctx = canvas.getContext("2d")!;
-    ctx.clearRect(0, 0, 256, 256);
+  private sgeo<T extends THREE.BufferGeometry>(key: string, build: () => T): T {
+    let g = WanderingEntity.geoCache.get(key) as T | undefined;
+    if (!g) { g = build(); WanderingEntity.geoCache.set(key, g); }
+    return g;
+  }
+  private smat<T extends THREE.Material>(key: string, build: () => T): T {
+    let m = WanderingEntity.matCache.get(key) as T | undefined;
+    if (!m) { m = build(); WanderingEntity.matCache.set(key, m); }
+    return m;
+  }
 
-    // Alpha transparent bg
-    ctx.fillStyle = "transparent";
-    ctx.fillRect(0, 0, 256, 256);
+  /** Frees the class-wide geometry/material caches. Call once, alongside clearPool(). */
+  public static disposeSharedAssets() {
+    WanderingEntity.geoCache.forEach((g) => g.dispose());
+    WanderingEntity.geoCache.clear();
+    WanderingEntity.matCache.forEach((m) => m.dispose());
+    WanderingEntity.matCache.clear();
+  }
 
-    ctx.save();
+  /** A tapered limb/spike mesh running from world-local point `a` to `b`. */
+  private limbBetween(mat: THREE.Material, a: THREE.Vector3, b: THREE.Vector3, radius: number, taper = 0.75): THREE.Mesh {
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const len = dir.length() || 0.001;
+    const geo = this.sgeo(`limb_${radius}_${taper}`, () => new THREE.CylinderGeometry(radius * taper, radius, 1, 5));
+    const m = new THREE.Mesh(geo, mat);
+    m.scale.set(1, len, 1);
+    m.position.copy(a).addScaledVector(dir, 0.5 / len);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    m.castShadow = true;
+    return m;
+  }
 
-    // 1. Draw entity physical figure based on type
+  private V(x: number, y: number, z: number): THREE.Vector3 {
+    return new THREE.Vector3(x, y, z);
+  }
+
+  /** Per-instance materials whose colour/emissive changes with AI state (agitation, chase). */
+  private tintMaterials: THREE.MeshStandardMaterial[] = [];
+  /** Toggled between the calm and hostile look (Skin-Stealer's black vs red eyes). */
+  private calmEyes: THREE.Object3D | null = null;
+  private hostileEyes: THREE.Object3D | null = null;
+
+  private createVisualMesh(): THREE.Group {
+    const group = new THREE.Group();
     switch (this.type) {
-      case EntityType.DULLER: {
-        // Humanoid noclip shadow
-        ctx.shadowBlur = 10;
-        ctx.shadowColor = "#3b82f6"; // Faint blue dimensional echo glow
-        
-        ctx.strokeStyle = "#080c14";
-        ctx.fillStyle = "#0c1220";
-        ctx.lineWidth = 14;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-
-        // Main skeletal spine
-        ctx.beginPath();
-        ctx.moveTo(128, 48);
-        ctx.lineTo(128, 180);
-        ctx.stroke();
-
-        // Limbs in clipping crawling positions
-        ctx.lineWidth = 7;
-        ctx.beginPath();
-        // Arms
-        ctx.moveTo(128, 70); ctx.lineTo(75, 100); ctx.lineTo(100, 140);
-        ctx.moveTo(128, 70); ctx.lineTo(181, 100); ctx.lineTo(156, 140);
-        // Legs
-        ctx.moveTo(128, 180); ctx.lineTo(95, 220); ctx.lineTo(70, 250);
-        ctx.moveTo(128, 180); ctx.lineTo(161, 220); ctx.lineTo(186, 250);
-        ctx.stroke();
-
-        // Featureless head
-        ctx.fillStyle = "#05080e";
-        ctx.beginPath();
-        ctx.arc(128, 32, 16, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = "#2563eb"; // Cyanish contour lines
-        ctx.stroke();
-        break;
-      }
-
-      case EntityType.HOUND: {
-        // Humanoid dog crawling
-        ctx.shadowBlur = 8;
-        ctx.shadowColor = "#ef4444"; // Aggressive red shadow eye reflection
-
-        // Draw body crouched down low on all fours
-        ctx.strokeStyle = "#111111";
-        ctx.fillStyle = "#0e0e0e";
-        ctx.lineWidth = 10;
-        ctx.lineCap = "round";
-
-        // Crawling torso spine
-        ctx.beginPath();
-        ctx.moveTo(70, 140);
-        ctx.quadraticCurveTo(128, 180, 190, 140);
-        ctx.stroke();
-
-        // 4 bent dog-like skeletal claws
-        ctx.lineWidth = 6;
-        ctx.beginPath();
-        // Front legs
-        ctx.moveTo(70, 140); ctx.lineTo(50, 190); ctx.lineTo(35, 240);
-        ctx.moveTo(100, 150); ctx.lineTo(90, 200); ctx.lineTo(75, 245);
-        // Rear legs
-        ctx.moveTo(160, 155); ctx.lineTo(170, 205); ctx.lineTo(185, 245);
-        ctx.moveTo(190, 140); ctx.lineTo(210, 195); ctx.lineTo(225, 240);
-        ctx.stroke();
-
-        // Messy heap of dark hair block
-        ctx.fillStyle = "#0a0a0a";
-        ctx.beginPath();
-        ctx.arc(60, 110, 26, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Wild messy strands of hair scribbled around the face
-        ctx.strokeStyle = "#080808";
-        ctx.lineWidth = 2;
-        for (let j = 0; j < 35; j++) {
-          ctx.beginPath();
-          const angle = Math.random() * Math.PI * 2;
-          const len = 15 + Math.random() * 20;
-          ctx.moveTo(60, 110);
-          ctx.lineTo(60 + Math.cos(angle) * len, 110 + Math.sin(angle) * len);
-          ctx.stroke();
-        }
-
-        // Two glowing yellow/white feral eyes leaking from hair
-        ctx.fillStyle = "#fef08a";
-        ctx.shadowColor = "#eab308";
-        ctx.shadowBlur = 12;
-        ctx.beginPath();
-        ctx.arc(52, 108, 4, 0, Math.PI * 2);
-        ctx.arc(68, 108, 4, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Terrifying open red jaw below hair with sharp teeth
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = "#7f1d1d";
-        ctx.beginPath();
-        ctx.moveTo(48, 122);
-        ctx.quadraticCurveTo(60, 142, 72, 122);
-        ctx.quadraticCurveTo(60, 118, 48, 122);
-        ctx.fill();
-
-        // Dropping white fangs
-        ctx.fillStyle = "#ffffff";
-        ctx.beginPath();
-        // Upper teeth
-        ctx.moveTo(51, 121); ctx.lineTo(54, 127); ctx.lineTo(57, 121);
-        ctx.moveTo(63, 121); ctx.lineTo(66, 127); ctx.lineTo(69, 121);
-        // Lower teeth
-        ctx.moveTo(54, 134); ctx.lineTo(57, 128); ctx.lineTo(60, 134);
-        ctx.fill();
-        break;
-      }
-
-      case EntityType.CLUMP: {
-        // Blob of multiple limbs
-        ctx.shadowBlur = 12;
-        ctx.shadowColor = "#ec4899"; // Fleshy pinkish/purple aura
-
-        const cx = 128;
-        const cy = 140;
-        
-        // Draw fleshy dark central sphere
-        ctx.fillStyle = "#1e0b12";
-        ctx.strokeStyle = "#3b1220";
-        ctx.lineWidth = 8;
-        ctx.beginPath();
-        ctx.arc(cx, cy, 38, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
-        // Chaos of multiple legs and arms extending out
-        ctx.lineWidth = 5.5;
-        ctx.strokeStyle = "#2e111a";
-        for (let arm = 0; arm < 16; arm++) {
-          const angle = (arm / 16) * Math.PI * 2 + Math.random() * 0.2;
-          const length = 55 + Math.random() * 30;
-          const endX = cx + Math.cos(angle) * length;
-          const endY = cy + Math.sin(angle) * length;
-
-          ctx.beginPath();
-          ctx.moveTo(cx, cy);
-          // Curved segmented arm/leg joint
-          const midX = cx + Math.cos(angle + 0.2) * (length * 0.5);
-          const midY = cy + Math.sin(angle + 0.2) * (length * 0.5);
-          ctx.quadraticCurveTo(midX, midY, endX, endY);
-          ctx.stroke();
-
-          // Hand/foot claws at ends
-          ctx.fillStyle = "#4a1d2d";
-          ctx.beginPath();
-          ctx.arc(endX, endY, 4.5, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        // Concentric veins inside the clump center
-        ctx.lineWidth = 1.5;
-        ctx.strokeStyle = "#9d174d";
-        for (let v = 0; v < 8; v++) {
-          ctx.beginPath();
-          ctx.arc(cx, cy, 10 + v * 3, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-        break;
-      }
-
-      case EntityType.SKIN_STEALER: {
-        // White humanoid mimicking suit
-        ctx.shadowBlur = 8;
-        ctx.shadowColor = "#eab308"; // Creepy yellow suit hue
-
-        // Draw jumpsuit torso
-        ctx.fillStyle = this.isAgitated ? "#3f320b" : "#b39a3c"; // darker/decayed if angry
-        ctx.strokeStyle = "#1a1608";
-        ctx.lineWidth = 7;
-        ctx.beginPath();
-        ctx.arc(128, 150, 32, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
-        // Elongated yellow limbs with exposed pale tips
-        ctx.lineWidth = 6.5;
-        ctx.strokeStyle = this.isAgitated ? "#42350c" : "#b39a3c";
-        ctx.beginPath();
-        // Arms
-        ctx.moveTo(96, 150); ctx.lineTo(40, 170); ctx.lineTo(30, 220); // Left arm extra long
-        ctx.moveTo(160, 150); ctx.lineTo(210, 160); ctx.lineTo(225, 210); // Right arm
-        // Legs
-        ctx.moveTo(110, 178); ctx.lineTo(95, 250);
-        ctx.moveTo(146, 178); ctx.lineTo(160, 250);
-        ctx.stroke();
-
-        // Exposed pale white hands/claws
-        ctx.fillStyle = "#eae6e1";
-        ctx.beginPath();
-        ctx.arc(30, 220, 6, 0, Math.PI * 2);
-        ctx.arc(225, 210, 6, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Head with loose skin mask details
-        ctx.fillStyle = "#e5e1da"; // Pale-white fleshy tone
-        ctx.strokeStyle = "#111111";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(128, 92, 19, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
-        // Draw creepy sagging yellow hood falling off
-        ctx.fillStyle = "#85722b";
-        ctx.beginPath();
-        ctx.arc(128, 86, 21, Math.PI, 0); // Hood contour
-        ctx.fill();
-
-        if (this.isAgitated) {
-          // Relentless bloodshot angry face
-          ctx.fillStyle = "#7f1d1d"; // Raw red mouth
-          ctx.beginPath();
-          ctx.arc(128, 97, 7, 0, Math.PI); // Unnatural wide open jaw
-          ctx.fill();
-
-          // Bloody claws/tears
-          ctx.fillStyle = "#991b1b";
-          ctx.beginPath();
-          ctx.arc(128, 104, 2, 0, Math.PI * 2);
-          ctx.arc(30, 220, 8, 0, Math.PI * 2);
-          ctx.fill();
-
-          // Black eye holes with glaring RED light pixels
-          ctx.fillStyle = "#0c0a09";
-          ctx.beginPath();
-          ctx.arc(121, 88, 4.5, 0, Math.PI * 2);
-          ctx.arc(135, 88, 4.5, 0, Math.PI * 2);
-          ctx.fill();
-
-          ctx.fillStyle = "#ef4444";
-          ctx.shadowColor = "#ff0000";
-          ctx.shadowBlur = 10;
-          ctx.beginPath();
-          ctx.arc(121, 88, 2.2, 0, Math.PI * 2);
-          ctx.arc(135, 88, 2.2, 0, Math.PI * 2);
-          ctx.fill();
-        } else {
-          // Normal blank human mask facade
-          ctx.fillStyle = "#0c0a09"; // Empty black socket eyes
-          ctx.beginPath();
-          ctx.arc(121, 88, 3.5, 0, Math.PI * 2);
-          ctx.arc(135, 88, 3.5, 0, Math.PI * 2);
-          ctx.fill();
-
-          // Horizontal blank line grin
-          ctx.strokeStyle = "#0d0d0d";
-          ctx.lineWidth = 2.5;
-          ctx.beginPath();
-          ctx.moveTo(117, 101);
-          ctx.lineTo(139, 101);
-          ctx.stroke();
-        }
-        break;
-      }
-
-      case EntityType.WRETCH: {
-        // Red, raw skin, decaying aggressive zombie
-        ctx.shadowBlur = 9;
-        ctx.shadowColor = "#b91c1c"; // Horror-bloody aura
-
-        // Humped body skeletal base
-        ctx.strokeStyle = "#450a0a";
-        ctx.fillStyle = "#7f1d1d";
-        ctx.lineWidth = 11;
-        ctx.lineJoin = "round";
-
-        ctx.beginPath();
-        ctx.moveTo(128, 172);
-        ctx.quadraticCurveTo(100, 110, 128, 80); // Humped back shape
-        ctx.stroke();
-
-        // Ribs lines exposed
-        ctx.strokeStyle = "#fca5a5";
-        ctx.lineWidth = 2;
-        for (let r = 0; r < 5; r++) {
-          ctx.beginPath();
-          ctx.moveTo(115, 110 + r * 10);
-          ctx.lineTo(135, 112 + r * 10);
-          ctx.stroke();
-        }
-
-        // Spasm claws and legs
-        ctx.lineWidth = 5.5;
-        ctx.strokeStyle = "#5f0f0f";
-        ctx.beginPath();
-        // Right claw reaching out
-        ctx.moveTo(120, 95); ctx.lineTo(75, 120); ctx.lineTo(45, 105);
-        // Left claw dragging
-        ctx.moveTo(125, 105); ctx.lineTo(165, 135); ctx.lineTo(185, 175);
-        // Desperate sprinting legs
-        ctx.moveTo(120, 170); ctx.lineTo(95, 245);
-        ctx.moveTo(132, 170); ctx.lineTo(145, 245);
-        ctx.stroke();
-
-        // Screaming mouth skull head
-        ctx.fillStyle = "#581c1c"; // decayed blood clot color
-        ctx.strokeStyle = "#2d0606";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(128, 56, 17, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
-        // Hollow screaming black oval jaw
-        ctx.fillStyle = "#020101";
-        ctx.beginPath();
-        ctx.ellipse(128, 64, 5, 9, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Blinking amber eyes
-        ctx.fillStyle = "#f59e0b";
-        ctx.shadowColor = "#f59e0b";
-        ctx.shadowBlur = 12;
-        ctx.beginPath();
-        ctx.arc(122, 51, 3.5, 0, Math.PI * 2);
-        ctx.arc(134, 51, 3.5, 0, Math.PI * 2);
-        ctx.fill();
-        break;
-      }
+      case EntityType.DULLER: this.buildDuller(group); break;
+      case EntityType.HOUND: this.buildHound(group); break;
+      case EntityType.CLUMP: this.buildClump(group); break;
+      case EntityType.SKIN_STEALER: this.buildSkinStealer(group); break;
+      case EntityType.WRETCH: this.buildWretch(group); break;
+      case EntityType.FINGER_KING: this.buildFingerKing(group); break;
     }
+    group.castShadow = true;
 
-    ctx.restore();
+    // Small floating text sprite for the speech bubble — the only thing that
+    // still needs a canvas texture; it starts hidden (no line spoken yet).
+    const speechTex = this.getSpeechTexture();
+    const speechMat = new THREE.SpriteMaterial({ map: speechTex, depthTest: false, transparent: true });
+    const sprite = new THREE.Sprite(speechMat);
+    sprite.scale.set(1.1, 0.28, 1);
+    sprite.position.set(0, this.speechBubbleLocalY(), 0);
+    sprite.visible = false;
+    group.add(sprite);
+    this.speechSprite = sprite;
 
-    // 2. Overlay Radio / Creepy subtitle box inside the texture if speaking! (Centered above the entity's head)
-    if (this.currentSpeechText) {
-      ctx.save();
-      
-      const text = this.currentSpeechText;
-      ctx.font = "bold 9px Courier New, monospace";
-      ctx.textAlign = "center";
-      
-      const xPos = 128;
-      const yPos = 15; // Upper part of texture sits perfectly above its 3D head coordinates
-      
-      const metrics = ctx.measureText(text);
-      const bgW = metrics.width + 12;
-      const bgH = 14;
-
-      // Draw high-contrast backing strip
-      ctx.fillStyle = "rgba(10, 8, 3, 0.85)";
-      ctx.strokeStyle = this.isAgitated ? "#ef4444" : "#a28e3b";
-      ctx.lineWidth = 1;
-      
-      ctx.beginPath();
-      ctx.roundRect(xPos - bgW / 2, yPos - bgH / 2, bgW, bgH, 3);
-      ctx.fill();
-      ctx.stroke();
-
-      // Glow font overlay
-      ctx.shadowBlur = 5;
-      ctx.shadowColor = this.isAgitated ? "#ef4444" : "#eab308";
-      ctx.fillStyle = this.isAgitated ? "#fca5a5" : "#deb81d";
-      ctx.fillText(text, xPos, yPos + 3);
-
-      ctx.restore();
-    }
-
-    if (!this.canvasTexture) {
-      this.canvasTexture = new THREE.CanvasTexture(canvas);
-    } else {
-      // Same texture object: just re-upload the pixels. Swapping the texture
-      // instead would force the material (and its shader) to be revalidated.
-      this.canvasTexture.needsUpdate = true;
-    }
-    return this.canvasTexture;
+    return group;
   }
 
-  private createVisualMesh(): THREE.Mesh {
-    const texture = this.createEntityTexture();
-    
-    const material = new THREE.MeshStandardMaterial({
-      map: texture,
-      transparent: true,
-      side: THREE.DoubleSide,
-      depthWrite: true,
-      alphaTest: 0.3,
-      roughness: 0.9,
-      metalness: 0.1
-    });
+  /** How high above this type's local origin (baseHeight) the speech bubble floats. */
+  private speechBubbleLocalY(): number {
+    switch (this.type) {
+      case EntityType.DULLER: return 0.75;
+      case EntityType.HOUND: return 0.55;
+      case EntityType.CLUMP: return 0.7;
+      case EntityType.FINGER_KING: return 1.1;
+      default: return 0.9;
+    }
+  }
 
-    // 1.6 meters wide, 2.65 meters tall 
-    const geometry = new THREE.PlaneGeometry(1.6, 2.65);
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    return mesh;
+  // --- Per-type bodies -----------------------------------------------------
+
+  /** Gaunt noclip shadow: thin dark humanoid, blue rim glow, limbs splayed as if mid-crawl. */
+  private buildDuller(group: THREE.Group) {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x0c1220, emissive: 0x1d4ed8, emissiveIntensity: 0.55,
+      roughness: 0.6, metalness: 0.1, transparent: true, opacity: 0.82,
+    });
+    this.tintMaterials.push(mat);
+
+    group.add(this.limbBetween(mat, this.V(0, 0.35, 0), this.V(0, -0.35, 0), 0.11)); // spine
+    // Arms, bent and trailing
+    group.add(this.limbBetween(mat, this.V(0, 0.3, 0), this.V(-0.32, 0.05, 0.1), 0.05));
+    group.add(this.limbBetween(mat, this.V(-0.32, 0.05, 0.1), this.V(-0.22, -0.25, 0.2), 0.045));
+    group.add(this.limbBetween(mat, this.V(0, 0.3, 0), this.V(0.32, 0.05, 0.1), 0.05));
+    group.add(this.limbBetween(mat, this.V(0.32, 0.05, 0.1), this.V(0.22, -0.25, 0.2), 0.045));
+    // Legs, dangling loosely below (Duller floats, feet don't touch ground)
+    group.add(this.limbBetween(mat, this.V(0, -0.35, 0), this.V(-0.2, -0.75, 0.05), 0.06));
+    group.add(this.limbBetween(mat, this.V(0, -0.35, 0), this.V(0.2, -0.75, 0.05), 0.06));
+
+    const head = new THREE.Mesh(this.sgeo("duller_head", () => new THREE.SphereGeometry(0.15, 10, 8)), mat);
+    head.position.set(0, 0.53, 0);
+    group.add(head);
+  }
+
+  /** Crawling feral dog-thing: low horizontal body, matted head, glowing eyes, red jaw. */
+  private buildHound(group: THREE.Group) {
+    const bodyMat = this.smat("hound_body", () => new THREE.MeshStandardMaterial({ color: 0x0e0e0e, roughness: 0.95 }));
+    group.add(this.limbBetween(bodyMat, this.V(-0.32, 0.02, -0.22), this.V(0.3, 0.05, 0.22), 0.17, 0.9));
+    // 4 crooked legs
+    const legs: [THREE.Vector3, THREE.Vector3][] = [
+      [this.V(-0.28, -0.05, -0.2), this.V(-0.38, -0.75, -0.28)],
+      [this.V(-0.1, -0.02, -0.25), this.V(-0.16, -0.75, -0.35)],
+      [this.V(0.14, -0.02, 0.22), this.V(0.22, -0.7, 0.32)],
+      [this.V(0.3, 0.0, 0.18), this.V(0.42, -0.72, 0.26)],
+    ];
+    for (const [a, b] of legs) group.add(this.limbBetween(bodyMat, a, b, 0.05));
+
+    const headMat = this.smat("hound_head", () => new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 1.0 }));
+    const head = new THREE.Mesh(this.sgeo("hound_head_geo", () => new THREE.IcosahedronGeometry(0.19, 0)), headMat);
+    head.position.set(-0.4, 0.12, -0.24);
+    group.add(head);
+
+    const eyeMat = this.smat("hound_eye", () => new THREE.MeshStandardMaterial({ color: 0xfef08a, emissive: 0xeab308, emissiveIntensity: 1.4 }));
+    const eyeGeo = this.sgeo("hound_eye_geo", () => new THREE.SphereGeometry(0.022, 6, 6));
+    const eyeL = new THREE.Mesh(eyeGeo, eyeMat); eyeL.position.set(-0.46, 0.15, -0.14); group.add(eyeL);
+    const eyeR = new THREE.Mesh(eyeGeo, eyeMat); eyeR.position.set(-0.46, 0.15, -0.34); group.add(eyeR);
+
+    const jawMat = this.smat("hound_jaw", () => new THREE.MeshStandardMaterial({ color: 0x7f1d1d, roughness: 0.8 }));
+    const jaw = new THREE.Mesh(this.sgeo("hound_jaw_geo", () => new THREE.BoxGeometry(0.08, 0.05, 0.13)), jawMat);
+    jaw.position.set(-0.52, 0.06, -0.24);
+    group.add(jaw);
+  }
+
+  /** Fleshy core with a burst of thin spike-limbs — a rolling clump of tumbling appendages. */
+  private buildClump(group: THREE.Group) {
+    const coreMat = this.smat("clump_core", () => new THREE.MeshStandardMaterial({ color: 0x1e0b12, emissive: 0x4a1029, emissiveIntensity: 0.35, roughness: 0.8 }));
+    const core = new THREE.Mesh(this.sgeo("clump_core_geo", () => new THREE.SphereGeometry(0.34, 12, 10)), coreMat);
+    group.add(core);
+
+    const spikeMat = this.smat("clump_spike", () => new THREE.MeshStandardMaterial({ color: 0x2e111a, roughness: 0.9 }));
+    const clawMat = this.smat("clump_claw", () => new THREE.MeshStandardMaterial({ color: 0x4a1d2d, roughness: 0.7 }));
+    const clawGeo = this.sgeo("clump_claw_geo", () => new THREE.SphereGeometry(0.035, 6, 6));
+
+    const SPIKES = 18;
+    for (let i = 0; i < SPIKES; i++) {
+      // Deterministic even spread (golden-angle spiral over the sphere) so every
+      // Clump looks the same instead of a fresh random burst each frame.
+      const t = i / SPIKES;
+      const theta = Math.acos(1 - 2 * t);
+      const phi = Math.PI * (1 + Math.sqrt(5)) * i;
+      const dir = this.V(Math.sin(theta) * Math.cos(phi), Math.cos(theta), Math.sin(theta) * Math.sin(phi));
+      const len = 0.3 + ((i * 37) % 10) / 40; // 0.3 - 0.55, stable per-index jitter
+      const start = dir.clone().multiplyScalar(0.3);
+      const end = dir.clone().multiplyScalar(0.3 + len);
+      group.add(this.limbBetween(spikeMat, start, end, 0.028));
+      const claw = new THREE.Mesh(clawGeo, clawMat);
+      claw.position.copy(end);
+      group.add(claw);
+    }
+  }
+
+  /** Lanky humanoid in a stained hazmat-yellow suit; retints darker and grows red eyes once agitated. */
+  private buildSkinStealer(group: THREE.Group) {
+    const suitMat = new THREE.MeshStandardMaterial({ color: 0xb39a3c, roughness: 0.85 });
+    this.tintMaterials.push(suitMat);
+
+    const torso = new THREE.Mesh(this.sgeo("stealer_torso", () => new THREE.CylinderGeometry(0.19, 0.23, 0.55, 8)), suitMat);
+    torso.position.set(0, -0.1, 0);
+    group.add(torso);
+
+    // Arms — left notably longer, per the original design
+    group.add(this.limbBetween(suitMat, this.V(-0.17, 0.1, 0), this.V(-0.55, -0.35, 0.05), 0.055));
+    group.add(this.limbBetween(suitMat, this.V(-0.55, -0.35, 0.05), this.V(-0.62, -0.8, 0.08), 0.045));
+    group.add(this.limbBetween(suitMat, this.V(0.17, 0.1, 0), this.V(0.5, -0.15, 0), 0.055));
+    group.add(this.limbBetween(suitMat, this.V(0.5, -0.15, 0), this.V(0.6, -0.62, 0), 0.045));
+    // Legs
+    group.add(this.limbBetween(suitMat, this.V(-0.1, -0.38, 0), this.V(-0.14, -1.3, 0), 0.07));
+    group.add(this.limbBetween(suitMat, this.V(0.1, -0.38, 0), this.V(0.14, -1.3, 0), 0.07));
+
+    const headMat = this.smat("stealer_head", () => new THREE.MeshStandardMaterial({ color: 0xe5e1da, roughness: 0.6 }));
+    const head = new THREE.Mesh(this.sgeo("stealer_head_geo", () => new THREE.SphereGeometry(0.16, 10, 8)), headMat);
+    head.position.set(0, 0.38, 0);
+    group.add(head);
+
+    // Sagging hood — a squashed half-dome sitting slightly back on the head
+    const hoodMat = this.smat("stealer_hood", () => new THREE.MeshStandardMaterial({ color: 0x85722b, roughness: 0.9, side: THREE.DoubleSide }));
+    const hood = new THREE.Mesh(this.sgeo("stealer_hood_geo", () => new THREE.SphereGeometry(0.19, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.6)), hoodMat);
+    hood.position.set(0, 0.42, -0.02);
+    hood.rotation.x = 0.15;
+    group.add(hood);
+
+    const eyeGeo = this.sgeo("stealer_eye_geo", () => new THREE.SphereGeometry(0.022, 6, 6));
+    const calmMat = this.smat("stealer_calm_eye", () => new THREE.MeshStandardMaterial({ color: 0x0c0a09 }));
+    const calm = new THREE.Group();
+    const cL = new THREE.Mesh(eyeGeo, calmMat); cL.position.set(-0.05, 0.4, 0.14); calm.add(cL);
+    const cR = new THREE.Mesh(eyeGeo, calmMat); cR.position.set(0.05, 0.4, 0.14); calm.add(cR);
+    group.add(calm);
+    this.calmEyes = calm;
+
+    const hostileMat = this.smat("stealer_hostile_eye", () => new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0xff0000, emissiveIntensity: 1.6 }));
+    const hostile = new THREE.Group();
+    const hL = new THREE.Mesh(eyeGeo, hostileMat); hL.position.set(-0.05, 0.4, 0.14); hostile.add(hL);
+    const hR = new THREE.Mesh(eyeGeo, hostileMat); hR.position.set(0.05, 0.4, 0.14); hostile.add(hR);
+    hostile.visible = false;
+    group.add(hostile);
+    this.hostileEyes = hostile;
+  }
+
+  /** Hunched, skeletal, sprinting — a red raw-skinned figure with a screaming skull head. */
+  private buildWretch(group: THREE.Group) {
+    const skinMat = this.smat("wretch_skin", () => new THREE.MeshStandardMaterial({ color: 0x7f1d1d, roughness: 0.85 }));
+    // Hunched spine: pelvis low and back, curving up and forward to the head
+    group.add(this.limbBetween(skinMat, this.V(0, -0.55, 0.1), this.V(-0.05, -0.05, -0.05), 0.11));
+    group.add(this.limbBetween(skinMat, this.V(-0.05, -0.05, -0.05), this.V(0, 0.35, -0.15), 0.09));
+    // Reaching claws
+    group.add(this.limbBetween(skinMat, this.V(-0.03, 0.15, -0.1), this.V(-0.42, 0.05, -0.3), 0.05));
+    group.add(this.limbBetween(skinMat, this.V(-0.42, 0.05, -0.3), this.V(-0.6, -0.1, -0.42), 0.04));
+    group.add(this.limbBetween(skinMat, this.V(0, 0.0, -0.08), this.V(0.35, -0.15, 0.1), 0.05));
+    group.add(this.limbBetween(skinMat, this.V(0.35, -0.15, 0.1), this.V(0.5, -0.42, 0.22), 0.04));
+    // Sprinting legs
+    group.add(this.limbBetween(skinMat, this.V(-0.06, -0.6, 0.12), this.V(-0.16, -1.3, 0.05), 0.065));
+    group.add(this.limbBetween(skinMat, this.V(0.06, -0.6, 0.1), this.V(0.2, -1.3, 0.2), 0.065));
+
+    const headMat = this.smat("wretch_head", () => new THREE.MeshStandardMaterial({ color: 0x581c1c, roughness: 0.9 }));
+    const head = new THREE.Mesh(this.sgeo("wretch_head_geo", () => new THREE.SphereGeometry(0.14, 10, 8)), headMat);
+    head.position.set(0, 0.48, -0.18);
+    group.add(head);
+
+    const jawMat = this.smat("wretch_jaw", () => new THREE.MeshStandardMaterial({ color: 0x020101, roughness: 1.0 }));
+    const jaw = new THREE.Mesh(this.sgeo("wretch_jaw_geo", () => new THREE.SphereGeometry(0.04, 6, 6)), jawMat);
+    jaw.position.set(0, 0.42, -0.28);
+    jaw.scale.set(0.8, 1.4, 1);
+    group.add(jaw);
+
+    const eyeMat = this.smat("wretch_eye", () => new THREE.MeshStandardMaterial({ color: 0xf59e0b, emissive: 0xf59e0b, emissiveIntensity: 1.4 }));
+    const eyeGeo = this.sgeo("wretch_eye_geo", () => new THREE.SphereGeometry(0.02, 6, 6));
+    const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(-0.06, 0.51, -0.28); group.add(eL);
+    const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.06, 0.51, -0.28); group.add(eR);
+  }
+
+  /** Tall, gaunt, office-grey figure: stilt legs, finger-hands dragging the floor, a crown of fingers. */
+  private buildFingerKing(group: THREE.Group) {
+    const suitMat = this.smat("king_suit", () => new THREE.MeshStandardMaterial({ color: 0x2b2d31, roughness: 0.7 }));
+    const torso = new THREE.Mesh(this.sgeo("king_torso", () => new THREE.CylinderGeometry(0.14, 0.2, 0.62, 6)), suitMat);
+    torso.position.set(0, 0.35, 0);
+    group.add(torso);
+
+    const tieMat = this.smat("king_tie", () => new THREE.MeshStandardMaterial({ color: 0x7f1d1d, roughness: 0.6 }));
+    const tie = new THREE.Mesh(this.sgeo("king_tie_geo", () => new THREE.BoxGeometry(0.05, 0.5, 0.02)), tieMat);
+    tie.position.set(0, 0.38, 0.15);
+    group.add(tie);
+
+    // Stilt legs — this creature reads as unnaturally tall
+    group.add(this.limbBetween(suitMat, this.V(-0.08, 0.04, 0), this.V(-0.1, -1.35, 0), 0.06));
+    group.add(this.limbBetween(suitMat, this.V(0.08, 0.04, 0), this.V(0.1, -1.35, 0), 0.06));
+
+    const skinMat = this.smat("king_skin", () => new THREE.MeshStandardMaterial({ color: 0xd8cfc2, roughness: 0.55 }));
+    const knuckleGeo = this.sgeo("king_knuckle_geo", () => new THREE.SphereGeometry(0.015, 5, 5));
+    const knuckleMat = this.smat("king_knuckle", () => new THREE.MeshStandardMaterial({ color: 0x8f8373, roughness: 0.6 }));
+
+    // Arms ending in a hand of 5 long, impossibly jointed fingers dragging near the floor
+    for (const side of [-1, 1]) {
+      const shoulder = this.V(side * 0.15, 0.55, 0);
+      const wrist = this.V(side * 0.42, -0.15, 0.05);
+      group.add(this.limbBetween(suitMat, shoulder, wrist, 0.045));
+      for (let f = 0; f < 5; f++) {
+        const spread = (f - 2) * 0.05;
+        const fingerEnd = this.V(wrist.x + side * (0.15 + f * 0.03), -1.3 + Math.abs(f - 2) * 0.05, wrist.z + spread * 2);
+        group.add(this.limbBetween(skinMat, wrist, fingerEnd, 0.014, 0.6));
+        const knuckle = new THREE.Mesh(knuckleGeo, knuckleMat);
+        knuckle.position.copy(wrist).lerp(fingerEnd, 0.55);
+        group.add(knuckle);
+      }
+    }
+
+    const head = new THREE.Mesh(this.sgeo("king_head_geo", () => new THREE.SphereGeometry(0.15, 10, 10)), skinMat);
+    head.position.set(0, 0.82, 0);
+    head.scale.set(0.85, 1.35, 0.95);
+    group.add(head);
+
+    // Crown of upright fingers
+    const nailMat = this.smat("king_nail", () => new THREE.MeshStandardMaterial({ color: 0xe9e2d6, roughness: 0.5 }));
+    const nailGeo = this.sgeo("king_nail_geo", () => new THREE.SphereGeometry(0.012, 5, 5));
+    for (let f = 0; f < 7; f++) {
+      const off = (f - 3) / 3; // -1..1
+      const base = this.V(off * 0.11, 1.0, 0);
+      const tip = this.V(off * 0.13, 1.22 - Math.abs(off) * 0.08, 0);
+      group.add(this.limbBetween(skinMat, base, tip, 0.011, 0.6));
+      const nail = new THREE.Mesh(nailGeo, nailMat);
+      nail.position.copy(tip);
+      group.add(nail);
+    }
+
+    const eyeGeo = this.sgeo("king_eye_geo", () => new THREE.SphereGeometry(0.018, 6, 6));
+    const eyeMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, emissive: 0x000000, emissiveIntensity: 0 });
+    this.tintMaterials.push(eyeMat);
+    const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(-0.045, 0.83, 0.11); group.add(eL);
+    const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.045, 0.83, 0.11); group.add(eR);
+    this.kingEyeMaterial = eyeMat;
+  }
+
+  /** Only meaningful for Finger King — its eye material, retinted red while chasing/hunting. */
+  private kingEyeMaterial: THREE.MeshStandardMaterial | null = null;
+
+  // --- Speech bubble (tiny canvas texture, unrelated to the body now) ------
+
+  private speechSprite: THREE.Sprite | null = null;
+  private speechCanvas: HTMLCanvasElement | null = null;
+  private speechTexture: THREE.CanvasTexture | null = null;
+
+  private getSpeechTexture(): THREE.CanvasTexture {
+    if (!this.speechCanvas) {
+      this.speechCanvas = document.createElement("canvas");
+      this.speechCanvas.width = 220;
+      this.speechCanvas.height = 56;
+    }
+    if (!this.speechTexture) this.speechTexture = new THREE.CanvasTexture(this.speechCanvas);
+    return this.speechTexture;
+  }
+
+  /** Redraws the little floating subtitle strip; hides the sprite entirely when there's no line to show. */
+  private redrawSpeechBubble() {
+    if (!this.speechSprite) return;
+    if (!this.currentSpeechText) {
+      this.speechSprite.visible = false;
+      return;
+    }
+    const canvas = this.speechCanvas!;
+    const ctx = canvas.getContext("2d")!;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const text = this.currentSpeechText;
+    ctx.font = "bold 15px Courier New, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const metrics = ctx.measureText(text);
+    const bgW = Math.min(canvas.width - 4, metrics.width + 18);
+    const bgH = 26;
+
+    ctx.fillStyle = "rgba(10, 8, 3, 0.85)";
+    ctx.strokeStyle = this.isAgitated ? "#ef4444" : "#a28e3b";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(canvas.width / 2 - bgW / 2, canvas.height / 2 - bgH / 2, bgW, bgH, 5);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.shadowBlur = 5;
+    ctx.shadowColor = this.isAgitated ? "#ef4444" : "#eab308";
+    ctx.fillStyle = this.isAgitated ? "#fca5a5" : "#deb81d";
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 1);
+
+    this.speechTexture!.needsUpdate = true;
+    this.speechSprite.visible = true;
   }
 
   /**
@@ -529,60 +510,98 @@ export class WanderingEntity {
     ey += this.map.getFloorHeightAt(wx, wz);
 
     this.mesh.position.set(wx, ey, wz);
-    
-    // If inside a solid wall (Duller clipping), set semi-transparent material state
-    if (this.map.grid[this.gridX][this.gridZ] === CellType.SOLID) {
-      this.mesh.scale.set(0.9, 0.9, 0.9);
-      if (Array.isArray(this.mesh.material)) {
-        this.mesh.material.forEach(m => { m.opacity = 0.20; m.needsUpdate = true; });
-      } else if (this.mesh.material) {
-        this.mesh.material.opacity = 0.20;
-        this.mesh.material.needsUpdate = true;
-      }
-    } else {
-      this.mesh.scale.set(1.0, 1.0, 1.0);
-      if (Array.isArray(this.mesh.material)) {
-        this.mesh.material.forEach(m => { m.opacity = 0.90; m.needsUpdate = true; });
-      } else if (this.mesh.material) {
-        this.mesh.material.opacity = 0.90;
-        this.mesh.material.needsUpdate = true;
-      }
+    this.updateWallClipLook();
+  }
+
+  /**
+   * Duller inside a solid wall renders faded and slightly shrunk (it's the
+   * only type that regularly noclips through walls — see chooseNextTarget).
+   * Only Duller's body material is per-instance (tintMaterials), so it's the
+   * only one it's safe to fade without dimming every other Duller sharing it.
+   */
+  private updateWallClipLook() {
+    const inWall = this.map.grid[this.gridX]?.[this.gridZ] === CellType.SOLID;
+    this.mesh.scale.setScalar(inWall ? 0.9 : 1.0);
+    if (this.type !== EntityType.DULLER) return;
+    const opacity = inWall ? 0.2 : 0.82;
+    this.tintMaterials.forEach((m) => { m.opacity = opacity; m.needsUpdate = true; });
+  }
+
+  public toNetState(): EntityNetState {
+    return {
+      id: this.netId,
+      t: this.type,
+      gx: this.gridX, gz: this.gridZ,
+      tx: this.targetGridX, tz: this.targetGridZ,
+      p: Math.round(this.transitionProgress * 1000) / 1000,
+      v: this.moveSpeed,
+      m: this.isMoving,
+      a: this.isAgitated,
+      c: this.isChasing,
+      s: this.currentSpeechText,
+    };
+  }
+
+  /**
+   * Adopts the authority's state. The AI fields are copied too (not just the
+   * visuals) so that if this client becomes the authority later, it resumes
+   * the simulation exactly where the previous one left off.
+   */
+  public applyNetState(s: EntityNetState) {
+    const cellChanged = s.gx !== this.gridX || s.gz !== this.gridZ;
+    const looksChanged = s.a !== this.isAgitated || s.s !== this.currentSpeechText;
+
+    this.gridX = s.gx;
+    this.gridZ = s.gz;
+    this.targetGridX = s.tx;
+    this.targetGridZ = s.tz;
+    this.transitionProgress = s.p;
+    this.moveSpeed = s.v;
+    this.isMoving = s.m;
+    this.isAgitated = s.a;
+    this.isChasing = s.c;
+    this.currentSpeechText = s.s;
+
+    if (cellChanged) this.updateWallClipLook();
+    if (looksChanged) this.updateVisualState(); // forced: a coalesced skip would never be retried
+  }
+
+  /**
+   * Per-frame update on a non-authority client: no AI, just dead-reckon along
+   * the edge the authority said it's walking, glide the mesh there, animate,
+   * and face the local viewer.
+   */
+  public updateReplica(delta: number, viewerX: number, viewerZ: number) {
+    const cSize = this.map.cellSize;
+    if (this.isMoving) {
+      this.transitionProgress = Math.min(1, this.transitionProgress + (this.moveSpeed / cSize) * delta);
     }
+    const t = this.isMoving ? this.transitionProgress : 0;
+    const wantX = THREE.MathUtils.lerp(this.gridX, this.targetGridX, t) * cSize + cSize / 2;
+    const wantZ = THREE.MathUtils.lerp(this.gridZ, this.targetGridZ, t) * cSize + cSize / 2;
+
+    // Snap on big jumps (relocations, first frame); otherwise glide to hide
+    // the correction when a fresh network frame disagrees slightly.
+    const dx = wantX - this.mesh.position.x;
+    const dz = wantZ - this.mesh.position.z;
+    if (dx * dx + dz * dz > cSize * cSize * 4) {
+      this.mesh.position.x = wantX;
+      this.mesh.position.z = wantZ;
+    } else {
+      const k = Math.min(1, 12 * delta);
+      this.mesh.position.x += dx * k;
+      this.mesh.position.z += dz * k;
+    }
+
+    this.animate(delta);
+    this.mesh.lookAt(viewerX, this.mesh.position.y, viewerZ);
   }
 
-  /**
-   * Redraws canvas texture contents to capture agitation transitions and speech bubbles
-   */
-  private lastTextureRedraw = 0;
-
-  /**
-   * Repaints the entity billboard. Redrawing a 256x256 canvas and re-uploading
-   * it is not free, so consecutive requests are coalesced.
-   */
-  private updateTexture(force = false) {
-    const now = performance.now();
-    if (!force && now - this.lastTextureRedraw < 200) return;
-    this.lastTextureRedraw = now;
-
-    this.createEntityTexture();
-  }
-
-  /**
-   * Updates state of Wandering Entity.
-   * Handles custom pathing, speed modulations, and billboard direction locks.
-   */
-  public update(
-    delta: number, 
-    playerX: number, 
-    playerZ: number,
-    playerState: "idle" | "walking" | "running" | "crouching" = "idle",
-    cameraDir?: THREE.Vector3,
-    isFlashlightOn?: boolean
-  ) {
+  /** Bobbing and glitch-scale flicker, shared by the AI and replica updates. */
+  private animate(delta: number) {
     this.bobTime += delta;
     this.glitchTimer += delta;
 
-    // 1. Organic Bobbing / Hover Animation
     let bobFreq = 3.8;
     let bobAmp = 0.08;
     if (this.type === EntityType.HOUND) {
@@ -594,7 +613,7 @@ export class WanderingEntity {
     }
 
     const bobOffset = Math.sin(this.bobTime * bobFreq) * bobAmp;
-    
+
     let baseHeight = 1.35;
     if (this.type === EntityType.DULLER) baseHeight = 1.48;
     else if (this.type === EntityType.HOUND) baseHeight = 1.05;
@@ -616,6 +635,44 @@ export class WanderingEntity {
         this.mesh.scale.set(1.0, 1.0, 1.0);
       }
     }
+  }
+
+  /**
+   * Applies the current AI state (agitation, chase) to the 3D body's tinted
+   * parts and redraws the speech bubble. Cheap enough (a couple of material
+   * flips + a small canvas redraw) that it needs no throttling, unlike the
+   * old full-body 256x256 texture repaint this replaces.
+   */
+  private updateVisualState() {
+    if (this.type === EntityType.SKIN_STEALER && this.calmEyes && this.hostileEyes) {
+      this.calmEyes.visible = !this.isAgitated;
+      this.hostileEyes.visible = this.isAgitated;
+      const tint = this.isAgitated ? 0x3f320b : 0xb39a3c;
+      this.tintMaterials.forEach((m) => { m.color.setHex(tint); m.needsUpdate = true; });
+    } else if (this.type === EntityType.FINGER_KING && this.kingEyeMaterial) {
+      const active = this.isChasing || this.hunting;
+      this.kingEyeMaterial.color.setHex(active ? 0xef4444 : 0x0a0a0a);
+      this.kingEyeMaterial.emissive.setHex(active ? 0xff0000 : 0x000000);
+      this.kingEyeMaterial.emissiveIntensity = active ? 1.6 : 0;
+      this.kingEyeMaterial.needsUpdate = true;
+    }
+    this.redrawSpeechBubble();
+  }
+
+  /**
+   * Updates state of Wandering Entity.
+   * Handles custom pathing, speed modulations, and billboard direction locks.
+   */
+  public update(
+    delta: number, 
+    playerX: number, 
+    playerZ: number,
+    playerState: "idle" | "walking" | "running" | "crouching" = "idle",
+    cameraDir?: THREE.Vector3,
+    isFlashlightOn?: boolean
+  ) {
+    // 1. Organic Bobbing / Hover Animation + glitch flicker
+    this.animate(delta);
 
     // 2. Rotate mesh horizontally to keep facing the voyager directly (Billboard sprite)
     this.mesh.lookAt(playerX, this.mesh.position.y, playerZ);
@@ -692,11 +749,20 @@ export class WanderingEntity {
         } else {
           this.currentSpeechText = "*MURMÚRIOS INSANOS*";
         }
+      } else if (this.type === EntityType.FINGER_KING) {
+        // Mostly silent — the taps (GameEngine) carry the warning, not text.
+        if (this.hunting) {
+          this.currentSpeechText = "*DEDOS ARRASTANDO NAS PAREDES*";
+        } else if (this.isChasing) {
+          this.currentSpeechText = "*tec tec tec tec*";
+        } else {
+          this.currentSpeechText = "";
+        }
       }
 
       // Re-render when label text rotates or morphs
       if (prevText !== this.currentSpeechText) {
-        this.updateTexture();
+        this.updateVisualState();
       }
     }
 
@@ -803,6 +869,26 @@ export class WanderingEntity {
           this.moveSpeed = 1.45;
         }
       }
+
+      else if (this.type === EntityType.FINGER_KING) {
+        // Senses further and moves faster the longer you stay on Level G.
+        // Never out-runs a sprinting explorer (4.2 m/s): the final chase is
+        // a race you can win, not a death sentence.
+        const senseRadius = 7 + 11 * this.aggression;
+        if (this.hunting) {
+          this.isChasing = true;
+          this.moveSpeed = 3.7;
+        } else if (this.targetHidden && distanceMeters > 2.2) {
+          this.isChasing = false;
+          this.moveSpeed = 1.0 + 0.8 * this.aggression;
+        } else if (distanceMeters < senseRadius) {
+          this.isChasing = true;
+          this.moveSpeed = 1.9 + 1.5 * this.aggression;
+        } else {
+          this.isChasing = false;
+          this.moveSpeed = 1.0 + 0.8 * this.aggression;
+        }
+      }
     }
 
     // Adjust target coordinates if chasing
@@ -821,7 +907,10 @@ export class WanderingEntity {
         this.gridX = this.targetGridX;
         this.gridZ = this.targetGridZ;
         this.isMoving = false;
-        this.pauseTimer = Math.random() * 0.4 + 0.2; // brief tension check
+        this.pauseTimer = this.type === EntityType.FINGER_KING
+          // Lurks between steps while searching; no pauses once it has you.
+          ? (this.isChasing ? 0.03 : 0.3 + Math.random() * 0.9)
+          : Math.random() * 0.4 + 0.2; // brief tension check
         this.syncWorldPosition();
       } else {
         // Linearly interpolate ThreeJS world coords
@@ -850,6 +939,11 @@ export class WanderingEntity {
    * Leverages custom AI mechanics (noclip for Duller, chase lock, random walks)
    */
   private chooseNextTarget(pXg: number, pZg: number) {
+    if (this.type === EntityType.FINGER_KING) {
+      this.chooseFingerKingStep(pXg, pZg);
+      return;
+    }
+
     const directions = [
       [0, -1], // North
       [0, 1],  // South
@@ -925,6 +1019,85 @@ export class WanderingEntity {
   }
 
   /**
+   * Finger King steps by real shortest paths (BFS over the small office), so
+   * walls and doors don't strand it the way the greedy step does. When not
+   * chasing it still drifts towards the explorer — more often as aggression
+   * rises — which is what keeps anyone from exploring at leisure. Closets are
+   * off limits unless it's hunting or the one inside isn't hidden any more.
+   */
+  private chooseFingerKingStep(pXg: number, pZg: number) {
+    const seek = this.isChasing || (!this.targetHidden && Math.random() < 0.3 + 0.5 * this.aggression);
+    const step = seek ? this.bfsFirstStep(pXg, pZg) : null;
+    if (step) {
+      [this.targetGridX, this.targetGridZ] = step;
+      this.isMoving = true;
+      this.transitionProgress = 0.0;
+      return;
+    }
+
+    const options: [number, number][] = [];
+    for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+      const nx = this.gridX + dx, nz = this.gridZ + dz;
+      if (this.fingerCanEnter(nx, nz)) options.push([nx, nz]);
+    }
+    if (options.length > 0) {
+      [this.targetGridX, this.targetGridZ] = options[Math.floor(Math.random() * options.length)];
+      this.isMoving = true;
+      this.transitionProgress = 0.0;
+    } else {
+      this.pauseTimer = 0.5;
+    }
+  }
+
+  private fingerCanEnter(x: number, z: number): boolean {
+    if (x < 0 || z < 0 || x >= this.map.gridSize || z >= this.map.gridSize) return false;
+    if (this.map.grid[x][z] === CellType.SOLID) return false;
+    if (!this.map.isWalkableForEntities(x, z)) return false;
+    if (!this.hunting && this.targetHidden && this.map.hideCells.has(`${x},${z}`)) return false;
+    return true;
+  }
+
+  /** First cell on a shortest walkable path from here to (tx, tz), or null. */
+  private bfsFirstStep(tx: number, tz: number): [number, number] | null {
+    const gs = this.map.gridSize;
+    if (tx === this.gridX && tz === this.gridZ) return null;
+    const firstStep = new Int32Array(gs * gs).fill(-1);
+    const queue: number[] = [];
+    const start = this.gridX * gs + this.gridZ;
+    firstStep[start] = start;
+    queue.push(start);
+    for (let head = 0; head < queue.length; head++) {
+      const cur = queue[head];
+      const cx = Math.floor(cur / gs), cz = cur % gs;
+      for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+        const nx = cx + dx, nz = cz + dz;
+        if (!this.fingerCanEnter(nx, nz)) continue;
+        const idx = nx * gs + nz;
+        if (firstStep[idx] !== -1) continue;
+        firstStep[idx] = cur === start ? idx : firstStep[cur];
+        if (nx === tx && nz === tz) {
+          const s = firstStep[idx];
+          return [Math.floor(s / gs), s % gs];
+        }
+        queue.push(idx);
+      }
+    }
+    return null;
+  }
+
+  /** Puts the entity on a specific cell instantly (Level G ambushes). */
+  public teleportTo(gx: number, gz: number) {
+    this.gridX = gx;
+    this.gridZ = gz;
+    this.targetGridX = gx;
+    this.targetGridZ = gz;
+    this.isMoving = false;
+    this.transitionProgress = 0.0;
+    this.pauseTimer = 0.4;
+    this.syncWorldPosition();
+  }
+
+  /**
    * Resets the entity's position to a distant grid cell
    */
   public relocateFarAway(playerGridX: number, playerGridZ: number) {
@@ -939,7 +1112,8 @@ export class WanderingEntity {
           const dx = x - playerGridX;
           const dz = z - playerGridZ;
           const dist = Math.sqrt(dx * dx + dz * dz);
-          if (dist > 18) {
+          // Half the map on small levels (Level G is only 18 cells across).
+          if (dist > Math.min(18, size * 0.5) && this.map.isWalkableForEntities(x, z)) {
             candidates.push([x, z]);
           }
         }
@@ -956,7 +1130,7 @@ export class WanderingEntity {
       this.isAgitated = false;
       this.resetBaseSpeed();
       this.syncWorldPosition();
-      this.updateTexture();
+      this.updateVisualState();
       console.log(`[Entity ${this.type}] Relocated safely to far cell (${this.gridX}, ${this.gridZ})`);
     } else {
       // Fallback
@@ -968,7 +1142,7 @@ export class WanderingEntity {
       this.isAgitated = false;
       this.resetBaseSpeed();
       this.syncWorldPosition();
-      this.updateTexture();
+      this.updateVisualState();
     }
   }
 
@@ -1052,31 +1226,25 @@ export class WanderingEntity {
     this.syncWorldPosition();
     // Forced: a reused entity must repaint immediately, not wait out the
     // coalescing window with the previous occupant's label on screen.
-    this.updateTexture(true);
+    this.updateVisualState();
   }
 
   /**
-   * Clears the entire object pool to free GPU resources when the game engine is disposed.
+   * Clears the entire object pool to free GPU resources when the game engine
+   * is disposed. Most geometries/materials are shared class-wide (sgeo/smat)
+   * and freed once via disposeSharedAssets() below — per entity, only the
+   * per-instance tint materials and the speech-bubble canvas texture are
+   * actually unique to it.
    */
   public static clearPool() {
     this.entityPool.forEach((list) => {
       list.forEach((entity) => {
-        // Run actual ThreeJS memory disposal
-        if (entity.mesh.geometry) {
-          entity.mesh.geometry.dispose();
-        }
-        if (entity.mesh.material) {
-          if (Array.isArray(entity.mesh.material)) {
-            entity.mesh.material.forEach((m) => m.dispose());
-          } else {
-            entity.mesh.material.dispose();
-          }
-        }
-        if (entity.canvasTexture) {
-          entity.canvasTexture.dispose();
-        }
+        entity.tintMaterials.forEach((m) => m.dispose());
+        entity.tintMaterials = [];
+        if (entity.speechTexture) entity.speechTexture.dispose();
       });
     });
     this.entityPool.clear();
+    WanderingEntity.disposeSharedAssets();
   }
 }

@@ -5,11 +5,12 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { GameSettings, ConnectionPhase, RemotePlayer, ChatMessage, DEFAULT_SUIT_COLOR } from "./types/game";
-import { GameEngine } from "./game/GameEngine";
+import { GameEngine, LevelGProgress } from "./game/GameEngine";
 import { MainMenu } from "./components/MainMenu";
 import { GameHUD } from "./components/GameHUD";
 import { InventoryHUD } from "./components/InventoryHUD";
 import { AchievementsHUD } from "./components/AchievementsHUD";
+import { TerminalModal } from "./components/TerminalModal";
 import { addAchievementListener, removeAchievementListener, unlockAchievement } from "./utils/achievements";
 import { isTypingInField, lockGameInput } from "./utils/input";
 import { EMPTY_FACE } from "./utils/face";
@@ -77,6 +78,12 @@ export default function App() {
   const [selectedJournalNote, setSelectedJournalNote] = useState<BackroomsLore | null>(null);
   const [isInventoryOpen, setIsInventoryOpen] = useState(false);
   const [isAchievementsOpen, setIsAchievementsOpen] = useState(false);
+  // Level G: documents found / alarm state, the terminal overlay, and the
+  // special ending shown before the regular victory screen.
+  const [levelGProgress, setLevelGProgress] = useState<LevelGProgress>({ digits: [null, null, null], alarm: false });
+  const [isTerminalOpen, setIsTerminalOpen] = useState(false);
+  const [interactPrompt, setInteractPrompt] = useState<string | null>(null);
+  const [levelGEnding, setLevelGEnding] = useState<"none" | "message" | "done">("none");
   const [achievementToast, setAchievementToast] = useState<{ id: string; title: string; description: string } | null>(null);
 
   useEffect(() => {
@@ -147,6 +154,8 @@ export default function App() {
   const rosterDirtyRef = useRef(false);
   /** Own player id, read inside socket handlers without re-subscribing. */
   const clientIdRef = useRef<string | null>(null);
+  /** Latest level -> world-authority map from the server (see server.ts). */
+  const worldAuthorityRef = useRef<Record<string, string>>({});
 
   /** Marks the roster changed; a timer flushes it into React state. */
   const touchRoster = useCallback(() => {
@@ -224,6 +233,16 @@ export default function App() {
           }
           return nextState;
         });
+      } else if ((e.key === "e" || e.key === "E") && engineRef.current?.tryInteract() === "terminal") {
+        // Level G's terminal
+        e.preventDefault();
+        setIsInventoryOpen(false);
+        setIsAchievementsOpen(false);
+        setIsTerminalOpen(true);
+        document.exitPointerLock?.();
+      } else if ((e.key === "e" || e.key === "E") && !e.repeat && engineRef.current?.tryPushBox()) {
+        // Shove the box in front of you out of the way
+        e.preventDefault();
       } else if (e.key === "k" || e.key === "K") {
         // Achievements moved off "C": that key is also crouch, so opening the
         // panel released the pointer lock every time the player crouched.
@@ -316,10 +335,13 @@ export default function App() {
           }
 
           else if (type === "joined") {
-            const { id: myId, seed, players: currentOn, level: roomLevel = 0 } = data;
+            const { id: myId, seed, players: currentOn, level: roomLevel = 0, authority = {} } = data;
+            worldAuthorityRef.current = authority;
             console.log(`Infiltration confirmed! Seed acquired: ${seed}. Connecting visuals...`);
             setClientId(myId);
             clientIdRef.current = myId;
+            setLevelGEnding("none");
+            setIsTerminalOpen(false);
             playersRef.current = currentOn;
             setConnectedPlayers(currentOn);
             setCurrentSeed(seed);
@@ -369,6 +391,13 @@ export default function App() {
                       } else {
                         console.log("Explorer successfully escaped the Backrooms!");
                         unlockAchievement("absolute_survivor");
+                        // Level G's emergency door is its own, secret ending
+                        if (engine.level === 4) {
+                          unlockAchievement("level_g_escaped");
+                          setLevelGEnding("message");
+                        }
+                        setIsTerminalOpen(false);
+                        document.exitPointerLock?.();
                         setPhase(ConnectionPhase.ESCAPED);
                         if (engineRef.current) {
                           engineRef.current.destroy();
@@ -380,19 +409,27 @@ export default function App() {
                         }
                       }
                     },
-                    onSecretLevelFound: () => {
-                      // Purely local — an optional solo detour off Level 1, not a
-                      // room-wide progression event, so no server round-trip.
+                    onInteractPrompt: (text) => setInteractPrompt(text),
+                    onSecretLevelFound: (targetLevel: number) => {
+                      // Purely local — optional solo detours (Level 1 -> Level 6
+                      // "Lights Out", Level 0 -> Level G), not room-wide
+                      // progression events, so no server round-trip.
                       const engine = engineRef.current;
-                      if (!engine || engine.level !== 1) return;
+                      const from = targetLevel === 4 ? 0 : 1;
+                      if (!engine || engine.level !== from) return;
 
-                      console.log("Found the dark corridor... entering Level 6: Lights Out.");
-                      unlockAchievement("secret_level_found");
+                      if (targetLevel === 4) {
+                        console.log("Found the office door that shouldn't exist... entering LEVEL G.");
+                        unlockAchievement("level_g_found");
+                      } else {
+                        console.log("Found the dark corridor... entering Level 6: Lights Out.");
+                        unlockAchievement("secret_level_found");
+                      }
 
                       setLoadingMap(true);
                       setLoadingProgress(0);
-                      setCurrentLevel(3);
-                      engine.transitionToLevel(3, seed, settings);
+                      setCurrentLevel(targetLevel);
+                      engine.transitionToLevel(targetLevel, seed, settings);
 
                       if (engine.player) {
                         engine.player.mapFullyLoaded = false;
@@ -409,13 +446,14 @@ export default function App() {
                           }
                         }, 350);
                       }).catch((err) => {
-                        console.error("Error during Level 6 (Lights Out) precreation:", err);
+                        console.error(`Error during secret level ${targetLevel} precreation:`, err);
                         setLoadingMap(false);
                         if (engineRef.current?.player) {
                           engineRef.current.player.mapFullyLoaded = true;
                         }
                       });
                     },
+                    onLevelGProgress: (progress) => setLevelGProgress(progress),
                     onRedRoomExposureChange: (exp) => setRedRoomExposure(exp),
                     onHUDNotification: (msg) => triggerNotification(msg),
                     onSectorChange: (sec) => setCurrentSector(sec),
@@ -464,6 +502,10 @@ export default function App() {
                 if (engineRef.current && engineRef.current.player) {
                   engineRef.current.player.mapFullyLoaded = false;
                 }
+
+                // Replicated monsters/blackouts: who simulates which level.
+                engineRef.current.localPlayerId = myId;
+                engineRef.current.setWorldAuthority(worldAuthorityRef.current);
 
                 // Instantly spawn existing players
                 currentOn.forEach((p: RemotePlayer) => {
@@ -591,6 +633,31 @@ export default function App() {
             if (engineRef.current) {
               engineRef.current.removeRemotePlayer(leftId);
             }
+          }
+
+          else if (type === "authority") {
+            worldAuthorityRef.current = data.byLevel || {};
+            engineRef.current?.setWorldAuthority(worldAuthorityRef.current);
+          }
+
+          else if (type === "entities") {
+            engineRef.current?.applyWorldState(data);
+          }
+
+          else if (type === "world_event") {
+            engineRef.current?.applyWorldEvent(data);
+          }
+
+          else if (type === "entities_relocate") {
+            engineRef.current?.handleRelocateRequest(data);
+          }
+
+          else if (type === "box_push") {
+            engineRef.current?.applyBoxPush(data);
+          }
+
+          else if (type === "levelg_code") {
+            engineRef.current?.handleLevelGCodeRequest(data);
           }
 
           else if (type === "chat_message") {
@@ -1040,7 +1107,20 @@ export default function App() {
             onOpenInventory={() => setIsInventoryOpen(true)}
             inventoryCount={inventory.length}
             onOpenAchievements={() => setIsAchievementsOpen(true)}
+            levelGProgress={levelGProgress}
           />
+
+          {isTerminalOpen && currentLevel === 4 && (
+            <TerminalModal
+              digits={levelGProgress.digits}
+              onSubmit={(code) => engineRef.current?.submitLevelGCode(code) ?? false}
+              onClose={() => {
+                setIsTerminalOpen(false);
+                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+                if (canvasEl) lockGameInput(canvasEl);
+              }}
+            />
+          )}
 
           <InventoryHUD
             inventory={inventory}
@@ -1059,6 +1139,15 @@ export default function App() {
           />
 
           {/* Achievement Unlock Popup Toast */}
+          {/* Context hint (e.g. "[E] Empurrar caixa") just below the crosshair */}
+          {interactPrompt && !isInventoryOpen && !isAchievementsOpen && !isTerminalOpen && (
+            <div className="fixed left-1/2 top-[58%] -translate-x-1/2 z-40 pointer-events-none font-mono">
+              <div className="bg-[#0b0b05]/80 border border-[#deb81d]/60 rounded px-3 py-1.5 text-[11px] tracking-widest uppercase text-[#deb81d] shadow-[0_0_12px_rgba(222,184,29,0.25)]">
+                {interactPrompt}
+              </div>
+            </div>
+          )}
+
           {achievementToast && (
             <div className="fixed top-6 right-6 z-50 pointer-events-none font-mono animate-bounce">
               <div className="bg-[#0b0b05]/95 border-2 border-[#deb81d] rounded px-5 py-4 flex items-center gap-4 shadow-[0_0_25px_rgba(222,184,29,0.35)] max-w-sm">
@@ -1197,7 +1286,26 @@ export default function App() {
           <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(10,35,10,0.15)_0%,rgba(0,0,0,0.95)_100%)] pointer-events-none" />
           <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[size:100%_4px,6px_100%] pointer-events-none opacity-45" />
 
-          {currentLevel === 1 ? (
+          {levelGEnding === "message" ? (
+            <div className="max-w-xl w-full text-center relative space-y-7 animate-fade-in px-4">
+              <h2 className="text-4xl md:text-5xl font-black tracking-[0.3em] text-[#e9ffe9] uppercase drop-shadow-[0_0_18px_rgba(60,255,122,0.45)]">
+                LEVEL G ESCAPED
+              </h2>
+              <div className="space-y-3 text-sm md:text-base text-stone-300 font-sans leading-relaxed">
+                <p>Você encontrou uma saída que não deveria existir.</p>
+                <p>O escritório... uhum... ficou para trás.</p>
+              </div>
+              <p className="text-2xl font-black tracking-widest text-[#3cff7a] uppercase">Você venceu.</p>
+              <p className="text-xs text-stone-500 italic font-sans">Mas talvez o Level G ainda esteja procurando por você.</p>
+              <button
+                id="btn-level-g-continue"
+                onClick={() => setLevelGEnding("done")}
+                className="mt-4 px-8 bg-[#1f7a3a] hover:bg-[#2a9b4b] text-black font-extrabold uppercase tracking-widest py-3 rounded text-xs transition-colors cursor-pointer"
+              >
+                Continuar
+              </button>
+            </div>
+          ) : currentLevel === 1 ? (
             <div className="max-w-xl w-full border border-orange-600/30 bg-[#140b05]/92 p-8 rounded text-center relative space-y-6 shadow-[0_0_25px_rgba(234,88,12,0.15)] animate-fade-in">
               <div className="w-16 h-16 bg-orange-950/60 border border-orange-500/50 rounded-full flex items-center justify-center mx-auto relative animate-pulse">
                 <span className="w-12 h-12 bg-orange-500 rounded-full animate-ping absolute opacity-20" />
@@ -1255,7 +1363,7 @@ export default function App() {
                     RELATÓRIO DE EXTRAÇÃO:
                   </div>
                   <div>• STATUS DO EXPEDICIONÁRIO: <span className="text-green-400 font-bold">VIVO E SEGURO</span></div>
-                  <div>• SETOR RETOMADO: <span className="text-white">COUT-SPACE L0-45</span></div>
+                  <div>• SETOR RETOMADO: <span className="text-white">{levelGEnding === "done" ? "LEVEL G // SAÍDA DE EMERGÊNCIA" : "COUT-SPACE L0-45"}</span></div>
                   <div>• SINAL DE CONTATO VIRTUAL: <span className="text-[#deb81d]">{settings.name}</span></div>
                   <div>• SEED DE GERAÇÃO: <span className="text-gray-400">{currentSeed}</span></div>
                 </div>

@@ -165,6 +165,9 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
       } else if (level === 0) {
         ctx.fillText("NÍVEL 0: THE LOBBY", cx, cy - 25);
         ctx.fillText("STATUS: SEGURO", cx, cy + 25);
+      } else if (level === 4) {
+        ctx.fillText("LEVEL G: ESCRITÓRIO", cx, cy - 25);
+        ctx.fillText("SINAL: INTERFERÊNCIA", cx, cy + 25);
       } else {
         ctx.fillText("NÍVEL 1: HABITABLE", cx, cy - 25);
         ctx.fillText("ANOMALIA PRESENTE", cx, cy + 25);
@@ -215,7 +218,8 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
       }
 
       // 4. Render Exit glitch gateway (Level 1 exit portal or Level 0 anomaly exit)
-      const hasExit = map.exitGridX !== 0 || map.exitGridZ !== 0;
+      // Level G keeps its emergency door off the radar until the alarm opens it.
+      const hasExit = (map.exitGridX !== 0 || map.exitGridZ !== 0) && (level !== 4 || engine.levelGAlarm);
       if (hasExit) {
         const exitX = map.exitGridX * map.cellSize + map.cellSize / 2;
         const exitZ = map.exitGridZ * map.cellSize + map.cellSize / 2;
@@ -322,6 +326,8 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
       // 6.2 Draw Wandering Stalker Entities (High Danger Anomalies)
       if (engine.entities && engine.entities.length > 0) {
         engine.entities.forEach(entity => {
+          // The Finger King jams the radar: you have to listen for it instead.
+          if (entity.type === "FINGER_KING") return;
           const entX = entity.mesh.position.x;
           const entZ = entity.mesh.position.z;
           const rx = entX - px;
@@ -556,7 +562,7 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
                 ? "text-yellow-400 bg-yellow-500/10 border-yellow-500/20 animate-pulse" 
                 : "text-amber-500 bg-amber-600/10 border-amber-600/20")
         }`}>
-          {level === 2 ? "NÍVEL 2: PIPE DREAMS" : (level === 1 ? "NÍVEL 1: ARMAZÉM" : "NÍVEL 0: O SAGUÃO")}
+          {level === 4 ? "LEVEL G: ESCRITÓRIO" : level === 3 ? "NÍVEL 6: LIGHTS OUT" : level === 2 ? "NÍVEL 2: PIPE DREAMS" : (level === 1 ? "NÍVEL 1: ARMAZÉM" : "NÍVEL 0: O SAGUÃO")}
         </span>
       </div>
 

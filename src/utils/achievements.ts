@@ -63,6 +63,20 @@ export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
     description: "Seguiu um corredor sem nenhuma luz até o fim e encontrou o Nível 6: Lights Out.",
     iconName: "Sparkles",
     unlocked: false,
+  },
+  {
+    id: "level_g_found",
+    title: "Horário de Expediente",
+    description: "Atravessou uma porta de escritório que não deveria existir no Nível 0 e chegou ao LEVEL G.",
+    iconName: "FileText",
+    unlocked: false,
+  },
+  {
+    id: "level_g_escaped",
+    title: "Saída de Emergência",
+    description: "Digitou o código, sobreviveu ao Finger King e escapou do LEVEL G.",
+    iconName: "Trophy",
+    unlocked: false,
   }
 ];
 

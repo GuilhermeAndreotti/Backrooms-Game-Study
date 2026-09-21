@@ -54,8 +54,39 @@ export interface LightFixture {
 }
 
 /** Grid width/height per level. Level 0 is larger to fit the key/maze/dual-door gauntlet. */
+/**
+ * Scrambles a seed before it goes into SeededRandom. Nearby seeds fed in
+ * directly give correlated streams (seeds 1, 42 and 999 all drew ~0.908 as
+ * their 4th value), which made seed-"random" picks land on the same spot.
+ */
+function mixSeed(seed: number, salt: number): number {
+  let h = (seed ^ salt) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+  return (h ^ (h >>> 16)) >>> 0;
+}
+
+/** Hinge angle of Level G's emergency door when fully open (swings outward). */
+export const LEVEL_G_DOOR_OPEN_ANGLE = -Math.PI * 0.55;
+
 export function gridSizeForLevel(level: number): number {
+  if (level === 4) return 18; // Level G: a small office, on purpose
   return level === 0 ? 64 : 48;
+}
+
+/** A ground-level box/crate the player can push aside with E. */
+export interface MovableProp {
+  id: string;
+  mesh: THREE.Object3D;
+  /** Second box stacked on top; travels with `mesh`. */
+  extra?: THREE.Object3D;
+  obstacle: { x: number; z: number; radius: number };
+  radius: number;
+  x: number;
+  z: number;
+  floorY: number;
+  /** True once it has been re-parented out of its cell group. */
+  pushed: boolean;
 }
 
 export class ProceduralMap {
@@ -169,7 +200,9 @@ export class ProceduralMap {
     mesh: THREE.Object3D;
     initialY: number;
     collected: boolean;
-    type: "almond_water" | "energy_bar" | "old_photo" | "rusty_key" | "cassette_tape" | "strange_crystal" | "liquid_pain" | "diary_page" | "scrap_of_note";
+    type: "almond_water" | "energy_bar" | "old_photo" | "rusty_key" | "cassette_tape" | "strange_crystal" | "liquid_pain" | "diary_page" | "scrap_of_note" | "g_document";
+    /** Level G documents: which digit of the terminal code this one reveals. */
+    docIndex?: number;
     x: number;
     z: number;
     gridX: number;
@@ -217,6 +250,47 @@ export class ProceduralMap {
   public secretGridX = -1;
   public secretGridZ = -1;
 
+  // --- Level 0: secret office door leading to Level G ---------------------
+  /** The dark one-cell nook behind the door; stepping into it enters Level G. -1 if none. */
+  public officeDoorX = -1;
+  public officeDoorZ = -1;
+  /** Step from the nook back out to the lobby cell the door faces. */
+  public officeDoorDir: [number, number] = [0, 0];
+
+  // --- Level G (internal level 4): "The Small Office" ----------------------
+  /** Three digits, one per document; typed into the main-room terminal. */
+  public levelGCode = "000";
+  /** Cell of each document, index = which digit it reveals. */
+  public levelGDocCells: [number, number][] = [];
+  /** The old computer in the main room. */
+  public levelGTerminalX = -1;
+  public levelGTerminalZ = -1;
+  /** Closets: crouch inside to hide from the Finger King (for a while). */
+  public hideCells = new Set<string>();
+  /** Door-adjacent cells and corridor ends where the Finger King can lie in wait. */
+  public ambushCells: [number, number][] = [];
+  /** Door frames between sectors: the cell and the axis you walk through it on. */
+  public officeDoorFrames: { gx: number; gz: number; axis: "x" | "z" }[] = [];
+  /** The emergency exit stays shut until the right code goes into the terminal. */
+  public emergencyDoorOpen = false;
+  /** The door leaf, swung open by GameEngine; rebuilt with the current state if culled. */
+  public emergencyDoorLeaf: THREE.Object3D | null = null;
+
+  /** Level G sector of a cell: 1 reception, 2 archive, 3 main room, 0 corridors. */
+  public levelGSectorOf(gx: number, gz: number): 0 | 1 | 2 | 3 {
+    if (gz >= 10) return 3;
+    if (gz <= 7 && gx <= 6) return 1;
+    if (gz <= 7 && gx >= 10) return 2;
+    return 0;
+  }
+
+  /** Cells monsters may walk into: not walls, and not Level G's exit while it's locked. */
+  public isWalkableForEntities(gx: number, gz: number): boolean {
+    if (this.grid[gx]?.[gz] === undefined || this.grid[gx][gz] === CellType.SOLID) return false;
+    if (this.level === 4 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) return false;
+    return true;
+  }
+
   // --- Level 3 ("Lights Out"): pitch-black maze, no ambient light at all --
   /** Sparse glowing waypoints along the true path — the only light in the maze. */
   public pathLightCells = new Set<string>();
@@ -237,7 +311,19 @@ export class ProceduralMap {
   // Random Environmental Event States
   private eventCooldown = 15.0; // Seconds between event rolls
   public globalEventState: "normal" | "flicker_storm" | "blackout" = "normal";
-  private globalEventTimer = 0.0;
+  public globalEventTimer = 0.0;
+  /**
+   * Whether this client rolls blackouts/flicker storms itself. Off on clients
+   * that aren't their level's world authority: they only play the events the
+   * authority broadcasts (see startGlobalEvent), so everyone sees the same ones.
+   */
+  public rollGlobalEvents = true;
+
+  /** Starts a level-wide event received from the level's authority. */
+  public startGlobalEvent(state: "flicker_storm" | "blackout", duration: number) {
+    this.globalEventState = state;
+    this.globalEventTimer = duration;
+  }
 
   public level = 0;
 
@@ -441,6 +527,10 @@ export class ProceduralMap {
         }
       }
     }
+
+    // Level G: no breadcrumbs, drafts or wet trails to the exit — finding the
+    // emergency door (and earning it) is the level.
+    if (this.level === 4) foundPath = [];
 
     this.exitPath = foundPath;
     this.exitPathSet.clear();
@@ -1120,6 +1210,62 @@ export class ProceduralMap {
     return texture;
   }
 
+  /** Level G: tired pale grey-green office paint, scuffed at hip height. */
+  private createOfficeWallTexture(): THREE.Texture {
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#b9beb2";
+      ctx.fillRect(0, 0, 256, 256);
+      for (let i = 0; i < 5000; i++) {
+        ctx.fillStyle = Math.random() > 0.5 ? "rgba(90, 96, 88, 0.08)" : "rgba(230, 232, 222, 0.07)";
+        ctx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+      }
+      // Chair-rail scuff band and a few grime streaks running down
+      ctx.fillStyle = "rgba(70, 72, 66, 0.18)";
+      ctx.fillRect(0, 150, 256, 10);
+      for (let s = 0; s < 5; s++) {
+        const x = Math.random() * 256;
+        const grad = ctx.createLinearGradient(0, 0, 0, 256);
+        grad.addColorStop(0, "rgba(60, 58, 45, 0.16)");
+        grad.addColorStop(1, "rgba(60, 58, 45, 0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, 0, 3 + Math.random() * 6, 120 + Math.random() * 120);
+      }
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    return texture;
+  }
+
+  /** Level G: blue-grey commercial carpet tiles. */
+  private createOfficeCarpetTexture(): THREE.Texture {
+    const canvas = document.createElement("canvas");
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#4a5360";
+      ctx.fillRect(0, 0, 128, 128);
+      for (let i = 0; i < 6000; i++) {
+        ctx.fillStyle = Math.random() > 0.5 ? "rgba(30, 34, 42, 0.25)" : "rgba(120, 130, 145, 0.14)";
+        ctx.fillRect(Math.random() * 128, Math.random() * 128, 1.4, 1.4);
+      }
+      // Tile seams
+      ctx.strokeStyle = "rgba(20, 22, 28, 0.45)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0.5, 0.5, 127, 127);
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(4, 4);
+    return texture;
+  }
+
   private createCarpetTexture(): THREE.Texture {
     const canvas = document.createElement("canvas");
     canvas.width = 128;
@@ -1326,7 +1472,8 @@ export class ProceduralMap {
     });
 
     // Wallpaper/Concrete: Dull yellowish wallpaper, raw concrete blocks or rusted metal
-    const wallTex = this.level === 2 ? this.createRustedMetalWallTexture() : (this.level === 1 ? this.createConcreteWallTexture() : this.createWallTexture());
+    const wallTex = this.level === 4 ? this.createOfficeWallTexture()
+      : this.level === 2 ? this.createRustedMetalWallTexture() : (this.level === 1 ? this.createConcreteWallTexture() : this.createWallTexture());
     this.wallMaterial = new THREE.MeshStandardMaterial({
       map: wallTex,
       roughness: this.level === 2 ? 0.6 : (this.level === 1 ? 0.72 : 0.85),
@@ -1335,13 +1482,14 @@ export class ProceduralMap {
 
     // Dark wood baseboard/skirting molding
     this.skirtingBoardMaterial = new THREE.MeshStandardMaterial({
-      color: this.level === 2 ? 0x110b08 : (this.level === 1 ? 0x222222 : 0x5a4d33),
+      color: this.level === 4 ? 0x3a3d42 : this.level === 2 ? 0x110b08 : (this.level === 1 ? 0x222222 : 0x5a4d33),
       roughness: 0.9,
       metalness: 0.1,
     });
 
     // Carpet/Concrete Floor: Muddy textured yellowish-brown carpet, stained factory cement, or rusted steel plates
-    const carpetTex = this.level === 2 ? this.createRustedMetalFloorTexture() : (this.level === 1 ? this.createConcreteFloorTexture() : this.createCarpetTexture());
+    const carpetTex = this.level === 4 ? this.createOfficeCarpetTexture()
+      : this.level === 2 ? this.createRustedMetalFloorTexture() : (this.level === 1 ? this.createConcreteFloorTexture() : this.createCarpetTexture());
     this.carpetMaterial = new THREE.MeshStandardMaterial({
       map: carpetTex,
       roughness: this.level === 2 ? 0.55 : (this.level === 1 ? 0.62 : 0.95),
@@ -1589,20 +1737,11 @@ export class ProceduralMap {
       // except for one long "ramp" corridor the player has to find.
       this.partitionLevel1Sectors();
 
-      // Secret entrance to "Lights Out": a single-wide corridor (the spawn
-      // corridor is wider, so this reads as distinctly narrower/off) branching
-      // east off it at z=7, through the solid block between spawn and the
-      // central field, with no fixtures spawned anywhere along it — walking
-      // it straight to the dead end in the dark is the whole "puzzle". Stops
-      // at x=15, short of the sector 1/2 divider (x=17), all on ground level.
-      const secretZ = 7;
-      for (let x = 4; x <= 15; x++) {
-        this.grid[x][secretZ] = CellType.CORRIDOR;
-        this.forcedDarkCells.add(`${x},${secretZ}`);
-      }
-      this.secretGridX = 15;
-      this.secretGridZ = secretZ;
+      // Secret entrance to "Lights Out", somewhere different every seed.
+      this.carveLevel1SecretCorridor();
 
+    } else if (this.level === 4) {
+      this.carveLevelG();
     } else if (this.level === 3) {
       // LEVEL 3 ("Lights Out" — secret level, found through a dark corridor on
       // Level 1). A real perfect maze, pitch black: no fluorescent fixtures are
@@ -1836,7 +1975,14 @@ export class ProceduralMap {
       // Carve the key/gate/maze/two-doors gauntlet into the enlarged east wing.
       // This overrides exitGridX/Z with the cell behind the correct door.
       this.carveLevel0Gateway();
+
+      // Somewhere in the lobby, a small office door that shouldn't exist.
+      this.carveLevel0OfficeDoor();
     }
+
+    // Level G is hand-laid; the generic spawn clearing below would punch
+    // through its reception walls.
+    if (this.level === 4) return;
 
     // Ensure spawn around (2,2) is safe, walkable, and fully cleared
     for (let dx = -1; dx <= 2; dx++) {
@@ -1858,6 +2004,206 @@ export class ProceduralMap {
   }
 
   // Helper method to carve a side maze of winding alleys
+  /**
+   * Level 1's secret entrance to "Lights Out": a single-wide, unlit dead-end
+   * corridor tunnelled into solid rock off some walkable cell of sectors 1/2.
+   * Where it opens is drawn from the seed, so it moves every run yet is the
+   * same for everyone in the room (every client builds the same grid).
+   *
+   * Each step must stay fully enclosed — the cell dug, both cells beside it
+   * and the cell beyond it are all solid — so the tunnel never breaks into
+   * another area and always ends in a true dead end, where the trigger sits.
+   * The sector dividers and ramps are off limits (a tunnel through a divider
+   * would be a shortcut between storeys).
+   */
+  private carveLevel1SecretCorridor() {
+    const gs = this.gridSize;
+    const MIN_LEN = 5;
+    const MAX_LEN = 10;
+    const dirs: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+    const diggable = (x: number, z: number) =>
+      x >= 2 && x < gs - 2 && z >= 2 && z < gs - 2 &&
+      x < this.level1Sector3X && x !== this.level1Sector2X &&
+      this.grid[x][z] === CellType.SOLID;
+    const solidOrEdge = (x: number, z: number) =>
+      x < 0 || z < 0 || x >= gs || z >= gs || this.grid[x][z] === CellType.SOLID;
+
+    /** How many cells can be dug from (sx, sz) heading (dx, dz), up to MAX_LEN. */
+    const reach = (sx: number, sz: number, dx: number, dz: number) => {
+      let len = 0;
+      for (let step = 1; step <= MAX_LEN; step++) {
+        const x = sx + dx * step, z = sz + dz * step;
+        if (!diggable(x, z)) break;
+        if (!solidOrEdge(x + dz, z + dx) || !solidOrEdge(x - dz, z - dx)) break; // sides
+        if (!solidOrEdge(x + dx, z + dz)) break; // beyond
+        len = step;
+      }
+      return len;
+    };
+
+    const options: { x: number; z: number; dx: number; dz: number; len: number }[] = [];
+    for (let x = 2; x < this.level1Sector3X; x++) {
+      for (let z = 2; z < gs - 2; z++) {
+        if (this.grid[x][z] === CellType.SOLID || this.rampCells.has(`${x},${z}`)) continue;
+        if (x < 5 && z < 5) continue; // not right at spawn
+        for (const [dx, dz] of dirs) {
+          const len = reach(x, z, dx, dz);
+          if (len >= MIN_LEN) options.push({ x, z, dx, dz, len });
+        }
+      }
+    }
+    if (options.length === 0) return; // no room anywhere: this seed has no secret
+
+    const rng = new SeededRandom(this.seed * 31 + 6006);
+    const pick = options[Math.floor(rng.next() * options.length)];
+    const len = MIN_LEN + Math.floor(rng.next() * (pick.len - MIN_LEN + 1));
+    const floorY = this.floorHeight[pick.x][pick.z];
+
+    for (let step = 1; step <= len; step++) {
+      const x = pick.x + pick.dx * step, z = pick.z + pick.dz * step;
+      this.grid[x][z] = CellType.CORRIDOR;
+      this.floorHeight[x][z] = floorY;
+      this.forcedDarkCells.add(`${x},${z}`);
+    }
+    this.secretGridX = pick.x + pick.dx * len;
+    this.secretGridZ = pick.z + pick.dz * len;
+  }
+
+  /**
+   * Level 0's secret way into Level G: a one-cell nook dug into a wall face
+   * somewhere in the lobby, fronted by a small office door. The spot is drawn
+   * from the seed (same for the whole room, different every run) and kept off
+   * the main thoroughfares, the spawn and the special rooms, so it takes
+   * actual exploring to stumble on. The nook is unlit; walking into it is
+   * what takes you through.
+   */
+  private carveLevel0OfficeDoor() {
+    const gs = this.gridSize;
+    const mainLanes = (x: number, z: number) =>
+      z === 12 || z === 13 || z === 34 || z === 35 || x === 20 || x === 21 || z === 32;
+    const walkable = (t: CellType) => t === CellType.CORRIDOR || t === CellType.ROOM_SMALL || t === CellType.ROOM_LARGE;
+    const solid = (x: number, z: number) => x < 0 || z < 0 || x >= gs || z >= gs || this.grid[x][z] === CellType.SOLID;
+
+    // Only lobby cells actually connected to the main corridors (some rooms'
+    // interiors are sealed pockets), flood-filled from the central spine.
+    const connected = new Set<number>();
+    const queue: number[] = [20 * gs + 12];
+    connected.add(queue[0]);
+    for (let head = 0; head < queue.length; head++) {
+      const cx = Math.floor(queue[head] / gs), cz = queue[head] % gs;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = cx + dx, nz = cz + dz;
+        if (solid(nx, nz) || connected.has(nx * gs + nz)) continue;
+        connected.add(nx * gs + nz);
+        queue.push(nx * gs + nz);
+      }
+    }
+
+    const options: { nx: number; nz: number; dx: number; dz: number }[] = [];
+    for (let x = 6; x <= 42; x++) {
+      for (let z = 6; z < gs - 6; z++) {
+        if (!walkable(this.grid[x][z]) || mainLanes(x, z) || !connected.has(x * gs + z)) continue;
+        if (x < 10 && z < 10) continue; // too close to spawn
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as [number, number][]) {
+          const nx = x + dx, nz = z + dz;
+          if (nx < 3 || nz < 3 || nx > 43 || nz > gs - 4) continue;
+          if (!solid(nx, nz)) continue;
+          // Enclosed on its other three sides, so it's a true nook
+          if (!solid(nx + dx, nz + dz) || !solid(nx + dz, nz + dx) || !solid(nx - dz, nz - dx)) continue;
+          options.push({ nx, nz, dx: -dx, dz: -dz });
+        }
+      }
+    }
+    if (options.length === 0) return;
+
+    const rng = new SeededRandom(mixSeed(this.seed, 0x4c3a17));
+    const pick = options[Math.floor(rng.next() * options.length)];
+    this.grid[pick.nx][pick.nz] = CellType.CORRIDOR;
+    this.forcedDarkCells.add(`${pick.nx},${pick.nz}`);
+    this.officeDoorX = pick.nx;
+    this.officeDoorZ = pick.nz;
+    this.officeDoorDir = [pick.dx, pick.dz];
+  }
+
+  /**
+   * Level G, "The Small Office": hand-laid, 18x18 cells, three sectors joined
+   * by doors in a loop (so there's always a way around the Finger King):
+   *
+   *   Sector 1 Reception (x2-6, z2-6, spawn)  --door-->  Sector 2 Archive (x10-14, z2-6)
+   *        |door                                              |door
+   *   Sector 3 Main room (x2-14, z10-14): west office | main room + terminal | east office
+   *                                   emergency exit off its south wall (8,15)
+   *
+   * Seed-dependent: which cell of each sector holds its document, and the code.
+   */
+  private carveLevelG() {
+    const setRect = (x0: number, z0: number, x1: number, z1: number, t: CellType) => {
+      for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) this.grid[x][z] = t;
+    };
+    const R = CellType.ROOM_SMALL, C = CellType.CORRIDOR, S = CellType.SOLID;
+
+    setRect(2, 2, 6, 6, R);     // 1: reception
+    setRect(10, 2, 14, 6, R);   // 2: archive
+    setRect(2, 10, 14, 14, R);  // 3: main floor
+    // Inner walls: a reception partition, archive stacks, and the two side
+    // offices split off the main room (each with a front and a back door).
+    this.grid[4][2] = S; this.grid[4][3] = S;
+    this.grid[12][2] = S; this.grid[12][3] = S; this.grid[12][5] = S;
+    for (let z = 10; z <= 14; z++) {
+      if (z !== 10 && z !== 13) { this.grid[4][z] = S; this.grid[12][z] = S; }
+    }
+    // Short corridors between sectors
+    setRect(7, 4, 9, 4, C);     // 1 -> 2
+    setRect(4, 7, 4, 9, C);     // 1 -> 3
+    setRect(12, 7, 12, 9, C);   // 2 -> 3
+    this.officeDoorFrames = [
+      { gx: 8, gz: 4, axis: "x" },
+      { gx: 4, gz: 8, axis: "z" },
+      { gx: 12, gz: 8, axis: "z" },
+      { gx: 4, gz: 13, axis: "x" },
+      { gx: 12, gz: 13, axis: "x" },
+    ];
+    // Closets to hide in, one per sector
+    for (const [x, z] of [[2, 7], [14, 7], [15, 12]] as [number, number][]) {
+      this.grid[x][z] = R;
+      this.hideCells.add(`${x},${z}`);
+      this.forcedDarkCells.add(`${x},${z}`);
+    }
+    // Terminal and the locked emergency exit
+    this.levelGTerminalX = 8; this.levelGTerminalZ = 11;
+    this.exitGridX = 8; this.exitGridZ = 15;
+    this.grid[8][15] = C;
+
+    // Where it waits: just past each door and at each corridor end
+    this.ambushCells = [
+      [7, 4], [10, 4], [4, 6], [4, 10], [12, 6], [12, 10],
+      [3, 13], [5, 13], [11, 13], [13, 13], [6, 2], [14, 2],
+    ];
+
+    // One document per sector, on a seed-chosen cell away from doors/closets/spawn
+    const rng = new SeededRandom(mixSeed(this.seed, 0x6a09e667));
+    const blocked = new Set<string>([
+      "2,2", "3,2", "2,3", "3,3",
+      `${this.levelGTerminalX},${this.levelGTerminalZ}`,
+      ...this.officeDoorFrames.map((d) => `${d.gx},${d.gz}`),
+      ...this.ambushCells.map(([x, z]) => `${x},${z}`),
+      "4,10", "12,10", "8,14",
+    ]);
+    this.levelGDocCells = [];
+    for (const sector of [1, 2, 3] as const) {
+      const options: [number, number][] = [];
+      for (let x = 2; x <= 14; x++) {
+        for (let z = 2; z <= 14; z++) {
+          if (this.grid[x][z] !== R || this.hideCells.has(`${x},${z}`) || blocked.has(`${x},${z}`)) continue;
+          if (this.levelGSectorOf(x, z) === sector) options.push([x, z]);
+        }
+      }
+      this.levelGDocCells.push(options[Math.floor(rng.next() * options.length)]);
+    }
+    this.levelGCode = [0, 1, 2].map(() => String(Math.floor(rng.next() * 10))).join("");
+  }
+
   private carveSideLabyrinth(xStart: number, zStart: number, xEnd: number, zEnd: number, cellType: CellType) {
     const rRng = new SeededRandom(this.seed + xStart * 77 + zStart);
     for (let x = xStart; x <= xEnd; x++) {
@@ -2185,6 +2531,10 @@ export class ProceduralMap {
         if (this.grid[gx][gz] === CellType.SOLID) {
           return true;
         }
+        // Level G's emergency exit is a locked door until the code goes in
+        if (this.level === 4 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) {
+          return true;
+        }
 
         // Check for obstacles/props/pillars in this cell
         const obstacles = this.obstacleGrid[gx][gz];
@@ -2248,6 +2598,7 @@ export class ProceduralMap {
    */
   private isKeepClearCell(gx: number, gz: number): boolean {
     if (Math.abs(gx - this.exitGridX) + Math.abs(gz - this.exitGridZ) <= 1) return true;
+    if (this.officeDoorX >= 0 && gx === this.officeDoorX + this.officeDoorDir[0] && gz === this.officeDoorZ + this.officeDoorDir[1]) return true;
     return this.forcedDarkCells.has(`${gx},${gz}`);
   }
 
@@ -2262,7 +2613,152 @@ export class ProceduralMap {
       this.cellObstacles.set(key, list);
       if (this.obstacleGrid[gx]) this.obstacleGrid[gx][gz] = list;
     }
-    list.push({ x, z, radius });
+    const obstacle = { x, z, radius };
+    list.push(obstacle);
+    return obstacle;
+  }
+
+  // --- Pushable boxes / crates ---------------------------------------------
+  /** Ground-level cardboard boxes and steel crates the player can shove aside (E). */
+  public movables = new Map<string, MovableProp>();
+  private slidingMovables: { m: MovableProp; fromX: number; fromZ: number; toX: number; toZ: number; t: number }[] = [];
+  /** Scene the pushed props were re-parented to (they leave their cell group so culling can't hide them). */
+  private movableScene: THREE.Scene | null = null;
+
+  private registerMovable(gx: number, gz: number, mesh: THREE.Object3D, obstacle: { x: number; z: number; radius: number }, extra?: THREE.Object3D) {
+    const id = `${gx},${gz}`;
+    this.movables.set(id, { id, mesh, extra, obstacle, radius: obstacle.radius, x: obstacle.x, z: obstacle.z, floorY: this.floorHeight[gx]?.[gz] ?? 0, pushed: false });
+  }
+
+  /** True if a prop of `radius` (ignoring `self`) fits at (x,z) on `floorY`. */
+  private isMovableSpotFree(self: MovableProp, x: number, z: number): boolean {
+    const o = self.obstacle;
+    const ox = o.x, oz = o.z;
+    o.x = 1e9; o.z = 1e9; // don't collide with ourselves
+    const blocked = this.checkCollision(x, z, self.radius * 0.9);
+    o.x = ox; o.z = oz;
+    if (blocked) return false;
+    return Math.abs(this.getFloorHeightAt(x, z) - self.floorY) < 0.05;
+  }
+
+  /** How far (up to `max` metres) the prop can travel along (dx,dz) before hitting something. */
+  private freeSlideDistance(m: MovableProp, dx: number, dz: number, max: number, playerX: number, playerZ: number): number {
+    let free = 0;
+    for (let d = 0.25; d <= max + 1e-6; d += 0.25) {
+      const x = m.x + dx * d, z = m.z + dz * d;
+      if (!this.isMovableSpotFree(m, x, z)) break;
+      const px = x - playerX, pz = z - playerZ;
+      if (px * px + pz * pz < (m.radius + 0.6) * (m.radius + 0.6)) break; // never slide into the player
+      free = d;
+    }
+    return free;
+  }
+
+  /**
+   * The pushable prop the player is facing: nearest within `reach` metres and
+   * inside a ~60 degree cone of the (fx,fz) look direction.
+   */
+  public findPushable(px: number, pz: number, fx: number, fz: number, reach = 2.6): MovableProp | null {
+    let best: MovableProp | null = null;
+    let bestD = reach * reach;
+    this.movables.forEach((m) => {
+      if (this.isSliding(m)) return;
+      const dx = m.x - px, dz = m.z - pz;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > bestD || d2 < 1e-4) return;
+      const inv = 1 / Math.sqrt(d2);
+      if ((dx * inv) * fx + (dz * inv) * fz < 0.5) return;
+      best = m;
+      bestD = d2;
+    });
+    return best;
+  }
+
+  private isSliding(m: MovableProp): boolean {
+    return this.slidingMovables.some((s) => s.m === m);
+  }
+
+  /**
+   * Shoves `m` away from the player, trying the straight line first and then
+   * angled alternatives if that's blocked. Returns the destination, or null
+   * if there is nowhere for it to go.
+   */
+  public pushMovable(m: MovableProp, playerX: number, playerZ: number, scene: THREE.Scene): { x: number; z: number } | null {
+    let dx = m.x - playerX, dz = m.z - playerZ;
+    const len = Math.hypot(dx, dz) || 1;
+    dx /= len; dz /= len;
+
+    const MAX = 1.9;
+    let bestDir: [number, number] | null = null;
+    let bestDist = 0;
+    for (const deg of [0, 40, -40, 80, -80, 120, -120]) {
+      const a = (deg * Math.PI) / 180;
+      const cx = dx * Math.cos(a) - dz * Math.sin(a);
+      const cz = dx * Math.sin(a) + dz * Math.cos(a);
+      const dist = this.freeSlideDistance(m, cx, cz, MAX, playerX, playerZ);
+      if (dist > bestDist) { bestDist = dist; bestDir = [cx, cz]; }
+      if (dist >= 1.5) break; // good enough — prefer the straightest option
+    }
+    if (!bestDir || bestDist < 0.5) return null;
+
+    return this.slideMovableTo(m, m.x + bestDir[0] * bestDist, m.z + bestDir[1] * bestDist, scene);
+  }
+
+  /** Starts sliding `m` to (x,z): moves its collision now, animates the mesh over ~0.4s. */
+  public slideMovableTo(m: MovableProp, x: number, z: number, scene: THREE.Scene): { x: number; z: number } {
+    // Leave the cell group (it may be culled/hidden) and live directly in the scene.
+    if (!m.pushed) {
+      const beforeY = m.mesh.position.y;
+      scene.attach(m.mesh);
+      if (m.extra) scene.attach(m.extra);
+      this.movableScene = scene;
+      m.pushed = true;
+      // Floating boxes bob around an absolute `initialY`; leaving the cell group
+      // drops the group's floor offset, so carry it over.
+      const dy = m.mesh.position.y - beforeY;
+      if (dy !== 0) this.animatingMeshes.forEach((a) => { if (a.mesh === m.mesh) a.initialY += dy; });
+    }
+    // Keep a floating box's bob animation active near where it ended up.
+    const ngx0 = Math.floor(x / this.cellSize), ngz0 = Math.floor(z / this.cellSize);
+    this.animatingMeshes.forEach((a) => { if (a.mesh === m.mesh) { a.gridX = ngx0; a.gridZ = ngz0; } });
+    this.slidingMovables = this.slidingMovables.filter((s) => s.m !== m);
+    this.slidingMovables.push({ m, fromX: m.x, fromZ: m.z, toX: x, toZ: z, t: 0 });
+
+    // Move the collision now, re-filing it under the destination cell.
+    const oldKey = `${Math.floor(m.x / this.cellSize)},${Math.floor(m.z / this.cellSize)}`;
+    const oldList = this.cellObstacles.get(oldKey);
+    if (oldList) {
+      const i = oldList.indexOf(m.obstacle);
+      if (i !== -1) oldList.splice(i, 1);
+    }
+    m.x = x; m.z = z;
+    m.obstacle.x = x; m.obstacle.z = z;
+    const ngx = Math.floor(x / this.cellSize), ngz = Math.floor(z / this.cellSize);
+    const newKey = `${ngx},${ngz}`;
+    let list = this.cellObstacles.get(newKey);
+    if (!list) {
+      list = [];
+      this.cellObstacles.set(newKey, list);
+      if (this.obstacleGrid[ngx]) this.obstacleGrid[ngx][ngz] = list;
+    }
+    list.push(m.obstacle);
+    return { x, z };
+  }
+
+  /** Advances any box slides (called once a frame from updateLights). */
+  private updateMovables(delta: number) {
+    if (this.slidingMovables.length === 0) return;
+    for (let i = this.slidingMovables.length - 1; i >= 0; i--) {
+      const s = this.slidingMovables[i];
+      s.t = Math.min(1, s.t + delta / 0.4);
+      const e = 1 - Math.pow(1 - s.t, 3); // ease-out: a shove, then friction
+      const x = s.fromX + (s.toX - s.fromX) * e;
+      const z = s.fromZ + (s.toZ - s.fromZ) * e;
+      const dx = x - s.m.mesh.position.x, dz = z - s.m.mesh.position.z;
+      s.m.mesh.position.x += dx; s.m.mesh.position.z += dz;
+      if (s.m.extra) { s.m.extra.position.x += dx; s.m.extra.position.z += dz; }
+      if (s.t >= 1) this.slidingMovables.splice(i, 1);
+    }
   }
 
   /**
@@ -2796,8 +3292,15 @@ export class ProceduralMap {
       }
     }
 
+    // Level G builds its own furniture, terminal and emergency door; Level 0
+    // has the secret office door in one nook.
+    if (this.level === 4) this.buildLevelGCell(group, gx, gz, posX, posZ, height);
+    if (this.level === 0 && gx === this.officeDoorX && gz === this.officeDoorZ) {
+      this.buildOfficeDoor(group, posX, posZ, height);
+    }
+
     // 5. THE GLITCHING NOCLIP WALL EXIT ("flipar na parede / noclip")
-    if (gx === this.exitGridX && gz === this.exitGridZ) {
+    if (gx === this.exitGridX && gz === this.exitGridZ && this.level !== 4) {
       const exitGroup = new THREE.Group();
 
       // Find all adjacent solid neighbors
@@ -2986,7 +3489,9 @@ export class ProceduralMap {
 
       // Glowing tube glass tube cylinder
       const lightRng = new SeededRandom(this.seed + gx * 41 + gz * 61);
-      const isBurntOut = (this.level === 1) && (lightRng.next() < 0.38); // 38% burnt out rate in warehouse Level 1!
+      const burntRoll = lightRng.next();
+      const isBurntOut = (this.level === 1 && burntRoll < 0.38) // 38% burnt out rate in warehouse Level 1!
+        || (this.level === 4 && burntRoll < 0.3); // Level G: a dead tube every few rooms
 
       const glassMaterial = isBurntOut ? this.fluorescentGlassOff : this.fluorescentGlassOn;
       const tubeMesh = new THREE.Mesh(this.tubeGeo, glassMaterial);
@@ -2994,8 +3499,8 @@ export class ProceduralMap {
       fixtureGroup.add(tubeMesh);
 
       // Point Light with soft, yellow-greenish tint for Level 0, or clean industrial white-grey for Level 1
-      let lightColor = this.level === 1 ? 0xe6e6e6 : 0xfefdb5;
-      let lightIntensity = isBurntOut ? 0.0 : (this.level === 1 ? 1.05 : 1.4); // slightly dimmer on average for warehouse
+      let lightColor = this.level === 4 ? 0xe8f0ff : (this.level === 1 ? 0xe6e6e6 : 0xfefdb5);
+      let lightIntensity = isBurntOut ? 0.0 : (this.level === 4 ? 1.0 : this.level === 1 ? 1.05 : 1.4); // slightly dimmer on average for warehouse
 
       // Gild Sector gets gorgeous colorful lighting!
       const isGild = this.level === 1 && (gx >= 24 && gz < 24);
@@ -3034,7 +3539,7 @@ export class ProceduralMap {
     const isSpawnZone = (gx < 5 && gz < 5);
     const isExitZone = this.isKeepClearCell(gx, gz);
 
-    if (this.level !== 1 && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
+    if (this.level !== 1 && this.level !== 4 && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
       const wallRng = new SeededRandom(this.seed + gx * 11 + gz * 23);
       if (wallRng.next() < 0.16) {
         let addedDivider = false;
@@ -3258,7 +3763,7 @@ export class ProceduralMap {
               crate1.position.set(posX + rx, isFloatingCrate ? 1.0 : 0, posZ + rz);
               crate1.rotation.y = ry1;
               group.add(crate1);
-              this.addObstacle(gx, gz, posX + rx, posZ + rz, 0.58);
+              const crate1Obstacle = this.addObstacle(gx, gz, posX + rx, posZ + rz, 0.58);
 
               if (isFloatingCrate) {
                 this.animatingMeshes.push({
@@ -3269,6 +3774,7 @@ export class ProceduralMap {
                   gridX: gx,
                   gridZ: gz,
                 });
+                this.registerMovable(gx, gz, crate1, crate1Obstacle);
               } 
               else if (isDoubleStack) {
                 const crate2 = this.createSteelCrateMesh(propRng);
@@ -3276,6 +3782,9 @@ export class ProceduralMap {
                 crate2.position.set(posX + rx + propRng.nextRange(-0.1, 0.1), 0.71, posZ + rz + propRng.nextRange(-0.1, 0.1));
                 crate2.rotation.y = ry1 + propRng.nextRange(-0.5, 0.5);
                 group.add(crate2);
+                this.registerMovable(gx, gz, crate1, crate1Obstacle, crate2);
+              } else {
+                this.registerMovable(gx, gz, crate1, crate1Obstacle);
               }
             } 
             else {
@@ -3347,7 +3856,7 @@ export class ProceduralMap {
             box1.position.set(posX + rx, isFloatingBox ? 1.0 : 0, posZ + rz);
             box1.rotation.y = ry1;
             group.add(box1);
-            this.addObstacle(gx, gz, posX + rx, posZ + rz, 0.52);
+            const box1Obstacle = this.addObstacle(gx, gz, posX + rx, posZ + rz, 0.52);
 
             if (isFloatingBox) {
               this.animatingMeshes.push({
@@ -3358,6 +3867,7 @@ export class ProceduralMap {
                 gridX: gx,
                 gridZ: gz,
               });
+              this.registerMovable(gx, gz, box1, box1Obstacle);
             } 
             else if (isDoubleStack) {
               // Spawn a second box on top slightly rotated
@@ -3366,6 +3876,9 @@ export class ProceduralMap {
               box2.position.set(posX + rx + propRng.nextRange(-0.1, 0.1), 0.61, posZ + rz + propRng.nextRange(-0.1, 0.1));
               box2.rotation.y = ry1 + propRng.nextRange(-0.5, 0.5);
               group.add(box2);
+              this.registerMovable(gx, gz, box1, box1Obstacle, box2);
+            } else {
+              this.registerMovable(gx, gz, box1, box1Obstacle);
             }
           } 
           else {
@@ -3506,7 +4019,7 @@ export class ProceduralMap {
     // On both Level 0 and Level 1, there is a sparse chance (e.g., 3.5%) to spawn a collectible item in a cell
     const itemRng = new SeededRandom(this.seed + gx * 83 + gz * 109);
     // Don't spawn collectibles at the exit or spawning point (0,0) or solid cells
-    if (itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
+    if (this.level !== 4 && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
       const itemTypeRoll = itemRng.next();
       // Keep it within the cell boundaries (so + hSize/2 is center, range is -hSize/2 + 0.5 to hSize/2 - 0.5)
       const maxOffset = hSize / 2 - 0.6;
@@ -3643,6 +4156,357 @@ export class ProceduralMap {
     if (fY !== 0) group.position.y = fY;
 
     return group;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Level G ("The Small Office") and Level 0's secret office door
+  // ---------------------------------------------------------------------------
+
+  private officeMat(key: string, color: number, roughness = 0.8, metalness = 0.1, emissive = 0x000000): THREE.Material {
+    return this.sharedMat(`office_${key}`, () => new THREE.MeshStandardMaterial({ color, roughness, metalness, emissive }));
+  }
+
+  private officeBox(w: number, h: number, d: number): THREE.BoxGeometry {
+    return this.sharedGeo(`office_box_${w}_${h}_${d}`, () => new THREE.BoxGeometry(w, h, d));
+  }
+
+  /** Desk facing local +Z, optionally with an old beige CRT (screen lit green or dead). */
+  private createOfficeDeskMesh(computer: "none" | "off" | "on"): THREE.Group {
+    const desk = new THREE.Group();
+    const wood = this.officeMat("desk_top", 0x6b5a45, 0.75);
+    const metal = this.officeMat("desk_leg", 0x3d4046, 0.5, 0.6);
+    const top = new THREE.Mesh(this.officeBox(1.5, 0.05, 0.75), wood);
+    top.position.y = 0.74;
+    desk.add(top);
+    for (const [lx, lz] of [[-0.68, -0.32], [0.68, -0.32], [-0.68, 0.32], [0.68, 0.32]]) {
+      const leg = new THREE.Mesh(this.officeBox(0.05, 0.72, 0.05), metal);
+      leg.position.set(lx, 0.36, lz);
+      desk.add(leg);
+    }
+    const modesty = new THREE.Mesh(this.officeBox(1.4, 0.45, 0.03), wood);
+    modesty.position.set(0, 0.45, -0.34);
+    desk.add(modesty);
+
+    if (computer !== "none") {
+      const beige = this.officeMat("crt_body", 0xcfc6a8, 0.7);
+      const body = new THREE.Mesh(this.officeBox(0.44, 0.38, 0.42), beige);
+      body.position.set(0, 0.96, -0.08);
+      desk.add(body);
+      const screenMat = computer === "on"
+        ? this.sharedMat("office_crt_on", () => new THREE.MeshBasicMaterial({ color: 0x3cff7a }))
+        : this.officeMat("crt_off", 0x111512, 0.3, 0.2);
+      const screen = new THREE.Mesh(this.sharedGeo("office_crt_screen", () => new THREE.PlaneGeometry(0.33, 0.26)), screenMat);
+      screen.position.set(0, 0.97, 0.135);
+      desk.add(screen);
+      const keyboard = new THREE.Mesh(this.officeBox(0.42, 0.03, 0.15), beige);
+      keyboard.position.set(0, 0.78, 0.2);
+      desk.add(keyboard);
+    }
+    return desk;
+  }
+
+  private createFilingCabinetMesh(): THREE.Group {
+    const cab = new THREE.Group();
+    const body = new THREE.Mesh(this.officeBox(0.5, 1.32, 0.6), this.officeMat("cabinet", 0x7a7f86, 0.45, 0.55));
+    body.position.y = 0.66;
+    cab.add(body);
+    const handleMat = this.officeMat("cabinet_handle", 0x2a2c30, 0.3, 0.8);
+    for (let i = 0; i < 4; i++) {
+      const handle = new THREE.Mesh(this.officeBox(0.16, 0.025, 0.03), handleMat);
+      handle.position.set(0, 0.2 + i * 0.32, 0.31);
+      cab.add(handle);
+    }
+    return cab;
+  }
+
+  /** Manila folder stamped CONFIDENCIAL: a Level G document. */
+  private createFolderMesh(): THREE.Group {
+    const folder = new THREE.Group();
+    const cover = new THREE.Mesh(this.officeBox(0.34, 0.02, 0.25), this.officeMat("folder", 0xd9b36c, 0.9, 0, 0x2a1f08));
+    folder.add(cover);
+    const sheet = new THREE.Mesh(this.officeBox(0.3, 0.005, 0.22), this.officeMat("paper", 0xf2efe6, 0.95, 0, 0x202020));
+    sheet.position.set(0.03, 0.013, -0.01);
+    sheet.rotation.y = 0.12;
+    folder.add(sheet);
+    const stamp = new THREE.Mesh(this.officeBox(0.2, 0.006, 0.035), this.officeMat("stamp", 0xb3261e, 0.8));
+    stamp.position.set(0, 0.016, 0.06);
+    folder.add(stamp);
+    return folder;
+  }
+
+  /** Solid neighbours of a cell, as outward unit steps. */
+  private wallSidesOf(gx: number, gz: number): [number, number][] {
+    const sides: [number, number][] = [];
+    for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]] as [number, number][]) {
+      if (this.grid[gx + dx]?.[gz + dz] === CellType.SOLID) sides.push([dx, dz]);
+    }
+    return sides;
+  }
+
+  /** Places `obj` against the wall on side (dx, dz), facing into the room. */
+  private placeAgainstWall(group: THREE.Group, obj: THREE.Object3D, posX: number, posZ: number, dx: number, dz: number, inset: number) {
+    obj.position.set(posX + dx * inset, 0, posZ + dz * inset);
+    obj.rotation.y = Math.atan2(-dx, -dz); // local +Z points away from the wall
+    group.add(obj);
+  }
+
+  /**
+   * Everything Level G puts in a cell beyond floor/walls/ceiling: door frames
+   * between sectors, closets, the terminal, the documents, the emergency
+   * exit, and ordinary office clutter against the walls.
+   */
+  private buildLevelGCell(group: THREE.Group, gx: number, gz: number, posX: number, posZ: number, height: number) {
+    const key = `${gx},${gz}`;
+    const hSize = this.cellSize;
+
+    // --- Emergency exit (door on the boundary with the main room, north side)
+    if (gx === this.exitGridX && gz === this.exitGridZ) {
+      const exit = new THREE.Group();
+      const edgeZ = -hSize / 2 + 0.06;
+      const wallMat = this.wallMaterial;
+      // Wall panels around a 1.3 m opening
+      for (const side of [-1, 1]) {
+        const panel = new THREE.Mesh(this.officeBox(1.35, height, 0.12), wallMat);
+        panel.position.set(side * (0.65 + 0.675), height / 2, edgeZ);
+        exit.add(panel);
+      }
+      const header = new THREE.Mesh(this.officeBox(1.3, height - 2.2, 0.12), wallMat);
+      header.position.set(0, 2.2 + (height - 2.2) / 2, edgeZ);
+      exit.add(header);
+      // The door leaf, hinged on its left edge
+      const hinge = new THREE.Group();
+      hinge.position.set(-0.65, 0, edgeZ);
+      const leaf = new THREE.Mesh(this.officeBox(1.3, 2.18, 0.06), this.officeMat("exit_door", 0x8c1d18, 0.55, 0.4));
+      leaf.position.set(0.65, 1.09, 0);
+      hinge.add(leaf);
+      const bar = new THREE.Mesh(this.officeBox(1.0, 0.06, 0.08), this.officeMat("push_bar", 0xc9ccd1, 0.3, 0.8));
+      bar.position.set(0.65, 1.0, -0.06);
+      hinge.add(bar);
+      // Opens outward, away from the office (negative = towards local +Z)
+      hinge.rotation.y = this.emergencyDoorOpen ? LEVEL_G_DOOR_OPEN_ANGLE : 0;
+      exit.add(hinge);
+      this.emergencyDoorLeaf = hinge;
+      // The side panels stay solid once the door is open
+      for (const off of [1.0, 1.65]) {
+        for (const side of [-1, 1]) {
+          this.addObstacle(gx, gz, posX + side * off, posZ + edgeZ, 0.36);
+        }
+      }
+      // Green-lit "SAÍDA DE EMERGÊNCIA" sign above, facing the main room
+      const canvas = document.createElement("canvas");
+      canvas.width = 256; canvas.height = 64;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.fillStyle = "#0f7a36"; ctx.fillRect(0, 0, 256, 64);
+        ctx.fillStyle = "#e9ffe9"; ctx.font = "bold 22px Arial"; ctx.textAlign = "center";
+        ctx.fillText("SAÍDA DE EMERGÊNCIA", 128, 40);
+      }
+      const signTex = new THREE.CanvasTexture(canvas);
+      this.sharedTextures.push(signTex);
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.3), new THREE.MeshBasicMaterial({ map: signTex }));
+      sign.position.set(0, 2.45, edgeZ - 0.07);
+      sign.rotation.y = Math.PI;
+      exit.add(sign);
+      // Daylight waiting behind the door
+      const glow = new THREE.Mesh(new THREE.PlaneGeometry(hSize - 0.2, height - 0.2), this.sharedMat("office_daylight", () => new THREE.MeshBasicMaterial({ color: 0xf4f7ff })));
+      glow.position.set(0, height / 2, hSize / 2 - 0.08);
+      glow.rotation.y = Math.PI;
+      exit.add(glow);
+      exit.position.set(posX, 0, posZ);
+      group.add(exit);
+      this.registerLight(gx, gz, posX, 2.4, posZ - hSize / 2 - 0.4, 0x36ff6a, 0.6, 4.0, 1.4);
+      return;
+    }
+
+    // --- Door frames between sectors / into the side offices
+    const frame = this.officeDoorFrames.find((d) => d.gx === gx && d.gz === gz);
+    if (frame) {
+      const door = new THREE.Group();
+      const frameMat = this.officeMat("door_frame", 0x4a3b2a, 0.7);
+      for (const side of [-1, 1]) {
+        const panel = new THREE.Mesh(this.officeBox(1.35, height, 0.12), this.wallMaterial);
+        panel.position.set(side * 1.325, height / 2, 0);
+        door.add(panel);
+        const post = new THREE.Mesh(this.officeBox(0.08, 2.15, 0.16), frameMat);
+        post.position.set(side * 0.64, 1.075, 0);
+        door.add(post);
+      }
+      const header = new THREE.Mesh(this.officeBox(1.3, height - 2.15, 0.12), this.wallMaterial);
+      header.position.set(0, 2.15 + (height - 2.15) / 2, 0);
+      door.add(header);
+      // Door leaf left open against the wall
+      const leaf = new THREE.Mesh(this.officeBox(1.2, 2.1, 0.05), this.officeMat("door_leaf", 0x8a7456, 0.65));
+      leaf.position.set(-0.6 - 0.05, 1.05, 0.62);
+      leaf.rotation.y = Math.PI / 2;
+      door.add(leaf);
+      door.rotation.y = frame.axis === "x" ? Math.PI / 2 : 0;
+      door.position.set(posX, 0, posZ);
+      group.add(door);
+      // Collide with the wall panels, leaving the 1.3 m opening clear
+      for (const off of [1.0, 1.65]) {
+        for (const side of [-1, 1]) {
+          const ox = frame.axis === "z" ? side * off : 0;
+          const oz = frame.axis === "x" ? side * off : 0;
+          this.addObstacle(gx, gz, posX + ox, posZ + oz, off === 1.0 ? 0.36 : 0.36);
+        }
+      }
+      return;
+    }
+
+    // --- Closets: shelves and hanging coats; nothing to collide with
+    if (this.hideCells.has(key)) {
+      const [odx, odz] = [[0, -1], [0, 1], [-1, 0], [1, 0]].find(([dx, dz]) => this.grid[gx + dx]?.[gz + dz] !== CellType.SOLID) ?? [0, 1];
+      const closet = new THREE.Group();
+      const shelfMat = this.officeMat("closet_shelf", 0x5a4a38, 0.8);
+      for (let i = 0; i < 3; i++) {
+        const shelf = new THREE.Mesh(this.officeBox(3.2, 0.04, 0.45), shelfMat);
+        shelf.position.set(0, 1.6 + i * 0.4, -hSize / 2 + 0.3);
+        closet.add(shelf);
+      }
+      const coatMat = this.officeMat("coat", 0x2c2f36, 0.95);
+      for (const cx of [-1.1, -0.4, 0.5, 1.2]) {
+        const coat = new THREE.Mesh(this.officeBox(0.45, 1.1, 0.14), coatMat);
+        coat.position.set(cx, 1.35, -hSize / 2 + 0.6);
+        coat.rotation.y = (cx % 0.5) * 0.4;
+        closet.add(coat);
+      }
+      // local +Z points at the opening, so shelves/coats (at -Z) line the back
+      closet.rotation.y = Math.atan2(odx, odz);
+      closet.position.set(posX, 0, posZ);
+      group.add(closet);
+      return;
+    }
+
+    // --- The terminal: the one computer still switched on
+    if (gx === this.levelGTerminalX && gz === this.levelGTerminalZ) {
+      const desk = this.createOfficeDeskMesh("on");
+      desk.position.set(posX, 0, posZ);
+      desk.rotation.y = Math.PI; // screen faces north, towards the doors
+      group.add(desk);
+      const chair = this.createChairMesh(new SeededRandom(this.seed + 404), false, false);
+      chair.position.set(posX, 0, posZ - 0.9);
+      group.add(chair);
+      this.addObstacle(gx, gz, posX, posZ, 0.8);
+      this.registerLight(gx, gz, posX, 1.2, posZ - 0.5, 0x3cff7a, 0.9, 5.0, 1.4);
+      return;
+    }
+
+    const cellType = this.grid[gx][gz];
+    if (cellType !== CellType.ROOM_SMALL) return;
+    const spawnArea = gx <= 3 && gz <= 3;
+    const sides = this.wallSidesOf(gx, gz);
+    const rng = new SeededRandom(this.seed + gx * 131 + gz * 197);
+
+    // --- Documents: always on a desk (against a wall when there is one)
+    const docIndex = this.levelGDocCells.findIndex(([x, z]) => x === gx && z === gz);
+    if (docIndex >= 0) {
+      const [dx, dz] = sides.length > 0 ? sides[rng.nextInt(0, sides.length - 1)] : [0, 0];
+      const inset = sides.length > 0 ? 1.35 : 0;
+      const desk = this.createOfficeDeskMesh(rng.next() < 0.5 ? "off" : "none");
+      this.placeAgainstWall(group, desk, posX, posZ, dx, dz, inset);
+      const fx = posX + dx * inset + (rng.next() - 0.5) * 0.6;
+      const fz = posZ + dz * inset;
+      const folder = this.createFolderMesh();
+      folder.position.set(fx, 0.78, fz);
+      folder.rotation.y = rng.nextRange(0, Math.PI * 2);
+      group.add(folder);
+      this.addObstacle(gx, gz, posX + dx * inset, posZ + dz * inset, 0.7);
+      this.consumables.push({
+        mesh: folder, initialY: 0.78, collected: false, type: "g_document", docIndex,
+        x: fx, z: fz, gridX: gx, gridZ: gz,
+      });
+      return;
+    }
+
+    // --- Ordinary clutter against a wall (never at spawn or in a doorway)
+    const isGap = (gx === 4 || gx === 12) && (gz === 10 || gz === 13);
+    if (spawnArea || isGap || sides.length === 0) return;
+    const [dx, dz] = sides[rng.nextInt(0, sides.length - 1)];
+    const roll = rng.next();
+    if (roll < 0.55) {
+      const desk = this.createOfficeDeskMesh(rng.next() < 0.7 ? "off" : "none");
+      this.placeAgainstWall(group, desk, posX, posZ, dx, dz, 1.35);
+      this.addObstacle(gx, gz, posX + dx * 1.35, posZ + dz * 1.35, 0.7);
+      if (rng.next() < 0.6) {
+        const chair = this.createChairMesh(rng, rng.next() < 0.2, false);
+        chair.position.set(posX + dx * 0.55, 0, posZ + dz * 0.55);
+        chair.rotation.y = rng.nextRange(0, Math.PI * 2);
+        group.add(chair);
+        this.addObstacle(gx, gz, chair.position.x, chair.position.z, 0.3);
+      }
+    } else if (roll < 0.8) {
+      for (const along of [-0.3, 0.3]) {
+        const cab = this.createFilingCabinetMesh();
+        const px = posX + dx * 1.65 + (dz !== 0 ? along : 0);
+        const pz = posZ + dz * 1.65 + (dx !== 0 ? along : 0);
+        cab.position.set(px, 0, pz);
+        cab.rotation.y = Math.atan2(-dx, -dz);
+        group.add(cab);
+      }
+      this.addObstacle(gx, gz, posX + dx * 1.65, posZ + dz * 1.65, 0.6);
+    } else if (roll < 0.9) {
+      const box = this.createCardboardBoxMesh(rng);
+      box.position.set(posX + dx * 1.5, 0, posZ + dz * 1.5);
+      group.add(box);
+      this.addObstacle(gx, gz, box.position.x, box.position.z, 0.45);
+    }
+  }
+
+  /**
+   * Level 0's small office door that shouldn't exist: a narrow door set into
+   * what reads as ordinary lobby wallpaper, left ajar onto darkness. Built in
+   * the nook cell, on its boundary with the lobby cell it faces.
+   */
+  private buildOfficeDoor(group: THREE.Group, posX: number, posZ: number, height: number) {
+    const hSize = this.cellSize;
+    const [dx, dz] = this.officeDoorDir;
+    const door = new THREE.Group();
+    const edgeZ = hSize / 2 - 0.06; // local +Z = towards the lobby
+    const open = 0.55, doorH = 1.95;
+
+    for (const side of [-1, 1]) {
+      const panel = new THREE.Mesh(this.officeBox(hSize / 2 - open, height, 0.12), this.wallMaterial);
+      panel.position.set(side * (open + (hSize / 2 - open) / 2), height / 2, edgeZ);
+      door.add(panel);
+    }
+    const header = new THREE.Mesh(this.officeBox(open * 2, height - doorH, 0.12), this.wallMaterial);
+    header.position.set(0, doorH + (height - doorH) / 2, edgeZ);
+    door.add(header);
+
+    const frameMat = this.officeMat("small_door_frame", 0x3d3024, 0.75);
+    for (const side of [-1, 1]) {
+      const post = new THREE.Mesh(this.officeBox(0.06, doorH, 0.15), frameMat);
+      post.position.set(side * open, doorH / 2, edgeZ);
+      door.add(post);
+    }
+    // Leaf ajar, swung into the dark
+    const hinge = new THREE.Group();
+    hinge.position.set(-open, 0, edgeZ);
+    const leaf = new THREE.Mesh(this.officeBox(open * 2 - 0.04, doorH - 0.04, 0.045), this.officeMat("small_door_leaf", 0x6f5a41, 0.7));
+    leaf.position.set(open - 0.02, doorH / 2, 0);
+    hinge.add(leaf);
+    const knob = new THREE.Mesh(this.sharedGeo("office_knob", () => new THREE.SphereGeometry(0.03, 8, 8)), this.officeMat("brass", 0xb08d3c, 0.3, 0.8));
+    knob.position.set(open * 2 - 0.12, 0.95, 0.04);
+    hinge.add(knob);
+    hinge.rotation.y = 0.65; // ajar, swung in towards the dark nook
+    door.add(hinge);
+    // A tiny brass plate: "G"
+    const plate = new THREE.Mesh(this.officeBox(0.16, 0.08, 0.01), this.officeMat("brass_plate", 0xa8843a, 0.35, 0.7));
+    plate.position.set(0, 1.62, edgeZ + 0.075);
+    door.add(plate);
+
+    door.rotation.y = Math.atan2(dx, dz);
+    door.position.set(posX, 0, posZ);
+    group.add(door);
+
+    // Collide with the wall panels either side of the opening
+    const gx = this.officeDoorX, gz = this.officeDoorZ;
+    const ex = posX + dx * edgeZ, ez = posZ + dz * edgeZ; // boundary centre
+    for (const off of [0.95, 1.6]) {
+      for (const side of [-1, 1]) {
+        this.addObstacle(gx, gz, ex + dz * side * off, ez + dx * side * off, 0.4);
+      }
+    }
   }
 
   /**
@@ -4267,7 +5131,7 @@ export class ProceduralMap {
         this.globalEventState = "normal";
         this.eventCooldown = 30.0 + Math.random() * 25.0; // Cooldown for 30-55 seconds
       }
-    } else {
+    } else if (this.rollGlobalEvents) {
       this.eventCooldown -= delta;
       if (this.eventCooldown <= 0) {
         // Cooldown finished! Roll for a random scare/flicker event (38% occurrence chance)
@@ -4322,8 +5186,9 @@ export class ProceduralMap {
             fixture.mesh.material = this.fluorescentGlassOn;
           }
         } else {
-          // Very rare natural spark flicker probability (0.0125% per frame)
-          if (Math.random() < 0.00018) {
+          // Very rare natural spark flicker probability (0.0125% per frame);
+          // Level G's tubes are on their last legs, so far more often there.
+          if (Math.random() < (this.level === 4 ? 0.0025 : 0.00018)) {
             const duration = Math.floor(250 + Math.random() * 500); // 250ms - 750ms flicker
             fixture.flickerTimer = duration / 1000;
 
@@ -4459,6 +5324,9 @@ export class ProceduralMap {
         anim.mesh.scale.set(scaleChance, scaleChance, scaleChance);
       }
     });
+
+    // 4. Slide any boxes the player has shoved.
+    this.updateMovables(delta);
   }
 
   /**
@@ -4656,6 +5524,13 @@ export class ProceduralMap {
       scene.remove(cellGroup);
     });
     this.cellGroups.clear();
+    // Pushed boxes were re-parented to the scene, so they aren't removed with their cell group.
+    this.movables.forEach((m) => {
+      if (m.pushed) { scene.remove(m.mesh); if (m.extra) scene.remove(m.extra); }
+    });
+    this.movables.clear();
+    this.slidingMovables = [];
+    this.movableScene = null;
     this.cellObstacles.clear();
     this.obstacleGrid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill(null));
     this.cellGroupGrid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill(null));

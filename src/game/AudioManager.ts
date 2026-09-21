@@ -823,11 +823,154 @@ export class AudioManager {
     }, duration * 1000);
   }
 
+  // ---------------------------------------------------------------------------
+  // Level G
+  // ---------------------------------------------------------------------------
+
+  private alarmOscillators: OscillatorNode[] = [];
+
+  /**
+   * The Finger King's warning: a few quick knuckle/nail taps, like fingers
+   * drumming on a desk or a wall. `volume` 0..1 rises as it gets closer.
+   */
+  public playFingerTap(volume: number, pan = 0) {
+    if (!this.ctx || !this.masterGain || volume <= 0.01) return;
+    const t0 = this.ctx.currentTime;
+    const taps = 2 + Math.floor(Math.random() * 3);
+
+    const panner = this.ctx.createStereoPanner();
+    panner.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), t0);
+    panner.connect(this.masterGain);
+
+    // One short noise burst shared by every tap
+    const len = Math.floor(this.ctx.sampleRate * 0.03);
+    const buffer = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+
+    for (let k = 0; k < taps; k++) {
+      const t = t0 + k * (0.07 + Math.random() * 0.05);
+      const src = this.ctx.createBufferSource();
+      src.buffer = buffer;
+      const band = this.ctx.createBiquadFilter();
+      band.type = "bandpass";
+      band.frequency.setValueAtTime(1800 + Math.random() * 900, t);
+      band.Q.setValueAtTime(6, t);
+      const gain = this.ctx.createGain();
+      gain.gain.setValueAtTime(0.55 * volume * this.settings.volumeSfx, t);
+      gain.gain.exponentialRampToValueAtTime(0.0005, t + 0.06);
+      src.connect(band);
+      band.connect(gain);
+      gain.connect(panner);
+      src.start(t);
+      src.stop(t + 0.07);
+    }
+  }
+
+  /** Terminal response: two rising beeps when accepted, a low buzz when refused. */
+  /** A box scraping across the carpet: a short, low-passed noise sweep plus a dull thud. */
+  public playBoxPush() {
+    if (!this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    const dur = 0.42;
+
+    const len = Math.floor(this.ctx.sampleRate * dur);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = buf;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(900, t);
+    lp.frequency.exponentialRampToValueAtTime(220, t + dur);
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.16 * this.settings.volumeSfx, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    noise.connect(lp); lp.connect(ng); ng.connect(this.masterGain);
+    noise.start(t);
+
+    const thud = this.ctx.createOscillator();
+    thud.type = "triangle";
+    thud.frequency.setValueAtTime(70, t + dur - 0.1);
+    thud.frequency.exponentialRampToValueAtTime(30, t + dur + 0.08);
+    const tg = this.ctx.createGain();
+    tg.gain.setValueAtTime(0.0001, t);
+    tg.gain.setValueAtTime(0.22 * this.settings.volumeSfx, t + dur - 0.1);
+    tg.gain.exponentialRampToValueAtTime(0.0005, t + dur + 0.1);
+    thud.connect(tg); tg.connect(this.masterGain);
+    thud.start(t + dur - 0.1);
+    thud.stop(t + dur + 0.12);
+  }
+
+  public playTerminalBeep(accepted: boolean) {
+    if (!this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    const notes = accepted ? [[880, 0, 0.09], [1320, 0.12, 0.14]] : [[160, 0, 0.4]];
+    for (const [freq, start, dur] of notes) {
+      const osc = this.ctx.createOscillator();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(freq, t + start);
+      const gain = this.ctx.createGain();
+      gain.gain.setValueAtTime(0.05 * this.settings.volumeSfx, t + start);
+      gain.gain.exponentialRampToValueAtTime(0.0005, t + start + dur);
+      osc.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start(t + start);
+      osc.stop(t + start + dur + 0.02);
+    }
+  }
+
+  /**
+   * Level G's final alarm: a two-tone klaxon replaces the fluorescent hum,
+   * which drops almost to nothing. Runs until stopAlarm() or destroy().
+   */
+  public startAlarm() {
+    if (!this.ctx || !this.masterGain || this.alarmOscillators.length > 0) return;
+    const t = this.ctx.currentTime;
+
+    const siren = this.ctx.createOscillator();
+    siren.type = "sawtooth";
+    siren.frequency.setValueAtTime(610, t);
+    // A square LFO flips the pitch between two tones
+    const lfo = this.ctx.createOscillator();
+    lfo.type = "square";
+    lfo.frequency.setValueAtTime(1.1, t);
+    const lfoDepth = this.ctx.createGain();
+    lfoDepth.gain.setValueAtTime(110, t);
+    lfo.connect(lfoDepth);
+    lfoDepth.connect(siren.frequency);
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(1600, t);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.linearRampToValueAtTime(0.05 * this.settings.volumeSfx, t + 0.4);
+
+    siren.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.masterGain);
+    siren.start(t);
+    lfo.start(t);
+    this.alarmOscillators = [siren, lfo];
+
+    if (this.humGain) this.humGain.gain.linearRampToValueAtTime(this.settings.volumeHum * 0.015, t + 0.6);
+  }
+
+  public stopAlarm() {
+    this.alarmOscillators.forEach((osc) => {
+      try { osc.stop(); osc.disconnect(); } catch (e) {}
+    });
+    this.alarmOscillators = [];
+  }
+
   /**
    * Destroys the audio engine.
    */
   public destroy() {
     try {
+      this.stopAlarm();
       this.isMusicPlaying = false;
       this.activeMusicOscillators.forEach(osc => {
         try {
