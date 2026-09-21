@@ -867,6 +867,150 @@ export class AudioManager {
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Monster voices — procedural, positional (pan + distance volume). Each is a
+  // short synth phrase; `alert` is the aggressive version played while hunting.
+  // A small voice cap keeps a Level 2 stampede from turning into white noise.
+  // ---------------------------------------------------------------------
+  private monsterVoices = 0;
+  private noiseBuf: AudioBuffer | null = null;
+
+  private noise(): AudioBuffer {
+    if (!this.noiseBuf) {
+      const len = this.ctx!.sampleRate * 2;
+      this.noiseBuf = this.ctx!.createBuffer(1, len, this.ctx!.sampleRate);
+      const d = this.noiseBuf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    }
+    return this.noiseBuf;
+  }
+
+  /**
+   * @param type   EntityType string
+   * @param alert  true = hunting/agitated voice, false = idle murmur
+   * @param volume 0..1 already attenuated by distance
+   * @param pan    -1 (left) .. 1 (right)
+   */
+  public playMonsterSound(type: string, alert: boolean, volume: number, pan: number) {
+    if (!this.ctx || !this.masterGain || volume < 0.02 || this.monsterVoices >= 4) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const vol = Math.min(1, volume) * this.settings.volumeSfx;
+
+    const out = ctx.createGain();
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, pan));
+    out.connect(panner);
+    panner.connect(this.masterGain);
+
+    const osc = (kind: OscillatorType, f0: number, f1: number, dur: number, dest: AudioNode, at = t) => {
+      const o = ctx.createOscillator();
+      o.type = kind;
+      o.frequency.setValueAtTime(f0, at);
+      o.frequency.exponentialRampToValueAtTime(Math.max(1, f1), at + dur);
+      o.connect(dest);
+      o.start(at);
+      o.stop(at + dur + 0.05);
+      return o;
+    };
+    const noiseBurst = (dur: number, filt: BiquadFilterType, freq: number, q: number, g: number, at = t) => {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise();
+      src.loop = true;
+      const f = ctx.createBiquadFilter();
+      f.type = filt; f.frequency.value = freq; f.Q.value = q;
+      const ng = ctx.createGain();
+      ng.gain.setValueAtTime(g, at);
+      ng.gain.exponentialRampToValueAtTime(0.001, at + dur);
+      src.connect(f); f.connect(ng); ng.connect(out);
+      src.start(at, Math.random());
+      src.stop(at + dur + 0.05);
+    };
+    const envelope = (dur: number, peak: number) => {
+      out.gain.setValueAtTime(0.0001, t);
+      out.gain.exponentialRampToValueAtTime(peak * vol, t + Math.min(0.08, dur / 3));
+      out.gain.exponentialRampToValueAtTime(0.0005, t + dur);
+      return dur;
+    };
+    let dur = 1;
+
+    switch (type) {
+      case "HOUND": {
+        // Idle: low rumbling growl. Alert: sharp bark-snarl.
+        dur = alert ? 0.45 : 1.1;
+        envelope(dur, alert ? 0.9 : 0.6);
+        const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = alert ? 900 : 350; lp.connect(out);
+        const o = osc("sawtooth", alert ? 220 : 80, alert ? 90 : 60, dur, lp);
+        const lfo = ctx.createOscillator(); lfo.frequency.value = alert ? 28 : 16;
+        const lfoG = ctx.createGain(); lfoG.gain.value = alert ? 40 : 12;
+        lfo.connect(lfoG); lfoG.connect(o.frequency); lfo.start(t); lfo.stop(t + dur + 0.05);
+        if (alert) noiseBurst(0.18, "bandpass", 1400, 1.2, 0.5);
+        break;
+      }
+      case "DULLER": {
+        // Something dry dragging through a wall.
+        dur = alert ? 1.2 : 1.8;
+        envelope(dur, 0.5);
+        noiseBurst(dur, "bandpass", alert ? 380 : 220, 3, 0.9);
+        osc("sine", 55, 48, dur, out);
+        break;
+      }
+      case "CLUMP": {
+        // Rattling limbs: a run of dry clicks.
+        const clicks = alert ? 9 : 4;
+        dur = clicks * 0.09 + 0.15;
+        out.gain.setValueAtTime(vol * 0.9, t);
+        for (let i = 0; i < clicks; i++) {
+          noiseBurst(0.05, "bandpass", 1600 + Math.random() * 1600, 5, 0.7, t + i * (0.07 + Math.random() * 0.04));
+        }
+        if (alert) osc("triangle", 130, 70, dur, out);
+        break;
+      }
+      case "SKIN_STEALER": {
+        if (alert) {
+          // The mask slips: warbling, distorted shriek.
+          dur = 1.0;
+          envelope(dur, 0.9);
+          const shaper = ctx.createWaveShaper();
+          const curve = new Float32Array(256);
+          for (let i = 0; i < 256; i++) { const x = i / 128 - 1; curve[i] = Math.tanh(x * 4); }
+          shaper.curve = curve; shaper.connect(out);
+          const o = osc("sawtooth", 520, 260, dur, shaper);
+          const lfo = ctx.createOscillator(); lfo.frequency.value = 9;
+          const lg = ctx.createGain(); lg.gain.value = 70;
+          lfo.connect(lg); lg.connect(o.frequency); lfo.start(t); lfo.stop(t + dur + 0.05);
+        } else {
+          // A friendly, slightly wrong hum: two detuned sines gliding like a voice.
+          dur = 1.4;
+          envelope(dur, 0.45);
+          osc("sine", 190, 230, dur, out);
+          osc("sine", 197, 236, dur, out);
+        }
+        break;
+      }
+      case "WRETCH": {
+        // Raspy scream.
+        dur = alert ? 1.0 : 1.5;
+        envelope(dur, alert ? 0.85 : 0.5);
+        const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 700; bp.Q.value = 2; bp.connect(out);
+        const o = osc("sawtooth", alert ? 420 : 260, alert ? 200 : 150, dur, bp);
+        const lfo = ctx.createOscillator(); lfo.frequency.value = 14;
+        const lg = ctx.createGain(); lg.gain.value = 35;
+        lfo.connect(lg); lg.connect(o.frequency); lfo.start(t); lfo.stop(t + dur + 0.05);
+        noiseBurst(dur, "highpass", 2500, 0.7, 0.25);
+        break;
+      }
+      default:
+        return; // FINGER_KING has its own taps
+    }
+
+    this.monsterVoices++;
+    setTimeout(() => {
+      this.monsterVoices = Math.max(0, this.monsterVoices - 1);
+      try { out.disconnect(); panner.disconnect(); } catch { /* already gone */ }
+    }, (dur + 0.2) * 1000);
+  }
+
   /** Terminal response: two rising beeps when accepted, a low buzz when refused. */
   /** A box scraping across the carpet: a short, low-passed noise sweep plus a dull thud. */
   public playBoxPush() {

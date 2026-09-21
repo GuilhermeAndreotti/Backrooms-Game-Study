@@ -65,6 +65,11 @@ export default function App() {
   // Real-time telemetry feeding from Game loop
   const [stamina, setStamina] = useState(1.0);
   const [sanity, setSanity] = useState(1.0);
+  // Death: a dead explorer spectates a living teammate; when everyone is dead
+  // the group picks how the room starts over.
+  const [isDead, setIsDead] = useState(false);
+  const [spectateName, setSpectateName] = useState<string | null>(null);
+  const [allDead, setAllDead] = useState(false);
   const [isFlashlightOn, setIsFlashlightOn] = useState(false);
   const [playerState, setPlayerState] = useState("idle");
   const [pointerLocked, setPointerLocked] = useState(false);
@@ -223,6 +228,12 @@ export default function App() {
       // Typing a chat message: "i"/"k" should land in the message, not pop
       // open the inventory/achievements panels over it.
       if (isTypingInField()) return;
+      // Spectating: arrows flip between the teammates still alive.
+      if (engineRef.current?.isDead && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        engineRef.current.cycleSpectate(e.key === "ArrowRight" ? 1 : -1);
+        return;
+      }
       if (e.key === "i" || e.key === "I") {
         e.preventDefault();
         setIsAchievementsOpen(false);
@@ -458,20 +469,11 @@ export default function App() {
                     onHUDNotification: (msg) => triggerNotification(msg),
                     onSectorChange: (sec) => setCurrentSector(sec),
                     onInventoryChange: (items) => setInventory(items),
-                    onSanityChange: (san) => {
-                      setSanity(san);
-                      if (san <= 0) {
-                        setPhase(ConnectionPhase.GAME_OVER);
-                        document.exitPointerLock?.();
-                        if (engineRef.current) {
-                          engineRef.current.destroy();
-                          engineRef.current = null;
-                        }
-                        if (socketRef.current) {
-                          socketRef.current.close();
-                          socketRef.current = null;
-                        }
-                      }
+                    onSanityChange: (san) => setSanity(san),
+                    onPlayerDeath: () => {
+                      setIsDead(true);
+                      setSpectateName(engineRef.current?.spectateName() ?? null);
+                      socketRef.current?.send(JSON.stringify({ type: "died" }));
                     },
                     onScrapOfNoteCollected: (noteSeed, doorMarker) => {
                       const lore = generateProceduralLore(noteSeed);
@@ -505,11 +507,13 @@ export default function App() {
 
                 // Replicated monsters/blackouts: who simulates which level.
                 engineRef.current.localPlayerId = myId;
+                engineRef.current.onSpectateChange = setSpectateName;
                 engineRef.current.setWorldAuthority(worldAuthorityRef.current);
 
                 // Instantly spawn existing players
                 currentOn.forEach((p: RemotePlayer) => {
                   engineRef.current?.spawnRemotePlayer(p.id, p.name, p.x, p.y, p.z, p.suitColor, p.face);
+                  if (p.dead) engineRef.current?.setRemoteDead(p.id, true);
                 });
 
                 // Track real asynchronous map precreation cells loading progress for Level 0
@@ -542,14 +546,32 @@ export default function App() {
           // Server-authoritative "the room advanced to the next level" broadcast —
           // fires for every player in the room (including whoever triggered it),
           // so the group always transitions together onto the same level.
-          else if (type === "level_transition") {
+          else if (type === "level_transition" || type === "respawn") {
             const engine = engineRef.current;
             const nextLevel = data.level;
             const roomSeed = data.seed;
-            if (!engine || typeof nextLevel !== "number" || nextLevel <= engine.level) return;
+            // A respawn (whole room died, group chose a reset) may repeat or
+            // go back to an earlier level; a plain transition only moves forward.
+            const forced = type === "respawn";
+            if (!engine || typeof nextLevel !== "number" || (!forced && nextLevel <= engine.level)) return;
 
-            console.log(`Group noclipped into Level ${nextLevel}!`);
-            if (nextLevel === 1) unlockAchievement("noclip_master");
+            if (forced) {
+              logSystemMessage(data.scratch
+                ? "[GRUPO REINICIADO]: TODOS VOLTAM AO LEVEL 0."
+                : `[GRUPO REINICIADO]: TODOS RENASCEM NO LEVEL ${nextLevel}.`);
+            } else {
+              console.log(`Group noclipped into Level ${nextLevel}!`);
+              if (nextLevel === 1) unlockAchievement("noclip_master");
+            }
+
+            // Everyone who died is back (server-side too).
+            setIsDead(false);
+            setAllDead(false);
+            setSpectateName(null);
+            if (forced && data.scratch) {
+              setInventory([]);
+              engine.inventory = [];
+            }
 
             setLoadingMap(true);
             setLoadingProgress(0);
@@ -577,6 +599,22 @@ export default function App() {
                 engineRef.current.player.mapFullyLoaded = true;
               }
             });
+          }
+
+          else if (type === "player_died") {
+            const { id: deadId } = data;
+            const who = playersRef.current.find((p) => p.id === deadId);
+            if (who) who.dead = true;
+            engineRef.current?.setRemoteDead(deadId, true);
+            if (deadId !== clientIdRef.current) {
+              logSystemMessage(`[SINAL DE EXPEDIÇÃO PERDIDO]: ${(who?.name ?? "UM EXPLORADOR").toUpperCase()} SUCUMBIU.`);
+            }
+            touchRoster();
+          }
+
+          else if (type === "all_dead") {
+            setAllDead(true);
+            document.exitPointerLock?.();
           }
 
           else if (type === "player_joined") {
@@ -820,7 +858,7 @@ export default function App() {
 
           {/* Locked Mouse Notice/Overlay */}
           {/* Locked Mouse Notice/Overlay (Custom Pause Menu with Diário) */}
-          {!pointerLocked && !pointerLockedOverride && !isInventoryOpen && (
+          {!pointerLocked && !pointerLockedOverride && !isInventoryOpen && !allDead && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#000000]/92 text-[#deb81d] z-50 text-center px-4 font-mono select-none">
               <div className="w-full max-w-3xl border border-[#a28e3b]/50 bg-[#14130a] rounded shadow-[0_0_50px_rgba(222,184,29,0.15)] flex flex-col h-[520px] max-h-[90vh] overflow-hidden pointer-events-auto">
                 
@@ -1079,6 +1117,61 @@ export default function App() {
                 <div className="text-[9px] text-[#a28e3b]/50 uppercase tracking-widest leading-relaxed">
                   Não mude de guia. O noclip dimensional está sendo calibrado.
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Death: spectating a living teammate */}
+          {isDead && !allDead && (
+            <div className="absolute top-20 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 font-mono select-none pointer-events-none">
+              <div className="flex items-center gap-2 text-red-500 font-black tracking-[0.3em] text-sm uppercase animate-pulse">
+                <Skull className="w-4 h-4" /> Você morreu
+              </div>
+              <div className="flex items-center gap-3 bg-black/70 border border-red-950 rounded px-4 py-2 pointer-events-auto">
+                <button
+                  onClick={() => engineRef.current?.cycleSpectate(-1)}
+                  className="text-[#deb81d] hover:text-white px-2 cursor-pointer"
+                  aria-label="Explorador anterior"
+                >◀</button>
+                <span className="text-[11px] text-stone-300 uppercase tracking-widest min-w-[10rem] text-center">
+                  {spectateName ? <>Espectando: <b className="text-[#deb81d]">{spectateName}</b></> : "Ninguém para espectar"}
+                </span>
+                <button
+                  onClick={() => engineRef.current?.cycleSpectate(1)}
+                  className="text-[#deb81d] hover:text-white px-2 cursor-pointer"
+                  aria-label="Próximo explorador"
+                >▶</button>
+              </div>
+              <div className="text-[9px] text-stone-400 uppercase tracking-widest">
+                Setas ← → trocam de câmera · você renasce quando o grupo passar de nível
+              </div>
+            </div>
+          )}
+
+          {/* Everyone died: the group chooses how to start over */}
+          {allDead && (
+            <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/85 px-4 font-mono select-none">
+              <div className="max-w-md w-full border border-red-950 bg-[#090303] p-8 rounded text-center space-y-5 shadow-[0_0_40px_rgba(220,38,38,0.2)]">
+                <Skull className="w-10 h-10 text-red-600 mx-auto" />
+                <h2 className="text-2xl font-black tracking-[0.2em] text-red-600 uppercase">Todos morreram</h2>
+                <p className="text-xs text-stone-400 uppercase leading-relaxed font-sans">
+                  Ninguém restou para continuar a expedição. Como o grupo quer recomeçar?
+                </p>
+                <div className="grid gap-3">
+                  <button
+                    onClick={() => socketRef.current?.send(JSON.stringify({ type: "room_reset", mode: "level" }))}
+                    className="w-full bg-red-700 hover:bg-red-600 text-white font-extrabold uppercase tracking-widest py-3 px-4 rounded text-xs transition-colors cursor-pointer border border-red-600/30"
+                  >
+                    Reiniciar no nível atual (Level {currentLevel})
+                  </button>
+                  <button
+                    onClick={() => socketRef.current?.send(JSON.stringify({ type: "room_reset", mode: "scratch" }))}
+                    className="w-full bg-transparent hover:bg-red-950/40 text-red-400 font-extrabold uppercase tracking-widest py-3 px-4 rounded text-xs transition-colors cursor-pointer border border-red-900"
+                  >
+                    Recomeçar do zero (Level 0)
+                  </button>
+                </div>
+                <p className="text-[9px] text-stone-500 uppercase tracking-widest">Qualquer jogador pode escolher; vale para toda a sala.</p>
               </div>
             </div>
           )}

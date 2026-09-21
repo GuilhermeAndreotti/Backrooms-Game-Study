@@ -78,6 +78,20 @@ export class WanderingEntity {
   private chaseTargetZ = 0;
   private isChasing = false;
 
+  /** Seconds until this monster's next voice line (owned by GameEngine's audio pass). */
+  public voiceTimer = 1 + Math.random() * 3;
+  private wasAlert = false;
+
+  /** Hunting/agitated: picks the aggressive voice. */
+  public get alert(): boolean { return this.isChasing || this.isAgitated || this.hunting; }
+  /** True once, on the frame the monster switches from calm to alert. */
+  public consumeAlertEdge(): boolean {
+    const a = this.alert;
+    const edge = a && !this.wasAlert;
+    this.wasAlert = a;
+    return edge;
+  }
+
   constructor(map: ProceduralMap, startX: number, startZ: number, type: EntityType) {
     this.map = map;
     this.gridX = startX;
@@ -514,7 +528,7 @@ export class WanderingEntity {
   }
 
   /**
-   * Duller inside a solid wall renders faded and slightly shrunk (it's the
+   * Legacy: a Duller placed inside a solid wall renders faded and slightly shrunk (it's the
    * only type that regularly noclips through walls — see chooseNextTarget).
    * Only Duller's body material is per-instance (tintMaterials), so it's the
    * only one it's safe to fade without dimming every other Duller sharing it.
@@ -703,7 +717,8 @@ export class WanderingEntity {
             "Encontrei água de amêndoas por aqui!",
             "Me chamo Lucas. Você faz parte do M.E.G.?",
             "Ufa, passos de gente! Venha me ajudar!",
-            "Estou perto da saída do Level 1!"
+            "Estou perto da saída do Level 1!",
+            "Socorro! Estão pegando na minha bingola!!"
           ];
           this.currentSpeechText = mimics[Math.floor(Math.random() * mimics.length)];
           this.moveSpeed = 1.0; // Slow friendly pace
@@ -718,7 +733,8 @@ export class WanderingEntity {
             "NÃO ADIANTA REZAR!",
             "VOCÊ CHEIRA TÃO BEM...",
             "ROSTO DE VERDADE... EU QUERO!",
-            "SOU HUMANO SIM! VENHA AQUI!"
+            "SOU HUMANO SIM! VENHA AQUI!",
+            "OVO COMER TEU CUUUU"
           ];
           this.currentSpeechText = hostiles[Math.floor(Math.random() * hostiles.length)];
           this.moveSpeed = 3.1; // Aggressive lunge speed!
@@ -891,6 +907,8 @@ export class WanderingEntity {
       }
     }
 
+    if (!this.isChasing && this.searchTimer > 0) this.searchTimer -= delta;
+
     // Adjust target coordinates if chasing
     if (this.isChasing) {
       this.chaseTargetX = pxGrid;
@@ -934,9 +952,17 @@ export class WanderingEntity {
     }
   }
 
+  /** Last cell the player was chased to; searched for a few seconds after losing them. */
+  private lastKnownX = -1;
+  private lastKnownZ = -1;
+  private searchTimer = 0.0;
+  private prevGridX = -1;
+  private prevGridZ = -1;
+
   /**
-   * Evaluates next target tile candidate.
-   * Leverages custom AI mechanics (noclip for Duller, chase lock, random walks)
+   * Evaluates next target tile candidate. Everything paths around walls and
+   * props (BFS), chases the player's cell, keeps searching the last place it
+   * saw them for a few seconds, and otherwise patrols without backtracking.
    */
   private chooseNextTarget(pXg: number, pZg: number) {
     if (this.type === EntityType.FINGER_KING) {
@@ -944,78 +970,58 @@ export class WanderingEntity {
       return;
     }
 
-    const directions = [
-      [0, -1], // North
-      [0, 1],  // South
-      [-1, 0], // West
-      [1, 0]   // East
-    ];
-
-    // If chasing, try and select a node which brings grid distance closer to player's grid tile
     if (this.isChasing) {
-      let bestDir: [number, number] | null = null;
-      let minDistance = 99999;
+      this.lastKnownX = pXg;
+      this.lastKnownZ = pZg;
+      this.searchTimer = 6.0;
+    }
 
-      directions.forEach(([dx, dz]) => {
-        const nx = this.gridX + dx;
-        const nz = this.gridZ + dz;
-
-        // Verify borders
-        if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2) {
-          const isSolid = this.map.grid[nx][nz] === CellType.SOLID;
-          
-          // Only Duller can bypass solid constraints! (Noclip capability with 50% probability)
-          const canWalk = !isSolid || (this.type === EntityType.DULLER && Math.random() < 0.50);
-
-          if (canWalk) {
-            // Euclidean grid distance to player's grid position
-            const gd = Math.pow(nx - pXg, 2) + Math.pow(nz - pZg, 2);
-            if (gd < minDistance) {
-              minDistance = gd;
-              bestDir = [nx, nz];
-            }
-          }
-        }
-      });
-
-      if (bestDir) {
-        const [tx, tz] = bestDir;
-        this.targetGridX = tx;
-        this.targetGridZ = tz;
-        this.isMoving = true;
-        this.transitionProgress = 0.0;
-        return;
+    let step: [number, number] | null = null;
+    if (this.isChasing) {
+      step = this.bfsFirstStep(pXg, pZg) ?? this.greedyStep(pXg, pZg);
+    } else if (this.searchTimer > 0 && this.lastKnownX >= 0) {
+      if (this.gridX === this.lastKnownX && this.gridZ === this.lastKnownZ) {
+        this.searchTimer = 0;
+      } else {
+        step = this.bfsFirstStep(this.lastKnownX, this.lastKnownZ);
       }
     }
 
-    // Default or Fallback random pacing patrolling
-    const walkableCandidates: [number, number][] = [];
-
-    directions.forEach(([dx, dz]) => {
-      const nx = this.gridX + dx;
-      const nz = this.gridZ + dz;
-
-      if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2) {
-        const isSolid = this.map.grid[nx][nz] === CellType.SOLID;
-        
-        // Duller wall-noclip choice probability when wandering
-        const canWalk = !isSolid || (this.type === EntityType.DULLER && Math.random() < 0.35);
-
-        if (canWalk) {
-          walkableCandidates.push([nx, nz]);
-        }
+    if (!step) {
+      // Patrol: random open neighbour, preferring not to walk straight back.
+      const options: [number, number][] = [];
+      for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+        const nx = this.gridX + dx, nz = this.gridZ + dz;
+        if (this.fingerCanEnter(this.gridX, this.gridZ, nx, nz)) options.push([nx, nz]);
       }
-    });
+      const forward = options.filter(([x, z]) => x !== this.prevGridX || z !== this.prevGridZ);
+      const pool = forward.length > 0 ? forward : options;
+      if (pool.length > 0) step = pool[Math.floor(Math.random() * pool.length)];
+    }
 
-    if (walkableCandidates.length > 0) {
-      const select = walkableCandidates[Math.floor(Math.random() * walkableCandidates.length)];
-      this.targetGridX = select[0];
-      this.targetGridZ = select[1];
+    if (step) {
+      this.prevGridX = this.gridX;
+      this.prevGridZ = this.gridZ;
+      this.targetGridX = step[0];
+      this.targetGridZ = step[1];
       this.isMoving = true;
       this.transitionProgress = 0.0;
     } else {
       this.pauseTimer = 0.5;
     }
+  }
+
+  /** Fallback when no full path exists: the open neighbour closest to (tx, tz). */
+  private greedyStep(tx: number, tz: number): [number, number] | null {
+    let best: [number, number] | null = null;
+    let bestD = Infinity;
+    for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+      const nx = this.gridX + dx, nz = this.gridZ + dz;
+      if (!this.fingerCanEnter(this.gridX, this.gridZ, nx, nz)) continue;
+      const d = (nx - tx) ** 2 + (nz - tz) ** 2;
+      if (d < bestD) { bestD = d; best = [nx, nz]; }
+    }
+    return best;
   }
 
   /**
@@ -1038,7 +1044,7 @@ export class WanderingEntity {
     const options: [number, number][] = [];
     for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
       const nx = this.gridX + dx, nz = this.gridZ + dz;
-      if (this.fingerCanEnter(nx, nz)) options.push([nx, nz]);
+      if (this.fingerCanEnter(this.gridX, this.gridZ, nx, nz)) options.push([nx, nz]);
     }
     if (options.length > 0) {
       [this.targetGridX, this.targetGridZ] = options[Math.floor(Math.random() * options.length)];
@@ -1049,10 +1055,17 @@ export class WanderingEntity {
     }
   }
 
-  private fingerCanEnter(x: number, z: number): boolean {
-    if (x < 0 || z < 0 || x >= this.map.gridSize || z >= this.map.gridSize) return false;
+  /** Whether a step from cell (fx, fz) into (x, z) is clear of walls and props. */
+  private fingerCanEnter(fx: number, fz: number, x: number, z: number): boolean {
+    if (x < 2 || z < 2 || x >= this.map.gridSize - 2 || z >= this.map.gridSize - 2) return false;
     if (this.map.grid[x][z] === CellType.SOLID) return false;
     if (!this.map.isWalkableForEntities(x, z)) return false;
+    const cs = this.map.cellSize;
+    const cx = x * cs + cs / 2, cz = z * cs + cs / 2;
+    const ox = fx * cs + cs / 2, oz = fz * cs + cs / 2;
+    // Props (crates, pillars, boilers) block the cell centre or the edge crossing.
+    if (this.map.checkCollision(cx, cz, 0.35)) return false;
+    if (this.map.checkCollision((cx + ox) / 2, (cz + oz) / 2, 0.35)) return false;
     if (!this.hunting && this.targetHidden && this.map.hideCells.has(`${x},${z}`)) return false;
     return true;
   }
@@ -1071,7 +1084,7 @@ export class WanderingEntity {
       const cx = Math.floor(cur / gs), cz = cur % gs;
       for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
         const nx = cx + dx, nz = cz + dz;
-        if (!this.fingerCanEnter(nx, nz)) continue;
+        if (!this.fingerCanEnter(cx, cz, nx, nz)) continue;
         const idx = nx * gs + nz;
         if (firstStep[idx] !== -1) continue;
         firstStep[idx] = cur === start ? idx : firstStep[cur];
@@ -1221,6 +1234,11 @@ export class WanderingEntity {
     this.chaseTargetX = 0;
     this.chaseTargetZ = 0;
     this.isChasing = false;
+    this.lastKnownX = -1;
+    this.lastKnownZ = -1;
+    this.searchTimer = 0.0;
+    this.prevGridX = -1;
+    this.prevGridZ = -1;
 
     this.resetBaseSpeed();
     this.syncWorldPosition();

@@ -18,6 +18,8 @@ export interface RemotePlayer {
   suitColor?: string;
   /** Hand-drawn helmet face (see utils/face.ts). Only in join/roster messages. */
   face?: string;
+  /** Died and is spectating (server-authoritative). */
+  dead?: boolean;
 }
 
 /** Hazmat suit colours offered in the character-customization screen. */

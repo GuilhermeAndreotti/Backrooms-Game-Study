@@ -1477,12 +1477,12 @@ export class ProceduralMap {
     this.wallMaterial = new THREE.MeshStandardMaterial({
       map: wallTex,
       roughness: this.level === 2 ? 0.6 : (this.level === 1 ? 0.72 : 0.85),
-      metalness: this.level === 2 ? 0.8 : (this.level === 1 ? 0.25 : 0.05),
+      metalness: this.level === 2 ? 0.35 : (this.level === 1 ? 0.25 : 0.05),
     });
 
     // Dark wood baseboard/skirting molding
     this.skirtingBoardMaterial = new THREE.MeshStandardMaterial({
-      color: this.level === 4 ? 0x3a3d42 : this.level === 2 ? 0x110b08 : (this.level === 1 ? 0x222222 : 0x5a4d33),
+      color: this.level === 4 ? 0x3a3d42 : this.level === 2 ? 0x24180f : (this.level === 1 ? 0x222222 : 0x5a4d33),
       roughness: 0.9,
       metalness: 0.1,
     });
@@ -1493,7 +1493,7 @@ export class ProceduralMap {
     this.carpetMaterial = new THREE.MeshStandardMaterial({
       map: carpetTex,
       roughness: this.level === 2 ? 0.55 : (this.level === 1 ? 0.62 : 0.95),
-      metalness: this.level === 2 ? 0.9 : (this.level === 1 ? 0.35 : 0.0),
+      metalness: this.level === 2 ? 0.4 : (this.level === 1 ? 0.35 : 0.0),
     });
 
     // Dark crimson red carpet for the mysterious Red Rooms
@@ -1509,7 +1509,7 @@ export class ProceduralMap {
     this.ceilingMaterial = new THREE.MeshStandardMaterial({
       map: ceilingTex,
       roughness: this.level === 2 ? 0.65 : (this.level === 1 ? 0.45 : 0.85),
-      metalness: this.level === 2 ? 0.85 : (this.level === 1 ? 0.8 : 0.0),
+      metalness: this.level === 2 ? 0.4 : (this.level === 1 ? 0.8 : 0.0),
     });
 
     // Fluorescent Tubes
@@ -2949,7 +2949,7 @@ export class ProceduralMap {
       group.add(ceilPipe2);
 
       // Add soft glowing hot red/orange lights under the pipes (pooled)
-      this.registerLight(gx, gz, posX, fY + height - 0.4, posZ, 0xff4400, 1.6, 4.5, 1.2);
+      this.registerLight(gx, gz, posX, fY + height - 0.4, posZ, 0xff5a1a, 2.4, 6.5, 1.2);
     }
 
     // Level 2: Pipe Dreams - Intense red/copper pipes running along walls and ceilings in all cells!

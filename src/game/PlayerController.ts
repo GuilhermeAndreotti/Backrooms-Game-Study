@@ -28,6 +28,8 @@ export class PlayerController {
   // Stamina parameters
   public maxStamina = 1.0; // 0.0 to 1.0 representation
   public stamina = 1.0;
+  /** 0..1 multiplier on stamina regen; the engine lowers it as sanity falls. */
+  public staminaRegenScale = 1.0;
   private staminaDrainRate = 0.28; // drains dry in ~3.5 seconds of full sprinting
   private staminaRegenRate = 0.16; // recharges completely in ~6 seconds
 
@@ -244,7 +246,7 @@ export class PlayerController {
     if (this.state === "running") {
       this.stamina = Math.max(0, this.stamina - this.staminaDrainRate * dt);
     } else {
-      this.stamina = Math.min(this.maxStamina, this.stamina + this.staminaRegenRate * dt);
+      this.stamina = Math.min(this.maxStamina, this.stamina + this.staminaRegenRate * this.staminaRegenScale * dt);
     }
 
     // Force walking if stamina runs dry completely

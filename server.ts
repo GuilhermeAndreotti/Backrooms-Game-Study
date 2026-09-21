@@ -64,6 +64,12 @@ interface PlayerState {
   level: number;
   suitColor: string; // hex, validated against SUIT_COLORS at join time
   /**
+   * Died (sanity at zero, ...) and is spectating. Revived for everyone when
+   * the room advances a level or resets; the room only resets once every
+   * player is dead.
+   */
+  dead: boolean;
+  /**
    * Hand-drawn helmet face: 16x16 palette digits (see src/utils/face.ts), or
    * "" for none. Sent with the join/roster messages only — stripped from the
    * movement snapshots so it isn't re-sent 20 times a second.
@@ -175,6 +181,11 @@ function broadcastToRoom(room: Room, payload: unknown, exclude?: Connection) {
 /** Level (as a string key) -> id of the player simulating it. */
 function computeAuthority(room: Room): Record<string, string> {
   const byLevel: Record<string, string> = {};
+  // Living players first: a spectator shouldn't be the one simulating monsters.
+  room.players.forEach((p) => {
+    const key = String(p.level);
+    if (!p.dead && !(key in byLevel)) byLevel[key] = p.id;
+  });
   room.players.forEach((p) => {
     const key = String(p.level);
     if (!(key in byLevel)) byLevel[key] = p.id;
@@ -251,6 +262,18 @@ function sanitizeEntities(data: Record<string, unknown>) {
   return { list, smilers };
 }
 
+/** Tells the room every player is dead so it can offer a reset; no-op otherwise. */
+function checkAllDead(room: Room) {
+  if (room.players.size === 0) return;
+  for (const p of room.players.values()) if (!p.dead) return;
+  broadcastToRoom(room, { type: "all_dead" });
+}
+
+function reviveAll(room: Room) {
+  // Marked dirty so the next snapshot tells every client they're alive again.
+  room.players.forEach((p) => { p.dead = false; room.dirty.add(p.id); });
+}
+
 function removeConnection(conn: Connection) {
   connections.delete(conn.ws);
 
@@ -263,6 +286,7 @@ function removeConnection(conn: Connection) {
 
   broadcastToRoom(room, { type: "player_left", id: conn.player.id });
   refreshAuthority(room);
+  checkAllDead(room); // the last living player leaving strands the dead ones
 
   if (room.players.size === 0) {
     rooms.delete(conn.player.room);
@@ -354,6 +378,7 @@ async function startServer() {
           state: "idle",
           level: 0,
           suitColor: sanitizeSuitColor(data.suitColor),
+          dead: false,
           face: sanitizeFace(data.face),
         };
 
@@ -468,13 +493,39 @@ async function startServer() {
         if (typeof requestedLevel !== "number" || !Number.isFinite(requestedLevel)) return;
         if (requestedLevel <= room.level) return;
 
+        if (conn.player.dead) return; // spectators can't open the way
         room.level = Math.floor(requestedLevel);
+        reviveAll(room); // a new level: everyone who died comes back
         room.players.forEach((p) => {
           p.level = room.level;
         });
         refreshAuthority(room);
 
         broadcastToRoom(room, { type: "level_transition", level: room.level, seed: room.seed });
+        return;
+      }
+
+      // --- death / spectating ---------------------------------------------------
+      if (type === "died") {
+        if (conn.player.dead) return;
+        conn.player.dead = true;
+        room.dirty.add(conn.player.id);
+        broadcastToRoom(room, { type: "player_died", id: conn.player.id });
+        refreshAuthority(room);
+        checkAllDead(room);
+        return;
+      }
+
+      // Every player is dead: any of them picks how the room starts over.
+      // "level" restarts the current level; "scratch" goes back to Level 0.
+      if (type === "room_reset") {
+        for (const p of room.players.values()) if (!p.dead) return;
+        const scratch = data.mode === "scratch";
+        if (scratch) room.level = 0;
+        reviveAll(room);
+        room.players.forEach((p) => { p.level = room.level; });
+        refreshAuthority(room);
+        broadcastToRoom(room, { type: "respawn", level: room.level, seed: room.seed, scratch });
         return;
       }
 

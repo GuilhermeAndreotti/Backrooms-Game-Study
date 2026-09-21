@@ -41,10 +41,15 @@ export interface GameEngineCallbacks {
   onSectorChange?: (sector: string) => void;
   onInventoryChange?: (items: string[]) => void;
   onSanityChange?: (val: number) => void;
+  /** This explorer died (sanity at zero, ...); the app tells the room and shows the spectator UI. */
+  onPlayerDeath?: (cause: "sanity") => void;
   onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   /** Smoothed FPS and current render scale, emitted about twice a second. */
   onPerformanceSample?: (fps: number, renderScale: number) => void;
 }
+
+/** Multiplier on every sanity drain source: sanity falls slower than the raw tuning. */
+const SANITY_DRAIN_SCALE = 0.6;
 
 /** Ambient light and fog per level, shared by level setup and the per-frame event code. */
 function levelAtmosphere(level: number) {
@@ -54,7 +59,7 @@ function levelAtmosphere(level: number) {
     case 3: // "Lights Out": all but pitch black — the waypoints and your flashlight are it
       return { ambientColor: 0x05050a, ambientIntensity: 0.008, fogColor: 0x000000, dimmedFogColor: 0x000000 };
     case 2: // Pipe Dreams: tense dark reddish brown
-      return { ambientColor: 0x522312, ambientIntensity: 0.75, fogColor: 0x240902, dimmedFogColor: 0x120401 };
+      return { ambientColor: 0x8a4a2c, ambientIntensity: 1.4, fogColor: 0x3a1608, dimmedFogColor: 0x1a0902 };
     case 1: // warehouse: brighter industrial
       return { ambientColor: 0xaab5bd, ambientIntensity: 1.35, fogColor: 0x8a9299, dimmedFogColor: 0x24282c };
     default: // Level 0: classic yellow
@@ -245,6 +250,7 @@ export class GameEngine {
   public onSectorChange?: (sector: string) => void;
   public onInventoryChange?: (items: string[]) => void;
   private onSanityChange?: (val: number) => void;
+  private onPlayerDeath?: (cause: "sanity") => void;
   public onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   private onPerformanceSample?: (fps: number, renderScale: number) => void;
 
@@ -285,6 +291,7 @@ export class GameEngine {
     this.onSectorChange = callbacks.onSectorChange;
     this.onInventoryChange = callbacks.onInventoryChange;
     this.onSanityChange = callbacks.onSanityChange;
+    this.onPlayerDeath = callbacks.onPlayerDeath;
     this.onScrapOfNoteCollected = callbacks.onScrapOfNoteCollected;
     this.onPerformanceSample = callbacks.onPerformanceSample;
 
@@ -489,7 +496,7 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === 4 ? 0.06 : level === 3 ? 0.11 : (level === 2 ? 0.045 : (level === 1 ? 0.020 : 0.024));
+    const authored = level === 4 ? 0.06 : level === 3 ? 0.11 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
@@ -672,7 +679,8 @@ export class GameEngine {
       this.audio.init();
 
       // Tick player controllers
-      this.player.update(delta);
+      if (this.isDead) this.updateSpectator(delta);
+      else this.player.update(delta);
       this.updateInteractPrompt(delta);
 
 
@@ -895,6 +903,7 @@ export class GameEngine {
         const px = this.player.position.x;
         const pz = this.player.position.z;
         let caught = false;
+        const canBeCaught = !this.isDead;
 
         this.entities.forEach(entity => {
           if (aiTargets) {
@@ -922,11 +931,13 @@ export class GameEngine {
           // Trigger reset when distance is less than 1.45 meters (squared is ~2.1)
           const dx = entity.mesh.position.x - px;
           const dz = entity.mesh.position.z - pz;
-          if (!caught && dx * dx + dz * dz < 2.1) {
+          if (canBeCaught && !caught && dx * dx + dz * dz < 2.1) {
             caught = true;
             console.warn(`[GameEngine] Explorer CAUGHT by ${entity.type}! Reseting state...`);
           }
         });
+
+        this.updateMonsterAudio(delta);
 
         if (caught) {
           // Sound effect!
@@ -961,8 +972,8 @@ export class GameEngine {
       // Stream monsters/smilers to the rest of the level (authority only).
       this.sendWorldState(delta);
 
-      // Sanity system depletion & recovery calculation
-      if (this.player && this.map) {
+      // Sanity system depletion & recovery calculation (the dead don't lose any more)
+      if (this.player && this.map && !this.isDead) {
         const px = this.player.position.x;
         const pz = this.player.position.z;
         let nearMonster = false;
@@ -1009,14 +1020,23 @@ export class GameEngine {
         // Apply depletion or recovery. Sanity now falls slowly, but hitting zero
         // still kills the player (App.tsx onSanityChange -> GAME_OVER).
         if (nearMonster) {
-          this.sanity = Math.max(0.0, this.sanity - (monsterDepletionSum + darknessDepletion) * delta);
+          this.sanity = Math.max(0.0, this.sanity - (monsterDepletionSum + darknessDepletion) * SANITY_DRAIN_SCALE * delta);
         } else if (darknessDepletion > 0) {
-          this.sanity = Math.max(0.0, this.sanity - darknessDepletion * delta);
+          this.sanity = Math.max(0.0, this.sanity - darknessDepletion * SANITY_DRAIN_SCALE * delta);
         } else {
           // Recover sanity in normal illuminated space (trimmed only slightly, so a
           // careful player still recovers at close to the old pace)
           this.sanity = Math.min(1.0, this.sanity + 0.014 * delta);
         }
+
+        // A shaken mind tires the body: below 50% sanity, stamina recovers
+        // slower (down to 35% of normal at zero).
+        this.player.staminaRegenScale = this.sanity >= 0.5 ? 1.0 : 0.35 + 1.3 * this.sanity;
+
+        // Zero sanity: this explorer is out. They spectate a living teammate
+        // until the room advances a level (everyone revives) or, if everyone
+        // is dead, the group picks a reset (see App.tsx).
+        if (this.sanity <= 0) this.die("sanity");
       }
 
       // Level 1's secret entrance: walk to the dead end of the unlit side
@@ -1219,7 +1239,7 @@ export class GameEngine {
       // Networking Socket Sync tick rate throttling
       if (this.socket && this.socket.readyState === WebSocket.OPEN) {
         this.networkSendTimer += delta;
-        if (this.networkSendTimer >= this.networkSendInterval) {
+        if (this.networkSendTimer >= this.networkSendInterval && !this.isDead) {
           this.socket.send(JSON.stringify({
             type: "update",
             x: this.player.position.x,
@@ -1396,6 +1416,141 @@ export class GameEngine {
   }
 
   /**
+   * Positional monster voices: each monster within earshot speaks on its own
+   * timer (faster and harsher while hunting), louder and more centred the
+   * closer it is. Runs on every client, so replicas are heard too.
+   */
+  private updateMonsterAudio(delta: number) {
+    const cam = this.camera;
+    cam.getWorldDirection(this.scratchCamDir);
+    const rx = -this.scratchCamDir.z, rz = this.scratchCamDir.x;
+    const rl = Math.hypot(rx, rz) || 1;
+    const px = this.player.position.x, pz = this.player.position.z;
+    const EARSHOT = 22;
+
+    for (const e of this.entities) {
+      if (e.type === EntityType.FINGER_KING) continue;
+      const dx = e.mesh.position.x - px, dz = e.mesh.position.z - pz;
+      const dist = Math.hypot(dx, dz);
+      const alertNow = e.alert;
+      const edge = e.consumeAlertEdge();
+      if (dist > EARSHOT) continue;
+
+      e.voiceTimer -= delta;
+      if (!edge && e.voiceTimer > 0) continue;
+
+      const near = 1 - dist / EARSHOT;
+      const vol = Math.pow(near, 1.5);
+      const pan = dist > 0.01 ? ((dx * rx + dz * rz) / (dist * rl)) * Math.min(1, dist / 3) : 0;
+      this.audio.playMonsterSound(e.type, alertNow, vol, pan);
+      e.voiceTimer = alertNow ? 1.6 + Math.random() * 2.2 : 4 + Math.random() * 6;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Death and spectating
+  // ---------------------------------------------------------------------------
+
+  /** Dead explorers spectate a living teammate (first-person) until the room revives everyone. */
+  public isDead = false;
+  private spectateId: string | null = null;
+  private remoteDead = new Set<string>();
+
+  private die(cause: "sanity") {
+    if (this.isDead) return;
+    this.isDead = true;
+    this.player.isFlashlightOn = false;
+    this.player.state = "idle";
+    this.camera.position.set(0, 0, 0);
+    this.camera.rotation.set(0, 0, 0);
+    this.audio.playEntityCatchSound();
+    this.spectateId = null;
+    this.cycleSpectate(1);
+    this.refreshRemoteVisibility();
+    this.onPlayerDeath?.(cause);
+  }
+
+  /** Brings this explorer back (level change or room reset): fresh mind, fresh legs. */
+  private revive() {
+    this.remoteDead.clear();
+    if (!this.isDead) return;
+    this.isDead = false;
+    this.spectateId = null;
+    this.sanity = 0.5;
+    this.lastReportedSanity = -1; // force the HUD to pick up the new value
+    this.refreshRemoteVisibility();
+  }
+
+  /** Marks a teammate dead/alive (server broadcast); dead ones vanish from the scene. */
+  public setRemoteDead(id: string, dead: boolean) {
+    if (dead) this.remoteDead.add(id); else this.remoteDead.delete(id);
+    const st = this.remoteStates.get(id);
+    if (st) st.dead = dead;
+    if (dead && this.spectateId === id) this.cycleSpectate(1);
+    this.refreshRemoteVisibility();
+  }
+
+  /** Living teammates on our level, in a stable order. */
+  private spectatable(): string[] {
+    const ids: string[] = [];
+    this.remotePlayerGroups.forEach((_g, id) => {
+      if (!this.remoteDead.has(id) && !this.remoteStates.get(id)?.dead) ids.push(id);
+    });
+    return ids.sort();
+  }
+
+  /** Switches to the next (dir 1) / previous (dir -1) living teammate; null spectateId if none. */
+  public cycleSpectate(dir: 1 | -1) {
+    const ids = this.spectatable();
+    if (ids.length === 0) {
+      this.spectateId = null;
+    } else {
+      const cur = this.spectateId ? ids.indexOf(this.spectateId) : -1;
+      this.spectateId = ids[cur === -1 ? 0 : (cur + dir + ids.length) % ids.length];
+    }
+    this.refreshRemoteVisibility();
+    this.onSpectateChange?.(this.spectateName());
+  }
+
+  public onSpectateChange?: (name: string | null) => void;
+
+  public spectateName(): string | null {
+    if (!this.spectateId) return null;
+    return this.remoteStates.get(this.spectateId)?.name ?? null;
+  }
+
+  /** Hides dead teammates entirely, and the spectated one's body (we're inside its head; its flashlight stays). */
+  private refreshRemoteVisibility() {
+    this.remotePlayerGroups.forEach((group, id) => {
+      const dead = this.remoteDead.has(id) || !!this.remoteStates.get(id)?.dead;
+      group.visible = !dead;
+      const bodyVisible = !(this.isDead && id === this.spectateId);
+      group.children.forEach((c) => {
+        if (c instanceof THREE.Light || c.type === "Object3D") return;
+        c.visible = bodyVisible;
+      });
+    });
+  }
+
+  private updateSpectator(delta: number) {
+    if (this.spectateId && !this.remotePlayerGroups.has(this.spectateId)) this.cycleSpectate(1);
+    const st = this.spectateId ? this.remoteStates.get(this.spectateId) : null;
+    const rig = this.camera.parent;
+    if (!st || !rig) return;
+    const k = Math.min(1, 12 * delta);
+    this.player.position.x += (st.x - this.player.position.x) * k;
+    this.player.position.y += (st.y - this.player.position.y) * k;
+    this.player.position.z += (st.z - this.player.position.z) * k;
+    let dy = st.yaw - this.player.rotation.y;
+    while (dy < -Math.PI) dy += Math.PI * 2;
+    while (dy > Math.PI) dy -= Math.PI * 2;
+    this.player.rotation.y += dy * k;
+    this.player.rotation.x += (st.pitch - this.player.rotation.x) * k;
+    rig.position.copy(this.player.position);
+    rig.rotation.copy(this.player.rotation);
+  }
+
+  /**
    * Spawns a remote explorer visual node and sets up their shoulder spotlight.
    */
   public spawnRemotePlayer(id: string, name: string, x: number, y: number, z: number, suitColor?: string, face?: string) {
@@ -1477,6 +1632,7 @@ export class GameEngine {
     const group = this.remotePlayerGroups.get(id);
     if (!group) {
       this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor, update.face);
+      this.refreshRemoteVisibility();
       return;
     }
 
@@ -1772,6 +1928,7 @@ export class GameEngine {
     this.player.setMouseSensitivity(settings.mouseSensitivity);
     this.player.spawnSafely();
     this.player.mapFullyLoaded = false; // start with map loading animation!
+    this.revive();
 
     // Reset total play time for the new layout
     this.totalPlayTime = 0;
@@ -2102,7 +2259,7 @@ export class GameEngine {
    * Returns true if there was a box in reach (whether or not it could move).
    */
   public tryPushBox(): boolean {
-    if (!this.map || !this.player || !this.player.mapFullyLoaded) return false;
+    if (this.isDead || !this.map || !this.player || !this.player.mapFullyLoaded) return false;
     if (!this.player.isLocked && !this.player.isOverrideActive) return false;
     const [fx, fz] = this.lookDirectionXZ();
     const px = this.player.position.x, pz = this.player.position.z;
@@ -2147,7 +2304,7 @@ export class GameEngine {
 
   /** The one interactable on Level G: the main-room terminal, within reach. */
   public tryInteract(): "terminal" | null {
-    if (this.level !== 4 || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
+    if (this.isDead || this.level !== 4 || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
     const cs = this.map.cellSize;
     const dx = this.player.position.x - (this.map.levelGTerminalX * cs + cs / 2);
     const dz = this.player.position.z - (this.map.levelGTerminalZ * cs + cs / 2);
@@ -2248,7 +2405,8 @@ export class GameEngine {
 
   /** Everyone the monsters on this level can hunt: us plus same-level teammates. */
   private collectAiTargets(camDir: THREE.Vector3): AiTarget[] {
-    const targets: AiTarget[] = [{
+    const targets: AiTarget[] = [];
+    targets.push({
       id: "local",
       hidden: false,
       crouched: this.player.position.y < CROUCHED_EYE_HEIGHT,
@@ -2257,9 +2415,10 @@ export class GameEngine {
       state: this.player.state,
       dir: camDir,
       flashlight: this.player.isFlashlightOn,
-    }];
+    });
     let i = 0;
     this.remoteStates.forEach((r, id) => {
+      if (r.dead) return; // spectators aren't prey
       let dir = this.scratchRemoteDirs[i];
       if (!dir) dir = this.scratchRemoteDirs[i] = new THREE.Vector3();
       i++;
@@ -2268,6 +2427,8 @@ export class GameEngine {
       dir.set(-Math.sin(r.yaw) * cosPitch, Math.sin(r.pitch), -Math.cos(r.yaw) * cosPitch);
       targets.push({ id, hidden: false, crouched: r.y < CROUCHED_EYE_HEIGHT, x: r.x, z: r.z, state: r.state, dir, flashlight: r.flashlight });
     });
+    // A dead explorer is only hunted when there is nobody else left to hunt.
+    if (this.isDead && targets.length > 1) targets.shift();
     return targets;
   }
 
