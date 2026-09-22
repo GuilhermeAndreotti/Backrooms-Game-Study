@@ -7,7 +7,7 @@ import { t, useLanguage, LANGUAGES } from "../i18n";
 import React, { useState, useEffect } from "react";
 import { GameSettings, SUIT_COLORS } from "../types/game";
 import { FaceEditor } from "./FaceEditor";
-import { Settings, Play, Users, LogOut, Check, Sliders, Volume2, MonitorCog, Shirt } from "lucide-react";
+import { Settings, Play, Users, LogOut, Check, Sliders, Volume2, MonitorCog, Shirt, AlertTriangle } from "lucide-react";
 
 interface MainMenuProps {
   settings: GameSettings;
@@ -36,6 +36,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
   const [showCharacter, setShowCharacter] = useState(false);
   const [language, setLanguage] = useLanguage();
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [pendingEntry, setPendingEntry] = useState<{ create: true } | { code: string } | null>(null);
 
   // Sync state if parent settings shift
   useEffect(() => {
@@ -57,6 +58,15 @@ export const MainMenu: React.FC<MainMenuProps> = ({
       setSaveSuccess(false);
       setShowSettings(false);
     }, 1200);
+  };
+
+  const confirmEntry = () => {
+    const entry = pendingEntry;
+    if (!entry) return;
+    setPendingEntry(null);
+    onUpdateSettings(localSettings);
+    if ("create" in entry) onCreate();
+    else onJoin(entry.code);
   };
 
   return (
@@ -193,10 +203,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 <div className="space-y-4 pt-2">
                   <button
                     id="btn-create-room"
-                    onClick={() => {
-                      onUpdateSettings(localSettings);
-                      onCreate();
-                    }}
+                    onClick={() => setPendingEntry({ create: true })}
                     disabled={!localSettings.name.trim()}
                     className="group w-full text-left transition-all disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
                   >
@@ -211,10 +218,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
 
                   <button
                     id="btn-join-room"
-                    onClick={() => {
-                      onUpdateSettings(localSettings);
-                      onJoin(cleanCode);
-                    }}
+                    onClick={() => setPendingEntry({ code: cleanCode })}
                     disabled={!localSettings.name.trim() || cleanCode.length < 4}
                     className="group w-full text-left transition-all disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
                   >
@@ -594,6 +598,35 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 className="flex-1 flex items-center justify-center gap-2 bg-[#deb81d] hover:bg-[#ebd255] text-black py-2 rounded uppercase tracking-wider text-xs font-bold transition-all cursor-pointer"
               >
                 {saveSuccess ? (<><Check className="w-4 h-4 text-black" />{t("menu.saved")}</>) : t("menu.save")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingEntry && (
+        <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/85 backdrop-blur-sm font-mono px-4">
+          <div role="dialog" aria-modal="true" aria-labelledby="photosensitivity-warning-title" className="w-full max-w-lg bg-[#14130a] border border-[#d99724]/60 rounded-lg p-6 md:p-8 shadow-[0_0_60px_rgba(217,151,36,0.2)] relative">
+            <div className="absolute top-0 left-0 w-full h-[2px] bg-[#f59e0b] rounded-t-lg" />
+            <div className="flex items-start gap-4">
+              <div className="mt-0.5 shrink-0 rounded-full border border-[#f59e0b]/50 bg-[#f59e0b]/10 p-2.5 text-[#fbbf24]">
+                <AlertTriangle className="w-6 h-6" aria-hidden="true" />
+              </div>
+              <div>
+                <h2 id="photosensitivity-warning-title" className="text-lg font-bold text-[#fbbf24] uppercase tracking-wider">
+                  {t("warning.photosensitivity.title")}
+                </h2>
+                <p className="mt-3 text-sm leading-relaxed text-[#f2e8cf]/80">
+                  {t("warning.photosensitivity.body")}
+                </p>
+              </div>
+            </div>
+            <div className="mt-7 flex flex-col-reverse sm:flex-row gap-3">
+              <button type="button" onClick={() => setPendingEntry(null)} className="flex-1 border border-white/20 text-[#f2e8cf]/80 hover:text-white hover:bg-white/5 py-2.5 rounded uppercase tracking-wider text-xs font-semibold transition-all cursor-pointer">
+                {t("warning.photosensitivity.cancel")}
+              </button>
+              <button type="button" id="btn-photosensitivity-confirm" onClick={confirmEntry} className="flex-1 bg-[#f59e0b] hover:bg-[#fbbf24] text-black py-2.5 rounded uppercase tracking-wider text-xs font-bold transition-all cursor-pointer">
+                {t("warning.photosensitivity.proceed")}
               </button>
             </div>
           </div>
