@@ -15,8 +15,14 @@ import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
 import { hound } from "./hound";
 import { skinStealer } from "./skinStealer";
+import { clump } from "./clump";
+import { wretch } from "./wretch";
+import { duller } from "./duller";
 
 export const MOB_DEFS: Partial<Record<EntityType, MobDefinition>> = {
   [EntityType.HOUND]: hound,
   [EntityType.SKIN_STEALER]: skinStealer,
+  [EntityType.CLUMP]: clump,
+  [EntityType.WRETCH]: wretch,
+  [EntityType.DULLER]: duller,
 };

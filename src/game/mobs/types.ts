@@ -78,6 +78,8 @@ export interface MobSenseCtx {
   playerZ: number;
   /** This entity's current world position (mesh.position) — for gaze-direction math (HOUND, Observador each build their own direction vector from this + playerX/Z, at their own assumed eye height, matching the pre-migration code exactly). */
   entityPos: THREE.Vector3;
+  /** Whether the entity's current grid cell is CellType.SOLID (DULLER regularly noclips through walls). */
+  inSolidCell: boolean;
   isFlashlightOn?: boolean;
   /** True on levels where every mob force-chases (2 and 3 today) — sense() is not called in that case, but forcedChaseSpeed is read instead. Exposed here for mobs whose speech() wants to know. */
   levelForcedChase: boolean;

@@ -722,6 +722,7 @@ export class WanderingEntity {
       delta, distanceMeters, playerState, cameraDir,
       playerX, playerZ,
       entityPos: this.mesh.position,
+      inSolidCell: this.map.grid[this.gridX]?.[this.gridZ] === CellType.SOLID,
       isFlashlightOn,
       levelForcedChase: this.map.level === 2 || this.map.level === 3,
       aggression: this.aggression,
