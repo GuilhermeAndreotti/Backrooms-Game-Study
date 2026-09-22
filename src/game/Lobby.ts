@@ -21,6 +21,8 @@ export const LOBBY = {
   goalDepth: 1.4,
   spawnCell: { x: 10, z: 6 },
   hall: { minCell: 2, maxCellX: 11, maxCellZ: 9 },
+  /** The cheat terminal, off in the corner away from the pitch (world XZ). */
+  terminal: { x: 44, z: 34 },
 };
 
 const BALL_RADIUS = 0.35;
@@ -69,6 +71,7 @@ export class Lobby {
     this.buildField();
     this.buildGoals();
     this.buildBenches();
+    this.buildCheatTerminal();
     this.ball = this.buildBall();
     scene.add(this.group);
   }
@@ -171,6 +174,61 @@ export class Lobby {
         this.group.add(l);
       }
     }
+  }
+
+  /**
+   * The cheat terminal: a standalone kiosk in the corner of the field, off
+   * the pitch. A glowing amber screen with a blinking prompt marks it as
+   * interactable; the actual code entry is the CheatTerminalModal in React
+   * (see GameEngine.tryInteract / submitCheatCode).
+   */
+  private buildCheatTerminal() {
+    const { x, z } = LOBBY.terminal;
+    const metalMat = this.track(new THREE.MeshStandardMaterial({ color: 0x2b2d31, roughness: 0.6, metalness: 0.5 }));
+
+    const post = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.09, 0.11, 1.05, 8)), metalMat);
+    post.position.set(x, 0.525, z);
+    this.group.add(post);
+
+    const base = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.32, 0.32, 0.06, 16)), metalMat);
+    base.position.set(x, 0.03, z);
+    this.group.add(base);
+
+    // Angled console head, facing the field so it reads naturally on approach.
+    const head = new THREE.Group();
+    head.position.set(x, 1.05, z);
+    head.rotation.y = Math.atan2(LOBBY.field.cx - x, LOBBY.field.cz - z);
+    this.group.add(head);
+
+    const bezel = new THREE.Mesh(this.track(new THREE.BoxGeometry(0.62, 0.42, 0.06)), metalMat);
+    bezel.rotation.x = -0.35;
+    head.add(bezel);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 256; canvas.height = 176;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#0a0f06"; ctx.fillRect(0, 0, 256, 176);
+    ctx.strokeStyle = "#ffb703"; ctx.lineWidth = 4;
+    ctx.strokeRect(8, 8, 240, 160);
+    ctx.fillStyle = "#ffb703";
+    ctx.font = "bold 20px Courier New, monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("CHEATS", 128, 78);
+    ctx.font = "bold 26px Courier New, monospace";
+    ctx.fillText(">_", 128, 118);
+    const screenTex = new THREE.CanvasTexture(canvas);
+    this.track(screenTex);
+    const screen = new THREE.Mesh(
+      this.track(new THREE.PlaneGeometry(0.54, 0.36)),
+      this.track(new THREE.MeshBasicMaterial({ map: screenTex }))
+    );
+    screen.rotation.x = -0.35;
+    screen.position.z = 0.032;
+    head.add(screen);
+
+    const glow = new THREE.PointLight(0xffb703, 1.6, 4.5, 1.3);
+    glow.position.set(x, 1.1, z);
+    this.group.add(glow);
   }
 
   private buildBall(): THREE.Mesh {

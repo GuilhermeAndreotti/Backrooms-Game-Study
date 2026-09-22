@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Lobby, LOBBY_LEVEL, BallNetState } from "./Lobby";
+import { Lobby, LOBBY, LOBBY_LEVEL, BallNetState } from "./Lobby";
+import { Voip } from "./Voip";
 import { t } from "../i18n";
 import * as THREE from "three";
 import { ProceduralMap, LEVEL_G_DOOR_OPEN_ANGLE } from "./ProceduralMap";
@@ -50,6 +51,12 @@ export interface GameEngineCallbacks {
   onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   /** Smoothed FPS and current render scale, emitted about twice a second. */
   onPerformanceSample?: (fps: number, renderScale: number) => void;
+  /** CLIP cheat: true while the player is currently phasing through walls. */
+  onNoclipChange?: (active: boolean) => void;
+  /** Proximity VOIP: enable()/disable() actually took effect. */
+  onVoipStateChange?: (enabled: boolean) => void;
+  /** Proximity VOIP: local mic activity crossed the speaking threshold. */
+  onVoipSpeakingChange?: (speaking: boolean) => void;
 }
 
 /** Multiplier on every sanity drain source: sanity falls slower than the raw tuning. */
@@ -131,6 +138,16 @@ function nearestHuntable(targets: AiTarget[], x: number, z: number): { target: A
 }
 
 const ENTITY_TYPES = new Set<string>(Object.values(EntityType));
+
+/** Monster bodies offered by the lobby's SKIN cheat — every type except the Level G exclusive. */
+const MONSTER_SKIN_TYPES: EntityType[] = [
+  EntityType.DULLER, EntityType.HOUND, EntityType.CLUMP, EntityType.SKIN_STEALER, EntityType.WRETCH,
+];
+
+/** Validates a `monsterSkin` string (network field or cheat-picker choice) against the offered set. */
+function monsterSkinType(value?: string | null): EntityType | null {
+  return value && (MONSTER_SKIN_TYPES as string[]).includes(value) ? (value as EntityType) : null;
+}
 
 export class GameEngine {
   private containerID: string;
@@ -260,6 +277,12 @@ export class GameEngine {
   private onPlayerRevive?: () => void;
   public onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   private onPerformanceSample?: (fps: number, renderScale: number) => void;
+  private onNoclipChange?: (active: boolean) => void;
+  private lastReportedNoclip = false;
+
+  // Proximity voice chat — see Voip.ts. Instantiated once; enable()/disable()
+  // is what actually opens the mic, so it's cheap to keep around unused.
+  private voip: Voip;
 
   // Sanity system
   public sanity = 1.0;
@@ -268,6 +291,16 @@ export class GameEngine {
   public currentSector = "";
   public inventory: string[] = [];
   private lastLockNotificationTime = 0;
+
+  // --- Lobby cheat codes (terminal in the room lobby) -----------------------
+  // Flags live here, not on `player`, because `player` (PlayerController) is
+  // torn down and rebuilt on every level transition — these need to survive
+  // that. applyCheatsToPlayer() re-stamps them onto each fresh PlayerController.
+  private cheatSpeed = false;
+  private cheatStamina = false;
+  private cheatClip = false;
+  /** SKIN cheat: the monster body worn instead of the hazmat suit, replicated to teammates; "" for none. */
+  public cheatSkin: EntityType | null = null;
 
   private lastReportedStamina = 1.0;
   private lastReportedState = "idle";
@@ -302,6 +335,11 @@ export class GameEngine {
     this.onPlayerRevive = callbacks.onPlayerRevive;
     this.onScrapOfNoteCollected = callbacks.onScrapOfNoteCollected;
     this.onPerformanceSample = callbacks.onPerformanceSample;
+    this.onNoclipChange = callbacks.onNoclipChange;
+
+    this.voip = new Voip((peerId, payload) => this.sendToServer({ type: "voip_signal", to: peerId, data: payload }));
+    this.voip.onStateChange = callbacks.onVoipStateChange;
+    this.voip.onSpeakingChange = callbacks.onVoipSpeakingChange;
 
     this.qualityLevel = settings.quality === "auto" ? detectQualityLevel() : settings.quality;
     this.quality = getQualityProfile(this.qualityLevel);
@@ -543,6 +581,7 @@ export class GameEngine {
     this.player = new PlayerController(this.camera, this.renderer.domElement, this.map, triggerAudioFootstep);
     this.player.setMouseSensitivity(settings.mouseSensitivity);
     this.player.spawnSafely();
+    this.applyCheatsToPlayer();
     this.setupLobby();
 
     // Spotlight representing local F key Flashlight
@@ -1203,6 +1242,10 @@ export class GameEngine {
         this.onFlashlightChange(this.player.isFlashlightOn);
         this.lastReportedFlashlight = this.player.isFlashlightOn;
       }
+      if (this.player.isNoclipping !== this.lastReportedNoclip) {
+        this.lastReportedNoclip = this.player.isNoclipping;
+        this.onNoclipChange?.(this.player.isNoclipping);
+      }
 
       const diffSanity = Math.abs(this.sanity - this.lastReportedSanity);
       if (diffSanity > 0.012 || (this.sanity <= 0.01 && this.lastReportedSanity > 0.01) || (this.sanity >= 0.99 && this.lastReportedSanity < 0.99)) {
@@ -1214,6 +1257,13 @@ export class GameEngine {
 
       // Interpolate position/movement animations for Remote Hazmat Explorers
       this.animateRemotePlayers(delta);
+
+      // Proximity VOIP: fade teammates in/out of hearing range, and poll the
+      // local mic for the speaking indicator. No-ops entirely while disabled.
+      if (this.voip.isEnabled) {
+        this.voip.updateVolumes(this.player.position.x, this.player.position.z, this.level, this.remoteStates);
+        this.voip.updateSpeakingIndicator(delta);
+      }
 
       // Update global drifting dust particles wrapped relative to client player
       this.updateGlobalDust(delta);
@@ -1231,7 +1281,8 @@ export class GameEngine {
             pitch: this.player.rotation.x,
             flashlight: this.player.isFlashlightOn,
             state: this.player.state,
-            level: this.level
+            level: this.level,
+            monsterSkin: this.cheatSkin ?? ""
           }));
           this.networkSendTimer = 0;
         }
@@ -1266,85 +1317,116 @@ export class GameEngine {
    * Spawns a beautiful, stylized retro Hazmat Explorer (Yellow Anti-contamination Suit) made of THREE primitive blocks.
    * Super light weight, no assets loading slowdown!
    */
-  private createHazmatExplorer(name: string, suitColor?: string, face?: string): THREE.Group {
+  private createHazmatExplorer(name: string, suitColor?: string, face?: string, monsterSkin?: string): THREE.Group {
     const group = new THREE.Group();
 
-    // Hazmat suit fabric — colour picked in the customization screen, defaults
-    // to the classic Level 0 yellow (flat shading keeps the vintage polygon look)
-    const suitMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(suitColor || "#deb81d"), roughness: 0.9, metalness: 0.1 });
-    
-    // Visor Glass: Shiny dark glass block
-    const visorMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.9, roughness: 0.1 });
-    
-    // Black boot soles / rubber belt
-    const darkMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9, metalness: 0.1 });
+    // Lobby SKIN cheat: wear a monster's body instead of the hazmat suit.
+    // Everything below this — suit, visor, drawn face — is skipped; only the
+    // floating name tag (added at the end) is shared between the two.
+    const skinType = monsterSkinType(monsterSkin);
 
-    // Torso (Main bodysuit body)
-    const bodyGeo = new THREE.CylinderGeometry(0.24, 0.28, 0.9, 8);
-    const body = new THREE.Mesh(bodyGeo, suitMat);
-    body.position.set(0, 0.75, 0);
-    group.add(body);
+    if (skinType) {
+      const body = WanderingEntity.buildSkinMesh(skinType);
+      body.position.y = WanderingEntity.skinAnchorY(skinType);
+      group.add(body);
+    } else {
+      // Hazmat suit fabric — colour picked in the customization screen, defaults
+      // to the classic Level 0 yellow (flat shading keeps the vintage polygon look)
+      const suitMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(suitColor || "#deb81d"), roughness: 0.9, metalness: 0.1 });
 
-    // Breathing Apparatus Back Oxygen Tank
-    const tankGeo = new THREE.BoxGeometry(0.35, 0.65, 0.18);
-    const tank = new THREE.Mesh(tankGeo, suitMat);
-    tank.position.set(0, 0.78, -0.18);
-    group.add(tank);
+      // Visor Glass: Shiny dark glass block
+      const visorMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.9, roughness: 0.1 });
 
-    // Belt
-    const beltGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.08, 8);
-    const belt = new THREE.Mesh(beltGeo, darkMat);
-    belt.position.set(0, 0.45, 0);
-    group.add(belt);
+      // Black boot soles / rubber belt
+      const darkMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9, metalness: 0.1 });
 
-    // Head (Suit Hood helmet sphere)
-    const headGeo = new THREE.SphereGeometry(0.2, 10, 10);
-    // Everything on the head hangs off a pivot at the neck so the whole head
-    // (helmet, visor, drawn face) tilts up/down with where the player looks.
-    const headPivot = new THREE.Group();
-    headPivot.name = "head";
-    headPivot.position.set(0, 1.3, 0);
-    group.add(headPivot);
-    const head = new THREE.Mesh(headGeo, suitMat);
-    headPivot.add(head);
+      // Torso (Main bodysuit body)
+      const bodyGeo = new THREE.CylinderGeometry(0.24, 0.28, 0.9, 8);
+      const body = new THREE.Mesh(bodyGeo, suitMat);
+      body.position.set(0, 0.75, 0);
+      group.add(body);
 
-    // Distinctive Level 0 reflective Visor Mask — skipped when the player has
-    // drawn a custom face, so the drawing shows through the hood opening
-    // instead of sitting behind a dark glass plate.
-    if (!hasFace(face)) {
-      const visorGeo = new THREE.BoxGeometry(0.22, 0.1, 0.12);
-      const visor = new THREE.Mesh(visorGeo, visorMat);
-      // Face the positive Z direction as default orientation
-      visor.position.set(0, 0.03, 0.14);
-      headPivot.add(visor);
+      // Breathing Apparatus Back Oxygen Tank
+      const tankGeo = new THREE.BoxGeometry(0.35, 0.65, 0.18);
+      const tank = new THREE.Mesh(tankGeo, suitMat);
+      tank.position.set(0, 0.78, -0.18);
+      group.add(tank);
+
+      // Belt
+      const beltGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.08, 8);
+      const belt = new THREE.Mesh(beltGeo, darkMat);
+      belt.position.set(0, 0.45, 0);
+      group.add(belt);
+
+      // Head (Suit Hood helmet sphere)
+      const headGeo = new THREE.SphereGeometry(0.2, 10, 10);
+      // Everything on the head hangs off a pivot at the neck so the whole head
+      // (helmet, visor, drawn face) tilts up/down with where the player looks.
+      const headPivot = new THREE.Group();
+      headPivot.name = "head";
+      headPivot.position.set(0, 1.3, 0);
+      group.add(headPivot);
+      const head = new THREE.Mesh(headGeo, suitMat);
+      headPivot.add(head);
+
+      // Distinctive Level 0 reflective Visor Mask — skipped when the player has
+      // drawn a custom face, so the drawing shows through the hood opening
+      // instead of sitting behind a dark glass plate.
+      if (!hasFace(face)) {
+        const visorGeo = new THREE.BoxGeometry(0.22, 0.1, 0.12);
+        const visor = new THREE.Mesh(visorGeo, visorMat);
+        // Face the positive Z direction as default orientation
+        visor.position.set(0, 0.03, 0.14);
+        headPivot.add(visor);
+      }
+
+      // Visual shoulders
+      const lLegGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.45, 6);
+
+      // Left Leg
+      const lLeg = new THREE.Mesh(lLegGeo, suitMat);
+      lLeg.name = "lLeg";
+      lLeg.position.set(-0.11, 0.225, 0);
+      group.add(lLeg);
+
+      // Right Leg
+      const rLeg = new THREE.Mesh(lLegGeo, suitMat);
+      rLeg.name = "rLeg";
+      rLeg.position.set(0.11, 0.225, 0);
+      group.add(rLeg);
+
+      // Boot soles
+      const bootGeo = new THREE.BoxGeometry(0.1, 0.06, 0.16);
+      const lBoot = new THREE.Mesh(bootGeo, darkMat);
+      lBoot.position.set(-0.11, 0.03, 0.03);
+      group.add(lBoot);
+
+      const rBoot = new THREE.Mesh(bootGeo, darkMat);
+      rBoot.position.set(0.11, 0.03, 0.03);
+      group.add(rBoot);
+
+      // Hand-drawn face from the customization screen, as a pixel-art decal just
+      // in front of the helmet. Transparent pixels let the visor show through.
+      if (hasFace(face)) {
+        const faceCanvas = document.createElement("canvas");
+        faceCanvas.width = FACE_SIZE;
+        faceCanvas.height = FACE_SIZE;
+        const faceCtx = faceCanvas.getContext("2d");
+        if (faceCtx) {
+          drawFace(faceCtx, face);
+          const faceTexture = new THREE.CanvasTexture(faceCanvas);
+          faceTexture.magFilter = THREE.NearestFilter;
+          faceTexture.minFilter = THREE.NearestFilter;
+          faceTexture.colorSpace = THREE.SRGBColorSpace;
+          const faceMat = new THREE.MeshStandardMaterial({ map: faceTexture, alphaTest: 0.5, roughness: 0.7 });
+          const facePlane = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.26), faceMat);
+          facePlane.position.set(0, 0.01, 0.215);
+          headPivot.add(facePlane);
+        }
+      }
     }
 
-    // Visual shoulders
-    const lLegGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.45, 6);
-    
-    // Left Leg
-    const lLeg = new THREE.Mesh(lLegGeo, suitMat);
-    lLeg.name = "lLeg";
-    lLeg.position.set(-0.11, 0.225, 0);
-    group.add(lLeg);
-
-    // Right Leg
-    const rLeg = new THREE.Mesh(lLegGeo, suitMat);
-    rLeg.name = "rLeg";
-    rLeg.position.set(0.11, 0.225, 0);
-    group.add(rLeg);
-
-    // Boot soles
-    const bootGeo = new THREE.BoxGeometry(0.1, 0.06, 0.16);
-    const lBoot = new THREE.Mesh(bootGeo, darkMat);
-    lBoot.position.set(-0.11, 0.03, 0.03);
-    group.add(lBoot);
-
-    const rBoot = new THREE.Mesh(bootGeo, darkMat);
-    rBoot.position.set(0.11, 0.03, 0.03);
-    group.add(rBoot);
-
-    // Floating UI player tag card setup in 3D Space!
+    // Floating UI player tag card setup in 3D Space! (both suit and skin get one)
     const canvas = document.createElement("canvas");
     canvas.width = 256;
     canvas.height = 64;
@@ -1364,26 +1446,6 @@ export class GameEngine {
     tagSprite.position.set(0, 1.75, 0);
     tagSprite.scale.set(1.1, 0.3, 1.0);
     group.add(tagSprite);
-
-    // Hand-drawn face from the customization screen, as a pixel-art decal just
-    // in front of the helmet. Transparent pixels let the visor show through.
-    if (hasFace(face)) {
-      const faceCanvas = document.createElement("canvas");
-      faceCanvas.width = FACE_SIZE;
-      faceCanvas.height = FACE_SIZE;
-      const faceCtx = faceCanvas.getContext("2d");
-      if (faceCtx) {
-        drawFace(faceCtx, face);
-        const faceTexture = new THREE.CanvasTexture(faceCanvas);
-        faceTexture.magFilter = THREE.NearestFilter;
-        faceTexture.minFilter = THREE.NearestFilter;
-        faceTexture.colorSpace = THREE.SRGBColorSpace;
-        const faceMat = new THREE.MeshStandardMaterial({ map: faceTexture, alphaTest: 0.5, roughness: 0.7 });
-        const facePlane = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.26), faceMat);
-        facePlane.position.set(0, 0.01, 0.215);
-        headPivot.add(facePlane);
-      }
-    }
 
     return group;
   }
@@ -1497,6 +1559,46 @@ export class GameEngine {
     if (!this.lobby || msg.level !== this.level || !this.isWorldAuthority) return;
     this.lobby.applyKick(msg.vx, msg.vz);
   }
+
+  // ---------------------------------------------------------------------------
+  // Proximity voice chat (see Voip.ts) — App.tsx drives this off the room
+  // roster (player_joined/player_left) and relayed "voip_signal" messages.
+  // ---------------------------------------------------------------------------
+
+  public get voipEnabled(): boolean { return this.voip.isEnabled; }
+  public get voipMuted(): boolean { return this.voip.isMuted; }
+
+  /** Requests the mic and starts calling every known teammate. Resolves once it's actually on (or listen-only, if the mic was denied). */
+  public enableVoip(): Promise<boolean> {
+    return this.voip.enable().then((ok) => {
+      if (ok) this.remoteStates.forEach((_r, id) => this.voip.ensurePeer(id, this.localPlayerId ?? ""));
+      return ok;
+    });
+  }
+
+  public disableVoip() {
+    this.voip.disable();
+  }
+
+  public setVoipMuted(muted: boolean) {
+    this.voip.setMuted(muted);
+  }
+
+  /** A teammate joined the room: open a call to them if VOIP is on. */
+  public voipConnectPeer(id: string) {
+    this.voip.ensurePeer(id, this.localPlayerId ?? "");
+  }
+
+  /** A teammate left the room: hang up on them. */
+  public voipDisconnectPeer(id: string) {
+    this.voip.closePeer(id);
+  }
+
+  /** An SDP offer/answer or ICE candidate relayed from a teammate. */
+  public handleVoipSignal(fromId: string, data: unknown) {
+    this.voip.handleSignal(fromId, this.localPlayerId ?? "", data);
+  }
+
   private spectateId: string | null = null;
   private remoteDead = new Set<string>();
 
@@ -1602,12 +1704,15 @@ export class GameEngine {
   /**
    * Spawns a remote explorer visual node and sets up their shoulder spotlight.
    */
-  public spawnRemotePlayer(id: string, name: string, x: number, y: number, z: number, suitColor?: string, face?: string) {
+  public spawnRemotePlayer(id: string, name: string, x: number, y: number, z: number, suitColor?: string, face?: string, monsterSkin?: string) {
     if (this.remotePlayerGroups.has(id)) return;
 
     // Create Hazmat Group Mesh
-    const group = this.createHazmatExplorer(name, suitColor, face);
+    const group = this.createHazmatExplorer(name, suitColor, face, monsterSkin);
     group.position.set(x, this.remoteFloorY(y), z);
+    // Remembered so updateRemotePlayer can tell a SKIN cheat toggled mid-session
+    // and rebuild the visual instead of silently ignoring the change.
+    group.userData.monsterSkin = monsterSkinType(monsterSkin) ?? "";
     this.scene.add(group);
     this.remotePlayerGroups.set(id, group);
 
@@ -1635,7 +1740,18 @@ export class GameEngine {
     const group = this.remotePlayerGroups.get(id);
     if (group) {
       this.scene.remove(group);
-      
+
+      // A SKIN-cheat body (see createHazmatExplorer) shares WanderingEntity's
+      // class-wide geometry/material caches with every live AI monster of
+      // that type — the traversal below must never reach it. Detach it first
+      // and dispose only the couple of genuinely per-instance tint materials
+      // it made for itself.
+      const skinBody = group.getObjectByName("monsterSkinBody");
+      if (skinBody) {
+        (skinBody.userData.tintMaterials as THREE.Material[] | undefined)?.forEach((m) => m.dispose());
+        group.remove(skinBody);
+      }
+
       // Memory cleanup. Sprites are handled too: the floating name tag owns a
       // CanvasTexture that used to survive every disconnect.
       group.traverse((child) => {
@@ -1680,7 +1796,17 @@ export class GameEngine {
 
     const group = this.remotePlayerGroups.get(id);
     if (!group) {
-      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor, update.face);
+      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor, update.face, update.monsterSkin);
+      this.refreshRemoteVisibility();
+      return;
+    }
+
+    // The SKIN cheat can be typed mid-session — rebuild the visual (suit vs.
+    // whichever monster body) when it no longer matches what's on screen.
+    if ((monsterSkinType(update.monsterSkin) ?? "") !== group.userData.monsterSkin) {
+      this.removeRemotePlayer(id); // clears remoteStates too — restore it below
+      this.remoteStates.set(id, update);
+      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor, update.face, update.monsterSkin);
       this.refreshRemoteVisibility();
       return;
     }
@@ -1982,6 +2108,7 @@ export class GameEngine {
     });
     this.player.setMouseSensitivity(settings.mouseSensitivity);
     this.player.spawnSafely();
+    this.applyCheatsToPlayer();
     this.player.mapFullyLoaded = false; // start with map loading animation!
     this.revive();
     this.setupLobby();
@@ -2350,8 +2477,10 @@ export class GameEngine {
       const [fx, fz] = this.lookDirectionXZ();
       if (this.nearExitDesk()) {
         text = t("act.readPaper");
+      } else if (this.nearCheatTerminal()) {
+        text = t("act.cheatTerminal");
       } else if (this.map.findPushable(this.player.position.x, this.player.position.z, fx, fz)) {
-        text = "[E] Empurrar caixa";
+        text = t("act.pushBox");
       }
     }
     if (text !== this.lastInteractPrompt) {
@@ -2374,10 +2503,11 @@ export class GameEngine {
     return note ? { title: note.title, content: note.lines.join("\n") } : null;
   }
 
-  /** The interactables: the exit desk's paper (Levels 0/1) and Level G's terminal. the main-room terminal, within reach. */
-  public tryInteract(): "terminal" | "paper" | null {
+  /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
+  public tryInteract(): "terminal" | "paper" | "cheat" | null {
     if (this.isDead) return null;
     if (this.nearExitDesk()) return "paper";
+    if (this.nearCheatTerminal()) return "cheat";
     if (this.level !== 4 || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
     const cs = this.map.cellSize;
     const dx = this.player.position.x - (this.map.levelGTerminalX * cs + cs / 2);
@@ -2408,6 +2538,58 @@ export class GameEngine {
     if (msg.level !== 4 || this.level !== 4 || !this.isWorldAuthority) return;
     if (msg.ok) this.startLevelGAlarm(true);
     else this.levelGAlertTimer = 10;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lobby cheat terminal (MVJM / UHUM / CLIP / SKIN)
+  // ---------------------------------------------------------------------------
+
+  /** Within arm's reach of the lobby's cheat terminal. */
+  private nearCheatTerminal(): boolean {
+    if (this.level !== LOBBY_LEVEL || !this.player) return false;
+    const dx = this.player.position.x - LOBBY.terminal.x;
+    const dz = this.player.position.z - LOBBY.terminal.z;
+    return dx * dx + dz * dz < 2.2 * 2.2;
+  }
+
+  /** Re-stamps the lobby's unlocked cheats onto a freshly (re)built PlayerController. */
+  private applyCheatsToPlayer() {
+    this.player.speedCheat = this.cheatSpeed;
+    this.player.infiniteStaminaCheat = this.cheatStamina;
+    this.player.clipCheat = this.cheatClip;
+  }
+
+  /**
+   * Checks a code typed into the lobby's cheat terminal. MVJM and UHUM unlock
+   * their effect immediately (re-entering an already-unlocked code just
+   * confirms it, never toggles it off); CLIP unlocks holding V to phase
+   * through walls; SKIN sets nothing by itself — it tells the caller to open
+   * the monster picker (see applySkinCheat).
+   */
+  public submitCheatCode(code: string): "speed" | "stamina" | "clip" | "skin" | null {
+    const c = code.trim().toUpperCase();
+    if (c === "MVJM") {
+      this.cheatSpeed = true;
+      this.player.speedCheat = true;
+      return "speed";
+    }
+    if (c === "UHUM") {
+      this.cheatStamina = true;
+      this.player.infiniteStaminaCheat = true;
+      return "stamina";
+    }
+    if (c === "CLIP") {
+      this.cheatClip = true;
+      this.player.clipCheat = true;
+      return "clip";
+    }
+    if (c === "SKIN") return "skin";
+    return null;
+  }
+
+  /** Sets (or, with null, clears) the SKIN cheat's monster body; replicated to teammates on the next network tick. */
+  public applySkinCheat(type: EntityType | null) {
+    this.cheatSkin = type && MONSTER_SKIN_TYPES.includes(type) ? type : null;
   }
 
   /**
@@ -2927,6 +3109,8 @@ export class GameEngine {
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
     }
+
+    this.voip.dispose();
 
     this.clearAllSmilers();
     if (this.smilerTexture) {

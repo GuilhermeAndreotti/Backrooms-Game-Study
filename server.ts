@@ -36,7 +36,9 @@ const TICK_HZ = Number(process.env.TICK_HZ ?? 20);
 const TICK_MS = Math.max(20, Math.round(1000 / TICK_HZ));
 
 /** Largest accepted client frame; anything bigger is a bug or an attack. */
-const MAX_MESSAGE_BYTES = 8 * 1024;
+// 16KB: comfortably fits a WebRTC SDP offer/answer (VOIP signaling), the
+// largest frame this relay ever sees.
+const MAX_MESSAGE_BYTES = 16 * 1024;
 /** Silence a client that has not answered a ping within this window. */
 const HEARTBEAT_MS = 30_000;
 
@@ -75,6 +77,12 @@ interface PlayerState {
    * movement snapshots so it isn't re-sent 20 times a second.
    */
   face: string;
+  /**
+   * Lobby SKIN cheat: an EntityType name worn instead of the hazmat suit, or
+   * "" for none. Unlike `face`, this can change mid-session, so (unlike
+   * `face`) it rides along on every movement snapshot.
+   */
+  monsterSkin: string;
 }
 
 /**
@@ -99,6 +107,13 @@ const FACE_PATTERN = /^[0-7]{256}$/;
 
 function sanitizeFace(value: unknown): string {
   return typeof value === "string" && FACE_PATTERN.test(value) ? value : "";
+}
+
+/** Monster bodies the lobby's SKIN cheat may hand out — kept in sync with client-side MONSTER_SKIN_TYPES. */
+const MONSTER_SKIN_TYPES = new Set(["DULLER", "HOUND", "CLUMP", "SKIN_STEALER", "WRETCH"]);
+
+function sanitizeMonsterSkin(value: unknown): string {
+  return typeof value === "string" && MONSTER_SKIN_TYPES.has(value) ? value : "";
 }
 
 interface Connection {
@@ -412,6 +427,7 @@ async function startServer() {
           suitColor: sanitizeSuitColor(data.suitColor),
           dead: false,
           face: sanitizeFace(data.face),
+          monsterSkin: sanitizeMonsterSkin(data.monsterSkin),
         };
 
         conn = { ws, player, isAlive: true, chatTimestamps: [] };
@@ -456,6 +472,7 @@ async function startServer() {
         p.flashlight = typeof data.flashlight === "boolean" ? data.flashlight : p.flashlight;
         p.state = typeof data.state === "string" ? data.state.slice(0, 16) : p.state;
         p.level = finiteNumber(data.level, p.level);
+        if (data.monsterSkin !== undefined) p.monsterSkin = sanitizeMonsterSkin(data.monsterSkin);
 
         // Queued instead of relayed immediately: see the room tick below.
         room.dirty.add(p.id);
@@ -575,6 +592,22 @@ async function startServer() {
         room.connections.forEach((c) => {
           if (c.player.id === authorityId) send(c.ws, { type: "ball_kick", level, vx, vz });
         });
+        return;
+      }
+
+      // --- proximity voice chat (WebRTC signaling relay) -------------------------
+      // The server never looks inside `data`: it's an opaque SDP offer/answer or
+      // ICE candidate, blindly forwarded to one specific teammate in the same
+      // room. The actual audio is peer-to-peer once the handshake completes.
+      if (type === "voip_signal") {
+        const toId = typeof data.to === "string" ? data.to : "";
+        if (!toId || !room.players.has(toId)) return;
+        for (const c of room.connections) {
+          if (c.player.id === toId) {
+            send(c.ws, { type: "voip_signal", from: conn.player.id, data: data.data });
+            break;
+          }
+        }
         return;
       }
 

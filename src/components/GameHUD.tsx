@@ -5,10 +5,11 @@
 
 import { t, useLanguage } from "../i18n";
 import React, { useState, useEffect, useRef } from "react";
-import { Flashlight, ShieldAlert, Send, MessageSquare, Terminal, Backpack, Trophy } from "lucide-react";
+import { Flashlight, ShieldAlert, Send, MessageSquare, Terminal, Backpack, Trophy, Mic, MicOff } from "lucide-react";
 import { ChatMessage, RemotePlayer } from "../types/game";
 import { RadarHUD } from "./RadarHUD";
 import { GameEngine, LevelGProgress } from "../game/GameEngine";
+import { isTypingInField } from "../utils/input";
 
 interface GameHUDProps {
   stamina: number; // 0 to 1
@@ -35,6 +36,10 @@ interface GameHUDProps {
   onOpenAchievements?: () => void;
   /** Level G: code digits found so far and whether the final alarm is on. */
   levelGProgress?: LevelGProgress;
+  /** Proximity VOIP: whether the mic/call is on, whether the local player is currently speaking, and the toggle. */
+  voipEnabled?: boolean;
+  voipSpeaking?: boolean;
+  onToggleVoip?: () => void;
 }
 
 const GameHUDComponent: React.FC<GameHUDProps> = ({
@@ -59,13 +64,20 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
   onOpenInventory,
   inventoryCount = 0,
   onOpenAchievements,
-  levelGProgress
+  levelGProgress,
+  voipEnabled = false,
+  voipSpeaking = false,
+  onToggleVoip
 }) => {
   useLanguage();
   const [inputText, setInputText] = useState("");
   const [showChat, setShowChat] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLInputElement>(null);
+  // Bumped every time "T" should (re)focus the chat box — a plain ref write
+  // wouldn't re-run the focus effect if showChat was already true.
+  const [focusChatSignal, setFocusChatSignal] = useState(0);
 
   // Infiltration clock timer
   useEffect(() => {
@@ -74,6 +86,26 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
     }, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Quick chat shortcut: "T" opens the comms drawer and focuses the input,
+  // same convention as most co-op games. Ignored while already typing
+  // somewhere (including a second "T" typed straight into an open chat).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingInField()) return;
+      if ((e.key === "t" || e.key === "T") && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        setShowChat(true);
+        setFocusChatSignal((n: number) => n + 1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    if (showChat) chatInputRef.current?.focus();
+  }, [showChat, focusChatSignal]);
 
   // Auto scroll chat to newest messages
   useEffect(() => {
@@ -295,6 +327,24 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
               {t("hud.achievements")}
             </button>
           )}
+
+          {/* Proximity VOIP: mic on/off, glowing green while the local mic is picking up speech */}
+          {onToggleVoip && (
+            <button
+              onClick={onToggleVoip}
+              id="btn-hud-voip-toggle"
+              className={`flex items-center gap-2 border rounded px-2.5 py-1.5 text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer ${
+                voipEnabled
+                  ? voipSpeaking
+                    ? "bg-green-500/20 text-green-400 border-green-400/60"
+                    : "bg-[#0b0a05]/85 text-[#deb81d] border-[#deb81d]/40"
+                  : "bg-[#0b0a05]/85 text-[#a28e3b] border-[#a28e3b]/20 hover:border-[#deb81d]/40 hover:text-[#deb81d]"
+              }`}
+            >
+              {voipEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+              {t("hud.voip")}
+            </button>
+          )}
         </div>
 
         {showChat && (
@@ -322,6 +372,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
             {/* Input Form */}
             <form onSubmit={handleSend} className="mt-2 flex gap-1 border-t border-[#a28e3b]/10 pt-2">
               <input
+                ref={chatInputRef}
                 type="text"
                 maxLength={45}
                 value={inputText}

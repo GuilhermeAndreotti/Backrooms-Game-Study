@@ -56,6 +56,16 @@ export class PlayerController {
   public velX = 0;
   public velZ = 0;
 
+  // --- Lobby cheat codes (see GameEngine.submitCheatCode) ------------------
+  /** MVJM: 60% faster on foot, in every state (walk/run/crouch). */
+  public speedCheat = false;
+  /** UHUM: stamina never drains. */
+  public infiniteStaminaCheat = false;
+  /** CLIP: holding V phases through walls while unlocked. */
+  public clipCheat = false;
+  /** True this frame while CLIP is unlocked and held — GameHUD shows it. */
+  public isNoclipping = false;
+
   // Input states
   private keys: { [key: string]: boolean } = {};
   private verticalVelocity = 0;
@@ -245,8 +255,14 @@ export class PlayerController {
       this.state = wantsMove ? "walking" : "idle";
     }
 
+    // Cheat: MVJM — flat speed multiplier, on top of whichever state applies.
+    if (this.speedCheat) currentSpeed *= 1.6;
+
     // 2. STAMINA MANAGEMENT
-    if (this.state === "running") {
+    if (this.infiniteStaminaCheat) {
+      // Cheat: UHUM — never drains, regardless of state.
+      this.stamina = this.maxStamina;
+    } else if (this.state === "running") {
       this.stamina = Math.max(0, this.stamina - this.staminaDrainRate * dt);
     } else {
       this.stamina = Math.min(this.maxStamina, this.stamina + this.staminaRegenRate * this.staminaRegenScale * dt);
@@ -280,14 +296,17 @@ export class PlayerController {
     const originalZ = this.position.z;
     const playerRadius = 0.42; // slightly less than cell boundaries to fit easily through pathways
 
+    // Cheat: CLIP — holding V phases straight through walls (no collision test at all).
+    this.isNoclipping = this.clipCheat && this.keys["v"];
+
     this.position.x += strideX;
-    if (this.map.checkCollision(this.position.x, originalZ, playerRadius)) {
+    if (!this.isNoclipping && this.map.checkCollision(this.position.x, originalZ, playerRadius)) {
       this.position.x = originalX; // undo X translation due to wall impact
     }
 
     // Test Z Axis position change
     this.position.z += strideZ;
-    if (this.map.checkCollision(this.position.x, this.position.z, playerRadius)) {
+    if (!this.isNoclipping && this.map.checkCollision(this.position.x, this.position.z, playerRadius)) {
       this.position.z = originalZ; // undo Z translation due to wall impact
     }
 

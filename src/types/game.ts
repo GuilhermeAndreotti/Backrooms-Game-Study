@@ -20,6 +20,8 @@ export interface RemotePlayer {
   face?: string;
   /** Died and is spectating (server-authoritative). */
   dead?: boolean;
+  /** SKIN cheat: an EntityType name ("HOUND", ...) worn instead of the hazmat suit, or "" for none. */
+  monsterSkin?: string;
 }
 
 /** Hazmat suit colours offered in the character-customization screen. */

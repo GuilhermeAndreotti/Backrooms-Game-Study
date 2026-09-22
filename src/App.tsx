@@ -11,6 +11,7 @@ import { GameHUD } from "./components/GameHUD";
 import { InventoryHUD } from "./components/InventoryHUD";
 import { AchievementsHUD } from "./components/AchievementsHUD";
 import { TerminalModal } from "./components/TerminalModal";
+import { CheatTerminalModal, SkinChoice } from "./components/CheatTerminalModal";
 import { addAchievementListener, removeAchievementListener, unlockAchievement } from "./utils/achievements";
 import { isTypingInField, lockGameInput } from "./utils/input";
 import { EMPTY_FACE } from "./utils/face";
@@ -99,6 +100,14 @@ export default function App() {
   // special ending shown before the regular victory screen.
   const [levelGProgress, setLevelGProgress] = useState<LevelGProgress>({ digits: [null, null, null], alarm: false });
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
+  // Lobby cheat terminal: MVJM/UHUM/CLIP/SKIN. cheatSkin only mirrors the
+  // engine's own state for the picker's checkmark — GameEngine.cheatSkin
+  // (replicated to teammates) is the source of truth.
+  const [isCheatTerminalOpen, setIsCheatTerminalOpen] = useState(false);
+  const [cheatSkin, setCheatSkin] = useState<SkinChoice | null>(null);
+  const [isNoclipActive, setIsNoclipActive] = useState(false);
+  const [voipEnabled, setVoipEnabled] = useState(false);
+  const [voipSpeaking, setVoipSpeaking] = useState(false);
   const [interactPrompt, setInteractPrompt] = useState<string | null>(null);
   const [levelGEnding, setLevelGEnding] = useState<"none" | "message" | "done">("none");
   const [achievementToast, setAchievementToast] = useState<{ id: string; title: string; description: string } | null>(null);
@@ -269,6 +278,13 @@ export default function App() {
         setIsAchievementsOpen(false);
         setIsTerminalOpen(true);
         document.exitPointerLock?.();
+      } else if ((e.key === "e" || e.key === "E") && engineRef.current?.tryInteract() === "cheat") {
+        // The lobby's cheat terminal
+        e.preventDefault();
+        setIsInventoryOpen(false);
+        setIsAchievementsOpen(false);
+        setIsCheatTerminalOpen(true);
+        document.exitPointerLock?.();
       } else if ((e.key === "e" || e.key === "E") && engineRef.current?.tryInteract() === "paper") {
         // The paper on the exit desk
         e.preventDefault();
@@ -354,6 +370,11 @@ export default function App() {
     setAllDead(false);
     setSpectateName(null);
     setConnectedPlayers([]);
+    setCheatSkin(null);
+    setIsCheatTerminalOpen(false);
+    setIsNoclipActive(false);
+    setVoipEnabled(false);
+    setVoipSpeaking(false);
     playersRef.current = [];
 
     try {
@@ -459,6 +480,9 @@ export default function App() {
                     onStateChange: (st) => setPlayerState(st),
                     onFlashlightChange: (fl) => setIsFlashlightOn(fl),
                     onPerformanceSample: (fps, scale) => setPerf({ fps, scale }),
+                    onNoclipChange: (active) => setIsNoclipActive(active),
+                    onVoipStateChange: (enabled) => setVoipEnabled(enabled),
+                    onVoipSpeakingChange: (speaking) => setVoipSpeaking(speaking),
                     onEscapeTrigger: () => {
                       setRedRoomExposure(0);
                       const engine = engineRef.current;
@@ -595,8 +619,10 @@ export default function App() {
 
                 // Instantly spawn existing players
                 currentOn.forEach((p: RemotePlayer) => {
-                  engineRef.current?.spawnRemotePlayer(p.id, p.name, p.x, p.y, p.z, p.suitColor, p.face);
+                  engineRef.current?.spawnRemotePlayer(p.id, p.name, p.x, p.y, p.z, p.suitColor, p.face, p.monsterSkin);
                   if (p.dead) engineRef.current?.setRemoteDead(p.id, true);
+                  // Proximity VOIP: call them now if we already turned our mic on.
+                  engineRef.current?.voipConnectPeer(p.id);
                 });
 
                 // Track real asynchronous map precreation cells loading progress for Level 0
@@ -719,7 +745,9 @@ export default function App() {
 
             // Update 3D engine world
             if (engineRef.current) {
-              engineRef.current.spawnRemotePlayer(player.id, player.name, player.x, player.y, player.z, player.suitColor, player.face);
+              engineRef.current.spawnRemotePlayer(player.id, player.name, player.x, player.y, player.z, player.suitColor, player.face, player.monsterSkin);
+              // Proximity VOIP: call them now if we already turned our mic on.
+              engineRef.current.voipConnectPeer(player.id);
             }
 
             // Standard terminal join announcement message
@@ -763,7 +791,12 @@ export default function App() {
             // Erase 3D nodes
             if (engineRef.current) {
               engineRef.current.removeRemotePlayer(leftId);
+              engineRef.current.voipDisconnectPeer(leftId);
             }
+          }
+
+          else if (type === "voip_signal") {
+            engineRef.current?.handleVoipSignal(data.from, data.data);
           }
 
           else if (type === "authority") {
@@ -881,7 +914,9 @@ export default function App() {
     setConnectedPlayers([]);
     setChatMessages([]);
     setPointerLockedOverride(false);
-    
+    setVoipEnabled(false);
+    setVoipSpeaking(false);
+
     if (hasError) {
       setErrorMessage(errorMsg || t("err.disconnected"));
       setPhase(ConnectionPhase.ERROR);
@@ -1039,6 +1074,7 @@ export default function App() {
                         <div className="flex justify-between"><span>{t("controls.flashlight")}</span><span className="text-[#deb81d] font-bold">F</span></div>
                         <div className="flex justify-between"><span>{t("controls.inventory")}</span><span className="text-[#deb81d] font-bold">I</span></div>
                         <div className="flex justify-between"><span>{t("controls.achievements")}</span><span className="text-[#deb81d] font-bold">K</span></div>
+                        <div className="flex justify-between"><span>{t("controls.chat")}</span><span className="text-[#deb81d] font-bold">T</span></div>
                         <div className="flex justify-between"><span>{t("controls.release")}</span><span className="text-[#deb81d] font-bold">ESC</span></div>
                       </div>
                     </div>
@@ -1354,6 +1390,14 @@ export default function App() {
             inventoryCount={inventory.length}
             onOpenAchievements={() => setIsAchievementsOpen(true)}
             levelGProgress={levelGProgress}
+            voipEnabled={voipEnabled}
+            voipSpeaking={voipSpeaking}
+            onToggleVoip={() => {
+              const engine = engineRef.current;
+              if (!engine) return;
+              if (engine.voipEnabled) engine.disableVoip();
+              else engine.enableVoip();
+            }}
           />
 
           {isTerminalOpen && currentLevel === 4 && (
@@ -1362,6 +1406,22 @@ export default function App() {
               onSubmit={(code) => engineRef.current?.submitLevelGCode(code) ?? false}
               onClose={() => {
                 setIsTerminalOpen(false);
+                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+                if (canvasEl) lockGameInput(canvasEl);
+              }}
+            />
+          )}
+
+          {isCheatTerminalOpen && currentLevel === 5 && (
+            <CheatTerminalModal
+              onSubmit={(code) => engineRef.current?.submitCheatCode(code) ?? null}
+              currentSkin={cheatSkin}
+              onPickSkin={(skin) => {
+                engineRef.current?.applySkinCheat(skin);
+                setCheatSkin(skin);
+              }}
+              onClose={() => {
+                setIsCheatTerminalOpen(false);
                 const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
                 if (canvasEl) lockGameInput(canvasEl);
               }}
@@ -1386,10 +1446,19 @@ export default function App() {
 
           {/* Achievement Unlock Popup Toast */}
           {/* Context hint (e.g. "[E] Empurrar caixa") just below the crosshair */}
-          {interactPrompt && !isInventoryOpen && !isAchievementsOpen && !isTerminalOpen && (
+          {interactPrompt && !isInventoryOpen && !isAchievementsOpen && !isTerminalOpen && !isCheatTerminalOpen && (
             <div className="fixed left-1/2 top-[58%] -translate-x-1/2 z-40 pointer-events-none font-mono">
               <div className="bg-[#0b0b05]/80 border border-[#deb81d]/60 rounded px-3 py-1.5 text-[11px] tracking-widest uppercase text-[#deb81d] shadow-[0_0_12px_rgba(222,184,29,0.25)]">
                 {interactPrompt}
+              </div>
+            </div>
+          )}
+
+          {/* CLIP cheat: flashes while actively phasing through walls */}
+          {isNoclipActive && (
+            <div className="fixed top-20 left-1/2 -translate-x-1/2 z-40 pointer-events-none font-mono">
+              <div className="bg-[#ffb703]/15 border border-[#ffb703] rounded px-3 py-1 text-[10px] font-black tracking-widest uppercase text-[#ffb703] animate-pulse shadow-[0_0_12px_rgba(255,183,3,0.35)]">
+                {t("hud.noclip")}
               </div>
             </div>
           )}

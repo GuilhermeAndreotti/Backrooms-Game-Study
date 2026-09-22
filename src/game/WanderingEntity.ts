@@ -1153,6 +1153,50 @@ export class WanderingEntity {
   }
 
   /**
+   * Builds a standalone copy of a monster's body — no AI, no map, not pooled —
+   * for the lobby's SKIN cheat, where a player wears a monster's body instead
+   * of the hazmat suit. `Object.create` skips the constructor (which needs a
+   * live ProceduralMap just to place itself); the build* methods only touch
+   * the class-wide geometry/material caches and a couple of per-instance
+   * fields, so a bare `tintMaterials` array is the only state they need.
+   *
+   * Every geometry (and most materials) the build* methods use come from the
+   * `sgeo`/`smat` class-wide caches — the same buffers live AI monsters of
+   * that type are using right now — so the returned group must never be
+   * disposed via a blind mesh traversal. `name` flags it for a caller doing
+   * that (see GameEngine.removeRemotePlayer); `userData.tintMaterials` holds
+   * the handful of genuinely per-instance materials (Duller, Skin-Stealer)
+   * that *do* need disposing when a skinned player leaves.
+   */
+  public static buildSkinMesh(type: EntityType): THREE.Group {
+    const proto = Object.create(WanderingEntity.prototype) as WanderingEntity;
+    proto.tintMaterials = [];
+    proto.type = type;
+    const group = new THREE.Group();
+    switch (type) {
+      case EntityType.DULLER: proto.buildDuller(group); break;
+      case EntityType.HOUND: proto.buildHound(group); break;
+      case EntityType.CLUMP: proto.buildClump(group); break;
+      case EntityType.SKIN_STEALER: proto.buildSkinStealer(group); break;
+      case EntityType.WRETCH: proto.buildWretch(group); break;
+      case EntityType.FINGER_KING: proto.buildFingerKing(group); break;
+    }
+    group.name = "monsterSkinBody";
+    group.userData.tintMaterials = proto.tintMaterials;
+    return group;
+  }
+
+  /** Height above the floor the type's body is centred at — mirrors syncWorldPosition's `ey`. */
+  public static skinAnchorY(type: EntityType): number {
+    switch (type) {
+      case EntityType.DULLER: return 1.48;
+      case EntityType.HOUND: return 1.05;
+      case EntityType.CLUMP: return 1.12;
+      default: return 1.35;
+    }
+  }
+
+  /**
    * Retrieves an entity from the static pool or instantiates a new one if empty
    */
   public static getOrCreate(map: ProceduralMap, startX: number, startZ: number, type: EntityType, scene: THREE.Scene): WanderingEntity {
