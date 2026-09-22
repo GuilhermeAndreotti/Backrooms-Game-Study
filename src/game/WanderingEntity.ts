@@ -7,6 +7,8 @@ import { t } from "../i18n";
 import * as THREE from "three";
 import { ProceduralMap, CellType } from "./ProceduralMap";
 import { EntityType } from "../shared/entityTypes";
+import { MOB_DEFS } from "./mobs/registry";
+import { MobBuildCtx, MobSenseCtx } from "./mobs/types";
 
 // Re-exported for existing import sites (GameEngine.ts etc.) — the type now
 // lives in src/shared/entityTypes.ts so server.ts can share it too.
@@ -108,6 +110,8 @@ export class WanderingEntity {
    * Assigns default speeds based on lore
    */
   private resetBaseSpeed() {
+    const def = MOB_DEFS[this.type];
+    if (def) { this.moveSpeed = def.baseSpeed; return; }
     switch (this.type) {
       case EntityType.DULLER:
         this.moveSpeed = 1.1;
@@ -184,15 +188,34 @@ export class WanderingEntity {
   private calmEyes: THREE.Object3D | null = null;
   private hostileEyes: THREE.Object3D | null = null;
 
+  /** Builds a MobBuildCtx bound to this instance's caches/scratch fields — see mobs/types.ts's MobBuildCtx doc. */
+  private buildCtx(group: THREE.Group): MobBuildCtx {
+    return {
+      group,
+      sgeo: (key, build) => this.sgeo(key, build),
+      smat: (key, build) => this.smat(key, build),
+      limbBetween: (mat, a, b, radius, taper) => this.limbBetween(mat, a, b, radius, taper),
+      V: (x, y, z) => this.V(x, y, z),
+      addTintMaterial: (m) => { this.tintMaterials.push(m); },
+      setCalmHostileEyes: (calm, hostile) => { this.calmEyes = calm; this.hostileEyes = hostile; },
+      setKingEyeMaterial: (m) => { this.kingEyeMaterial = m; },
+    };
+  }
+
   private createVisualMesh(): THREE.Group {
     const group = new THREE.Group();
-    switch (this.type) {
-      case EntityType.DULLER: this.buildDuller(group); break;
-      case EntityType.HOUND: this.buildHound(group); break;
-      case EntityType.CLUMP: this.buildClump(group); break;
-      case EntityType.SKIN_STEALER: this.buildSkinStealer(group); break;
-      case EntityType.WRETCH: this.buildWretch(group); break;
-      case EntityType.FINGER_KING: this.buildFingerKing(group); break;
+    const def = MOB_DEFS[this.type];
+    if (def) {
+      def.build(this.buildCtx(group));
+    } else {
+      switch (this.type) {
+        case EntityType.DULLER: this.buildDuller(group); break;
+        case EntityType.HOUND: this.buildHound(group); break;
+        case EntityType.CLUMP: this.buildClump(group); break;
+        case EntityType.SKIN_STEALER: this.buildSkinStealer(group); break;
+        case EntityType.WRETCH: this.buildWretch(group); break;
+        case EntityType.FINGER_KING: this.buildFingerKing(group); break;
+      }
     }
     group.castShadow = true;
 
@@ -212,6 +235,8 @@ export class WanderingEntity {
 
   /** How high above this type's local origin (baseHeight) the speech bubble floats. */
   private speechBubbleLocalY(): number {
+    const def = MOB_DEFS[this.type];
+    if (def) return def.speechBubbleLocalY;
     switch (this.type) {
       case EntityType.DULLER: return 0.75;
       case EntityType.HOUND: return 0.55;
@@ -507,13 +532,16 @@ export class WanderingEntity {
     const wz = this.gridZ * cSize + cSize / 2;
     
     // Set elevation: Duller hovers slightly floating; Clump/Hound crouch low to ground
-    let ey = 1.35;
-    if (this.type === EntityType.DULLER) {
-      ey = 1.48; // Floating ghostly phantom
-    } else if (this.type === EntityType.HOUND) {
-      ey = 1.05; // crawling dog
-    } else if (this.type === EntityType.CLUMP) {
-      ey = 1.12; // ball of tumbling limbs
+    const def = MOB_DEFS[this.type];
+    let ey = def ? def.baseHeight : 1.35;
+    if (!def) {
+      if (this.type === EntityType.DULLER) {
+        ey = 1.48; // Floating ghostly phantom
+      } else if (this.type === EntityType.HOUND) {
+        ey = 1.05; // crawling dog
+      } else if (this.type === EntityType.CLUMP) {
+        ey = 1.12; // ball of tumbling limbs
+      }
     }
 
     // Level 1's sectors are real stacked storeys — stand on this cell's floor.
@@ -612,9 +640,12 @@ export class WanderingEntity {
     this.bobTime += delta;
     this.glitchTimer += delta;
 
+    const animDef = MOB_DEFS[this.type];
     let bobFreq = 3.8;
     let bobAmp = 0.08;
-    if (this.type === EntityType.HOUND) {
+    if (animDef) {
+      bobFreq = animDef.bobFreq; bobAmp = animDef.bobAmp;
+    } else if (this.type === EntityType.HOUND) {
       bobFreq = 5.5; bobAmp = 0.04; // Fast canine shivering
     } else if (this.type === EntityType.CLUMP) {
       bobFreq = 2.4; bobAmp = 0.12; // Tumbling heavy rolling motion
@@ -625,7 +656,8 @@ export class WanderingEntity {
     const bobOffset = Math.sin(this.bobTime * bobFreq) * bobAmp;
 
     let baseHeight = 1.35;
-    if (this.type === EntityType.DULLER) baseHeight = 1.48;
+    if (animDef) baseHeight = animDef.baseHeight;
+    else if (this.type === EntityType.DULLER) baseHeight = 1.48;
     else if (this.type === EntityType.HOUND) baseHeight = 1.05;
     else if (this.type === EntityType.CLUMP) baseHeight = 1.12;
 
@@ -669,6 +701,27 @@ export class WanderingEntity {
     this.redrawSpeechBubble();
   }
 
+  /** Builds a MobSenseCtx for this frame — see mobs/types.ts's doc on why it's read-only. */
+  private senseCtx(
+    delta: number, distanceMeters: number, playerX: number, playerZ: number,
+    playerState: "idle" | "walking" | "running" | "crouching",
+    cameraDir?: THREE.Vector3, isFlashlightOn?: boolean
+  ): MobSenseCtx {
+    return {
+      delta, distanceMeters, playerState, cameraDir,
+      playerX, playerZ,
+      entityPos: this.mesh.position,
+      isFlashlightOn,
+      levelForcedChase: this.map.level === 2 || this.map.level === 3,
+      aggression: this.aggression,
+      hunting: this.hunting,
+      targetHidden: this.targetHidden,
+      isAgitated: this.isAgitated,
+      isChasing: this.isChasing,
+      scratch: this.intimidatedTimer,
+    };
+  }
+
   /**
    * Updates state of Wandering Entity.
    * Handles custom pathing, speed modulations, and billboard direction locks.
@@ -703,7 +756,13 @@ export class WanderingEntity {
       const prevText = this.currentSpeechText;
 
       // Formulate custom Portuguese lore subtitles based on proximity & type
-      if (this.type === EntityType.SKIN_STEALER) {
+      const speechDef = MOB_DEFS[this.type];
+      if (speechDef && speechDef.speech) {
+        const ctx = this.senseCtx(delta, distanceMeters, playerX, playerZ, playerState, cameraDir, isFlashlightOn);
+        const result = speechDef.speech(ctx);
+        this.currentSpeechText = result.key;
+        if (result.agitated !== undefined) this.isAgitated = result.agitated;
+      } else if (this.type === EntityType.SKIN_STEALER) {
         if (distanceMeters > 5.5) {
           // Innocent explorer mimicking phrases
           this.isAgitated = false;
@@ -768,10 +827,13 @@ export class WanderingEntity {
     // Default chasing reset each frame, we calculate depending on sensors.
     // Level 3 ("Lights Out") stalkers are summoned specifically to hunt the
     // player, so they share Level 2's always-chasing behavior.
+    const senseDef = MOB_DEFS[this.type];
     if (this.map.level === 2 || this.map.level === 3) {
       this.isChasing = true;
       // Boost movement speeds dramatically on Level 2/3 to make it a fast, heart-pounding sprint chase!
-      if (this.type === EntityType.HOUND) {
+      if (senseDef) {
+        this.moveSpeed = senseDef.forcedChaseSpeed;
+      } else if (this.type === EntityType.HOUND) {
         this.moveSpeed = 3.65;
       } else if (this.type === EntityType.CLUMP) {
         this.moveSpeed = 3.3;
@@ -790,7 +852,14 @@ export class WanderingEntity {
     }
 
     if (this.map.level !== 2 && this.map.level !== 3) {
-      if (this.type === EntityType.HOUND) {
+      if (senseDef) {
+        const ctx = this.senseCtx(delta, distanceMeters, playerX, playerZ, playerState, cameraDir, isFlashlightOn);
+        const result = senseDef.sense(ctx);
+        this.isChasing = result.chasing;
+        this.moveSpeed = result.speed;
+        if (result.agitated !== undefined) this.isAgitated = result.agitated;
+        if (result.scratch !== undefined) this.intimidatedTimer = result.scratch;
+      } else if (this.type === EntityType.HOUND) {
         // Intimidation Gaze logic!
         // Compute player gaze orientation against the Hound's relative direction
         const pPos3 = new THREE.Vector3(playerX, 1.6, playerZ);
@@ -1168,13 +1237,18 @@ export class WanderingEntity {
     proto.tintMaterials = [];
     proto.type = type;
     const group = new THREE.Group();
-    switch (type) {
-      case EntityType.DULLER: proto.buildDuller(group); break;
-      case EntityType.HOUND: proto.buildHound(group); break;
-      case EntityType.CLUMP: proto.buildClump(group); break;
-      case EntityType.SKIN_STEALER: proto.buildSkinStealer(group); break;
-      case EntityType.WRETCH: proto.buildWretch(group); break;
-      case EntityType.FINGER_KING: proto.buildFingerKing(group); break;
+    const def = MOB_DEFS[type];
+    if (def) {
+      def.build(proto.buildCtx(group));
+    } else {
+      switch (type) {
+        case EntityType.DULLER: proto.buildDuller(group); break;
+        case EntityType.HOUND: proto.buildHound(group); break;
+        case EntityType.CLUMP: proto.buildClump(group); break;
+        case EntityType.SKIN_STEALER: proto.buildSkinStealer(group); break;
+        case EntityType.WRETCH: proto.buildWretch(group); break;
+        case EntityType.FINGER_KING: proto.buildFingerKing(group); break;
+      }
     }
     group.name = "monsterSkinBody";
     group.userData.tintMaterials = proto.tintMaterials;
@@ -1183,6 +1257,8 @@ export class WanderingEntity {
 
   /** Height above the floor the type's body is centred at — mirrors syncWorldPosition's `ey`. */
   public static skinAnchorY(type: EntityType): number {
+    const def = MOB_DEFS[type];
+    if (def) return def.baseHeight;
     switch (type) {
       case EntityType.DULLER: return 1.48;
       case EntityType.HOUND: return 1.05;
