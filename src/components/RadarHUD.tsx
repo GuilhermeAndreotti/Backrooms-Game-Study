@@ -331,8 +331,8 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
       // 6.2 Draw Wandering Stalker Entities (High Danger Anomalies)
       if (engine.entities && engine.entities.length > 0) {
         engine.entities.forEach(entity => {
-          // The Finger King jams the radar: you have to listen for it instead.
-          if (entity.type === "FINGER_KING") return;
+          // The Finger King and O Ceifador jam the radar: you have to listen/watch for them instead.
+          if (entity.type === "FINGER_KING" || entity.type === "CEIFADOR") return;
           const entX = entity.mesh.position.x;
           const entZ = entity.mesh.position.z;
           const rx = entX - px;
@@ -375,6 +375,31 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
                 colorFill = `rgba(185, 28, 28, ${0.50 + pulse * 0.50})`; // deep blood red
                 colorStroke = "#ef4444";
                 label = "WRETCH (PERIGO)";
+                break;
+              case "ECO":
+                colorFill = `rgba(34, 211, 238, ${0.40 + pulse * 0.55})`; // cyan, sound ripple
+                colorStroke = "#22d3ee";
+                label = t("radar.eco");
+                break;
+              case "OBSERVADOR":
+                colorFill = `rgba(226, 232, 240, ${0.35 + pulse * 0.5})`; // pale eye-white
+                colorStroke = "#e2e8f0";
+                label = t("radar.observador");
+                break;
+              case "IMITADOR":
+                colorFill = `rgba(168, 85, 247, ${0.40 + pulse * 0.55})`; // violet
+                colorStroke = "#a855f7";
+                label = t("radar.imitador");
+                break;
+              case "SOMBRA":
+                colorFill = `rgba(76, 29, 149, ${0.45 + pulse * 0.55})`; // near-black violet, deliberately dim
+                colorStroke = "#4c1d95";
+                label = t("radar.sombra");
+                break;
+              case "VIGIA":
+                colorFill = `rgba(120, 113, 108, ${0.45 + pulse * 0.55})`; // stone grey
+                colorStroke = "#78716c";
+                label = t("radar.vigia");
                 break;
               default:
                 colorFill = `rgba(239, 68, 68, ${0.45 + pulse * 0.55})`;

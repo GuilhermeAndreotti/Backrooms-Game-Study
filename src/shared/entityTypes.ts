@@ -20,6 +20,18 @@ export enum EntityType {
   WRETCH = "WRETCH",
   /** Level G's exclusive stalker. */
   FINGER_KING = "FINGER_KING",
+  /** O Eco: sound-reactive pursuer. */
+  ECO = "ECO",
+  /** O Observador: sight-reactive predator (sustained eye contact escalates it). */
+  OBSERVADOR = "OBSERVADOR",
+  /** O Imitador: disguised ambusher, reveals at close range. */
+  IMITADOR = "IMITADOR",
+  /** A Sombra: territorial, avoids/attacks light sources. */
+  SOMBRA = "SOMBRA",
+  /** O Vigia: near-stationary territorial controller, blocks routes. */
+  VIGIA = "VIGIA",
+  /** O Ceifador: adaptive apex predator, biased by VisitTracker. */
+  CEIFADOR = "CEIFADOR",
 }
 
 /** Every known entity type, in enum declaration order. The single source of truth for server/client whitelists. */

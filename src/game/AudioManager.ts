@@ -1000,6 +1000,80 @@ export class AudioManager {
         noiseBurst(dur, "highpass", 2500, 0.7, 0.25);
         break;
       }
+      case "ECO": {
+        // A short blip that echoes itself — a handful of fading repeats.
+        const reps = alert ? 4 : 2;
+        dur = reps * 0.14 + 0.15;
+        out.gain.setValueAtTime(vol * (alert ? 0.6 : 0.3), t);
+        for (let i = 0; i < reps; i++) {
+          noiseBurst(0.06, "bandpass", alert ? 1200 : 700, 6, (alert ? 0.6 : 0.3) * Math.pow(0.55, i), t + i * 0.14);
+        }
+        if (alert) osc("square", 480, 240, dur, out);
+        break;
+      }
+      case "OBSERVADOR": {
+        if (alert) {
+          // Every eye snaps open at once: a fast rising whine.
+          dur = 0.8;
+          envelope(dur, 0.85);
+          osc("sawtooth", 300, 900, dur, out);
+          noiseBurst(dur, "highpass", 3000, 1, 0.3);
+        } else {
+          // Barely-there — something watching, not moving.
+          dur = 1.6;
+          envelope(dur, 0.3);
+          osc("sine", 60, 58, dur, out);
+          osc("sine", 90.5, 89, dur, out); // detuned second layer: an unsettling slow beat
+        }
+        break;
+      }
+      case "IMITADOR": {
+        if (alert) {
+          // The disguise drops all at once: a short, harsh glitch-shriek.
+          dur = 0.5;
+          envelope(dur, 0.95);
+          const shaper = ctx.createWaveShaper();
+          const curve = new Float32Array(256);
+          for (let i = 0; i < 256; i++) { const x = i / 128 - 1; curve[i] = Math.tanh(x * 6); }
+          shaper.curve = curve; shaper.connect(out);
+          osc("sawtooth", 700, 150, dur, shaper);
+          noiseBurst(dur, "highpass", 4000, 0.8, 0.4);
+        } else {
+          // Convincingly normal — almost a voice, if you don't listen too closely.
+          dur = 1.3;
+          envelope(dur, 0.35);
+          osc("sine", 170, 175, dur, out);
+          osc("sine", 172.3, 177, dur, out);
+        }
+        break;
+      }
+      case "SOMBRA": {
+        dur = alert ? 1.1 : 1.8;
+        envelope(dur, alert ? 0.75 : 0.3);
+        const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = alert ? 500 : 200; lp.connect(out);
+        osc("sine", alert ? 90 : 45, alert ? 60 : 40, dur, lp);
+        noiseBurst(dur, "lowpass", alert ? 400 : 150, 0.6, alert ? 0.5 : 0.2);
+        break;
+      }
+      case "VIGIA": {
+        // A heavy, infrequent groan — something massive shifting its weight.
+        dur = alert ? 1.6 : 2.2;
+        envelope(dur, alert ? 0.7 : 0.35);
+        const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 220; lp.connect(out);
+        const o = osc("sawtooth", alert ? 55 : 35, alert ? 40 : 30, dur, lp);
+        const lfo = ctx.createOscillator(); lfo.frequency.value = 3;
+        const lg = ctx.createGain(); lg.gain.value = 6;
+        lfo.connect(lg); lg.connect(o.frequency); lfo.start(t); lfo.stop(t + dur + 0.05);
+        break;
+      }
+      case "CEIFADOR": {
+        // Abrupt and brief on purpose — "no clear signal" is the point.
+        dur = 0.35;
+        envelope(dur, alert ? 0.9 : 0.4);
+        noiseBurst(dur, "lowpass", alert ? 500 : 300, 1.2, alert ? 0.7 : 0.3);
+        osc("sine", alert ? 70 : 50, alert ? 40 : 35, dur, out);
+        break;
+      }
       default:
         return; // FINGER_KING has its own taps
     }

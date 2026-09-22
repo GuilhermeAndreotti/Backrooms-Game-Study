@@ -463,6 +463,28 @@ export const ptBR = {
   "skin.CLUMP": "Clump",
   "skin.SKIN_STEALER": "Ladrão de Pele",
   "skin.WRETCH": "Wretch",
+
+  // --- 6 novos mobs (O Eco, O Observador, O Imitador, A Sombra, O Vigia, O Ceifador) ---
+  "radar.eco": "ECO (RUÍDO)",
+  "radar.observador": "OBSERVADOR (NÃO OLHE)",
+  "radar.imitador": "IMITADOR (DISFARCE)",
+  "radar.sombra": "SOMBRA (LUZ BAIXA)",
+  "radar.vigia": "VIGIA (TERRITÓRIO)",
+  "sp.eco.idle": "*ECOS DISTANTES*",
+  "sp.eco.chase": "*PASSOS QUE NÃO SÃO SEUS*",
+  "sp.observador.watch": "*SENSAÇÃO DE SER OBSERVADO*",
+  "sp.observador.chase": "*OLHOS SE ABREM DE UMA VEZ*",
+  "sp.imitador.calm0": "Ei, também tá perdido por aqui?",
+  "sp.imitador.calm1": "Peraí, deixa eu conferir uma coisa...",
+  "sp.imitador.calm2": "Que bom achar alguém normal aqui.",
+  "sp.imitador.calm3": "Você viu a saída? Eu não achei ainda.",
+  "sp.imitador.reveal0": "*O ROSTO NÃO SE MOVE DIREITO*",
+  "sp.imitador.reveal1": "*A VOZ TRAVA NO MEIO DA FRASE*",
+  "sp.imitador.reveal2": "*NÃO ERA UMA PESSOA*",
+  "sp.sombra.lurk": "*SUSSURRO NO ESCURO*",
+  "sp.sombra.chase": "*A ESCURIDÃO SE MOVE*",
+  "sp.vigia.advance": "*MEMBROS ARRASTANDO PELO CORREDOR*",
+  "sp.ceifador.chase": "*NENHUM AVISO, SÓ PASSOS*",
 };
 
 export type MessageKey = keyof typeof ptBR;

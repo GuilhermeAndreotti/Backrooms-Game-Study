@@ -17,6 +17,12 @@ import { clump } from "./clump";
 import { wretch } from "./wretch";
 import { duller } from "./duller";
 import { fingerKing } from "./fingerKing";
+import { eco } from "./eco";
+import { observador } from "./observador";
+import { imitador } from "./imitador";
+import { sombra } from "./sombra";
+import { vigia } from "./vigia";
+import { ceifador } from "./ceifador";
 
 export const MOB_DEFS: Record<EntityType, MobDefinition> = {
   [EntityType.HOUND]: hound,
@@ -25,4 +31,10 @@ export const MOB_DEFS: Record<EntityType, MobDefinition> = {
   [EntityType.WRETCH]: wretch,
   [EntityType.DULLER]: duller,
   [EntityType.FINGER_KING]: fingerKing,
+  [EntityType.ECO]: eco,
+  [EntityType.OBSERVADOR]: observador,
+  [EntityType.IMITADOR]: imitador,
+  [EntityType.SOMBRA]: sombra,
+  [EntityType.VIGIA]: vigia,
+  [EntityType.CEIFADOR]: ceifador,
 };
