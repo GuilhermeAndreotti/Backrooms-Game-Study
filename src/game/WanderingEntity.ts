@@ -458,8 +458,8 @@ export class WanderingEntity {
 
     // 3. Distance vector math
     const cSize = this.map.cellSize;
-    const pxGrid = Math.floor(playerX / cSize);
-    const pzGrid = Math.floor(playerZ / cSize);
+    let pxGrid = Math.floor(playerX / cSize);
+    let pzGrid = Math.floor(playerZ / cSize);
 
     const fx = this.mesh.position.x - playerX;
     const fz = this.mesh.position.z - playerZ;
@@ -492,7 +492,7 @@ export class WanderingEntity {
     // Level 3 ("Lights Out") stalkers are summoned specifically to hunt the
     // player, so they share Level 2's always-chasing behavior.
     const senseDef = MOB_DEFS[this.type];
-    if (this.map.level === 2 || this.map.level === 3) {
+    if (this.map.level === 2) {
       this.isChasing = true;
       // Boost movement speeds dramatically on Level 2/3 to make it a fast, heart-pounding sprint chase!
       this.moveSpeed = senseDef.forcedChaseSpeed;
@@ -501,13 +501,25 @@ export class WanderingEntity {
       this.isChasing = false;
     }
 
-    if (this.map.level !== 2 && this.map.level !== 3) {
+    if (this.map.level !== 2) {
       const ctx = this.senseCtx(delta, distanceMeters, playerX, playerZ, playerState, cameraDir, isFlashlightOn);
       const result = senseDef.sense(ctx);
       this.isChasing = result.chasing;
       this.moveSpeed = result.speed;
       if (result.agitated !== undefined) this.isAgitated = result.agitated;
       if (result.scratch !== undefined) this.intimidatedTimer = result.scratch;
+
+      // On Level 3 the pack is aggressive until a beam lands on it. A lit,
+      // aimed-at Hound flees by pathing toward the opposite side of the map.
+      if (this.map.level === 3 && this.type === EntityType.HOUND && isFlashlightOn && cameraDir) {
+        const fromPlayer = new THREE.Vector3(this.mesh.position.x - playerX, 0, this.mesh.position.z - playerZ).normalize();
+        if (cameraDir.dot(fromPlayer) > 0.78 && distanceMeters < 18) {
+          this.isChasing = true;
+          this.moveSpeed = 3.0;
+          pxGrid = Math.max(2, Math.min(this.map.gridSize - 3, this.gridX + Math.round(fromPlayer.x * 12)));
+          pzGrid = Math.max(2, Math.min(this.map.gridSize - 3, this.gridZ + Math.round(fromPlayer.z * 12)));
+        }
+      }
     }
 
     if (!this.isChasing && this.searchTimer > 0) this.searchTimer -= delta;

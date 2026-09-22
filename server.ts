@@ -527,6 +527,15 @@ async function startServer() {
         return;
       }
 
+      // Level 3: five idempotent wall switches open the barred gate.
+      if (type === "level3_switch") {
+        const level = conn.player.level;
+        const index = data.index;
+        if (level !== 3 || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 4) return;
+        broadcastToLevel(room, level, { type: "level3_switch", level, index }, conn);
+        return;
+      }
+
       // Level G: a non-authority player typed a code into the terminal. The
       // authority decides (alarm for everyone, or sets the monster on them).
       if (type === "levelg_code") {
@@ -578,11 +587,13 @@ async function startServer() {
       // The host starts the expedition: everyone leaves the lobby for Level 0.
       if (type === "start_game") {
         if (room.level !== LOBBY_LEVEL || room.hostId !== conn.player.id) return;
-        room.level = 0;
+        const requestedLevel = data.level === undefined ? 0 : data.level;
+        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || requestedLevel > 8 || requestedLevel === LOBBY_LEVEL) return;
+        room.level = requestedLevel;
         reviveAll(room);
-        room.players.forEach((p) => { p.level = 0; });
+        room.players.forEach((p) => { p.level = requestedLevel; });
         refreshAuthority(room);
-        broadcastToRoom(room, { type: "level_transition", level: 0, seed: room.seed, start: true });
+        broadcastToRoom(room, { type: "level_transition", level: requestedLevel, seed: room.seed, start: true });
         return;
       }
 

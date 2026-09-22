@@ -12,6 +12,8 @@ import { InventoryHUD } from "./components/InventoryHUD";
 import { AchievementsHUD } from "./components/AchievementsHUD";
 import { TerminalModal } from "./components/TerminalModal";
 import { CheatTerminalModal, SkinChoice } from "./components/CheatTerminalModal";
+import { LevelSelectorModal } from "./components/LevelSelectorModal";
+import { MegDoorModal } from "./components/MegDoorModal";
 import { addAchievementListener, removeAchievementListener, unlockAchievement } from "./utils/achievements";
 import { isTypingInField, lockGameInput } from "./utils/input";
 import { EMPTY_FACE } from "./utils/face";
@@ -26,7 +28,7 @@ import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, X, FileText, Compa
  * such special case in one place instead of scattered ternaries.
  */
 function displayLabelForLevel(level: number): string {
-  if (level === 3) return "6 · LIGHTS OUT";
+  if (level === 3) return "3";
   if (level === 5) return "LOBBY";
   if (level === 6) return "4";
   if (level === 7) return "5";
@@ -115,10 +117,13 @@ export default function App() {
   // special ending shown before the regular victory screen.
   const [levelGProgress, setLevelGProgress] = useState<LevelGProgress>({ digits: [null, null, null], alarm: false });
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
+  const [isMegDoorOpen, setIsMegDoorOpen] = useState(false);
+  const [megDialogue, setMegDialogue] = useState<{ name: string; grade: string; dialogue: string } | null>(null);
   // Lobby cheat terminal: MVJM/UHUM/CLIP/SKIN. cheatSkin only mirrors the
   // engine's own state for the picker's checkmark — GameEngine.cheatSkin
   // (replicated to teammates) is the source of truth.
   const [isCheatTerminalOpen, setIsCheatTerminalOpen] = useState(false);
+  const [isLevelSelectorOpen, setIsLevelSelectorOpen] = useState(false);
   const [cheatSkin, setCheatSkin] = useState<SkinChoice | null>(null);
   const [isNoclipActive, setIsNoclipActive] = useState(false);
   const [voipEnabled, setVoipEnabled] = useState(false);
@@ -259,15 +264,17 @@ export default function App() {
 
   // Keyboard listener for toggling inventory & achievements
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (phase !== ConnectionPhase.PLAYING) return;
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (phase !== ConnectionPhase.PLAYING) return;
+        // Ctrl+W is the browser's close-tab shortcut, but Ctrl is also crouch.
+        if (e.ctrlKey && e.key.toLowerCase() === "w") e.preventDefault();
       // Typing a chat message: "i"/"k" should land in the message, not pop
       // open the inventory/achievements panels over it.
       if (isTypingInField()) return;
       // Lobby: the host starts the expedition.
       if (e.key === "Enter" && !e.repeat && engineRef.current?.level === 5 && clientIdRef.current && clientIdRef.current === hostIdRef.current) {
         e.preventDefault();
-        socketRef.current?.send(JSON.stringify({ type: "start_game" }));
+        socketRef.current?.send(JSON.stringify({ type: "start_game", level: 0 }));
         return;
       }
       // Spectating: arrows flip between the teammates still alive.
@@ -286,6 +293,13 @@ export default function App() {
           }
           return nextState;
         });
+      } else if ((e.key === "e" || e.key === "E") && engineRef.current?.tryInteract() === "meg_employee") {
+        e.preventDefault();
+        document.exitPointerLock?.();
+      } else if ((e.key === "e" || e.key === "E") && engineRef.current?.tryInteract() === "meg_door") {
+        e.preventDefault();
+        setIsMegDoorOpen(true);
+        document.exitPointerLock?.();
       } else if ((e.key === "e" || e.key === "E") && engineRef.current?.tryInteract() === "terminal") {
         // Level G's terminal
         e.preventDefault();
@@ -507,7 +521,7 @@ export default function App() {
                       const engine = engineRef.current;
                       if (!engine) return;
 
-                      if (engine.level === 0 || engine.level === 1 || engine.level === 2 || engine.level === 6) {
+                      if (engine.level === 0 || engine.level === 1 || engine.level === 2 || engine.level === 3 || engine.level === 4 || engine.level === 6) {
                         // Ask the server to advance the whole room together instead
                         // of transitioning just this client: previously each player
                         // who found the exit noclipped into their own next level,
@@ -515,21 +529,20 @@ export default function App() {
                         // transition now runs for every player (this one included)
                         // when the server's "level_transition" broadcast comes back
                         // — see that handler below.
-                        // Progression: 0 -> 1 -> 2 -> 6 (LEVEL 4) -> 7 (LEVEL 5, the
-                        // real final escape) -> ESCAPED. 3 ("Lights Out") and 4
-                        // ("Level G") are secret detours with their own endings,
-                        // reached via onSecretLevelFound below, not this chain.
+                         // Progression: 0 -> 1 -> 2 -> 3 -> 4 -> 7 (LEVEL 5)
+                         // -> ESCAPED. Level 6 and Level G
+                         // remains a secret detour reached via onSecretLevelFound.
                         if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
                           socketRef.current.send(JSON.stringify({
                             type: "level_transition_request",
-                            level: engine.level === 2 ? 6 : engine.level === 6 ? 7 : engine.level + 1,
+                             level: engine.level === 2 ? 3 : engine.level === 3 ? 4 : engine.level === 4 ? 7 : engine.level === 6 ? 7 : engine.level + 1,
                           }));
                         }
                       } else {
                         console.log("Explorer successfully escaped the Backrooms!");
                         unlockAchievement("absolute_survivor");
                         // Level G's emergency door is its own, secret ending
-                        if (engine.level === 4) {
+                         if (engine.level === 8) {
                           unlockAchievement("level_g_escaped");
                           setLevelGEnding("message");
                         }
@@ -547,15 +560,17 @@ export default function App() {
                       }
                     },
                     onInteractPrompt: (text) => setInteractPrompt(text),
+                    onMegDialogue: (employee) => setMegDialogue(employee),
+                    onMegDoorRequest: () => setIsMegDoorOpen(true),
                     onSecretLevelFound: (targetLevel: number) => {
                       // Purely local — optional solo detours (Level 1 -> Level 6
                       // "Lights Out", Level 0 -> Level G), not room-wide
                       // progression events, so no server round-trip.
                       const engine = engineRef.current;
-                      const from = targetLevel === 4 ? 0 : 1;
+                       const from = targetLevel === 8 ? 0 : 1;
                       if (!engine || engine.level !== from) return;
 
-                      if (targetLevel === 4) {
+                       if (targetLevel === 8) {
                         console.log("Found the office door that shouldn't exist... entering LEVEL G.");
                         unlockAchievement("level_g_found");
                       } else {
@@ -850,6 +865,10 @@ export default function App() {
 
           else if (type === "valve_turn") {
             engineRef.current?.handleValveTurn(data.index);
+          }
+
+          else if (type === "level3_switch") {
+            engineRef.current?.handleLevel3Switch(data.index);
           }
 
           else if (type === "chat_message") {
@@ -1438,7 +1457,7 @@ export default function App() {
             }}
           />
 
-          {isTerminalOpen && currentLevel === 4 && (
+          {isTerminalOpen && currentLevel === 8 && (
             <TerminalModal
               digits={levelGProgress.digits}
               onSubmit={(code) => engineRef.current?.submitLevelGCode(code) ?? false}
@@ -1449,10 +1468,27 @@ export default function App() {
               }}
             />
           )}
+          {isMegDoorOpen && currentLevel === 4 && (
+            <MegDoorModal
+              onSubmit={(names) => engineRef.current?.submitMegDoorNames(names) ?? false}
+              onClose={() => setIsMegDoorOpen(false)}
+            />
+          )}
+          {megDialogue && currentLevel === 4 && !isMegDoorOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4" onClick={() => setMegDialogue(null)}>
+              <div className="max-w-lg border border-amber-500/60 bg-[#171513] p-6 text-slate-100" onClick={(event) => event.stopPropagation()}>
+                <div className="mb-1 text-xs tracking-[0.25em] text-amber-400">MEG // FUNCIONÁRIO {megDialogue.grade.toUpperCase()}</div>
+                <h2 className="mb-3 text-2xl font-bold">{megDialogue.name}</h2>
+                <p className="mb-5 text-slate-300">{megDialogue.dialogue}</p>
+                <button onClick={() => setMegDialogue(null)} className="bg-amber-700 px-5 py-2 text-sm font-bold hover:bg-amber-600">FECHAR</button>
+              </div>
+            </div>
+          )}
 
           {isCheatTerminalOpen && currentLevel === 5 && (
             <CheatTerminalModal
-              onSubmit={(code) => engineRef.current?.submitCheatCode(code) ?? null}
+                     onSubmit={(code) => engineRef.current?.submitCheatCode(code) ?? null}
+                     onUnlockRoom={() => setIsLevelSelectorOpen(true)}
               currentSkin={cheatSkin}
               onPickSkin={(skin) => {
                 engineRef.current?.applySkinCheat(skin);
@@ -1463,6 +1499,17 @@ export default function App() {
                 const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
                 if (canvasEl) lockGameInput(canvasEl);
               }}
+            />
+          )}
+
+          {isLevelSelectorOpen && currentLevel === 5 && (
+            <LevelSelectorModal
+              isHost={clientIdRef.current === hostIdRef.current}
+              onStart={(level) => {
+                socketRef.current?.send(JSON.stringify({ type: "start_game", level }));
+                setIsLevelSelectorOpen(false);
+              }}
+              onClose={() => setIsLevelSelectorOpen(false)}
             />
           )}
 

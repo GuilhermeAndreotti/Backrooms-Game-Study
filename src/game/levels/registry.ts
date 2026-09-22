@@ -60,28 +60,33 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     },
   },
 
-  // Level 3 ("Lights Out", secret): unchanged — out of scope for the main-
-  // progression rebalance. Summons on demand while a player's flashlight
-  // is on, instead of a fixed roster.
+  // Level 3: brick service halls. Hounds patrol in a pack and retreat from a
+  // flashlight beam, making the five-switch route tense without a boss fight.
   3: {
     id: 3,
-    displayLabel: "LEVEL 6 (LIGHTS OUT)",
+    displayLabel: "LEVEL 3",
     spawn: {
-      kind: "timedSummon",
-      pool: [EntityType.DULLER, EntityType.SKIN_STEALER, EntityType.WRETCH, EntityType.HOUND],
-      intervalS: 6.0,
-      maxConcurrent: 5,
-      spawnRadiusCells: [8, 14],
+      kind: "static",
+      roster: [
+        { type: EntityType.HOUND, targetCell: [13, 7] },
+        { type: EntityType.HOUND, targetCell: [21, 10] },
+        { type: EntityType.HOUND, targetCell: [31, 8] },
+        { type: EntityType.HOUND, targetCell: [14, 24] },
+        { type: EntityType.HOUND, targetCell: [28, 24] },
+        { type: EntityType.HOUND, targetCell: [42, 25] },
+        { type: EntityType.HOUND, targetCell: [13, 41] },
+        { type: EntityType.HOUND, targetCell: [31, 41] },
+      ],
     },
   },
 
-  // Level 4 ("Level G", secret): unchanged — a fully bespoke boss
+  // Level G (secret, internal id 8): fully bespoke boss
   // ecosystem (closets, code puzzle, alarm, ambushes). This entry exists
-  // only so `LEVEL_DEFS[4]` is non-null for anything that enumerates
+  // only so `LEVEL_DEFS[8]` is non-null for anything that enumerates
   // "which levels have a definition"; GameEngine's own level===4
   // special-casing is untouched.
-  4: {
-    id: 4,
+  8: {
+    id: 8,
     displayLabel: "LEVEL G",
     spawn: { kind: "bespoke" },
   },

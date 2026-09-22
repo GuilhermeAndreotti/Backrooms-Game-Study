@@ -75,9 +75,10 @@ function mixSeed(seed: number, salt: number): number {
 export const LEVEL_G_DOOR_OPEN_ANGLE = -Math.PI * 0.55;
 
 export function gridSizeForLevel(level: number): number {
-  if (level === 4) return 18; // Level G: a small office, on purpose
+  if (level === 8) return 18; // Level G: a small office, on purpose
   if (level === LOBBY_LEVEL) return 16; // the room lobby: small, open-air
   if (level === 6 || level === 7) return 40; // the new main-progression levels — simpler layouts than 1/2, a smaller grid to match
+  if (level === 3) return 48;
   return level === 0 ? 64 : 48;
 }
 
@@ -307,6 +308,39 @@ export class ProceduralMap {
   /** The door leaf, swung open by GameEngine; rebuilt with the current state if culled. */
   public emergencyDoorLeaf: THREE.Object3D | null = null;
 
+  // --- Level 3 (Brick Halls) ------------------------------------------------
+  /** Five deterministic switch cells, in the order used by the network protocol. */
+  public level3Switches: [number, number][] = [];
+  public level3SwitchesOn = new Set<number>();
+  public level3GateOpen = false;
+  /** Cells under the low service passage; players must crouch to cross them. */
+  public level3LowCorridor = new Set<string>();
+  public level3GateX = -1;
+  public level3GateZ = -1;
+
+  public updateLevel3SwitchVisual(index: number) {
+    const [gx, gz] = this.level3Switches[index] ?? [];
+    const group = gx === undefined ? null : this.cellGroupGrid[gx]?.[gz] ?? null;
+    if (!group) return;
+    group.traverse((object) => {
+      if (object.name !== `level3_switch_lamp_${index}`) return;
+      const material = object instanceof THREE.Mesh ? object.material : null;
+      const mats = Array.isArray(material) ? material : material ? [material] : [];
+      mats.forEach((mat) => {
+        if (mat instanceof THREE.MeshStandardMaterial) {
+          mat.color.setHex(0x39ff88);
+          mat.emissive.setHex(0x16a34a);
+          mat.emissiveIntensity = 3.5;
+        }
+      });
+    });
+  }
+
+  // --- Level 4 (MEG offices) -----------------------------------------------
+  public level4Employees: { name: string; grade: "junior" | "pleno" | "senior"; gx: number; gz: number; dialogue: string }[] = [];
+  public level4DoorX = -1;
+  public level4DoorZ = -1;
+
   /** Level G sector of a cell: 1 reception, 2 archive, 3 main room, 0 corridors. */
   public levelGSectorOf(gx: number, gz: number): 0 | 1 | 2 | 3 {
     if (gz >= 10) return 3;
@@ -318,7 +352,7 @@ export class ProceduralMap {
   /** Cells monsters may walk into: not walls, and not Level G's exit while it's locked. */
   public isWalkableForEntities(gx: number, gz: number): boolean {
     if (this.grid[gx]?.[gz] === undefined || this.grid[gx][gz] === CellType.SOLID) return false;
-    if (this.level === 4 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) return false;
+    if (this.level === 8 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) return false;
     return true;
   }
 
@@ -561,7 +595,7 @@ export class ProceduralMap {
 
     // Level G: no breadcrumbs, drafts or wet trails to the exit — finding the
     // emergency door (and earning it) is the level.
-    if (this.level === 4 || this.level === LOBBY_LEVEL) foundPath = [];
+    if (this.level === 8 || this.level === LOBBY_LEVEL) foundPath = [];
 
     this.exitPath = foundPath;
     this.exitPathSet.clear();
@@ -607,6 +641,7 @@ export class ProceduralMap {
         }
       }
     }
+
   }
 
   /** The text on the exit desk's paper (also shown when the player reads it), or null on levels without one. */
@@ -926,6 +961,30 @@ export class ProceduralMap {
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(4, 3); // repeat across 4m x 3m wall panel
+    return texture;
+  }
+
+  private createBrickWallTexture(): THREE.Texture {
+    const canvas = document.createElement("canvas");
+    canvas.width = 256; canvas.height = 128;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return new THREE.Texture();
+    ctx.fillStyle = "#633b32";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "rgba(25, 12, 10, 0.75)";
+    ctx.lineWidth = 3;
+    for (let y = 0; y <= canvas.height; y += 16) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+      const offset = (y / 16) % 2 ? 18 : 0;
+      for (let x = offset; x <= canvas.width; x += 36) {
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + 16); ctx.stroke();
+      }
+    }
+    ctx.fillStyle = "rgba(185, 105, 72, 0.18)";
+    for (let i = 0; i < 600; i++) ctx.fillRect(Math.random() * 256, Math.random() * 128, 1 + Math.random() * 3, 1 + Math.random() * 2);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping; texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(3, 2);
     return texture;
   }
 
@@ -1513,7 +1572,8 @@ export class ProceduralMap {
     });
 
     // Wallpaper/Concrete: Dull yellowish wallpaper, raw concrete blocks or rusted metal
-    const wallTex = this.level === 4 ? this.createOfficeWallTexture()
+    const wallTex = this.level === 8 ? this.createOfficeWallTexture()
+      : this.level === 3 ? this.createBrickWallTexture()
       : this.level === 2 ? this.createRustedMetalWallTexture() : (this.level === 1 ? this.createConcreteWallTexture() : this.createWallTexture());
     this.wallMaterial = new THREE.MeshStandardMaterial({
       map: wallTex,
@@ -1523,13 +1583,13 @@ export class ProceduralMap {
 
     // Dark wood baseboard/skirting molding
     this.skirtingBoardMaterial = new THREE.MeshStandardMaterial({
-      color: this.level === 4 ? 0x3a3d42 : this.level === 2 ? 0x24180f : (this.level === 1 ? 0x222222 : 0x5a4d33),
+      color: this.level === 8 ? 0x3a3d42 : this.level === 2 ? 0x24180f : (this.level === 1 ? 0x222222 : 0x5a4d33),
       roughness: 0.9,
       metalness: 0.1,
     });
 
     // Carpet/Concrete Floor: Muddy textured yellowish-brown carpet, stained factory cement, or rusted steel plates
-    const carpetTex = this.level === 4 ? this.createOfficeCarpetTexture()
+    const carpetTex = this.level === 8 ? this.createOfficeCarpetTexture()
       : this.level === 2 ? this.createRustedMetalFloorTexture() : (this.level === 1 ? this.createConcreteFloorTexture() : this.createCarpetTexture());
     this.carpetMaterial = new THREE.MeshStandardMaterial({
       map: carpetTex,
@@ -1782,24 +1842,37 @@ export class ProceduralMap {
       this.carveLevel1SecretCorridor();
 
     } else if (this.level === 4) {
+      this.carveLevel4Office();
+    } else if (this.level === 8) {
       this.carveLevelG();
     } else if (this.level === LOBBY_LEVEL) {
       this.carveLobby();
     } else if (this.level === 3) {
-      // LEVEL 3 ("Lights Out" — secret level, found through a dark corridor on
-      // Level 1). A real perfect maze, pitch black: no fluorescent fixtures are
-      // ever spawned here (see createCell3D's light-fixture gate). The only
-      // visible things are sparse glowing waypoints traced along the true path
-      // (populated in findExitPath, right after this maze exists) — you
-      // navigate by hopping from light to light, not by sight. Bounded to a
-      // 34x34 region (not the full grid) so the shortest path stays in the
-      // same ballpark as the other levels' gauntlets rather than ballooning —
-      // a perfect maze's only path can wind a very long way.
-      this.exitGridX = 34;
-      this.exitGridZ = 34;
-      this.carvePerfectMaze(2, 2, this.exitGridX, this.exitGridZ, 2, 2);
-      this.grid[2][2] = CellType.CORRIDOR;
-      this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
+      // LEVEL 3: brick service halls, broad rooms divided by narrow connectors.
+      // The gate at the start of the first room opens only after all five switches.
+      this.exitGridX = 44;
+      this.exitGridZ = 44;
+      this.level3GateX = 10;
+      this.level3GateZ = 5;
+      const room = (x1: number, z1: number, x2: number, z2: number) => {
+        for (let x = x1; x <= x2; x++) for (let z = z1; z <= z2; z++) this.grid[x][z] = CellType.ROOM_LARGE;
+      };
+      const corridor = (x1: number, z1: number, x2: number, z2: number) => {
+        for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) {
+          for (let z = Math.min(z1, z2); z <= Math.max(z1, z2); z++) this.grid[x][z] = CellType.CORRIDOR;
+        }
+      };
+      room(2, 2, 10, 10); room(14, 2, 24, 12); room(28, 2, 44, 12);
+      room(4, 18, 17, 31); room(22, 18, 35, 31); room(40, 18, 45, 31);
+      room(4, 37, 18, 45); room(24, 37, 36, 45); room(40, 37, 45, 45);
+      corridor(10, 5, 14, 7); corridor(24, 5, 28, 7); corridor(8, 10, 8, 18);
+      corridor(15, 15, 15, 18); corridor(30, 12, 30, 18); corridor(35, 24, 40, 24);
+      corridor(12, 31, 12, 37); corridor(28, 31, 28, 37); corridor(36, 42, 40, 42);
+      corridor(2, 2, 8, 2); corridor(8, 2, 8, 5); corridor(40, 42, 44, 42); corridor(44, 42, 44, 44);
+      this.level3Switches = [[6, 6], [19, 8], [9, 25], [29, 25], [30, 41]];
+      for (const [x, z] of this.level3Switches) this.grid[x][z] = CellType.CORRIDOR;
+      // A cramped final service crawlspace, visually low and physically gated by GameEngine.
+      for (let x = 40; x <= 44; x++) for (let z = 42; z <= 44; z++) this.level3LowCorridor.add(`${x},${z}`);
 
     } else if (this.level === 6) {
       this.carveLevel6();
@@ -2029,7 +2102,7 @@ export class ProceduralMap {
 
     // Level G is hand-laid; the generic spawn clearing below would punch
     // through its reception walls.
-    if (this.level === 4 || this.level === LOBBY_LEVEL) return;
+    if (this.level === 8 || this.level === LOBBY_LEVEL) return;
 
     // Ensure spawn around (2,2) is safe, walkable, and fully cleared
     for (let dx = -1; dx <= 2; dx++) {
@@ -2048,6 +2121,30 @@ export class ProceduralMap {
 
     // Ensure the exit cell itself is walkable while keeping adjacent solid walls untouched!
     this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
+  }
+
+  private carveLevel4Office() {
+    this.exitGridX = 44; this.exitGridZ = 44;
+    const room = (x1: number, z1: number, x2: number, z2: number, type: CellType = CellType.ROOM_LARGE) => {
+      for (let x = x1; x <= x2; x++) for (let z = z1; z <= z2; z++) this.grid[x][z] = type;
+    };
+    const corridor = (x1: number, z1: number, x2: number, z2: number) => {
+      for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) for (let z = Math.min(z1, z2); z <= Math.max(z1, z2); z++) this.grid[x][z] = CellType.CORRIDOR;
+    };
+    // Reception, meeting rooms, side departments and the open-plan central floor.
+    room(2, 2, 11, 10); room(14, 2, 23, 10); room(27, 2, 45, 11);
+    room(3, 16, 11, 25); room(14, 14, 35, 35, CellType.OPEN_AREA); room(38, 16, 45, 25);
+    room(3, 30, 12, 44); room(16, 39, 29, 45); room(34, 30, 45, 45);
+    corridor(11, 6, 14, 6); corridor(23, 6, 27, 6); corridor(8, 10, 8, 16);
+    corridor(11, 20, 14, 20); corridor(35, 20, 38, 20); corridor(8, 25, 8, 30);
+    corridor(29, 35, 34, 35); corridor(29, 42, 34, 42); corridor(42, 25, 42, 30);
+    corridor(2, 2, 2, 6); corridor(42, 42, 44, 44);
+    this.level4DoorX = this.exitGridX; this.level4DoorZ = this.exitGridZ;
+    this.level4Employees = [
+      { name: "Marina Alves", grade: "junior", gx: 6, gz: 6, dialogue: "Não toque nos terminais vermelhos. O inventário da MEG ainda está sendo conferido." },
+      { name: "Rafael Costa", grade: "pleno", gx: 20, gz: 24, dialogue: "A porta azul reconhece nomes, não crachás. Pergunte aos três e anote a hierarquia." },
+      { name: "Helena Duarte", grade: "senior", gx: 35, gz: 7, dialogue: "Se você chegou até aqui, mantenha a calma. Meu nome deve ser digitado por último? Não: primeiro, pela senioridade." },
+    ];
   }
 
   // Helper method to carve a side maze of winding alleys
@@ -2714,8 +2811,12 @@ export class ProceduralMap {
           return true;
         }
         // Level G's emergency exit is a locked door until the code goes in
-        if (this.level === 4 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) {
+        if (this.level === 8 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) {
           return true;
+        }
+        if (this.level === 3 && !this.level3GateOpen && gx === this.level3GateX && gz >= 5 && gz <= 7) {
+          const gateEdge = this.level3GateX * this.cellSize;
+          if (Math.abs(x - gateEdge) < radius + 0.12) return true;
         }
 
         // Check for obstacles/props/pillars in this cell
@@ -3073,16 +3174,100 @@ export class ProceduralMap {
         }
       }
 
-      // Level 3 ("Lights Out"): a small self-lit waypoint — the only thing
-      // visible in the whole maze without your own flashlight, and the whole
-      // point is that turning that flashlight on has a cost (see GameEngine's
-      // entity-summon logic).
-      if (this.level === 3 && this.pathLightCells.has(`${gx},${gz}`)) {
-        const glowMat = this.sharedMat("lightsout_waypoint", () => new THREE.MeshBasicMaterial({ color: 0xbfe6ff }));
-        const orb = new THREE.Mesh(this.sharedGeo("lightsout_orb", () => new THREE.SphereGeometry(0.11, 8, 8)), glowMat);
-        orb.position.set(posX, 0.55, posZ);
-        group.add(orb);
-        this.registerLight(gx, gz, posX, 0.55, posZ, 0x9fd4ff, 1.1, 4.0, 1.4);
+    }
+
+    if (this.level === 3) {
+      const switchIndex = this.level3Switches.findIndex(([sx, sz]) => sx === gx && sz === gz);
+      if (switchIndex >= 0) {
+        const plateMat = this.sharedMat("level3_switch_plate", () => new THREE.MeshStandardMaterial({ color: 0x252525, metalness: 0.8, roughness: 0.35 }));
+        const isOn = this.level3SwitchesOn.has(switchIndex);
+        const lightMat = this.sharedMat(`level3_switch_light_${switchIndex}`, () => new THREE.MeshStandardMaterial({ color: isOn ? 0x39ff88 : 0xff3b18, emissive: isOn ? 0x16a34a : 0xff2200, emissiveIntensity: 3.5 }));
+        const terminal = new THREE.Mesh(this.sharedGeo("level3_switch_terminal", () => new THREE.BoxGeometry(0.72, 1.15, 0.46)), plateMat);
+        terminal.position.set(posX, 0.58, posZ);
+        group.add(terminal);
+        const lamp = new THREE.Mesh(this.sharedGeo("level3_switch_lamp", () => new THREE.BoxGeometry(0.36, 0.18, 0.05)), lightMat);
+        lamp.name = `level3_switch_lamp_${switchIndex}`;
+        lamp.position.set(posX, 1.05, posZ - 0.24);
+        group.add(lamp);
+        const handle = new THREE.Mesh(this.sharedGeo("level3_switch_handle", () => new THREE.BoxGeometry(0.08, 0.28, 0.1)), this.metalMaterial);
+        handle.position.set(posX, 0.72, posZ - 0.27);
+        handle.rotation.x = -0.35;
+        group.add(handle);
+        this.registerLight(gx, gz, posX, 1.1, posZ - 0.35, 0xff3b18, 4.5, 7.0, 1.0);
+      }
+      if (gx === this.level3GateX && gz >= 5 && gz <= 7) {
+        const gateMat = this.sharedMat("level3_gate", () => new THREE.MeshStandardMaterial({ color: 0x202326, metalness: 0.9, roughness: 0.3 }));
+        const barGeo = this.sharedGeo("level3_gate_bar", () => new THREE.CylinderGeometry(0.055, 0.055, height - 0.18, 8));
+        for (let i = -2; i <= 2; i++) {
+          const bar = new THREE.Mesh(barGeo, gateMat);
+          bar.position.set(posX - hSize / 2 + 0.08, height / 2, posZ + i * 0.38);
+          group.add(bar);
+        }
+        const frame = new THREE.Mesh(this.sharedGeo("level3_gate_frame", () => new THREE.BoxGeometry(0.14, 0.14, hSize - 0.25)), gateMat);
+        frame.position.set(posX - hSize / 2 + 0.08, height - 0.08, posZ);
+        group.add(frame);
+        const warning = new THREE.Mesh(this.sharedGeo("level3_gate_warning", () => new THREE.BoxGeometry(0.08, 0.08, hSize - 0.25)), this.sharedMat("level3_gate_warning", () => new THREE.MeshBasicMaterial({ color: 0xff5a24 })));
+        warning.position.set(posX - hSize / 2 - 0.04, 2.55, posZ);
+        group.add(warning);
+      }
+      if (this.level3LowCorridor.has(`${gx},${gz}`)) {
+        const lowHeader = new THREE.Mesh(this.sharedGeo("level3_low_header", () => new THREE.BoxGeometry(hSize, 0.35, 0.18)), this.wallMaterial);
+        lowHeader.position.set(posX, 1.42, posZ - hSize / 2);
+        group.add(lowHeader);
+      }
+    }
+
+    if (this.level === 4) {
+      const employee = this.level4Employees.find((person) => person.gx === gx && person.gz === gz);
+      const deskMat = this.sharedMat("meg_desk", () => new THREE.MeshStandardMaterial({ color: 0x4a4038, roughness: 0.72 }));
+      const chairMat = this.sharedMat("meg_chair", () => new THREE.MeshStandardMaterial({ color: 0x30343a, roughness: 0.8 }));
+      const screenMat = this.sharedMat("meg_screen", () => new THREE.MeshStandardMaterial({ color: 0x182c32, emissive: 0x164e63, emissiveIntensity: 0.8 }));
+      const makeDesk = (x: number, z: number, rotation = 0) => {
+        const desk = new THREE.Group();
+        const top = new THREE.Mesh(this.sharedGeo("meg_desk_top", () => new THREE.BoxGeometry(1.65, 0.1, 0.78)), deskMat);
+        top.position.y = 0.82; desk.add(top);
+        const monitor = new THREE.Mesh(this.sharedGeo("meg_monitor", () => new THREE.BoxGeometry(0.48, 0.32, 0.06)), screenMat);
+        monitor.position.set(0, 1.08, -0.16); desk.add(monitor);
+        const chair = new THREE.Mesh(this.sharedGeo("meg_chair_seat", () => new THREE.BoxGeometry(0.52, 0.1, 0.52)), chairMat);
+        chair.position.set(0, 0.48, 0.62); desk.add(chair);
+        const back = new THREE.Mesh(this.sharedGeo("meg_chair_back", () => new THREE.BoxGeometry(0.52, 0.62, 0.1)), chairMat);
+        back.position.set(0, 0.78, 0.84); desk.add(back);
+        desk.position.set(x, 0, z); desk.rotation.y = rotation; group.add(desk);
+        this.addObstacle(gx, gz, x, z, 0.55);
+      };
+      if (cellType === CellType.OPEN_AREA && gx >= 16 && gx <= 34 && gz >= 16 && gz <= 33 && (gx + gz) % 3 === 0) makeDesk(posX, posZ, (gx % 2) * Math.PI / 2);
+      if ((gx === 5 && gz === 5) || (gx === 18 && gz === 5) || (gx === 31 && gz === 5)) {
+        const table = new THREE.Mesh(this.sharedGeo("meg_meeting_table", () => new THREE.BoxGeometry(2.2, 0.12, 1.05)), deskMat);
+        table.position.set(posX, 0.78, posZ); group.add(table);
+        this.addObstacle(gx, gz, posX, posZ, 1.0);
+      }
+      if (employee) {
+        const body = new THREE.Mesh(this.sharedGeo("meg_employee_body", () => new THREE.CylinderGeometry(0.22, 0.28, 0.95, 8)), this.sharedMat("meg_employee_suit", () => new THREE.MeshStandardMaterial({ color: 0x53616a, roughness: 0.75 })));
+        body.position.set(posX, 0.48, posZ + 0.7); group.add(body);
+        const head = new THREE.Mesh(this.sharedGeo("meg_employee_head", () => new THREE.SphereGeometry(0.18, 8, 8)), this.sharedMat("meg_employee_skin", () => new THREE.MeshStandardMaterial({ color: 0xb98268, roughness: 0.9 })));
+        head.position.set(posX, 1.15, posZ + 0.7); group.add(head);
+      }
+      if (gx === this.level4DoorX && gz === this.level4DoorZ) {
+        const blue = this.sharedMat("meg_blue_door", () => new THREE.MeshStandardMaterial({ color: 0x155e91, emissive: 0x0b3554, emissiveIntensity: 0.55, metalness: 0.55, roughness: 0.35 }));
+        const door = new THREE.Mesh(this.sharedGeo("meg_blue_door", () => new THREE.BoxGeometry(hSize - 0.35, 2.65, 0.16)), blue);
+        door.position.set(posX, 1.32, posZ - hSize / 2 + 0.08); group.add(door);
+        const sign = new THREE.Mesh(this.sharedGeo("meg_door_sign", () => new THREE.BoxGeometry(1.25, 0.22, 0.04)), this.sharedMat("meg_door_sign", () => new THREE.MeshBasicMaterial({ color: 0x8bd5ff })));
+        sign.position.set(posX, 2.42, posZ - hSize / 2 - 0.02); group.add(sign);
+      }
+    }
+
+    if (this.level === 3) {
+      if ((gx + gz) % 2 === 0) this.registerLight(gx, gz, posX, fY + height - 0.35, posZ, 0xffc58a, 2.1, 8.5, 1.15);
+      if (gx === 3 && gz === 2) {
+        const canvas = document.createElement("canvas"); canvas.width = 512; canvas.height = 256;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.fillStyle = "#d7c49a"; ctx.fillRect(0, 0, 512, 256);
+          ctx.fillStyle = "#241a16"; ctx.font = "bold 25px monospace"; ctx.fillText("AVISO MEG", 28, 48);
+          ctx.font = "18px monospace"; ctx.fillText("Encontre os 5 paineis", 28, 94); ctx.fillText("de luz para abrir a", 28, 124); ctx.fillText("porta de barras.", 28, 154);
+        }
+        const note = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 0.72), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), side: THREE.DoubleSide }));
+        note.position.set(posX, 1.35, posZ - hSize / 2 + 0.03); note.rotation.y = Math.PI; group.add(note);
       }
     }
 
@@ -3491,13 +3676,13 @@ export class ProceduralMap {
 
     // Level G builds its own furniture, terminal and emergency door; Level 0
     // has the secret office door in one nook.
-    if (this.level === 4) this.buildLevelGCell(group, gx, gz, posX, posZ, height);
+    if (this.level === 8) this.buildLevelGCell(group, gx, gz, posX, posZ, height);
     if (this.level === 0 && gx === this.officeDoorX && gz === this.officeDoorZ) {
       this.buildOfficeDoor(group, posX, posZ, height);
     }
 
     // 5. THE GLITCHING NOCLIP WALL EXIT ("flipar na parede / noclip")
-    if (gx === this.exitGridX && gz === this.exitGridZ && this.level !== 4) {
+    if (gx === this.exitGridX && gz === this.exitGridZ && this.level !== 8 && this.level !== 4) {
       const exitGroup = new THREE.Group();
 
       // Find all adjacent solid neighbors
@@ -3706,7 +3891,7 @@ export class ProceduralMap {
     // Level 3 ("Lights Out") never gets one — total darkness is the whole level.
     // Level 1's secret dark corridor is force-excluded the same way. The room
     // lobby has no ceiling to hang one from — sunlight (ambient) is its light.
-    const isForcedDark = this.level === 3 || this.level === LOBBY_LEVEL || this.forcedDarkCells.has(`${gx},${gz}`);
+    const isForcedDark = this.level === LOBBY_LEVEL || this.forcedDarkCells.has(`${gx},${gz}`);
     const lightRand = new SeededRandom(this.seed + gx * 7 + gz * 13);
     const shouldSpawnLight = !isForcedDark && (cellType === CellType.CORRIDOR
       ? lightRand.next() > 0.65
@@ -3725,7 +3910,7 @@ export class ProceduralMap {
       const lightRng = new SeededRandom(this.seed + gx * 41 + gz * 61);
       const burntRoll = lightRng.next();
       const isBurntOut = (this.level === 1 && burntRoll < 0.38) // 38% burnt out rate in warehouse Level 1!
-        || (this.level === 4 && burntRoll < 0.3); // Level G: a dead tube every few rooms
+        || (this.level === 8 && burntRoll < 0.3); // Level G: a dead tube every few rooms
 
       const glassMaterial = isBurntOut ? this.fluorescentGlassOff : this.fluorescentGlassOn;
       const tubeMesh = new THREE.Mesh(this.tubeGeo, glassMaterial);
@@ -3733,8 +3918,8 @@ export class ProceduralMap {
       fixtureGroup.add(tubeMesh);
 
       // Point Light with soft, yellow-greenish tint for Level 0, or clean industrial white-grey for Level 1
-      let lightColor = this.level === 4 ? 0xe8f0ff : (this.level === 1 ? 0xe6e6e6 : 0xfefdb5);
-      let lightIntensity = isBurntOut ? 0.0 : (this.level === 4 ? 1.0 : this.level === 1 ? 1.05 : 1.4); // slightly dimmer on average for warehouse
+      let lightColor = this.level === 8 ? 0xe8f0ff : (this.level === 1 ? 0xe6e6e6 : 0xfefdb5);
+      let lightIntensity = isBurntOut ? 0.0 : (this.level === 8 ? 1.0 : this.level === 1 ? 1.05 : 1.4); // slightly dimmer on average for warehouse
 
       // Gild Sector gets gorgeous colorful lighting!
       const isGild = this.level === 1 && (gx >= 24 && gz < 24);
@@ -3773,7 +3958,7 @@ export class ProceduralMap {
     const isSpawnZone = (gx < 5 && gz < 5);
     const isExitZone = this.isKeepClearCell(gx, gz);
 
-    if (this.level !== 1 && this.level !== 4 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
+    if (this.level !== 1 && this.level !== 8 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
       const wallRng = new SeededRandom(this.seed + gx * 11 + gz * 23);
       if (wallRng.next() < 0.16) {
         let addedDivider = false;
@@ -4222,7 +4407,7 @@ export class ProceduralMap {
     // On both Level 0 and Level 1, there is a sparse chance (e.g., 3.5%) to spawn a collectible item in a cell
     const itemRng = new SeededRandom(this.seed + gx * 83 + gz * 109);
     // Don't spawn collectibles at the exit or spawning point (0,0) or solid cells
-    if (this.level !== 4 && this.level !== LOBBY_LEVEL && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
+    if (this.level !== 8 && this.level !== LOBBY_LEVEL && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
       const itemTypeRoll = itemRng.next();
       // Keep it within the cell boundaries (so + hSize/2 is center, range is -hSize/2 + 0.5 to hSize/2 - 0.5)
       const maxOffset = hSize / 2 - 0.6;
@@ -5391,7 +5576,7 @@ export class ProceduralMap {
         } else {
           // Very rare natural spark flicker probability (0.0125% per frame);
           // Level G's tubes are on their last legs, so far more often there.
-          if (Math.random() < (this.level === 4 ? 0.0025 : 0.00018)) {
+          if (Math.random() < (this.level === 8 ? 0.0025 : 0.00018)) {
             const duration = Math.floor(250 + Math.random() * 500); // 250ms - 750ms flicker
             fixture.flickerTimer = duration / 1000;
 
