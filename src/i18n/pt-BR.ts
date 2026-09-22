@@ -464,6 +464,7 @@ export const ptBR = {
   "cheat.unlockedSpeed": "VELOCIDADE LIBERADA!",
   "cheat.unlockedStamina": "STAMINA INFINITA LIBERADA!",
   "cheat.unlockedClip": "NOCLIP LIBERADO! Segure [V] para atravessar paredes.",
+  "cheat.unlockedLife": "IMORTALIDADE LIBERADA!",
   "cheat.submit": "Enviar",
   "cheat.pickSkin": "Escolher skin de monstro",
   "cheat.back": "Voltar",

@@ -466,6 +466,7 @@ export const enUS: Record<MessageKey, string> = {
   "cheat.unlockedSpeed": "SPEED UNLOCKED!",
   "cheat.unlockedStamina": "INFINITE STAMINA UNLOCKED!",
   "cheat.unlockedClip": "NOCLIP UNLOCKED! Hold [V] to walk through walls.",
+  "cheat.unlockedLife": "IMMORTALITY UNLOCKED!",
   "cheat.submit": "Submit",
   "cheat.pickSkin": "Choose a monster skin",
   "cheat.back": "Back",

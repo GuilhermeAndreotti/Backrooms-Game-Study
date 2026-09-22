@@ -326,6 +326,7 @@ export class GameEngine {
   private cheatSpeed = false;
   private cheatStamina = false;
   private cheatClip = false;
+  private cheatLife = false;
   /** SKIN cheat: the monster body worn instead of the hazmat suit, replicated to teammates; "" for none. */
   public cheatSkin: EntityType | null = null;
 
@@ -950,7 +951,7 @@ export class GameEngine {
               } else if (item.type === "liquid_pain") {
                 this.inventory.push("liquid_pain");
                 this.player.stamina = Math.max(0.05, this.player.stamina - 0.15);
-                this.sanity = Math.max(0.0, this.sanity - 0.12);
+                if (!this.cheatLife) this.sanity = Math.max(0.0, this.sanity - 0.12);
                 if (this.onHUDNotification) {
                   this.onHUDNotification(t("eng.pain"));
                 }
@@ -1049,7 +1050,7 @@ export class GameEngine {
           // Trigger reset when distance is less than 1.45 meters (squared is ~2.1)
           const dx = entity.mesh.position.x - px;
           const dz = entity.mesh.position.z - pz;
-          if (canBeCaught && !caught && dx * dx + dz * dz < 2.1) {
+          if (canBeCaught && !caught && !this.cheatLife && dx * dx + dz * dz < 2.1) {
             caught = true;
             console.warn(`[GameEngine] Explorer CAUGHT by ${entity.type}! Reseting state...`);
           }
@@ -1059,7 +1060,7 @@ export class GameEngine {
 
         // Being caught is fatal: the monster got you. You spectate until the
         // group advances a level (or, if everyone is dead, resets).
-        if (caught) this.die("caught");
+        if (caught && !this.cheatLife) this.die("caught");
       }
 
       // Update psychological Smilers
@@ -1116,9 +1117,11 @@ export class GameEngine {
           }
         }
 
-        // Apply depletion or recovery. Sanity now falls slowly, but hitting zero
-        // still kills the player (App.tsx onSanityChange -> GAME_OVER).
-        if (nearMonster) {
+        // Apply depletion or recovery. LIFE keeps sanity full and prevents every
+        // sanity-based death while the cheat is active.
+        if (this.cheatLife) {
+          this.sanity = 1.0;
+        } else if (nearMonster) {
           this.sanity = Math.max(0.0, this.sanity - (monsterDepletionSum + darknessDepletion) * SANITY_DRAIN_SCALE * delta);
         } else if (darknessDepletion > 0) {
           this.sanity = Math.max(0.0, this.sanity - darknessDepletion * SANITY_DRAIN_SCALE * delta);
@@ -1677,7 +1680,7 @@ export class GameEngine {
   private remoteDead = new Set<string>();
 
   private die(cause: "sanity" | "caught") {
-    if (this.isDead) return;
+    if (this.isDead || this.cheatLife) return;
     this.isDead = true;
     this.player.isFlashlightOn = false;
     this.player.state = "idle";
@@ -2641,7 +2644,7 @@ export class GameEngine {
   }
 
   // ---------------------------------------------------------------------------
-  // Lobby cheat terminal (MVJM / UHUM / CLIP / SKIN)
+  // Lobby cheat terminal (MVJM / UHUM / CLIP / LIFE / SKIN)
   // ---------------------------------------------------------------------------
 
   /** Within arm's reach of the lobby's cheat terminal. */
@@ -2660,13 +2663,13 @@ export class GameEngine {
   }
 
   /**
-   * Checks a code typed into the lobby's cheat terminal. MVJM and UHUM unlock
+   * Checks a code typed into the lobby's cheat terminal. MVJM, UHUM, and LIFE unlock
    * their effect immediately (re-entering an already-unlocked code just
    * confirms it, never toggles it off); CLIP unlocks holding V to phase
    * through walls; SKIN sets nothing by itself — it tells the caller to open
    * the monster picker (see applySkinCheat).
    */
-  public submitCheatCode(code: string): "speed" | "stamina" | "clip" | "skin" | null {
+  public submitCheatCode(code: string): "speed" | "stamina" | "clip" | "life" | "skin" | null {
     const c = code.trim().toUpperCase();
     if (c === "MVJM") {
       this.cheatSpeed = true;
@@ -2682,6 +2685,11 @@ export class GameEngine {
       this.cheatClip = true;
       this.player.clipCheat = true;
       return "clip";
+    }
+    if (c === "LIFE") {
+      this.cheatLife = true;
+      this.sanity = 1.0;
+      return "life";
     }
     if (c === "SKIN") return "skin";
     return null;
@@ -3169,7 +3177,7 @@ export class GameEngine {
       } else if (gazing) {
         smiler.gazeTimer += delta;
         const drainRate = 0.010 + Math.min(smiler.gazeTimer, 8) * 0.006; // ~0.01/s -> ~0.058/s after 8s
-        this.sanity = Math.max(0.0, this.sanity - drainRate * delta);
+        if (!this.cheatLife) this.sanity = Math.max(0.0, this.sanity - drainRate * delta);
         if (Math.random() < delta * 0.18) {
           this.audio.triggerHumFlicker(90);
         }

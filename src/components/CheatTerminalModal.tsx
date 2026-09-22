@@ -13,7 +13,7 @@ export type SkinChoice = (typeof SKIN_OPTIONS)[number];
 
 interface CheatTerminalModalProps {
   /** Tries a code; returns which cheat it unlocked, or null if it wasn't recognized. */
-  onSubmit: (code: string) => "speed" | "stamina" | "clip" | "skin" | null;
+  onSubmit: (code: string) => "speed" | "stamina" | "clip" | "life" | "skin" | null;
   /** Applies (or, with null, clears) the SKIN cheat's monster body. */
   onPickSkin: (type: SkinChoice | null) => void;
   /** Currently worn skin, if any — the picker highlights it. */
@@ -22,9 +22,9 @@ interface CheatTerminalModalProps {
 }
 
 /**
- * The lobby's cheat terminal: fixed codes (MVJM/UHUM/CLIP/SKIN) unlock small
+ * The lobby's cheat terminal: fixed codes (MVJM/UHUM/CLIP/LIFE/SKIN) unlock small
  * fun modifiers for the rest of the session. Unlike Level G's terminal this
- * one doesn't close on a correct code — there are four to try, so it stays
+ * one doesn't close on a correct code — there are five to try, so it stays
  * open and just confirms each one, until SKIN switches it to the monster
  * picker or the player backs out / presses Escape.
  */
@@ -32,7 +32,7 @@ export const CheatTerminalModal: React.FC<CheatTerminalModalProps> = ({ onSubmit
   useLanguage();
   const [mode, setMode] = useState<"code" | "skin">("code");
   const [code, setCode] = useState("");
-  const [status, setStatus] = useState<"idle" | "denied" | "speed" | "stamina" | "clip">("idle");
+  const [status, setStatus] = useState<"idle" | "denied" | "speed" | "stamina" | "clip" | "life">("idle");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -103,6 +103,7 @@ export const CheatTerminalModal: React.FC<CheatTerminalModalProps> = ({ onSubmit
               {status === "speed" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedSpeed")}</span>}
               {status === "stamina" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedStamina")}</span>}
               {status === "clip" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedClip")}</span>}
+              {status === "life" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedLife")}</span>}
             </div>
 
             <button

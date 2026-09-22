@@ -466,6 +466,7 @@ export const es: Record<MessageKey, string> = {
   "cheat.unlockedSpeed": "¡VELOCIDAD DESBLOQUEADA!",
   "cheat.unlockedStamina": "¡STAMINA INFINITA DESBLOQUEADA!",
   "cheat.unlockedClip": "¡NOCLIP DESBLOQUEADO! Mantén [V] para atravesar paredes.",
+  "cheat.unlockedLife": "¡INMORTALIDAD DESBLOQUEADA!",
   "cheat.submit": "Enviar",
   "cheat.pickSkin": "Elegir piel de monstruo",
   "cheat.back": "Volver",
