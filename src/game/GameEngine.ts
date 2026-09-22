@@ -43,6 +43,8 @@ export interface GameEngineCallbacks {
   /** Level G: digits found so far (null = missing) and whether the final alarm is on. */
   onLevelGProgress?: (progress: LevelGProgress) => void;
   onRedRoomExposureChange?: (val: number) => void;
+  /** Level 7's toxic water exposure (see toxicWaterExposure) — same shape as onRedRoomExposureChange, kept separate rather than shared since the two hazards use different thresholds and are never active at the same time. */
+  onToxicWaterExposureChange?: (val: number) => void;
   onHUDNotification?: (msg: string) => void;
   onSectorChange?: (sector: string) => void;
   onInventoryChange?: (items: string[]) => void;
@@ -78,6 +80,10 @@ function levelAtmosphere(level: number) {
       return { ambientColor: 0x8a4a2c, ambientIntensity: 1.4, fogColor: 0x3a1608, dimmedFogColor: 0x1a0902 };
     case 1: // warehouse: brighter industrial
       return { ambientColor: 0xaab5bd, ambientIntensity: 1.35, fogColor: 0x8a9299, dimmedFogColor: 0x24282c };
+    case 6: // "Motion": bright open-air field by day (night is a live override — see updateLevel6/the per-frame ambient block)
+      return { ambientColor: 0xdff0ff, ambientIntensity: 2.2, fogColor: 0x9fd4f0, dimmedFogColor: 0x3a5a70 };
+    case 7: // Dark Poolrooms: cool, dim, underwater-tinted
+      return { ambientColor: 0x2a4a55, ambientIntensity: 0.6, fogColor: 0x0f2830, dimmedFogColor: 0x050f12 };
     default: // Level 0: classic yellow
       return { ambientColor: 0xeae2c2, ambientIntensity: 1.05, fogColor: 0xede4c0, dimmedFogColor: 0x5c5740 };
   }
@@ -224,6 +230,8 @@ export class GameEngine {
   
   // Exposure timer in the mysterious Level 0 Red Rooms (60 seconds to collapse)
   public redRoomExposure = 0;
+  /** Level 7: cumulative seconds standing in a toxic ("Hydrolitis Plague") water cell. Same shape as redRoomExposure, own field since the two are never simultaneous but use different thresholds/recovery. */
+  public toxicWaterExposure = 0;
 
   // Wandering Stalker Entities (multiple types spawn on Level 1)
   public entities: WanderingEntity[] = [];
@@ -251,6 +259,16 @@ export class GameEngine {
   // --- Level G ("The Small Office") ----------------------------------------
   /** Seconds spent on Level G: drives the Finger King's aggression. */
   private levelGTime = 0;
+  // --- Level 6 ("LEVEL 4" display): day/night cycle -------------------------
+  private level6Time = 0;
+  private level6IsNight = false;
+  private readonly LEVEL6_DAY_S = 90;
+  private readonly LEVEL6_NIGHT_S = 60;
+  /** The night hunter — spawned/despawned with the day/night cycle, not pooled like the rest of this.entities since there's only ever at most one. */
+  private ceifadorEntity: WanderingEntity | null = null;
+  // --- Level 7 ("LEVEL 5" display): valve puzzle -----------------------------
+  /** Indices into map.valvePositions that have been turned; all 3 drains toxicWaterCells. */
+  private valvesTurned = new Set<number>();
   public levelGDigits: (number | null)[] = [null, null, null];
   /** Right code entered: alarm, flickering lights, open emergency door, final chase. */
   public levelGAlarm = false;
@@ -277,6 +295,7 @@ export class GameEngine {
   private interactPromptTimer = 0;
   private onLevelGProgress?: (progress: LevelGProgress) => void;
   private onRedRoomExposureChange?: (val: number) => void;
+  private onToxicWaterExposureChange?: (val: number) => void;
   public onHUDNotification?: (msg: string) => void;
   public onSectorChange?: (sector: string) => void;
   public onInventoryChange?: (items: string[]) => void;
@@ -335,6 +354,7 @@ export class GameEngine {
     this.onInteractPrompt = callbacks.onInteractPrompt;
     this.onLevelGProgress = callbacks.onLevelGProgress;
     this.onRedRoomExposureChange = callbacks.onRedRoomExposureChange;
+    this.onToxicWaterExposureChange = callbacks.onToxicWaterExposureChange;
     this.onHUDNotification = callbacks.onHUDNotification;
     this.onSectorChange = callbacks.onSectorChange;
     this.onInventoryChange = callbacks.onInventoryChange;
@@ -797,6 +817,35 @@ export class GameEngine {
         }
       }
 
+      // Level 7: toxic ("Hydrolitis Plague") water — a much sharper, faster
+      // hazard than the Red Room (per the wiki level it's based on, dying
+      // "in seconds" if you linger), with a proportionally faster recovery
+      // once you're clear of it.
+      let inToxicWater = false;
+      if (this.level === 7 && this.map && this.player) {
+        const gx = Math.floor(this.player.position.x / this.map.cellSize);
+        const gz = Math.floor(this.player.position.z / this.map.cellSize);
+        if (this.map.toxicWaterCells.has(`${gx},${gz}`)) inToxicWater = true;
+      }
+      const TOXIC_WATER_THRESHOLD_S = 8.0;
+      if (inToxicWater) {
+        this.toxicWaterExposure += delta;
+        this.onToxicWaterExposureChange?.(this.toxicWaterExposure);
+        if (this.toxicWaterExposure >= TOXIC_WATER_THRESHOLD_S) {
+          this.toxicWaterExposure = 0;
+          this.onToxicWaterExposureChange?.(0);
+          this.audio.playEntityCatchSound();
+          this.player.spawnSafely();
+          const playerGX = Math.floor(this.player.position.x / this.map.cellSize);
+          const playerGZ = Math.floor(this.player.position.z / this.map.cellSize);
+          this.relocateEntitiesAwayFrom(playerGX, playerGZ);
+          this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z, true);
+        }
+      } else if (this.toxicWaterExposure > 0) {
+        this.toxicWaterExposure = Math.max(0, this.toxicWaterExposure - delta * 1.2);
+        this.onToxicWaterExposureChange?.(this.toxicWaterExposure);
+      }
+
       // Track Level Sector transitions and collectible pickups
       if (this.map && this.player) {
         const px = this.player.position.x;
@@ -964,6 +1013,9 @@ export class GameEngine {
       // Level G: closets, the Finger King's aggression/ambushes, its taps and
       // the final alarm. Runs before the AI so hidden explorers are marked.
       this.updateLevelG(delta, aiTargets);
+
+      // Level 6: day/night cycle, O Ceifador's night hunt.
+      this.updateLevel6(delta);
 
       if (this.entities.length > 0 && this.player) {
         const px = this.player.position.x;
@@ -1162,9 +1214,13 @@ export class GameEngine {
         // Per-level values: this runs every frame, so hardcoding Level 0/1
         // here used to override Level 2/3's darker setup from transitionToLevel.
         const atmosphere = levelAtmosphere(this.level);
-        const baseInt = atmosphere.ambientIntensity;
-        const defaultFog = atmosphere.fogColor;
-        
+        // Level 6's day/night cycle overrides its own base (daylight) atmosphere
+        // live, rather than going through levelAtmosphere (which only knows the
+        // level id, not this runtime cycle state).
+        const isLevel6Night = this.level === 6 && this.level6IsNight;
+        const baseInt = isLevel6Night ? 0.12 : atmosphere.ambientIntensity;
+        const defaultFog = isLevel6Night ? 0x040608 : atmosphere.fogColor;
+
         // The background colour is mutated in place. Allocating a THREE.Color
         // every frame produced ~3600 short-lived objects per minute and forced
         // the renderer to re-upload the clear colour each time.
@@ -2160,12 +2216,29 @@ export class GameEngine {
       this.onHUDNotification?.(t("eng.levelG"));
     }
 
+    // Level 6: fresh day/night cycle, no leftover night hunter.
+    this.level6Time = 0;
+    this.level6IsNight = false;
+    this.ceifadorEntity = null; // already pooled by the blanket entities.forEach(returnToPool) above
+
+    // Level 7: fresh valve state (the new map's own toxicWaterCells already
+    // starts populated from its own carve — see ProceduralMap.carveLevel7).
+    this.valvesTurned.clear();
+
     // Spawn multiple chasing entities on Level 2 (Pipe Dreams), placed at
     // the same S-shaped key joints/corridor points the level's always used.
     if (level === 2) {
       const def2 = LEVEL_DEFS[2];
       if (def2.spawn.kind === "static") {
         this.spawnStaticRoster(def2.spawn.roster, 8);
+      }
+    }
+
+    // Level 7 (Dark Poolrooms): CLUMP + O Vigia.
+    if (level === 7) {
+      const def7 = LEVEL_DEFS[7];
+      if (def7.spawn.kind === "static") {
+        this.spawnStaticRoster(def7.spawn.roster, 8);
       }
     }
 
@@ -2429,6 +2502,60 @@ export class GameEngine {
     return true;
   }
 
+  /** Index of the nearest untouched valve within arm's reach, or -1. */
+  private nearestUntouchedValveIndex(): number {
+    if (this.level !== 7 || !this.map || !this.player) return -1;
+    const cs = this.map.cellSize;
+    for (let i = 0; i < this.map.valvePositions.length; i++) {
+      if (this.valvesTurned.has(i)) continue;
+      const [vx, vz] = this.map.valvePositions[i];
+      const dx = this.player.position.x - (vx * cs + cs / 2);
+      const dz = this.player.position.z - (vz * cs + cs / 2);
+      if (dx * dx + dz * dz < 2.4 * 2.4) return i;
+    }
+    return -1;
+  }
+
+  private nearUntouchedValve(): boolean {
+    return this.nearestUntouchedValveIndex() >= 0;
+  }
+
+  /**
+   * E, near one of Level 7's 3 valves: turns it. Once all 3 are turned, the
+   * level's toxic ("Hydrolitis Plague") water cells drain — a re-reading of
+   * the source level's "fill the tank" puzzle as "drain the contamination"
+   * instead, which needed no wall-regeneration machinery to gate progress
+   * (the hazard itself is the gate). Returns true if there was an untouched
+   * valve in reach.
+   */
+  public tryTurnValve(): boolean {
+    if (this.isDead) return false;
+    const i = this.nearestUntouchedValveIndex();
+    if (i < 0) return false;
+    this.turnValve(i);
+    this.sendToServer({ type: "valve_turn", level: this.level, index: i });
+    return true;
+  }
+
+  private turnValve(index: number) {
+    if (this.valvesTurned.has(index)) return;
+    this.valvesTurned.add(index);
+    this.audio.playTerminalBeep(true);
+    const total = this.map?.valvePositions.length ?? 3;
+    if (this.valvesTurned.size >= total) {
+      this.map?.toxicWaterCells.clear();
+      this.onHUDNotification?.(t("eng.valveAllTurned"));
+    } else {
+      this.onHUDNotification?.(t("eng.valveTurn", { n: this.valvesTurned.size, total }));
+    }
+  }
+
+  /** A teammate turned a valve (relayed by the server — see server.ts's "valve_turn" handler). */
+  public handleValveTurn(index: number) {
+    if (this.level !== 7) return;
+    this.turnValve(index);
+  }
+
   /** A teammate shoved a box on this level: replay the slide. */
   public applyBoxPush(msg: { level: number; id: string; x: number; z: number }) {
     if (!this.map || msg.level !== this.level) return;
@@ -2451,6 +2578,8 @@ export class GameEngine {
         text = t("act.cheatTerminal");
       } else if (this.map.findPushable(this.player.position.x, this.player.position.z, fx, fz)) {
         text = t("act.pushBox");
+      } else if (this.nearUntouchedValve()) {
+        text = t("act.turnValve");
       }
     }
     if (text !== this.lastInteractPrompt) {
@@ -2972,9 +3101,13 @@ export class GameEngine {
     // elsewhere), judged against every explorer on the level; the gaze drain
     // below runs on every client for its own explorer.
     if (targets) {
-      // Smilers live only in Level 1's sector 3 (the final hall). With nobody
-      // in there, clear them out.
-      const hunted = this.level === 1 ? targets.filter((t) => inSector3(t.x, t.z)) : [];
+      // Smilers live in Level 1's sector 3 (the final hall) and, at night,
+      // all over Level 6 (see updateLevel6's day/night cycle) — everywhere
+      // else, clear them out.
+      const level6Night = this.level === 6 && this.level6IsNight;
+      const hunted = this.level === 1 ? targets.filter((t) => inSector3(t.x, t.z))
+        : level6Night ? targets
+        : [];
       if (hunted.length === 0) {
         if (this.smilers.length > 0) this.clearAllSmilers();
         return;
@@ -3027,8 +3160,12 @@ export class GameEngine {
       const dirToSmiler = new THREE.Vector3().subVectors(mesh.position, this.camera.position).normalize();
       const dot = camDir.dot(dirToSmiler);
       const gazing = dot > 0.90 && dist < 20.0; // ~25 deg cone, 20 m range
+      // Burned back by direct flashlight light — roughly the flashlight's own cone/range (see the SpotLight built in initWorld).
+      const litByFlashlight = this.player.isFlashlightOn && dot > 0.85 && dist < 14.0;
 
-      if (gazing) {
+      if (litByFlashlight) {
+        smiler.gazeTimer = Math.max(0, smiler.gazeTimer - delta * 1.5);
+      } else if (gazing) {
         smiler.gazeTimer += delta;
         const drainRate = 0.010 + Math.min(smiler.gazeTimer, 8) * 0.006; // ~0.01/s -> ~0.058/s after 8s
         this.sanity = Math.max(0.0, this.sanity - drainRate * delta);
@@ -3039,6 +3176,56 @@ export class GameEngine {
         smiler.gazeTimer = Math.max(0, smiler.gazeTimer - delta * 0.6);
       }
     }
+  }
+
+  /**
+   * Level 6's day/night cycle. By day it's a safe, calm field/town — no
+   * mobs (LEVEL_DEFS has no static/timedSummon roster for it, see
+   * registry.ts's "bespoke" entry). At night O Ceifador is summoned to
+   * hunt, biased toward the group's most-visited cells if any exist yet
+   * (VisitTracker) — its presence doubles as the level's "boss": the exit
+   * sits inside the castle at the far end, so reaching it at night means
+   * reaching it while Ceifador is actively hunting, rather than a
+   * separately scripted boss encounter.
+   */
+  private updateLevel6(delta: number) {
+    if (this.level !== 6 || !this.map || !this.player) return;
+    this.level6Time += delta;
+    const cycleLength = this.LEVEL6_DAY_S + this.LEVEL6_NIGHT_S;
+    const phase = this.level6Time % cycleLength;
+    const wasNight = this.level6IsNight;
+    this.level6IsNight = phase >= this.LEVEL6_DAY_S;
+
+    if (this.level6IsNight && !wasNight) {
+      this.onHUDNotification?.(t("eng.level6Night"));
+      if (this.isWorldAuthority) this.spawnCeifadorNightHunt();
+    } else if (!this.level6IsNight && wasNight) {
+      this.onHUDNotification?.(t("eng.level6Day"));
+      if (this.isWorldAuthority) this.despawnCeifadorNightHunt();
+    }
+  }
+
+  private spawnCeifadorNightHunt() {
+    if (!this.map || this.ceifadorEntity) return;
+    const px = Math.floor(this.player.position.x / this.map.cellSize);
+    const pz = Math.floor(this.player.position.z / this.map.cellSize);
+    // Bias toward the group's most-visited cells (route-memory — the whole
+    // point of this mob, see mobs/ceifador.ts), well clear of the player's
+    // own cell; falls back to a far corner if there's no visit data yet.
+    const visited = this.map.visitTracker?.mostVisited(1, px, pz, 6) ?? [];
+    const [gx, gz] = visited[0] ? [visited[0].gx, visited[0].gz] : [this.map.gridSize - 6, this.map.gridSize - 6];
+    const entity = WanderingEntity.getOrCreate(this.map, gx, gz, EntityType.CEIFADOR, this.scene);
+    entity.netId = this.nextEntityNetId++;
+    this.entities.push(entity);
+    this.ceifadorEntity = entity;
+  }
+
+  private despawnCeifadorNightHunt() {
+    if (!this.ceifadorEntity) return;
+    const idx = this.entities.indexOf(this.ceifadorEntity);
+    if (idx >= 0) this.entities.splice(idx, 1);
+    this.ceifadorEntity.returnToPool(this.scene);
+    this.ceifadorEntity = null;
   }
 
   /**

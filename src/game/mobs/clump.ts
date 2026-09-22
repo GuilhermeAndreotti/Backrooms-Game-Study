@@ -9,6 +9,7 @@
 
 import * as THREE from "three";
 import { EntityType } from "../../shared/entityTypes";
+import { CellType } from "../ProceduralMap";
 import { MobDefinition } from "./types";
 
 export const clump: MobDefinition = {
@@ -49,6 +50,20 @@ export const clump: MobDefinition = {
 
   // Hearing mechanic! Has no eyes, scans by sounds.
   sense(ctx) {
+    // Level 7 (Dark Poolrooms) only: submerged in a WATER_ROOM cell, the
+    // player loses it — the level's own documented weakness for its native
+    // hazard. Kept as a small, explicit, level-gated check here rather than
+    // a generic level->mob behavior-override plumbing system (LevelDefinition
+    // doesn't have one — see levels/types.ts), since this is the only mob
+    // that currently needs one; building that generic layer for a single
+    // caller isn't worth the added surface right now.
+    if (ctx.map.level === 7) {
+      const gx = Math.floor(ctx.playerX / ctx.map.cellSize);
+      const gz = Math.floor(ctx.playerZ / ctx.map.cellSize);
+      if (ctx.map.grid[gx]?.[gz] === CellType.WATER_ROOM) {
+        return { chasing: false, speed: 1.4 };
+      }
+    }
     if (ctx.playerState === "running") {
       return { chasing: ctx.distanceMeters <= 24.0, speed: 3.9 }; // hears distant sprinting boots, fast rush!
     }

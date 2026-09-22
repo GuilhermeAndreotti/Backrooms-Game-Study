@@ -44,6 +44,7 @@ export enum CellType {
   PIT_ROOM = 5,   // Floor with deep black drop-cuts
   ARCH_ROOM = 6,  // Elegant plaster colonnade/archway partitions
   RED_ROOM = 7,   // Mysterious silent-draining red room
+  WATER_ROOM = 8, // Level 7's flooded pool cells — own value rather than folded into ROOM_LARGE/PIT_ROOM, since it needs its own hazard-exposure timer and swim-not-fall physics (same reasoning RED_ROOM already got its own value for)
 }
 
 export interface LightFixture {
@@ -76,6 +77,7 @@ export const LEVEL_G_DOOR_OPEN_ANGLE = -Math.PI * 0.55;
 export function gridSizeForLevel(level: number): number {
   if (level === 4) return 18; // Level G: a small office, on purpose
   if (level === LOBBY_LEVEL) return 16; // the room lobby: small, open-air
+  if (level === 6 || level === 7) return 40; // the new main-progression levels — simpler layouts than 1/2, a smaller grid to match
   return level === 0 ? 64 : 48;
 }
 
@@ -288,6 +290,10 @@ export class ProceduralMap {
   public levelGTerminalZ = -1;
   /** Closets: crouch inside to hide from the Finger King (for a while). */
   public hideCells = new Set<string>();
+  /** Level 7's toxic ("Hydrolitis Plague") water cells — a subset of WATER_ROOM cells; the rest are safe to swim through. */
+  public toxicWaterCells = new Set<string>();
+  /** Level 7's 3 valve interaction points — turning all of them drains toxicWaterCells (see GameEngine.tryTurnValve). */
+  public valvePositions: [number, number][] = [];
   /** Set by GameEngine right after construction — O Eco (sound-reactive) queries this. Not owned/populated here. */
   public noiseBus: NoiseBus | null = null;
   /** Set by GameEngine right after construction — O Ceifador's route-memory. Not owned/populated here. */
@@ -1795,6 +1801,10 @@ export class ProceduralMap {
       this.grid[2][2] = CellType.CORRIDOR;
       this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
 
+    } else if (this.level === 6) {
+      this.carveLevel6();
+    } else if (this.level === 7) {
+      this.carveLevel7();
     } else {
       // LEVEL 0: The Lobby (Classic Backrooms yellow partitions forming a modular wall-labyrinth)
       // Populate as walkable hallway/open area space by default
@@ -2239,6 +2249,116 @@ export class ProceduralMap {
       this.levelGDocCells.push(options[Math.floor(rng.next() * options.length)]);
     }
     this.levelGCode = [0, 1, 2].map(() => String(Math.floor(rng.next() * 10))).join("");
+  }
+
+  /**
+   * LEVEL 6 ("LEVEL 4" display — theme: a grassy clearing opening onto a
+   * small castle). Simpler, less densely hand-decorated than levels 0-2's
+   * maps (those got years of iterative tuning in this project's history;
+   * this is a first pass) — a real, fully walkable, thematically distinct
+   * layout: a central field ringed by "houses" (ROOM_LARGE, doubling as
+   * night hiding spots via hideCells — see GameEngine's day/night cycle),
+   * leading to an arched castle chamber around the exit.
+   */
+  private carveLevel6() {
+    const fieldMin = 6, fieldMax = this.gridSize - 10;
+    for (let x = fieldMin; x <= fieldMax; x++) {
+      for (let z = fieldMin; z <= fieldMax; z++) {
+        this.grid[x][z] = CellType.OPEN_AREA;
+      }
+    }
+
+    // Corridor from spawn into the field.
+    for (let x = 2; x <= fieldMin; x++) this.grid[x][2] = CellType.CORRIDOR;
+    for (let z = 2; z <= fieldMin; z++) this.grid[fieldMin][z] = CellType.CORRIDOR;
+
+    // A scatter of "houses" around the field's edge — ROOM_LARGE cells that
+    // double as night hiding spots (see GameEngine.inCloset/hideCells).
+    const houses: [number, number][] = [
+      [fieldMin - 3, fieldMin + 4], [fieldMin + 4, fieldMin - 3],
+      [fieldMax - 2, fieldMin + 8], [fieldMin + 8, fieldMax - 2],
+      [fieldMax - 6, fieldMax - 6],
+    ];
+    for (const [hx, hz] of houses) {
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const nx = hx + dx, nz = hz + dz;
+          if (nx >= 2 && nx < this.gridSize - 2 && nz >= 2 && nz < this.gridSize - 2) {
+            this.grid[nx][nz] = CellType.ROOM_LARGE;
+            this.hideCells.add(`${nx},${nz}`);
+          }
+        }
+      }
+    }
+
+    // A corridor sweeping from the field to the castle at the far corner.
+    for (let x = fieldMax; x < this.gridSize - 2; x++) this.grid[x][fieldMax] = CellType.CORRIDOR;
+    for (let z = fieldMax; z < this.gridSize - 2; z++) this.grid[this.gridSize - 3][z] = CellType.CORRIDOR;
+
+    // The castle: an arched chamber around the exit.
+    for (let x = this.gridSize - 9; x < this.gridSize - 2; x++) {
+      for (let z = this.gridSize - 9; z < this.gridSize - 2; z++) {
+        this.grid[x][z] = CellType.ARCH_ROOM;
+      }
+    }
+
+    this.exitGridX = this.gridSize - 3;
+    this.exitGridZ = this.gridSize - 3;
+    this.grid[2][2] = CellType.CORRIDOR;
+    this.grid[this.exitGridX][this.exitGridZ] = CellType.ARCH_ROOM;
+  }
+
+  /**
+   * LEVEL 7 ("LEVEL 5" display — theme: The Dark Poolrooms). A windowed
+   * start room leads into a snaking flooded corridor (WATER_ROOM); a
+   * pocket of it is toxic ("Hydrolitis Plague" — see GameEngine's
+   * toxic-water exposure timer) until all 3 valves scattered along the
+   * safe path are turned (see GameEngine.tryTurnValve), which drains it.
+   * CLUMP is this level's native hazard — see mobs/clump.ts's sense() for
+   * its level-7-only "loses you if you're submerged in WATER_ROOM" weakness.
+   */
+  private carveLevel7() {
+    // Windowed start room.
+    for (let x = 2; x <= 6; x++) {
+      for (let z = 2; z <= 6; z++) this.grid[x][z] = CellType.ROOM_SMALL;
+    }
+
+    // A snaking flooded corridor from the start room to the exit.
+    const waterPath: [number, number][] = [
+      [6, 4], [14, 4], [14, 12], [22, 12], [22, 20], [30, 20], [30, 28], [this.gridSize - 4, 28], [this.gridSize - 4, this.gridSize - 4],
+    ];
+    for (let i = 0; i < waterPath.length - 1; i++) {
+      const [x1, z1] = waterPath[i];
+      const [x2, z2] = waterPath[i + 1];
+      const minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
+      const minZ = Math.min(z1, z2), maxZ = Math.max(z1, z2);
+      for (let x = minX - 1; x <= maxX + 1; x++) {
+        for (let z = minZ - 1; z <= maxZ + 1; z++) {
+          if (x >= 2 && x < this.gridSize - 2 && z >= 2 && z < this.gridSize - 2) {
+            this.grid[x][z] = CellType.WATER_ROOM;
+          }
+        }
+      }
+    }
+
+    // A toxic pocket, roughly a third of the way along — must drain the
+    // valves before it's safe to swim through.
+    for (let x = 18; x <= 22; x++) {
+      for (let z = 14; z <= 18; z++) {
+        if (this.grid[x]?.[z] === CellType.WATER_ROOM) this.toxicWaterCells.add(`${x},${z}`);
+      }
+    }
+
+    // 3 valves along the safe stretch before the toxic pocket.
+    this.valvePositions = [[8, 4], [14, 8], [16, 12]];
+    for (const [vx, vz] of this.valvePositions) {
+      if (this.grid[vx]?.[vz] !== undefined) this.grid[vx][vz] = CellType.ROOM_SMALL; // a dry ledge to stand on while turning it
+    }
+
+    this.exitGridX = this.gridSize - 4;
+    this.exitGridZ = this.gridSize - 4;
+    this.grid[2][2] = CellType.ROOM_SMALL;
+    this.grid[this.exitGridX][this.exitGridZ] = CellType.ROOM_SMALL; // a dry landing at the exit
   }
 
   private carveSideLabyrinth(xStart: number, zStart: number, xEnd: number, zEnd: number, cellType: CellType) {
@@ -2928,10 +3048,15 @@ export class ProceduralMap {
       }
     } else {
       const isRamp = this.level === 1 && this.rampCells.has(`${gx},${gz}`);
+      const isToxicWater = cellType === CellType.WATER_ROOM && this.toxicWaterCells.has(`${gx},${gz}`);
       const mat = this.level === LOBBY_LEVEL
         ? this.sharedMat("lobby_floor", () => new THREE.MeshStandardMaterial({ color: 0xcdbd93, roughness: 0.85 }))
         : (cellType === CellType.RED_ROOM)
         ? this.redCarpetMaterial
+        : isToxicWater
+        ? this.sharedMat("toxic_water_floor", () => new THREE.MeshStandardMaterial({ color: 0x2f5c1a, emissive: 0x3f7d1a, emissiveIntensity: 0.25, roughness: 0.35, metalness: 0.15 }))
+        : cellType === CellType.WATER_ROOM
+        ? this.sharedMat("water_floor", () => new THREE.MeshStandardMaterial({ color: 0x1b4a5c, roughness: 0.25, metalness: 0.2 }))
         : (isRamp ? this.getRampFloorMaterial() : this.carpetMaterial);
       const floorMesh = new THREE.Mesh(this.floorGeo, mat);
       floorMesh.position.set(posX, 0, posZ);

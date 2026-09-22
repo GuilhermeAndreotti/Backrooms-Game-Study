@@ -85,4 +85,30 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     displayLabel: "LEVEL G",
     spawn: { kind: "bespoke" },
   },
+
+  // Level 6 ("LEVEL 4" display, theme: Level 94 "Motion"): no static/
+  // timedSummon roster — day is mob-free by design, and O Ceifador is
+  // spawned/despawned with the day/night cycle itself (GameEngine's
+  // updateLevel6/spawnCeifadorNightHunt), not through this table.
+  6: {
+    id: 6,
+    displayLabel: "LEVEL 4",
+    spawn: { kind: "bespoke" },
+  },
+
+  // Level 7 ("LEVEL 5" display, theme: Level 37.2 "Dark Poolrooms"): CLUMP
+  // is the level's native hazard (see LevelDefinition consumers for its
+  // "loses you if you're submerged" override), O Vigia guards the route
+  // past the valve puzzle.
+  7: {
+    id: 7,
+    displayLabel: "LEVEL 5",
+    spawn: {
+      kind: "static",
+      roster: [
+        { type: EntityType.CLUMP, targetCell: [24, 14] },
+        { type: EntityType.VIGIA, targetCell: [30, 24] },
+      ],
+    },
+  },
 };

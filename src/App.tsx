@@ -19,6 +19,20 @@ import { BackroomsLore, generateProceduralLore } from "./utils/lore";
 import { t, useLanguage, localeTag } from "./i18n";
 import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, X, FileText, Compass, Skull } from "lucide-react";
 
+/**
+ * Player-facing level label. Internal level ids and what's shown on screen
+ * are deliberately decoupled (Lights Out is internal id 3, shown as
+ * "6 · LIGHTS OUT" per Backrooms-wiki lore numbering) — this keeps every
+ * such special case in one place instead of scattered ternaries.
+ */
+function displayLabelForLevel(level: number): string {
+  if (level === 3) return "6 · LIGHTS OUT";
+  if (level === 5) return "LOBBY";
+  if (level === 6) return "4";
+  if (level === 7) return "5";
+  return String(level);
+}
+
 const SETTINGS_STORAGE_KEY = "backrooms_lvl0_settings";
 
 const defaultSettings: GameSettings = {
@@ -88,6 +102,7 @@ export default function App() {
   const [pointerLocked, setPointerLocked] = useState(false);
   const [pointerLockedOverride, setPointerLockedOverride] = useState(false);
   const [redRoomExposure, setRedRoomExposure] = useState(0);
+  const [toxicWaterExposure, setToxicWaterExposure] = useState(0);
   const [currentSector, setCurrentSector] = useState("");
   const [inventory, setInventory] = useState<string[]>([]);
   const [activeLoreNote, setActiveLoreNote] = useState<BackroomsLore | null>(null);
@@ -302,6 +317,9 @@ export default function App() {
       } else if ((e.key === "e" || e.key === "E") && !e.repeat && engineRef.current?.tryPushBox()) {
         // Shove the box in front of you out of the way
         e.preventDefault();
+      } else if ((e.key === "e" || e.key === "E") && !e.repeat && engineRef.current?.tryTurnValve()) {
+        // Level 7: turn the nearest untouched valve
+        e.preventDefault();
       } else if (e.key === "k" || e.key === "K") {
         // Achievements moved off "C": that key is also crouch, so opening the
         // panel released the pointer lock every time the player crouched.
@@ -485,10 +503,11 @@ export default function App() {
                     onVoipSpeakingChange: (speaking) => setVoipSpeaking(speaking),
                     onEscapeTrigger: () => {
                       setRedRoomExposure(0);
+                      setToxicWaterExposure(0);
                       const engine = engineRef.current;
                       if (!engine) return;
 
-                      if (engine.level === 0 || engine.level === 1) {
+                      if (engine.level === 0 || engine.level === 1 || engine.level === 2 || engine.level === 6) {
                         // Ask the server to advance the whole room together instead
                         // of transitioning just this client: previously each player
                         // who found the exit noclipped into their own next level,
@@ -496,10 +515,14 @@ export default function App() {
                         // transition now runs for every player (this one included)
                         // when the server's "level_transition" broadcast comes back
                         // — see that handler below.
+                        // Progression: 0 -> 1 -> 2 -> 6 (LEVEL 4) -> 7 (LEVEL 5, the
+                        // real final escape) -> ESCAPED. 3 ("Lights Out") and 4
+                        // ("Level G") are secret detours with their own endings,
+                        // reached via onSecretLevelFound below, not this chain.
                         if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
                           socketRef.current.send(JSON.stringify({
                             type: "level_transition_request",
-                            level: engine.level + 1,
+                            level: engine.level === 2 ? 6 : engine.level === 6 ? 7 : engine.level + 1,
                           }));
                         }
                       } else {
@@ -569,6 +592,7 @@ export default function App() {
                     },
                     onLevelGProgress: (progress) => setLevelGProgress(progress),
                     onRedRoomExposureChange: (exp) => setRedRoomExposure(exp),
+                    onToxicWaterExposureChange: (exp) => setToxicWaterExposure(exp),
                     onHUDNotification: (msg) => triggerNotification(msg),
                     onSectorChange: (sec) => setCurrentSector(sec),
                     onInventoryChange: (items) => setInventory(items),
@@ -824,6 +848,10 @@ export default function App() {
             engineRef.current?.handleLevelGCodeRequest(data);
           }
 
+          else if (type === "valve_turn") {
+            engineRef.current?.handleValveTurn(data.index);
+          }
+
           else if (type === "chat_message") {
             const { sender, text } = data;
             const timeStr = new Date().toLocaleTimeString(localeTag(), { hour: "2-digit", minute: "2-digit" });
@@ -977,10 +1005,20 @@ export default function App() {
 
           {/* Creeping Crimson Silent Hazard Vignette */}
           {currentLevel === 0 && redRoomExposure > 0 && (
-            <div 
+            <div
               className="absolute inset-0 pointer-events-none z-30 transition-all duration-300 ease-out"
               style={{
                 background: `radial-gradient(circle, rgba(0,0,0,0) 35%, rgba(120,4,4,${Math.min(0.85, 0.15 + (redRoomExposure / 60) * 0.7)}) 100%)`
+              }}
+            />
+          )}
+
+          {/* Hydrolitis Plague toxic water vignette (Level 7) */}
+          {currentLevel === 7 && toxicWaterExposure > 0 && (
+            <div
+              className="absolute inset-0 pointer-events-none z-30 transition-all duration-300 ease-out"
+              style={{
+                background: `radial-gradient(circle, rgba(0,0,0,0) 30%, rgba(74,140,26,${Math.min(0.9, 0.2 + (toxicWaterExposure / 8) * 0.7)}) 100%)`
               }}
             />
           )}
@@ -1219,7 +1257,7 @@ export default function App() {
                     {t("loading.init")}
                   </div>
                    <h2 className="text-lg font-black tracking-widest text-[#deb81d] uppercase select-none flex items-center justify-between">
-                    <span>{t("loading.decompress", { name: currentLevel === 3 ? "6 · LIGHTS OUT" : currentLevel === 5 ? "LOBBY" : String(currentLevel) })}</span>
+                    <span>{t("loading.decompress", { name: displayLabelForLevel(currentLevel) })}</span>
                     <span className="text-[#a28e3b] text-sm font-semibold">{loadingProgress}%</span>
                   </h2>
                 </div>

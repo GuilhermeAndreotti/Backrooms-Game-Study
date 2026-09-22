@@ -516,6 +516,17 @@ async function startServer() {
         return;
       }
 
+      // Level 7: a player turned one of the 3 valves. Idempotent state (no
+      // authority gate needed, unlike levelg_code's AI-driving decision) —
+      // just relay it to the rest of the level, same shape as box_push.
+      if (type === "valve_turn") {
+        const level = conn.player.level;
+        const index = data.index;
+        if (level !== 7 || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 5) return;
+        broadcastToLevel(room, level, { type: "valve_turn", level, index }, conn);
+        return;
+      }
+
       // Level G: a non-authority player typed a code into the terminal. The
       // authority decides (alarm for everyone, or sets the monster on them).
       if (type === "levelg_code") {
