@@ -2545,6 +2545,7 @@ export class GameEngine {
     if (this.valvesTurned.size >= total) {
       this.map?.toxicWaterCells.clear();
       this.onHUDNotification?.(t("eng.valveAllTurned"));
+      unlockAchievement("valves_drained");
     } else {
       this.onHUDNotification?.(t("eng.valveTurn", { n: this.valvesTurned.size, total }));
     }

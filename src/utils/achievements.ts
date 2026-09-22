@@ -78,6 +78,13 @@ export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
     description: "",
     iconName: "Trophy",
     unlocked: false,
+  },
+  {
+    id: "valves_drained",
+    title: "",
+    description: "",
+    iconName: "Lock",
+    unlocked: false,
   }
 ];
 
