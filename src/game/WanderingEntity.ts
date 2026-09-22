@@ -110,28 +110,7 @@ export class WanderingEntity {
    * Assigns default speeds based on lore
    */
   private resetBaseSpeed() {
-    const def = MOB_DEFS[this.type];
-    if (def) { this.moveSpeed = def.baseSpeed; return; }
-    switch (this.type) {
-      case EntityType.DULLER:
-        this.moveSpeed = 1.1;
-        break;
-      case EntityType.HOUND:
-        this.moveSpeed = 1.25;
-        break;
-      case EntityType.CLUMP:
-        this.moveSpeed = 1.4;
-        break;
-      case EntityType.SKIN_STEALER:
-        this.moveSpeed = 1.1;
-        break;
-      case EntityType.WRETCH:
-        this.moveSpeed = 1.45;
-        break;
-      case EntityType.FINGER_KING:
-        this.moveSpeed = 1.0;
-        break;
-    }
+    this.moveSpeed = MOB_DEFS[this.type].baseSpeed;
   }
 
   // ---------------------------------------------------------------------
@@ -204,19 +183,7 @@ export class WanderingEntity {
 
   private createVisualMesh(): THREE.Group {
     const group = new THREE.Group();
-    const def = MOB_DEFS[this.type];
-    if (def) {
-      def.build(this.buildCtx(group));
-    } else {
-      switch (this.type) {
-        case EntityType.DULLER: this.buildDuller(group); break;
-        case EntityType.HOUND: this.buildHound(group); break;
-        case EntityType.CLUMP: this.buildClump(group); break;
-        case EntityType.SKIN_STEALER: this.buildSkinStealer(group); break;
-        case EntityType.WRETCH: this.buildWretch(group); break;
-        case EntityType.FINGER_KING: this.buildFingerKing(group); break;
-      }
-    }
+    MOB_DEFS[this.type].build(this.buildCtx(group));
     group.castShadow = true;
 
     // Small floating text sprite for the speech bubble — the only thing that
@@ -235,237 +202,7 @@ export class WanderingEntity {
 
   /** How high above this type's local origin (baseHeight) the speech bubble floats. */
   private speechBubbleLocalY(): number {
-    const def = MOB_DEFS[this.type];
-    if (def) return def.speechBubbleLocalY;
-    switch (this.type) {
-      case EntityType.DULLER: return 0.75;
-      case EntityType.HOUND: return 0.55;
-      case EntityType.CLUMP: return 0.7;
-      case EntityType.FINGER_KING: return 1.1;
-      default: return 0.9;
-    }
-  }
-
-  // --- Per-type bodies -----------------------------------------------------
-
-  /** Gaunt noclip shadow: thin dark humanoid, blue rim glow, limbs splayed as if mid-crawl. */
-  private buildDuller(group: THREE.Group) {
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x0c1220, emissive: 0x1d4ed8, emissiveIntensity: 0.55,
-      roughness: 0.6, metalness: 0.1, transparent: true, opacity: 0.82,
-    });
-    this.tintMaterials.push(mat);
-
-    group.add(this.limbBetween(mat, this.V(0, 0.35, 0), this.V(0, -0.35, 0), 0.11)); // spine
-    // Arms, bent and trailing
-    group.add(this.limbBetween(mat, this.V(0, 0.3, 0), this.V(-0.32, 0.05, 0.1), 0.05));
-    group.add(this.limbBetween(mat, this.V(-0.32, 0.05, 0.1), this.V(-0.22, -0.25, 0.2), 0.045));
-    group.add(this.limbBetween(mat, this.V(0, 0.3, 0), this.V(0.32, 0.05, 0.1), 0.05));
-    group.add(this.limbBetween(mat, this.V(0.32, 0.05, 0.1), this.V(0.22, -0.25, 0.2), 0.045));
-    // Legs, dangling loosely below (Duller floats, feet don't touch ground)
-    group.add(this.limbBetween(mat, this.V(0, -0.35, 0), this.V(-0.2, -0.75, 0.05), 0.06));
-    group.add(this.limbBetween(mat, this.V(0, -0.35, 0), this.V(0.2, -0.75, 0.05), 0.06));
-
-    const head = new THREE.Mesh(this.sgeo("duller_head", () => new THREE.SphereGeometry(0.15, 10, 8)), mat);
-    head.position.set(0, 0.53, 0);
-    group.add(head);
-  }
-
-  /** Crawling feral dog-thing: low horizontal body, matted head, glowing eyes, red jaw. */
-  private buildHound(group: THREE.Group) {
-    const bodyMat = this.smat("hound_body", () => new THREE.MeshStandardMaterial({ color: 0x0e0e0e, roughness: 0.95 }));
-    group.add(this.limbBetween(bodyMat, this.V(-0.32, 0.02, -0.22), this.V(0.3, 0.05, 0.22), 0.17, 0.9));
-    // 4 crooked legs
-    const legs: [THREE.Vector3, THREE.Vector3][] = [
-      [this.V(-0.28, -0.05, -0.2), this.V(-0.38, -0.75, -0.28)],
-      [this.V(-0.1, -0.02, -0.25), this.V(-0.16, -0.75, -0.35)],
-      [this.V(0.14, -0.02, 0.22), this.V(0.22, -0.7, 0.32)],
-      [this.V(0.3, 0.0, 0.18), this.V(0.42, -0.72, 0.26)],
-    ];
-    for (const [a, b] of legs) group.add(this.limbBetween(bodyMat, a, b, 0.05));
-
-    const headMat = this.smat("hound_head", () => new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 1.0 }));
-    const head = new THREE.Mesh(this.sgeo("hound_head_geo", () => new THREE.IcosahedronGeometry(0.19, 0)), headMat);
-    head.position.set(-0.4, 0.12, -0.24);
-    group.add(head);
-
-    const eyeMat = this.smat("hound_eye", () => new THREE.MeshStandardMaterial({ color: 0xfef08a, emissive: 0xeab308, emissiveIntensity: 1.4 }));
-    const eyeGeo = this.sgeo("hound_eye_geo", () => new THREE.SphereGeometry(0.022, 6, 6));
-    const eyeL = new THREE.Mesh(eyeGeo, eyeMat); eyeL.position.set(-0.46, 0.15, -0.14); group.add(eyeL);
-    const eyeR = new THREE.Mesh(eyeGeo, eyeMat); eyeR.position.set(-0.46, 0.15, -0.34); group.add(eyeR);
-
-    const jawMat = this.smat("hound_jaw", () => new THREE.MeshStandardMaterial({ color: 0x7f1d1d, roughness: 0.8 }));
-    const jaw = new THREE.Mesh(this.sgeo("hound_jaw_geo", () => new THREE.BoxGeometry(0.08, 0.05, 0.13)), jawMat);
-    jaw.position.set(-0.52, 0.06, -0.24);
-    group.add(jaw);
-  }
-
-  /** Fleshy core with a burst of thin spike-limbs — a rolling clump of tumbling appendages. */
-  private buildClump(group: THREE.Group) {
-    const coreMat = this.smat("clump_core", () => new THREE.MeshStandardMaterial({ color: 0x1e0b12, emissive: 0x4a1029, emissiveIntensity: 0.35, roughness: 0.8 }));
-    const core = new THREE.Mesh(this.sgeo("clump_core_geo", () => new THREE.SphereGeometry(0.34, 12, 10)), coreMat);
-    group.add(core);
-
-    const spikeMat = this.smat("clump_spike", () => new THREE.MeshStandardMaterial({ color: 0x2e111a, roughness: 0.9 }));
-    const clawMat = this.smat("clump_claw", () => new THREE.MeshStandardMaterial({ color: 0x4a1d2d, roughness: 0.7 }));
-    const clawGeo = this.sgeo("clump_claw_geo", () => new THREE.SphereGeometry(0.035, 6, 6));
-
-    const SPIKES = 18;
-    for (let i = 0; i < SPIKES; i++) {
-      // Deterministic even spread (golden-angle spiral over the sphere) so every
-      // Clump looks the same instead of a fresh random burst each frame.
-      const t = i / SPIKES;
-      const theta = Math.acos(1 - 2 * t);
-      const phi = Math.PI * (1 + Math.sqrt(5)) * i;
-      const dir = this.V(Math.sin(theta) * Math.cos(phi), Math.cos(theta), Math.sin(theta) * Math.sin(phi));
-      const len = 0.3 + ((i * 37) % 10) / 40; // 0.3 - 0.55, stable per-index jitter
-      const start = dir.clone().multiplyScalar(0.3);
-      const end = dir.clone().multiplyScalar(0.3 + len);
-      group.add(this.limbBetween(spikeMat, start, end, 0.028));
-      const claw = new THREE.Mesh(clawGeo, clawMat);
-      claw.position.copy(end);
-      group.add(claw);
-    }
-  }
-
-  /** Lanky humanoid in a stained hazmat-yellow suit; retints darker and grows red eyes once agitated. */
-  private buildSkinStealer(group: THREE.Group) {
-    const suitMat = new THREE.MeshStandardMaterial({ color: 0xb39a3c, roughness: 0.85 });
-    this.tintMaterials.push(suitMat);
-
-    const torso = new THREE.Mesh(this.sgeo("stealer_torso", () => new THREE.CylinderGeometry(0.19, 0.23, 0.55, 8)), suitMat);
-    torso.position.set(0, -0.1, 0);
-    group.add(torso);
-
-    // Arms — left notably longer, per the original design
-    group.add(this.limbBetween(suitMat, this.V(-0.17, 0.1, 0), this.V(-0.55, -0.35, 0.05), 0.055));
-    group.add(this.limbBetween(suitMat, this.V(-0.55, -0.35, 0.05), this.V(-0.62, -0.8, 0.08), 0.045));
-    group.add(this.limbBetween(suitMat, this.V(0.17, 0.1, 0), this.V(0.5, -0.15, 0), 0.055));
-    group.add(this.limbBetween(suitMat, this.V(0.5, -0.15, 0), this.V(0.6, -0.62, 0), 0.045));
-    // Legs
-    group.add(this.limbBetween(suitMat, this.V(-0.1, -0.38, 0), this.V(-0.14, -1.3, 0), 0.07));
-    group.add(this.limbBetween(suitMat, this.V(0.1, -0.38, 0), this.V(0.14, -1.3, 0), 0.07));
-
-    const headMat = this.smat("stealer_head", () => new THREE.MeshStandardMaterial({ color: 0xe5e1da, roughness: 0.6 }));
-    const head = new THREE.Mesh(this.sgeo("stealer_head_geo", () => new THREE.SphereGeometry(0.16, 10, 8)), headMat);
-    head.position.set(0, 0.38, 0);
-    group.add(head);
-
-    // Sagging hood — a squashed half-dome sitting slightly back on the head
-    const hoodMat = this.smat("stealer_hood", () => new THREE.MeshStandardMaterial({ color: 0x85722b, roughness: 0.9, side: THREE.DoubleSide }));
-    const hood = new THREE.Mesh(this.sgeo("stealer_hood_geo", () => new THREE.SphereGeometry(0.19, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.6)), hoodMat);
-    hood.position.set(0, 0.42, -0.02);
-    hood.rotation.x = 0.15;
-    group.add(hood);
-
-    const eyeGeo = this.sgeo("stealer_eye_geo", () => new THREE.SphereGeometry(0.022, 6, 6));
-    const calmMat = this.smat("stealer_calm_eye", () => new THREE.MeshStandardMaterial({ color: 0x0c0a09 }));
-    const calm = new THREE.Group();
-    const cL = new THREE.Mesh(eyeGeo, calmMat); cL.position.set(-0.05, 0.4, 0.14); calm.add(cL);
-    const cR = new THREE.Mesh(eyeGeo, calmMat); cR.position.set(0.05, 0.4, 0.14); calm.add(cR);
-    group.add(calm);
-    this.calmEyes = calm;
-
-    const hostileMat = this.smat("stealer_hostile_eye", () => new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0xff0000, emissiveIntensity: 1.6 }));
-    const hostile = new THREE.Group();
-    const hL = new THREE.Mesh(eyeGeo, hostileMat); hL.position.set(-0.05, 0.4, 0.14); hostile.add(hL);
-    const hR = new THREE.Mesh(eyeGeo, hostileMat); hR.position.set(0.05, 0.4, 0.14); hostile.add(hR);
-    hostile.visible = false;
-    group.add(hostile);
-    this.hostileEyes = hostile;
-  }
-
-  /** Hunched, skeletal, sprinting — a red raw-skinned figure with a screaming skull head. */
-  private buildWretch(group: THREE.Group) {
-    const skinMat = this.smat("wretch_skin", () => new THREE.MeshStandardMaterial({ color: 0x7f1d1d, roughness: 0.85 }));
-    // Hunched spine: pelvis low and back, curving up and forward to the head
-    group.add(this.limbBetween(skinMat, this.V(0, -0.55, 0.1), this.V(-0.05, -0.05, -0.05), 0.11));
-    group.add(this.limbBetween(skinMat, this.V(-0.05, -0.05, -0.05), this.V(0, 0.35, -0.15), 0.09));
-    // Reaching claws
-    group.add(this.limbBetween(skinMat, this.V(-0.03, 0.15, -0.1), this.V(-0.42, 0.05, -0.3), 0.05));
-    group.add(this.limbBetween(skinMat, this.V(-0.42, 0.05, -0.3), this.V(-0.6, -0.1, -0.42), 0.04));
-    group.add(this.limbBetween(skinMat, this.V(0, 0.0, -0.08), this.V(0.35, -0.15, 0.1), 0.05));
-    group.add(this.limbBetween(skinMat, this.V(0.35, -0.15, 0.1), this.V(0.5, -0.42, 0.22), 0.04));
-    // Sprinting legs
-    group.add(this.limbBetween(skinMat, this.V(-0.06, -0.6, 0.12), this.V(-0.16, -1.3, 0.05), 0.065));
-    group.add(this.limbBetween(skinMat, this.V(0.06, -0.6, 0.1), this.V(0.2, -1.3, 0.2), 0.065));
-
-    const headMat = this.smat("wretch_head", () => new THREE.MeshStandardMaterial({ color: 0x581c1c, roughness: 0.9 }));
-    const head = new THREE.Mesh(this.sgeo("wretch_head_geo", () => new THREE.SphereGeometry(0.14, 10, 8)), headMat);
-    head.position.set(0, 0.48, -0.18);
-    group.add(head);
-
-    const jawMat = this.smat("wretch_jaw", () => new THREE.MeshStandardMaterial({ color: 0x020101, roughness: 1.0 }));
-    const jaw = new THREE.Mesh(this.sgeo("wretch_jaw_geo", () => new THREE.SphereGeometry(0.04, 6, 6)), jawMat);
-    jaw.position.set(0, 0.42, -0.28);
-    jaw.scale.set(0.8, 1.4, 1);
-    group.add(jaw);
-
-    const eyeMat = this.smat("wretch_eye", () => new THREE.MeshStandardMaterial({ color: 0xf59e0b, emissive: 0xf59e0b, emissiveIntensity: 1.4 }));
-    const eyeGeo = this.sgeo("wretch_eye_geo", () => new THREE.SphereGeometry(0.02, 6, 6));
-    const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(-0.06, 0.51, -0.28); group.add(eL);
-    const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.06, 0.51, -0.28); group.add(eR);
-  }
-
-  /** Tall, gaunt, office-grey figure: stilt legs, finger-hands dragging the floor, a crown of fingers. */
-  private buildFingerKing(group: THREE.Group) {
-    const suitMat = this.smat("king_suit", () => new THREE.MeshStandardMaterial({ color: 0x2b2d31, roughness: 0.7 }));
-    const torso = new THREE.Mesh(this.sgeo("king_torso", () => new THREE.CylinderGeometry(0.14, 0.2, 0.62, 6)), suitMat);
-    torso.position.set(0, 0.35, 0);
-    group.add(torso);
-
-    const tieMat = this.smat("king_tie", () => new THREE.MeshStandardMaterial({ color: 0x7f1d1d, roughness: 0.6 }));
-    const tie = new THREE.Mesh(this.sgeo("king_tie_geo", () => new THREE.BoxGeometry(0.05, 0.5, 0.02)), tieMat);
-    tie.position.set(0, 0.38, 0.15);
-    group.add(tie);
-
-    // Stilt legs — this creature reads as unnaturally tall
-    group.add(this.limbBetween(suitMat, this.V(-0.08, 0.04, 0), this.V(-0.1, -1.35, 0), 0.06));
-    group.add(this.limbBetween(suitMat, this.V(0.08, 0.04, 0), this.V(0.1, -1.35, 0), 0.06));
-
-    const skinMat = this.smat("king_skin", () => new THREE.MeshStandardMaterial({ color: 0xd8cfc2, roughness: 0.55 }));
-    const knuckleGeo = this.sgeo("king_knuckle_geo", () => new THREE.SphereGeometry(0.015, 5, 5));
-    const knuckleMat = this.smat("king_knuckle", () => new THREE.MeshStandardMaterial({ color: 0x8f8373, roughness: 0.6 }));
-
-    // Arms ending in a hand of 5 long, impossibly jointed fingers dragging near the floor
-    for (const side of [-1, 1]) {
-      const shoulder = this.V(side * 0.15, 0.55, 0);
-      const wrist = this.V(side * 0.42, -0.15, 0.05);
-      group.add(this.limbBetween(suitMat, shoulder, wrist, 0.045));
-      for (let f = 0; f < 5; f++) {
-        const spread = (f - 2) * 0.05;
-        const fingerEnd = this.V(wrist.x + side * (0.15 + f * 0.03), -1.3 + Math.abs(f - 2) * 0.05, wrist.z + spread * 2);
-        group.add(this.limbBetween(skinMat, wrist, fingerEnd, 0.014, 0.6));
-        const knuckle = new THREE.Mesh(knuckleGeo, knuckleMat);
-        knuckle.position.copy(wrist).lerp(fingerEnd, 0.55);
-        group.add(knuckle);
-      }
-    }
-
-    const head = new THREE.Mesh(this.sgeo("king_head_geo", () => new THREE.SphereGeometry(0.15, 10, 10)), skinMat);
-    head.position.set(0, 0.82, 0);
-    head.scale.set(0.85, 1.35, 0.95);
-    group.add(head);
-
-    // Crown of upright fingers
-    const nailMat = this.smat("king_nail", () => new THREE.MeshStandardMaterial({ color: 0xe9e2d6, roughness: 0.5 }));
-    const nailGeo = this.sgeo("king_nail_geo", () => new THREE.SphereGeometry(0.012, 5, 5));
-    for (let f = 0; f < 7; f++) {
-      const off = (f - 3) / 3; // -1..1
-      const base = this.V(off * 0.11, 1.0, 0);
-      const tip = this.V(off * 0.13, 1.22 - Math.abs(off) * 0.08, 0);
-      group.add(this.limbBetween(skinMat, base, tip, 0.011, 0.6));
-      const nail = new THREE.Mesh(nailGeo, nailMat);
-      nail.position.copy(tip);
-      group.add(nail);
-    }
-
-    const eyeGeo = this.sgeo("king_eye_geo", () => new THREE.SphereGeometry(0.018, 6, 6));
-    const eyeMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, emissive: 0x000000, emissiveIntensity: 0 });
-    this.tintMaterials.push(eyeMat);
-    const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(-0.045, 0.83, 0.11); group.add(eL);
-    const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.045, 0.83, 0.11); group.add(eR);
-    this.kingEyeMaterial = eyeMat;
+    return MOB_DEFS[this.type].speechBubbleLocalY;
   }
 
   /** Only meaningful for Finger King — its eye material, retinted red while chasing/hunting. */
@@ -532,17 +269,7 @@ export class WanderingEntity {
     const wz = this.gridZ * cSize + cSize / 2;
     
     // Set elevation: Duller hovers slightly floating; Clump/Hound crouch low to ground
-    const def = MOB_DEFS[this.type];
-    let ey = def ? def.baseHeight : 1.35;
-    if (!def) {
-      if (this.type === EntityType.DULLER) {
-        ey = 1.48; // Floating ghostly phantom
-      } else if (this.type === EntityType.HOUND) {
-        ey = 1.05; // crawling dog
-      } else if (this.type === EntityType.CLUMP) {
-        ey = 1.12; // ball of tumbling limbs
-      }
-    }
+    let ey = MOB_DEFS[this.type].baseHeight;
 
     // Level 1's sectors are real stacked storeys — stand on this cell's floor.
     ey += this.map.getFloorHeightAt(wx, wz);
@@ -641,25 +368,10 @@ export class WanderingEntity {
     this.glitchTimer += delta;
 
     const animDef = MOB_DEFS[this.type];
-    let bobFreq = 3.8;
-    let bobAmp = 0.08;
-    if (animDef) {
-      bobFreq = animDef.bobFreq; bobAmp = animDef.bobAmp;
-    } else if (this.type === EntityType.HOUND) {
-      bobFreq = 5.5; bobAmp = 0.04; // Fast canine shivering
-    } else if (this.type === EntityType.CLUMP) {
-      bobFreq = 2.4; bobAmp = 0.12; // Tumbling heavy rolling motion
-    } else if (this.type === EntityType.DULLER) {
-      bobFreq = 1.8; bobAmp = 0.15; // Silent floating hover
-    }
-
+    const bobFreq = animDef.bobFreq;
+    const bobAmp = animDef.bobAmp;
     const bobOffset = Math.sin(this.bobTime * bobFreq) * bobAmp;
-
-    let baseHeight = 1.35;
-    if (animDef) baseHeight = animDef.baseHeight;
-    else if (this.type === EntityType.DULLER) baseHeight = 1.48;
-    else if (this.type === EntityType.HOUND) baseHeight = 1.05;
-    else if (this.type === EntityType.CLUMP) baseHeight = 1.12;
+    const baseHeight = animDef.baseHeight;
 
     const floorY = this.map.getFloorHeightAt(this.mesh.position.x, this.mesh.position.z);
     this.mesh.position.y = floorY + baseHeight + bobOffset;
@@ -687,7 +399,7 @@ export class WanderingEntity {
    */
   private updateVisualState() {
     const visDef = MOB_DEFS[this.type];
-    if (visDef && visDef.updateVisual) {
+    if (visDef.updateVisual) {
       visDef.updateVisual({
         isAgitated: this.isAgitated,
         isChasing: this.isChasing,
@@ -697,17 +409,6 @@ export class WanderingEntity {
         tintMaterials: this.tintMaterials,
         kingEyeMaterial: this.kingEyeMaterial,
       });
-    } else if (this.type === EntityType.SKIN_STEALER && this.calmEyes && this.hostileEyes) {
-      this.calmEyes.visible = !this.isAgitated;
-      this.hostileEyes.visible = this.isAgitated;
-      const tint = this.isAgitated ? 0x3f320b : 0xb39a3c;
-      this.tintMaterials.forEach((m) => { m.color.setHex(tint); m.needsUpdate = true; });
-    } else if (this.type === EntityType.FINGER_KING && this.kingEyeMaterial) {
-      const active = this.isChasing || this.hunting;
-      this.kingEyeMaterial.color.setHex(active ? 0xef4444 : 0x0a0a0a);
-      this.kingEyeMaterial.emissive.setHex(active ? 0xff0000 : 0x000000);
-      this.kingEyeMaterial.emissiveIntensity = active ? 1.6 : 0;
-      this.kingEyeMaterial.needsUpdate = true;
     }
     this.redrawSpeechBubble();
   }
@@ -769,63 +470,11 @@ export class WanderingEntity {
 
       // Formulate custom Portuguese lore subtitles based on proximity & type
       const speechDef = MOB_DEFS[this.type];
-      if (speechDef && speechDef.speech) {
+      if (speechDef.speech) {
         const ctx = this.senseCtx(delta, distanceMeters, playerX, playerZ, playerState, cameraDir, isFlashlightOn);
         const result = speechDef.speech(ctx);
         this.currentSpeechText = result.key;
         if (result.agitated !== undefined) this.isAgitated = result.agitated;
-      } else if (this.type === EntityType.SKIN_STEALER) {
-        if (distanceMeters > 5.5) {
-          // Innocent explorer mimicking phrases
-          this.isAgitated = false;
-          const mimics = [0, 1, 2, 3, 4, 5].map((n) => `sp.stealer.m${n}`);
-          this.currentSpeechText = mimics[Math.floor(Math.random() * mimics.length)];
-          this.moveSpeed = 1.0; // Slow friendly pace
-        } else {
-          // Angry morph trigger close-up!
-          if (!this.isAgitated) {
-            this.isAgitated = true;
-            console.warn("[Skin-Stealer] Mask slipped! Attacking voyager.");
-          }
-          const hostiles = [0, 1, 2, 3, 4].map((n) => `sp.stealer.h${n}`);
-          this.currentSpeechText = hostiles[Math.floor(Math.random() * hostiles.length)];
-          this.moveSpeed = 3.1; // Aggressive lunge speed!
-        }
-      } else if (this.type === EntityType.HOUND) {
-        if (this.intimidatedTimer > 0.1) {
-          this.currentSpeechText = "sp.hound.scared";
-        } else if (this.isChasing) {
-          this.currentSpeechText = "sp.hound.chase";
-        } else {
-          this.currentSpeechText = "sp.hound.idle";
-        }
-      } else if (this.type === EntityType.DULLER) {
-        if (this.map.grid[this.gridX][this.gridZ] === CellType.SOLID) {
-          this.currentSpeechText = "sp.duller.wall";
-        } else {
-          this.currentSpeechText = "...";
-        }
-      } else if (this.type === EntityType.CLUMP) {
-        if (this.isChasing) {
-          this.currentSpeechText = "sp.clump.chase";
-        } else {
-          this.currentSpeechText = "sp.clump.idle";
-        }
-      } else if (this.type === EntityType.WRETCH) {
-        if (this.isChasing) {
-          this.currentSpeechText = "sp.wretch.chase";
-        } else {
-          this.currentSpeechText = "sp.wretch.idle";
-        }
-      } else if (this.type === EntityType.FINGER_KING) {
-        // Mostly silent — the taps (GameEngine) carry the warning, not text.
-        if (this.hunting) {
-          this.currentSpeechText = "sp.king.hunt";
-        } else if (this.isChasing) {
-          this.currentSpeechText = "sp.king.chase";
-        } else {
-          this.currentSpeechText = "";
-        }
       }
 
       // Re-render when label text rotates or morphs
@@ -843,131 +492,19 @@ export class WanderingEntity {
     if (this.map.level === 2 || this.map.level === 3) {
       this.isChasing = true;
       // Boost movement speeds dramatically on Level 2/3 to make it a fast, heart-pounding sprint chase!
-      if (senseDef) {
-        this.moveSpeed = senseDef.forcedChaseSpeed;
-        if (senseDef.forcedChaseAgitated) this.isAgitated = true;
-      } else if (this.type === EntityType.HOUND) {
-        this.moveSpeed = 3.65;
-      } else if (this.type === EntityType.CLUMP) {
-        this.moveSpeed = 3.3;
-      } else if (this.type === EntityType.DULLER) {
-        this.moveSpeed = 3.1;
-      } else if (this.type === EntityType.SKIN_STEALER) {
-        this.moveSpeed = 3.8;
-        this.isAgitated = true;
-      } else if (this.type === EntityType.WRETCH) {
-        this.moveSpeed = 3.4;
-      } else {
-        this.moveSpeed = 3.2;
-      }
+      this.moveSpeed = senseDef.forcedChaseSpeed;
+      if (senseDef.forcedChaseAgitated) this.isAgitated = true;
     } else {
       this.isChasing = false;
     }
 
     if (this.map.level !== 2 && this.map.level !== 3) {
-      if (senseDef) {
-        const ctx = this.senseCtx(delta, distanceMeters, playerX, playerZ, playerState, cameraDir, isFlashlightOn);
-        const result = senseDef.sense(ctx);
-        this.isChasing = result.chasing;
-        this.moveSpeed = result.speed;
-        if (result.agitated !== undefined) this.isAgitated = result.agitated;
-        if (result.scratch !== undefined) this.intimidatedTimer = result.scratch;
-      } else if (this.type === EntityType.HOUND) {
-        // Intimidation Gaze logic!
-        // Compute player gaze orientation against the Hound's relative direction
-        const pPos3 = new THREE.Vector3(playerX, 1.6, playerZ);
-        const toHoundDir = new THREE.Vector3().subVectors(this.mesh.position, pPos3).normalize();
-        
-        const isGazedAt = cameraDir ? cameraDir.dot(toHoundDir) > 0.81 : false;
-
-        if (isGazedAt && distanceMeters < 16.0) {
-          // Player maintains high-tension eye contact! Hound freezes or retreats
-          this.intimidatedTimer = 1.2; // freeze lingering
-          this.moveSpeed = 0.25; // Backs away very slowly
-          this.isChasing = false;
-        } else {
-          if (this.intimidatedTimer > 0.0) {
-            this.intimidatedTimer -= delta;
-          }
-
-          // Search trigger
-          if (distanceMeters < 15.0 && this.intimidatedTimer <= 0.0) {
-            this.isChasing = true;
-            this.moveSpeed = 3.25; // fast chase sprint!
-          } else {
-            this.moveSpeed = 1.25; // leisurely crawl pace
-          }
-        }
-      } 
-      
-      else if (this.type === EntityType.CLUMP) {
-        // Hearing mechanic! Has no eyes, scans by sounds
-        let localAlertRadius = 10.0;
-        if (playerState === "running") {
-          localAlertRadius = 24.0; // Hears distant sprinting boots
-          this.moveSpeed = 3.9;    // fast rush!
-          this.isChasing = distanceMeters <= localAlertRadius;
-        } else if (playerState === "crouching") {
-          localAlertRadius = 2.2;   // Stealth allows creeping around it safely
-          this.moveSpeed = 1.1;
-          this.isChasing = distanceMeters <= localAlertRadius;
-        } else {
-          localAlertRadius = 10.0;  // Standard walking pace
-          this.moveSpeed = 2.1;
-          this.isChasing = distanceMeters <= localAlertRadius;
-        }
-      }
-
-      else if (this.type === EntityType.DULLER) {
-        // Normal pacing, but wanders into walls
-        if (distanceMeters < 12.0) {
-          this.isChasing = true;
-          this.moveSpeed = 2.0;
-        } else {
-          this.moveSpeed = 1.1;
-        }
-      }
-
-      else if (this.type === EntityType.SKIN_STEALER) {
-        // Skin-Stealer locks onto player and rushes when agitated (< 5.5m)
-        if (this.isAgitated) {
-          this.isChasing = true;
-          this.moveSpeed = 3.1;
-        } else {
-          this.isChasing = false;
-          this.moveSpeed = 1.0;
-        }
-      }
-
-      else if (this.type === EntityType.WRETCH) {
-        // Relentless pursuer once spotted within 16 meters
-        if (distanceMeters < 16.0) {
-          this.isChasing = true;
-          this.moveSpeed = 2.45;
-        } else {
-          this.moveSpeed = 1.45;
-        }
-      }
-
-      else if (this.type === EntityType.FINGER_KING) {
-        // Senses further and moves faster the longer you stay on Level G.
-        // Never out-runs a sprinting explorer (4.2 m/s): the final chase is
-        // a race you can win, not a death sentence.
-        const senseRadius = 7 + 11 * this.aggression;
-        if (this.hunting) {
-          this.isChasing = true;
-          this.moveSpeed = 3.7;
-        } else if (this.targetHidden && distanceMeters > 2.2) {
-          this.isChasing = false;
-          this.moveSpeed = 1.0 + 0.8 * this.aggression;
-        } else if (distanceMeters < senseRadius) {
-          this.isChasing = true;
-          this.moveSpeed = 1.9 + 1.5 * this.aggression;
-        } else {
-          this.isChasing = false;
-          this.moveSpeed = 1.0 + 0.8 * this.aggression;
-        }
-      }
+      const ctx = this.senseCtx(delta, distanceMeters, playerX, playerZ, playerState, cameraDir, isFlashlightOn);
+      const result = senseDef.sense(ctx);
+      this.isChasing = result.chasing;
+      this.moveSpeed = result.speed;
+      if (result.agitated !== undefined) this.isAgitated = result.agitated;
+      if (result.scratch !== undefined) this.intimidatedTimer = result.scratch;
     }
 
     if (!this.isChasing && this.searchTimer > 0) this.searchTimer -= delta;
@@ -1233,11 +770,12 @@ export class WanderingEntity {
    * Builds a standalone copy of a monster's body — no AI, no map, not pooled —
    * for the lobby's SKIN cheat, where a player wears a monster's body instead
    * of the hazmat suit. `Object.create` skips the constructor (which needs a
-   * live ProceduralMap just to place itself); the build* methods only touch
-   * the class-wide geometry/material caches and a couple of per-instance
-   * fields, so a bare `tintMaterials` array is the only state they need.
+   * live ProceduralMap just to place itself); MobDefinition.build() only
+   * touches the class-wide geometry/material caches (via buildCtx) and a
+   * couple of per-instance fields, so a bare `tintMaterials` array is the
+   * only state they need.
    *
-   * Every geometry (and most materials) the build* methods use come from the
+   * Every geometry (and most materials) build() uses come from the
    * `sgeo`/`smat` class-wide caches — the same buffers live AI monsters of
    * that type are using right now — so the returned group must never be
    * disposed via a blind mesh traversal. `name` flags it for a caller doing
@@ -1250,19 +788,7 @@ export class WanderingEntity {
     proto.tintMaterials = [];
     proto.type = type;
     const group = new THREE.Group();
-    const def = MOB_DEFS[type];
-    if (def) {
-      def.build(proto.buildCtx(group));
-    } else {
-      switch (type) {
-        case EntityType.DULLER: proto.buildDuller(group); break;
-        case EntityType.HOUND: proto.buildHound(group); break;
-        case EntityType.CLUMP: proto.buildClump(group); break;
-        case EntityType.SKIN_STEALER: proto.buildSkinStealer(group); break;
-        case EntityType.WRETCH: proto.buildWretch(group); break;
-        case EntityType.FINGER_KING: proto.buildFingerKing(group); break;
-      }
-    }
+    MOB_DEFS[type].build(proto.buildCtx(group));
     group.name = "monsterSkinBody";
     group.userData.tintMaterials = proto.tintMaterials;
     return group;
@@ -1270,14 +796,7 @@ export class WanderingEntity {
 
   /** Height above the floor the type's body is centred at — mirrors syncWorldPosition's `ey`. */
   public static skinAnchorY(type: EntityType): number {
-    const def = MOB_DEFS[type];
-    if (def) return def.baseHeight;
-    switch (type) {
-      case EntityType.DULLER: return 1.48;
-      case EntityType.HOUND: return 1.05;
-      case EntityType.CLUMP: return 1.12;
-      default: return 1.35;
-    }
+    return MOB_DEFS[type].baseHeight;
   }
 
   /**

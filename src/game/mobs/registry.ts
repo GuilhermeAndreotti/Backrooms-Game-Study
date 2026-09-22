@@ -2,13 +2,11 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * The mob definition registry. Partial during the migration off the old
- * per-type switch/if-chains in WanderingEntity.ts (see git history): each
- * type moves over in its own commit, verified individually, with
- * WanderingEntity falling back to its legacy switch for any type not yet
- * present here. Once all types are migrated, this becomes a total
- * `Record<EntityType, MobDefinition>` (turning a missing type into a build
- * error) and the legacy switches are deleted in one cleanup commit.
+ * The mob definition registry — total: every EntityType must have a
+ * MobDefinition, so a new type added to the enum without one here is a
+ * build error, not a silently-broken mob (see WanderingEntity.ts's old
+ * per-type switch/if-chains this replaced, which had no such guarantee —
+ * an unhandled type there just never chased, with no error).
  */
 
 import { EntityType } from "../../shared/entityTypes";
@@ -18,11 +16,13 @@ import { skinStealer } from "./skinStealer";
 import { clump } from "./clump";
 import { wretch } from "./wretch";
 import { duller } from "./duller";
+import { fingerKing } from "./fingerKing";
 
-export const MOB_DEFS: Partial<Record<EntityType, MobDefinition>> = {
+export const MOB_DEFS: Record<EntityType, MobDefinition> = {
   [EntityType.HOUND]: hound,
   [EntityType.SKIN_STEALER]: skinStealer,
   [EntityType.CLUMP]: clump,
   [EntityType.WRETCH]: wretch,
   [EntityType.DULLER]: duller,
+  [EntityType.FINGER_KING]: fingerKing,
 };
