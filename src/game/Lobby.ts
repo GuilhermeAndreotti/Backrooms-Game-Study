@@ -2,10 +2,12 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * The room lobby ("level 5"): an open hall where explorers wait for the host to
- * start the expedition. It has a soccer field with a ball everybody can kick
- * and a trampoline. Everything here is plain props on top of the generic map
- * (which only carves the empty hall, see ProceduralMap.carveLobby).
+
+ * The room lobby ("level 5"): a small open-air field, roofless and walled only
+ * by the sky, where explorers wait for the host to start the expedition. It
+ * has a soccer field everybody can kick a ball around on. Everything here is
+ * plain props on top of the generic map (which only carves the empty plot and
+ * skips the walls/ceiling, see ProceduralMap.carveLobby / createCell3D).
  */
 
 import * as THREE from "three";
@@ -14,12 +16,11 @@ export const LOBBY_LEVEL = 5;
 
 /** Layout in world metres (the hall itself is grid cells 2..21 x 2..15, 4 m each). */
 export const LOBBY = {
-  field: { cx: 32, cz: 36, length: 40, width: 24 },
-  goalWidth: 7,
-  goalDepth: 2,
-  trampoline: { x: 70, z: 36, r: 3.2 },
-  spawnCell: { x: 17, z: 3 },
-  hall: { minCell: 2, maxCellX: 21, maxCellZ: 15 },
+  field: { cx: 20, cz: 20, length: 22, width: 14 },
+  goalWidth: 5,
+  goalDepth: 1.4,
+  spawnCell: { x: 10, z: 6 },
+  hall: { minCell: 2, maxCellX: 11, maxCellZ: 9 },
 };
 
 const BALL_RADIUS = 0.35;
@@ -47,7 +48,6 @@ export interface LobbyUpdateContext {
 export class Lobby {
   public group = new THREE.Group();
   private ball: THREE.Mesh;
-  private pad: THREE.Mesh;
 
   public x = LOBBY.field.cx;
   public z = LOBBY.field.cz;
@@ -63,13 +63,11 @@ export class Lobby {
 
   private kickCooldown = 0;
   private resetTimer = 0;
-  private bounceSquash = 0;
   private disposables: { dispose(): void }[] = [];
 
   constructor(scene: THREE.Scene) {
     this.buildField();
     this.buildGoals();
-    this.pad = this.buildTrampoline();
     this.buildBenches();
     this.ball = this.buildBall();
     scene.add(this.group);
@@ -158,37 +156,6 @@ export class Lobby {
     }
   }
 
-  private buildTrampoline(): THREE.Mesh {
-    const { x, z, r } = LOBBY.trampoline;
-    const frameMat = this.track(new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.5, metalness: 0.4 }));
-    const ring = new THREE.Mesh(this.track(new THREE.TorusGeometry(r, 0.14, 8, 40)), frameMat);
-    ring.rotation.x = Math.PI / 2;
-    ring.position.set(x, 0.2, z);
-    this.group.add(ring);
-
-    const padMat = this.track(new THREE.MeshStandardMaterial({ color: 0x0b0f1a, roughness: 0.9 }));
-    const pad = new THREE.Mesh(this.track(new THREE.CircleGeometry(r - 0.05, 40)), padMat);
-    pad.rotation.x = -Math.PI / 2;
-    pad.position.set(x, 0.21, z);
-    this.group.add(pad);
-
-    const markMat = this.track(new THREE.MeshBasicMaterial({ color: 0xffd60a, side: THREE.DoubleSide }));
-    const mark = new THREE.Mesh(this.track(new THREE.RingGeometry(0.9, 1.05, 32)), markMat);
-    mark.rotation.x = -Math.PI / 2;
-    mark.position.set(x, 0.215, z);
-    this.group.add(mark);
-
-    const legMat = this.track(new THREE.MeshStandardMaterial({ color: 0x222222 }));
-    const legGeo = this.track(new THREE.CylinderGeometry(0.08, 0.08, 0.2, 6));
-    for (let i = 0; i < 8; i++) {
-      const a = (i / 8) * Math.PI * 2;
-      const leg = new THREE.Mesh(legGeo, legMat);
-      leg.position.set(x + Math.cos(a) * r, 0.1, z + Math.sin(a) * r);
-      this.group.add(leg);
-    }
-    return pad;
-  }
-
   private buildBenches() {
     const woodMat = this.track(new THREE.MeshStandardMaterial({ color: 0x6b4a2b, roughness: 0.8 }));
     const seat = this.track(new THREE.BoxGeometry(4, 0.12, 0.6));
@@ -232,11 +199,6 @@ export class Lobby {
   }
 
   // --- simulation ---------------------------------------------------------
-
-  /** Trampoline pad reacts to a bounce (visual squash only). */
-  public squashPad() {
-    this.bounceSquash = 1;
-  }
 
   /** Puts a kick on the ball (called locally, and by the authority for teammates' kicks). */
   public applyKick(vx: number, vz: number) {
@@ -310,9 +272,6 @@ export class Lobby {
     }
     this.ball.position.set(this.x, BALL_RADIUS + 0.02, this.z);
 
-    // Trampoline pad squash decays.
-    this.bounceSquash = Math.max(0, this.bounceSquash - dt * 4);
-    this.pad.position.y = 0.21 - 0.12 * this.bounceSquash;
   }
 
   private simulate(dt: number, ctx: LobbyUpdateContext) {

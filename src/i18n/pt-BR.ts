@@ -432,7 +432,7 @@ export const ptBR = {
   "lobby.waitHost": "Aguardando o anfitrião iniciar a expedição...",
   "lobby.host": "anfitrião",
   "lobby.players": "No lobby: {n}/4",
-  "lobby.tips": "Chute a bola correndo contra ela • Pule no pula-pula segurando ESPAÇO • ESC libera o cursor",
+  "lobby.tips": "Chute a bola correndo contra ela • ESC libera o cursor",
   "hud.loc.5": "Lobby da Sala",
   "radar.title.5": "LOBBY DA SALA",
   "sys.resetLobby": "[GRUPO REINICIADO]: TODOS VOLTAM AO LOBBY.",
@@ -441,6 +441,7 @@ export const ptBR = {
   "pause.copyLink": "Copiar link",
   "radar.l5a": "LOBBY DA SALA",
   "radar.l5b": "STATUS: SEGURO",
+  "err.oldServer": "O servidor em execução é uma versão antiga (sem salas e lobby). Reinicie o servidor (npm run dev) e recarregue a página.",
 };
 
 export type MessageKey = keyof typeof ptBR;

@@ -52,8 +52,6 @@ export class PlayerController {
   public jumpVelocity = 0;
   private gravity = 15.0;
   public spacePressCount = 0;
-  /** Counts trampoline bounces; the engine reacts to each change (sound, pad squash). */
-  public bounceCount = 0;
   /** Horizontal velocity of the last frame (m/s), for kicking the lobby ball. */
   public velX = 0;
   public velZ = 0;
@@ -304,19 +302,6 @@ export class PlayerController {
       this.jumpVelocity = 4.8; // Vertical thrust force
       this.jumpOffset = 0.01;
       this.spacePressCount++; // Increment jump ticks for escaping
-    }
-
-    // Trampoline: landing on one throws you back up, higher if you hold jump.
-    if (this.jumpOffset <= 0.01 && !wantsCrouch && this.map.trampolines.length > 0) {
-      for (const tr of this.map.trampolines) {
-        const tx = this.position.x - tr.x, tz = this.position.z - tr.z;
-        if (tx * tx + tz * tz < tr.r * tr.r) {
-          this.jumpVelocity = spacePressed ? 7.4 : 5.4;
-          this.jumpOffset = 0.01;
-          this.bounceCount++;
-          break;
-        }
-      }
     }
 
     if (this.jumpOffset > 0) {

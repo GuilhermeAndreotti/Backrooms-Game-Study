@@ -58,8 +58,8 @@ const SANITY_DRAIN_SCALE = 0.6;
 /** Ambient light and fog per level, shared by level setup and the per-frame event code. */
 function levelAtmosphere(level: number) {
   switch (level) {
-    case LOBBY_LEVEL: // room lobby: bright and calm
-      return { ambientColor: 0xf1ead0, ambientIntensity: 1.5, fogColor: 0xd8d2b4, dimmedFogColor: 0x6a664f };
+    case LOBBY_LEVEL: // room lobby: open-air field under a clear blue sky
+      return { ambientColor: 0xfff6e0, ambientIntensity: 2.6, fogColor: 0x8fc7f0, dimmedFogColor: 0x4a6a8a };
     case 4: // Level G: dim, cold office under failing tubes
       return { ambientColor: 0x9aa4ad, ambientIntensity: 0.5, fogColor: 0x23272a, dimmedFogColor: 0x0b0c0d };
     case 3: // "Lights Out": all but pitch black — the waypoints and your flashlight are it
@@ -1443,19 +1443,17 @@ export class GameEngine {
   private noclipDwell = 0;
 
   // ---------------------------------------------------------------------------
-  // Room lobby (soccer field + trampoline)
+  // Room lobby (soccer field)
   // ---------------------------------------------------------------------------
 
   private lobby: Lobby | null = null;
   private lobbySendTimer = 0;
-  private lastBounceCount = 0;
 
   /** (Re)builds the lobby props when the current level is the lobby; tears them down otherwise. */
   private setupLobby() {
     if (this.lobby) { this.lobby.dispose(this.scene); this.lobby = null; }
     if (this.level === LOBBY_LEVEL) {
       this.lobby = new Lobby(this.scene);
-      this.lastBounceCount = this.player?.bounceCount ?? 0;
     }
   }
 
@@ -1474,12 +1472,6 @@ export class GameEngine {
         this.audio.playGlitchNoclipSound();
       },
     });
-
-    if (this.player.bounceCount !== this.lastBounceCount) {
-      this.lastBounceCount = this.player.bounceCount;
-      this.lobby.squashPad();
-      this.audio.playBoxPush();
-    }
 
     // The ball's authority streams it to everyone else in the lobby.
     if (authority && this.remoteStates.size > 0) {

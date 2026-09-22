@@ -434,7 +434,7 @@ export const enUS: Record<MessageKey, string> = {
   "lobby.waitHost": "Waiting for the host to start the expedition...",
   "lobby.host": "host",
   "lobby.players": "In the lobby: {n}/4",
-  "lobby.tips": "Kick the ball by running into it • Bounce on the trampoline holding SPACE • ESC frees the cursor",
+  "lobby.tips": "Kick the ball by running into it • ESC frees the cursor",
   "hud.loc.5": "Room Lobby",
   "radar.title.5": "ROOM LOBBY",
   "sys.resetLobby": "[GROUP RESET]: EVERYONE RETURNS TO THE LOBBY.",
@@ -443,4 +443,5 @@ export const enUS: Record<MessageKey, string> = {
   "pause.copyLink": "Copy link",
   "radar.l5a": "ROOM LOBBY",
   "radar.l5b": "STATUS: SAFE",
+  "err.oldServer": "The running server is an old version (no rooms or lobby). Restart the server (npm run dev) and reload the page.",
 };

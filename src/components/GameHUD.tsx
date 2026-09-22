@@ -170,7 +170,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
           <div className="text-[10px] text-[#a28e3b]/60 px-1 font-semibold uppercase tracking-wider flex items-center gap-2 flex-wrap max-w-lg">
             <span>{t("hud.explorer")} <span className="text-[#deb81d]">{playerName}</span></span>
             <span className="text-[#a28e3b]/30">•</span>
-            <span>{t("hud.location")} <span className="text-[#deb81d]">{level === 4 ? "LEVEL G (The Small Office)" : level === 3 ? "Level 6 (Lights Out)" : (level === 2 ? "Level 2 (Pipe Dreams)" : (level === 1 ? "Level 1 (Habitable Zone)" : "Level 0 (The Lobby)"))}</span></span>
+            <span>{t("hud.location")} <span className="text-[#deb81d]">{t(`hud.loc.${level}`)}</span></span>
             {(level === 1 || level === 4) && currentSector && (
               <>
                 <span className="text-[#a28e3b]/30">•</span>

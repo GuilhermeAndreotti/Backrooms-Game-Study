@@ -73,7 +73,7 @@ export const LEVEL_G_DOOR_OPEN_ANGLE = -Math.PI * 0.55;
 
 export function gridSizeForLevel(level: number): number {
   if (level === 4) return 18; // Level G: a small office, on purpose
-  if (level === LOBBY_LEVEL) return 24; // the room lobby
+  if (level === LOBBY_LEVEL) return 16; // the room lobby: small, open-air
   return level === 0 ? 64 : 48;
 }
 
@@ -216,8 +216,6 @@ export class ProceduralMap {
   /** Where explorers appear (grid cell). The lobby moves it off the corner. */
   public spawnGridX = 2;
   public spawnGridZ = 2;
-  /** Trampolines (world XZ + radius): standing on one makes the player bounce. */
-  public trampolines: { x: number; z: number; r: number }[] = [];
   public exitGridX = 0;
   public exitGridZ = 0;
 
@@ -581,15 +579,18 @@ export class ProceduralMap {
       }
     });
 
-    // Populate extra random damp spots around Level 1 / Level 0 to maintain cohesive thematic environment of moist carpets / concrete
-    const leakRng = new SeededRandom(this.seed + 999);
-    for (let x = 2; x < this.gridSize - 2; x++) {
-      for (let z = 2; z < this.gridSize - 2; z++) {
-        if (this.grid[x][z] !== CellType.SOLID && !this.wetSpills.has(`${x},${z}`)) {
-          const isLevel1Aquila = (this.level === 1 && x < 24 && z < 24);
-          const threshold = isLevel1Aquila ? 0.78 : 0.93; // 22% rate in Aquila Sector, 7% elsewhere!
-          if (leakRng.next() > threshold) {
-            this.wetSpills.add(`${x},${z}`);
+    // Populate extra random damp spots around Level 1 / Level 0 to maintain cohesive thematic environment of moist carpets / concrete.
+    // The room lobby is an open-air field — no carpet, no ceiling to drip from.
+    if (this.level !== LOBBY_LEVEL) {
+      const leakRng = new SeededRandom(this.seed + 999);
+      for (let x = 2; x < this.gridSize - 2; x++) {
+        for (let z = 2; z < this.gridSize - 2; z++) {
+          if (this.grid[x][z] !== CellType.SOLID && !this.wetSpills.has(`${x},${z}`)) {
+            const isLevel1Aquila = (this.level === 1 && x < 24 && z < 24);
+            const threshold = isLevel1Aquila ? 0.78 : 0.93; // 22% rate in Aquila Sector, 7% elsewhere!
+            if (leakRng.next() > threshold) {
+              this.wetSpills.add(`${x},${z}`);
+            }
           }
         }
       }
@@ -2378,7 +2379,7 @@ export class ProceduralMap {
     }
   }
 
-  /** The room lobby: one big open hall, no exit; props are added by Lobby. */
+  /** The room lobby: a small open-air plot, no exit; props are added by Lobby. */
   private carveLobby() {
     const h = LOBBY.hall;
     for (let x = h.minCell; x <= h.maxCellX; x++) {
@@ -2388,7 +2389,6 @@ export class ProceduralMap {
     this.exitGridZ = 0;
     this.spawnGridX = LOBBY.spawnCell.x;
     this.spawnGridZ = LOBBY.spawnCell.z;
-    this.trampolines = [{ x: LOBBY.trampoline.x, z: LOBBY.trampoline.z, r: LOBBY.trampoline.r }];
   }
 
   /** Hazard-striped floor for Level 1 "ramp" connector cells. */
@@ -2839,7 +2839,7 @@ export class ProceduralMap {
     }
 
     const hSize = this.cellSize;
-    const height = this.level === LOBBY_LEVEL ? 7.0 : 3.0; // Backrooms standard height: 3.0 meters (the lobby is tall enough to jump on a trampoline)
+    const height = 3.0; // Backrooms standard height: 3.0 meters
     const posX = gx * hSize + hSize / 2;
     const posZ = gz * hSize + hSize / 2;
     // This cell's floor elevation (0 except Level 1's stacked sectors/ramps).
@@ -2922,7 +2922,9 @@ export class ProceduralMap {
       }
     } else {
       const isRamp = this.level === 1 && this.rampCells.has(`${gx},${gz}`);
-      const mat = (cellType === CellType.RED_ROOM)
+      const mat = this.level === LOBBY_LEVEL
+        ? this.sharedMat("lobby_floor", () => new THREE.MeshStandardMaterial({ color: 0xcdbd93, roughness: 0.85 }))
+        : (cellType === CellType.RED_ROOM)
         ? this.redCarpetMaterial
         : (isRamp ? this.getRampFloorMaterial() : this.carpetMaterial);
       const floorMesh = new THREE.Mesh(this.floorGeo, mat);
@@ -2953,11 +2955,14 @@ export class ProceduralMap {
       }
     }
 
-    // 2. CEILING (Acoustic ceiling panels) - Use shared ceilGeo
-    const ceilMesh = new THREE.Mesh(this.ceilGeo, this.ceilingMaterial);
-    ceilMesh.position.set(posX, height, posZ);
-    ceilMesh.receiveShadow = true;
-    group.add(ceilMesh);
+    // 2. CEILING (Acoustic ceiling panels) - Use shared ceilGeo.
+    // The room lobby is open-air: sky overhead instead of a ceiling.
+    if (this.level !== LOBBY_LEVEL) {
+      const ceilMesh = new THREE.Mesh(this.ceilGeo, this.ceilingMaterial);
+      ceilMesh.position.set(posX, height, posZ);
+      ceilMesh.receiveShadow = true;
+      group.add(ceilMesh);
+    }
 
     // Aquila Sector: Small ceiling pipes leaking damp water on the floor
     if (this.level === 1 && gx < 24 && gz < 24) {
@@ -3079,6 +3084,10 @@ export class ProceduralMap {
     }
 
     // 3. WALLS - Evaluate cardinal neighbors. If the neighbor is SOLID, we build a wall panel!
+    // The room lobby skips this entirely: it's an open-air field bounded only
+    // by (invisible) collision at the plot's edge — sky in every direction,
+    // not a room. checkCollision still blocks the surrounding SOLID cells.
+    if (this.level !== LOBBY_LEVEL) {
     //
     // Level 1's stacked sectors/ramps mean two WALKABLE neighbors can still sit
     // at different floor heights (e.g. the 3-wide ramp band next to the flat
@@ -3192,6 +3201,7 @@ export class ProceduralMap {
     } else {
       buildStepRiser(gx + 1, gz, "x", 1);
     }
+    } // end: skipped entirely for the room lobby
 
     // 4. OPEN AREA - Columns / Pillars
     if (cellType === CellType.OPEN_AREA) {
@@ -3563,8 +3573,9 @@ export class ProceduralMap {
     // 6. FLUORESCENT LIGHT LUMINAIRE FIXTURE (Deterministic placement)
     // Place a fluorescent lightbox on the ceiling. (45% probability on corridor cells or room centers)
     // Level 3 ("Lights Out") never gets one — total darkness is the whole level.
-    // Level 1's secret dark corridor is force-excluded the same way.
-    const isForcedDark = this.level === 3 || this.forcedDarkCells.has(`${gx},${gz}`);
+    // Level 1's secret dark corridor is force-excluded the same way. The room
+    // lobby has no ceiling to hang one from — sunlight (ambient) is its light.
+    const isForcedDark = this.level === 3 || this.level === LOBBY_LEVEL || this.forcedDarkCells.has(`${gx},${gz}`);
     const lightRand = new SeededRandom(this.seed + gx * 7 + gz * 13);
     const shouldSpawnLight = !isForcedDark && (cellType === CellType.CORRIDOR
       ? lightRand.next() > 0.65

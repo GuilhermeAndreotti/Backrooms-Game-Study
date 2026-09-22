@@ -412,6 +412,14 @@ export default function App() {
 
           else if (type === "joined") {
             const { id: myId, seed, players: currentOn, level: roomLevel = 0, authority = {}, code: joinedCode = "", hostId: joinedHost = "" } = data;
+            // A server from before rooms/lobbies answers without an invite code
+            // (and drops you straight into Level 0): say so instead of playing on.
+            if (!joinedCode) {
+              setErrorMessage(t("err.oldServer"));
+              setPhase(ConnectionPhase.ERROR);
+              socket.close();
+              return;
+            }
             worldAuthorityRef.current = authority;
             console.log(`Infiltration confirmed! Seed acquired: ${seed}. Connecting visuals...`);
             setClientId(myId);
@@ -1175,7 +1183,7 @@ export default function App() {
                     {t("loading.init")}
                   </div>
                    <h2 className="text-lg font-black tracking-widest text-[#deb81d] uppercase select-none flex items-center justify-between">
-                    <span>{t("loading.decompress", { name: currentLevel === 3 ? "6 · LIGHTS OUT" : String(currentLevel) })}</span>
+                    <span>{t("loading.decompress", { name: currentLevel === 3 ? "6 · LIGHTS OUT" : currentLevel === 5 ? "LOBBY" : String(currentLevel) })}</span>
                     <span className="text-[#a28e3b] text-sm font-semibold">{loadingProgress}%</span>
                   </h2>
                 </div>
