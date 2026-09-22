@@ -38,6 +38,8 @@ export class WanderingEntity {
   public mesh: THREE.Group;
   public type: EntityType;
   private map: ProceduralMap;
+  /** Local body transform; the root stays free to face the viewer. */
+  private bodyRoot: THREE.Group | null = null;
   /** Stable id shared by every client in the room (assigned by GameEngine). */
   public netId = -1;
 
@@ -183,7 +185,10 @@ export class WanderingEntity {
 
   private createVisualMesh(): THREE.Group {
     const group = new THREE.Group();
-    MOB_DEFS[this.type].build(this.buildCtx(group));
+    const body = new THREE.Group();
+    MOB_DEFS[this.type].build(this.buildCtx(body));
+    group.add(body);
+    this.bodyRoot = body;
     group.castShadow = true;
 
     // Small floating text sprite for the speech bubble — the only thing that
@@ -362,7 +367,7 @@ export class WanderingEntity {
     this.mesh.lookAt(viewerX, this.mesh.position.y, viewerZ);
   }
 
-  /** Bobbing and glitch-scale flicker, shared by the AI and replica updates. */
+  /** Bobbing, species-specific body motion, and glitch-scale flicker. */
   private animate(delta: number) {
     this.bobTime += delta;
     this.glitchTimer += delta;
@@ -375,6 +380,7 @@ export class WanderingEntity {
 
     const floorY = this.map.getFloorHeightAt(this.mesh.position.x, this.mesh.position.z);
     this.mesh.position.y = floorY + baseHeight + bobOffset;
+    this.animateBody();
 
     // Glitch animation (subtle scaling artifacts)
     if (this.glitchTimer >= 0.11) {
@@ -389,6 +395,73 @@ export class WanderingEntity {
         this.mesh.scale.set(1.0, 1.0, 1.0);
       }
     }
+  }
+
+  /**
+   * Purely local animation: transforms the body below the viewer-facing root,
+   * so it does not affect AI, collision, or the replicated world state.
+   */
+  private animateBody() {
+    const body = this.bodyRoot;
+    if (!body) return;
+
+    const time = this.bobTime;
+    const moving = this.isMoving ? 1 : 0.35;
+    body.position.set(0, 0, 0);
+    body.rotation.set(0, 0, 0);
+    body.scale.set(1, 1, 1);
+
+    switch (this.type) {
+      case EntityType.HOUND:
+        body.position.y = Math.abs(Math.sin(time * 11)) * 0.035 * moving;
+        body.rotation.set(Math.sin(time * 11) * 0.1 * moving, 0, Math.sin(time * 5.5) * 0.055 * moving);
+        break;
+      case EntityType.DULLER:
+        body.position.y = Math.sin(time * 1.7) * 0.09;
+        body.rotation.set(Math.sin(time * 1.2) * 0.08, 0, Math.sin(time * 0.9) * 0.12);
+        break;
+      case EntityType.CLUMP:
+        body.rotation.set(time * (this.isMoving ? 3.4 : 0.7), 0, time * (this.isMoving ? 2.6 : 0.45));
+        body.scale.setScalar(1 + Math.sin(time * 5.2) * 0.045);
+        break;
+      case EntityType.WRETCH:
+        body.position.y = Math.abs(Math.sin(time * 5.8)) * 0.04 * moving;
+        body.rotation.set(Math.sin(time * 5.8) * 0.12 * moving, 0, Math.sin(time * 2.9) * 0.075);
+        break;
+      case EntityType.SKIN_STEALER:
+      case EntityType.IMITADOR:
+        body.rotation.set(Math.sin(time * 1.9) * 0.045, 0, Math.sin(time * 1.3) * 0.055);
+        body.position.y = Math.sin(time * 3.1) * 0.018;
+        break;
+      case EntityType.FINGER_KING:
+        body.rotation.set(Math.sin(time * 1.5) * 0.04, 0, Math.sin(time * 2.2) * 0.07);
+        body.position.y = Math.sin(time * 3.8) * 0.025;
+        break;
+      case EntityType.ECO:
+        body.position.y = Math.sin(time * 4.6) * 0.045;
+        body.rotation.set(Math.sin(time * 6.4) * 0.045, 0, Math.sin(time * 3.2) * 0.08);
+        break;
+      case EntityType.OBSERVADOR:
+        body.rotation.set(Math.sin(time * 1.1) * 0.06, 0, Math.sin(time * 1.7) * 0.05);
+        break;
+      case EntityType.SOMBRA:
+        body.position.y = Math.sin(time * 2.3) * 0.055;
+        body.scale.set(1 + Math.sin(time * 3.8) * 0.035, 1 - Math.sin(time * 3.8) * 0.04, 1 + Math.sin(time * 2.7) * 0.03);
+        break;
+      case EntityType.VIGIA:
+        body.rotation.z = Math.sin(time * 0.75) * 0.035;
+        break;
+      case EntityType.CEIFADOR:
+        body.position.y = Math.sin(time * 2.1) * 0.028;
+        body.rotation.set(Math.sin(time * 1.4) * 0.05, 0, Math.sin(time * 1.05) * 0.045);
+        break;
+    }
+  }
+
+  private resetBodyAnimation() {
+    this.bodyRoot?.position.set(0, 0, 0);
+    this.bodyRoot?.rotation.set(0, 0, 0);
+    this.bodyRoot?.scale.set(1, 1, 1);
   }
 
   /**
@@ -841,6 +914,7 @@ export class WanderingEntity {
     this.chaseTargetX = 0;
     this.chaseTargetZ = 0;
     this.isChasing = false;
+    this.resetBodyAnimation();
 
     if (!WanderingEntity.entityPool.has(this.type)) {
       WanderingEntity.entityPool.set(this.type, []);
@@ -870,6 +944,7 @@ export class WanderingEntity {
     this.chaseTargetX = 0;
     this.chaseTargetZ = 0;
     this.isChasing = false;
+    this.resetBodyAnimation();
     this.lastKnownX = -1;
     this.lastKnownZ = -1;
     this.searchTimer = 0.0;
