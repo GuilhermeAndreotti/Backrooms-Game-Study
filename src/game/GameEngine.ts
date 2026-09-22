@@ -16,6 +16,7 @@ import { GameSettings, RemotePlayer } from "../types/game";
 import { unlockAchievement } from "../utils/achievements";
 import { LightPool } from "./LightPool";
 import { NoiseBus, footstepLoudness } from "./systems/noiseBus";
+import { VisitTracker } from "./systems/visitTracker";
 import {
   AdaptiveResolution,
   QualityLevel,
@@ -195,6 +196,8 @@ export class GameEngine {
 
   /** Sound-reactive mobs (O Eco) poll this; fed by footsteps/prop shoves. Authority-local, never replicated. */
   private noiseBus = new NoiseBus();
+  /** O Ceifador's route-memory: which cells the group keeps re-visiting. Authority-local, never replicated. */
+  private visitTracker = new VisitTracker();
 
   // Quality / adaptive resolution
   public qualityLevel: QualityLevel;
@@ -948,6 +951,12 @@ export class GameEngine {
       const camDir = this.scratchCamDir;
       this.camera.getWorldDirection(camDir);
       const aiTargets = worldAuthority ? this.collectAiTargets(camDir) : null;
+      if (aiTargets) {
+        const cs = this.map.cellSize;
+        for (const tgt of aiTargets) {
+          this.visitTracker.visit(tgt.id, Math.floor(tgt.x / cs), Math.floor(tgt.z / cs));
+        }
+      }
 
       // Level G: closets, the Finger King's aggression/ambushes, its taps and
       // the final alarm. Runs before the AI so hidden explorers are marked.
@@ -2123,6 +2132,7 @@ export class GameEngine {
     // Reset total play time for the new layout
     this.totalPlayTime = 0;
     this.noiseBus.clear();
+    this.visitTracker.clear();
     
     // Clear any active smilers on transition
     this.clearAllSmilers();
