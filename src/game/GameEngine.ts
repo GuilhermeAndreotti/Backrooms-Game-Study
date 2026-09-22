@@ -569,6 +569,8 @@ export class GameEngine {
 
     // Instantiate Procedural Level 0 or 1 Map
     this.map = new ProceduralMap(seed, this.level, this.quality);
+    this.map.noiseBus = this.noiseBus;
+    this.map.visitTracker = this.visitTracker;
 
     // Fixed pool of real point lights shared by every lamp in the level.
     this.lightPool = new LightPool(this.scene, this.quality.lightBudget, this.quality.lightRange);
@@ -2105,6 +2107,8 @@ export class GameEngine {
 
     // 4. Instantiate new level's ProceduralMap
     this.map = new ProceduralMap(seed, level, this.quality);
+    this.map.noiseBus = this.noiseBus;
+    this.map.visitTracker = this.visitTracker;
     this.lightPool.invalidate();
     
     // Pre-create/load the entire proximity map meshes before placing/spawning the player

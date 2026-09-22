@@ -8,6 +8,8 @@ import { t } from "../i18n";
 import * as THREE from "three";
 import { DynamicLightSource } from "./LightPool";
 import { QualityProfile, getQualityProfile } from "./Quality";
+import { NoiseBus } from "./systems/noiseBus";
+import { VisitTracker } from "./systems/visitTracker";
 
 // Deterministic Mulbery32 Random Number Generator
 export class SeededRandom {
@@ -286,6 +288,10 @@ export class ProceduralMap {
   public levelGTerminalZ = -1;
   /** Closets: crouch inside to hide from the Finger King (for a while). */
   public hideCells = new Set<string>();
+  /** Set by GameEngine right after construction — O Eco (sound-reactive) queries this. Not owned/populated here. */
+  public noiseBus: NoiseBus | null = null;
+  /** Set by GameEngine right after construction — O Ceifador's route-memory. Not owned/populated here. */
+  public visitTracker: VisitTracker | null = null;
   /** Door-adjacent cells and corridor ends where the Finger King can lie in wait. */
   public ambushCells: [number, number][] = [];
   /** Door frames between sectors: the cell and the axis you walk through it on. */

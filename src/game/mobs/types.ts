@@ -14,6 +14,9 @@
 
 import * as THREE from "three";
 import { EntityType } from "../../shared/entityTypes";
+import { NoiseBus } from "../systems/noiseBus";
+import { VisitTracker } from "../systems/visitTracker";
+import { ProceduralMap } from "../ProceduralMap";
 
 export type PlayerMoveState = "idle" | "walking" | "running" | "crouching";
 
@@ -100,6 +103,12 @@ export interface MobSenseCtx {
   isChasing: boolean;
   /** Generic persistent scalar (e.g. HOUND's gaze-freeze timer) going into this frame — see MobSenseResult.scratch. */
   scratch: number;
+  /** The level's map — for mobs that need spatial queries (A Sombra's light-query helpers, grid/cell lookups). */
+  map: ProceduralMap;
+  /** O Eco's noise-event feed. Null until GameEngine wires it onto the map (always populated once the game is running). */
+  noiseBus: NoiseBus | null;
+  /** O Ceifador's route-memory. Null until GameEngine wires it onto the map (always populated once the game is running). */
+  visitTracker: VisitTracker | null;
 }
 
 export interface MobSenseResult {

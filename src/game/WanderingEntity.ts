@@ -432,6 +432,9 @@ export class WanderingEntity {
       isAgitated: this.isAgitated,
       isChasing: this.isChasing,
       scratch: this.intimidatedTimer,
+      map: this.map,
+      noiseBus: this.map.noiseBus,
+      visitTracker: this.map.visitTracker,
     };
   }
 
