@@ -14,6 +14,7 @@ import compression from "compression";
 import path from "path";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
+import { ALL_ENTITY_TYPES } from "./src/shared/entityTypes";
 
 // ---------------------------------------------------------------------------
 // Configuration (everything overridable from the environment / .env)
@@ -244,7 +245,12 @@ function broadcastToLevel(room: Room, level: number, payload: unknown, exclude?:
   });
 }
 
-const ENTITY_TYPES = new Set(["DULLER", "HOUND", "CLUMP", "SKIN_STEALER", "WRETCH"]);
+// Derived from the shared enum (not hand-maintained) so a type the client can
+// actually send is never silently rejected here — this used to omit
+// FINGER_KING, which meant Level G's authority's "entities" frame (always
+// containing the King) was silently dropped for every other player in the
+// room (sanitizeEntities nulls the whole frame on one unrecognized `t`).
+const ENTITY_TYPES = new Set<string>(ALL_ENTITY_TYPES);
 const MAX_ENTITIES = 40;
 const MAX_SMILERS = 8;
 const MAX_SPEECH_LENGTH = 64;

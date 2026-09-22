@@ -6,16 +6,11 @@
 import { t } from "../i18n";
 import * as THREE from "three";
 import { ProceduralMap, CellType } from "./ProceduralMap";
+import { EntityType } from "../shared/entityTypes";
 
-export enum EntityType {
-  DULLER = "DULLER",
-  HOUND = "HOUND",
-  CLUMP = "CLUMP",
-  SKIN_STEALER = "SKIN_STEALER",
-  WRETCH = "WRETCH",
-  /** Level G's exclusive stalker. */
-  FINGER_KING = "FINGER_KING"
-}
+// Re-exported for existing import sites (GameEngine.ts etc.) — the type now
+// lives in src/shared/entityTypes.ts so server.ts can share it too.
+export { EntityType };
 
 /**
  * One monster's replicated state, streamed by the level's authority client
