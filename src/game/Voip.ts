@@ -27,6 +27,8 @@ interface Peer {
   audio: HTMLAudioElement | null;
   /** Buffers ICE candidates that arrive before the remote description is set. */
   pendingCandidates: RTCIceCandidateInit[];
+  /** Re-entrancy guard for makeOffer(), so a "ready" retry never overlaps an in-flight createOffer(). */
+  offering: boolean;
 }
 
 export class Voip {
@@ -106,7 +108,7 @@ export class Voip {
   public ensurePeer(peerId: string, myId: string) {
     if (!this.enabled || peerId === myId || this.peers.has(peerId)) return;
     const conn = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    const peer: Peer = { id: peerId, conn, audio: null, pendingCandidates: [] };
+    const peer: Peer = { id: peerId, conn, audio: null, pendingCandidates: [], offering: false };
     this.peers.set(peerId, peer);
 
     conn.onicecandidate = (e) => {
@@ -136,6 +138,14 @@ export class Voip {
     // both sides learning of each other at once doesn't produce two offers.
     if (myId && peerId > myId) {
       this.makeOffer(peer);
+    } else {
+      // We're the answerer for this peer. Tell them we're listening now —
+      // if they enabled VOIP (and so tried to offer) before we did, their
+      // offer arrived while we weren't enabled yet and handleSignal()
+      // dropped it silently; nothing would otherwise ever retry it, and
+      // the connection would be stuck forever. Harmless no-op the rest of
+      // the time (they'll just ignore a "ready" they don't need).
+      this.sendSignal(peerId, { kind: "ready" });
     }
   }
 
@@ -147,13 +157,23 @@ export class Voip {
     }
   }
 
+  /**
+   * (Re-)offers this connection. Safe to call more than once for the same
+   * peer — e.g. once up front and again later in response to a "ready"
+   * ping — since it no-ops once the peer has told us anything back
+   * (remoteDescription set) or while a previous attempt is still in flight.
+   */
   private async makeOffer(peer: Peer) {
+    if (peer.offering || peer.conn.remoteDescription) return;
+    peer.offering = true;
     try {
       const offer = await peer.conn.createOffer();
       await peer.conn.setLocalDescription(offer);
       this.sendSignal(peer.id, { kind: "offer", sdp: offer.sdp });
     } catch (e) {
       console.warn("[Voip] Failed to create offer:", e);
+    } finally {
+      peer.offering = false;
     }
   }
 
@@ -180,6 +200,13 @@ export class Voip {
         } else {
           peer.pendingCandidates.push(payload.candidate);
         }
+      } else if (payload.kind === "ready") {
+        // The peer just became reachable (they enabled VOIP after we did,
+        // or ensurePeer() just created this connection fresh) and is
+        // prompting us in case an earlier offer of ours went nowhere.
+        // Only the designated offerer for this pair acts on it; makeOffer()
+        // itself no-ops if we've already heard back from them.
+        if (myId && fromId > myId) this.makeOffer(peer);
       }
     } catch (e) {
       console.warn(`[Voip] Signaling error with ${fromId}:`, e);
