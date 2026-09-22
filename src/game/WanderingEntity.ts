@@ -686,7 +686,18 @@ export class WanderingEntity {
    * old full-body 256x256 texture repaint this replaces.
    */
   private updateVisualState() {
-    if (this.type === EntityType.SKIN_STEALER && this.calmEyes && this.hostileEyes) {
+    const visDef = MOB_DEFS[this.type];
+    if (visDef && visDef.updateVisual) {
+      visDef.updateVisual({
+        isAgitated: this.isAgitated,
+        isChasing: this.isChasing,
+        hunting: this.hunting,
+        calmEyes: this.calmEyes,
+        hostileEyes: this.hostileEyes,
+        tintMaterials: this.tintMaterials,
+        kingEyeMaterial: this.kingEyeMaterial,
+      });
+    } else if (this.type === EntityType.SKIN_STEALER && this.calmEyes && this.hostileEyes) {
       this.calmEyes.visible = !this.isAgitated;
       this.hostileEyes.visible = this.isAgitated;
       const tint = this.isAgitated ? 0x3f320b : 0xb39a3c;
@@ -833,6 +844,7 @@ export class WanderingEntity {
       // Boost movement speeds dramatically on Level 2/3 to make it a fast, heart-pounding sprint chase!
       if (senseDef) {
         this.moveSpeed = senseDef.forcedChaseSpeed;
+        if (senseDef.forcedChaseAgitated) this.isAgitated = true;
       } else if (this.type === EntityType.HOUND) {
         this.moveSpeed = 3.65;
       } else if (this.type === EntityType.CLUMP) {

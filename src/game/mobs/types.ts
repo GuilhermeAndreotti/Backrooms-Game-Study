@@ -147,6 +147,8 @@ export interface MobDefinition {
   speechBubbleLocalY: number;
   /** m/s on levels where every mob force-chases (2 and 3 today). */
   forcedChaseSpeed: number;
+  /** SKIN_STEALER also flips agitated (its "mask slipped" reveal) the moment forced-chase kicks in. */
+  forcedChaseAgitated?: boolean;
 
   build(ctx: MobBuildCtx): void;
   sense(ctx: MobSenseCtx): MobSenseResult;
