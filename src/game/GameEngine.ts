@@ -17,6 +17,7 @@ import { unlockAchievement } from "../utils/achievements";
 import { LightPool } from "./LightPool";
 import { NoiseBus, footstepLoudness } from "./systems/noiseBus";
 import { VisitTracker } from "./systems/visitTracker";
+import { LEVEL_DEFS } from "./levels/registry";
 import {
   AdaptiveResolution,
   QualityLevel,
@@ -2159,66 +2160,12 @@ export class GameEngine {
       this.onHUDNotification?.(t("eng.levelG"));
     }
 
-    // Spawn multiple chasing entities on Level 2 (Pipe Dreams)
+    // Spawn multiple chasing entities on Level 2 (Pipe Dreams), placed at
+    // the same S-shaped key joints/corridor points the level's always used.
     if (level === 2) {
-      const types2 = [
-        EntityType.HOUND,
-        EntityType.SKIN_STEALER,
-        EntityType.WRETCH,
-        EntityType.CLUMP,
-        EntityType.DULLER,
-        EntityType.HOUND,
-        EntityType.WRETCH,
-        EntityType.SKIN_STEALER,
-        EntityType.CLUMP,
-        EntityType.HOUND,
-        EntityType.WRETCH
-      ];
-
-      // Placed at S-shaped key joints/corridor points:
-      const targetQuads2 = [
-        [2, 7],
-        [2, 16],
-        [8, 25],
-        [18, 25],
-        [23, 21],
-        [23, 11],
-        [29, 5],
-        [38, 5],
-        [44, 12],
-        [44, 24],
-        [44, 35]
-      ];
-
-      for (let i = 0; i < types2.length; i++) {
-        const type = types2[i];
-        const [qx, qz] = targetQuads2[i];
-        
-        let entGX = qx;
-        let entGZ = qz;
-        let found = false;
-        
-        // Find adjacent walkable cell
-        for (let r = 0; r < 8 && !found; r++) {
-          for (let dx = -r; dx <= r && !found; dx++) {
-            for (let dz = -r; dz <= r && !found; dz++) {
-              const nx = qx + dx;
-              const nz = qz + dz;
-              if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2) {
-                if (this.map.grid[nx][nz] !== 0) { // CORRIDOR is non-zero
-                  entGX = nx;
-                  entGZ = nz;
-                  found = true;
-                }
-              }
-            }
-          }
-        }
-        
-        const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, type, this.scene);
-        entity.netId = this.nextEntityNetId++;
-        this.entities.push(entity);
-        console.log(`[GameEngine] Level 2 Escape Chaser ${type} spawned at grid (${entGX}, ${entGZ})`);
+      const def2 = LEVEL_DEFS[2];
+      if (def2.spawn.kind === "static") {
+        this.spawnStaticRoster(def2.spawn.roster, 8);
       }
     }
 
@@ -2909,39 +2856,44 @@ export class GameEngine {
   }
 
   /**
+   * Spawns every entry of a static roster (LevelDefinition's "static" spawn
+   * kind) at the nearest walkable cell to each entry's target cell. Shared
+   * by level 1 and level 2's rosters — the only difference between the two
+   * call sites used to be the search radius and whether a sector bound
+   * (level 1 only spawns in sectors 1 & 2) applied.
+   */
+  private spawnStaticRoster(roster: { type: EntityType; targetCell: [number, number] }[], searchRadius: number, maxX?: number) {
+    if (!this.map) return;
+    for (const { type, targetCell } of roster) {
+      const [qx, qz] = targetCell;
+      let entGX = qx, entGZ = qz, found = false;
+      for (let r = 0; r < searchRadius && !found; r++) {
+        for (let dx = -r; dx <= r && !found; dx++) {
+          for (let dz = -r; dz <= r && !found; dz++) {
+            const nx = qx + dx, nz = qz + dz;
+            if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2 && (maxX === undefined || nx < maxX)) {
+              if (this.map.grid[nx][nz] !== 0) { entGX = nx; entGZ = nz; found = true; }
+            }
+          }
+        }
+      }
+      const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, type, this.scene);
+      entity.netId = this.nextEntityNetId++;
+      this.entities.push(entity);
+    }
+  }
+
+  /**
    * Spawns Level 1's roaming monsters. They live in sectors 1 & 2 only —
    * sector 3 is the smiler hall. Shared by the first level load and every
    * transitionToLevel(1) so the two spawn sites can't drift apart.
    */
   private spawnLevel1Entities() {
     if (!this.map) return;
-    const types = [
-      EntityType.HOUND,
-      EntityType.DULLER,
-      EntityType.CLUMP,
-      EntityType.SKIN_STEALER,
-      EntityType.WRETCH,
-    ];
+    const def = LEVEL_DEFS[1];
+    if (def.spawn.kind !== "static") return;
     // All targets sit inside sectors 1 & 2 (x < level1Sector3X).
-    const targetQuads = [[8, 10], [10, 30], [24, 12], [26, 30], [30, 22]];
-
-    for (let i = 0; i < types.length; i++) {
-      const [qx, qz] = targetQuads[i];
-      let entGX = qx, entGZ = qz, found = false;
-      for (let r = 0; r < 12 && !found; r++) {
-        for (let dx = -r; dx <= r && !found; dx++) {
-          for (let dz = -r; dz <= r && !found; dz++) {
-            const nx = qx + dx, nz = qz + dz;
-            if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2 && nx < this.map.level1Sector3X) {
-              if (this.map.grid[nx][nz] !== 0) { entGX = nx; entGZ = nz; found = true; }
-            }
-          }
-        }
-      }
-      const entity = WanderingEntity.getOrCreate(this.map, entGX, entGZ, types[i], this.scene);
-      entity.netId = this.nextEntityNetId++;
-      this.entities.push(entity);
-    }
+    this.spawnStaticRoster(def.spawn.roster, 12, this.map.level1Sector3X);
   }
 
   /**
@@ -2953,23 +2905,22 @@ export class GameEngine {
    * the next one comes.
    */
   private updateLightsOutSummons(delta: number, targets: AiTarget[] | null) {
+    const def = LEVEL_DEFS[3];
     // Authority only (targets is null elsewhere): the summoned stalkers reach
     // everyone else on the level through the replicated stream.
-    if (this.level !== 3 || !this.player || !this.map || !targets) {
+    if (this.level !== 3 || !this.player || !this.map || !targets || def.spawn.kind !== "timedSummon") {
       this.lightsOutSummonTimer = 0;
       return;
     }
-
-    const SUMMON_INTERVAL = 6.0;
-    const MAX_STALKERS = 5;
+    const { intervalS, maxConcurrent } = def.spawn;
 
     // Any explorer on the level holding a light counts, not just us.
     const lit = targets.find((t) => t.flashlight);
     if (lit) {
       this.lightsOutSummonTimer += delta;
-      if (this.lightsOutSummonTimer >= SUMMON_INTERVAL) {
+      if (this.lightsOutSummonTimer >= intervalS) {
         this.lightsOutSummonTimer = 0;
-        if (this.entities.length < MAX_STALKERS) {
+        if (this.entities.length < maxConcurrent) {
           this.spawnLightsOutStalker(lit.x, lit.z);
         }
       }
@@ -2978,20 +2929,22 @@ export class GameEngine {
     }
   }
 
-  /** Summons a stalker 8-14 cells from the explorer whose light drew it, at (x, z). */
+  /** Summons a stalker from LEVEL_DEFS[3]'s pool, spawnRadiusCells away from the explorer whose light drew it, at (x, z). */
   private spawnLightsOutStalker(x: number, z: number) {
-    if (!this.player || !this.map) return;
+    const def = LEVEL_DEFS[3];
+    if (!this.player || !this.map || def.spawn.kind !== "timedSummon") return;
+    const { pool, spawnRadiusCells: [minR, maxR] } = def.spawn;
     const pgX = Math.floor(x / this.map.cellSize);
     const pgZ = Math.floor(z / this.map.cellSize);
-    const types = [EntityType.DULLER, EntityType.SKIN_STEALER, EntityType.WRETCH, EntityType.HOUND];
-    const type = types[Math.floor(Math.random() * types.length)];
+    const type = pool[Math.floor(Math.random() * pool.length)];
 
-    // A walkable cell 8-14 cells out in a random direction — close enough to
-    // feel like it answered the light, far enough to not spawn on top of you.
+    // A walkable cell spawnRadiusCells out in a random direction — close
+    // enough to feel like it answered the light, far enough to not spawn on
+    // top of you.
     let entGX = -1, entGZ = -1;
     for (let attempt = 0; attempt < 24 && entGX < 0; attempt++) {
       const angle = Math.random() * Math.PI * 2;
-      const dist = 8 + Math.random() * 6;
+      const dist = minR + Math.random() * (maxR - minR);
       const nx = Math.round(pgX + Math.cos(angle) * dist);
       const nz = Math.round(pgZ + Math.sin(angle) * dist);
       if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2 && this.map.grid[nx][nz] !== 0) {
