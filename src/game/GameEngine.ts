@@ -15,6 +15,7 @@ import { WanderingEntity, EntityType, EntityNetState } from "./WanderingEntity";
 import { GameSettings, RemotePlayer } from "../types/game";
 import { unlockAchievement } from "../utils/achievements";
 import { LightPool } from "./LightPool";
+import { NoiseBus, footstepLoudness } from "./systems/noiseBus";
 import {
   AdaptiveResolution,
   QualityLevel,
@@ -191,6 +192,9 @@ export class GameEngine {
   private totalPlayTime = 0;
   private animationFrameId: number | null = null;
   private isRunning = false;
+
+  /** Sound-reactive mobs (O Eco) poll this; fed by footsteps/prop shoves. Authority-local, never replicated. */
+  private noiseBus = new NoiseBus();
 
   // Quality / adaptive resolution
   public qualityLevel: QualityLevel;
@@ -575,6 +579,7 @@ export class GameEngine {
     const triggerAudioFootstep = (speed: 'walk' | 'run' | 'crouch') => {
       const isWet = this.map ? this.map.isCellWet(this.player.position.x, this.player.position.z) : false;
       this.audio.playFootstep(speed, 0.0, isWet); // panning 0.0 for self
+      this.noiseBus.emit(this.player.position.x, this.player.position.z, footstepLoudness(speed), "footstep", this.totalPlayTime);
     };
 
     // Instantiate Player movement controller after map is pre-loaded
@@ -702,6 +707,7 @@ export class GameEngine {
 
       const delta = this.clock.getDelta();
       this.totalPlayTime += delta;
+      this.noiseBus.prune(this.totalPlayTime);
       this.frameCounter++;
 
       // Trade pixels for frame rate before the game starts feeling sluggish.
@@ -2105,6 +2111,7 @@ export class GameEngine {
     this.player = new PlayerController(this.camera, this.renderer.domElement, this.map, (speed) => {
       const isWet = this.map ? this.map.isCellWet(this.player.position.x, this.player.position.z) : false;
       this.audio.playFootstep(speed, 0.0, isWet);
+      this.noiseBus.emit(this.player.position.x, this.player.position.z, footstepLoudness(speed), "footstep", this.totalPlayTime);
     });
     this.player.setMouseSensitivity(settings.mouseSensitivity);
     this.player.spawnSafely();
@@ -2115,6 +2122,7 @@ export class GameEngine {
 
     // Reset total play time for the new layout
     this.totalPlayTime = 0;
+    this.noiseBus.clear();
     
     // Clear any active smilers on transition
     this.clearAllSmilers();
@@ -2455,6 +2463,7 @@ export class GameEngine {
       return true;
     }
     this.audio.playBoxPush();
+    this.noiseBus.emit(dest.x, dest.z, 1.0, "prop", this.totalPlayTime);
     this.sendToServer({ type: "box_push", level: this.level, id: m.id, x: dest.x, z: dest.z });
     return true;
   }
