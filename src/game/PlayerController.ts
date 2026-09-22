@@ -106,6 +106,9 @@ export class PlayerController {
     this.onPlayFootstep = onPlayFootstep;
 
     this.initEvents();
+    // Level transitions replace the controller while the canvas can remain
+    // pointer-locked, so no new pointerlockchange event is guaranteed.
+    this.onLockChange();
   }
 
   private initEvents() {
