@@ -61,7 +61,8 @@ const MonsterSkinPreview: React.FC<{ type: SkinChoice }> = ({ type }) => {
 
 interface CheatTerminalModalProps {
   /** Tries a code; returns which cheat it unlocked, or null if it wasn't recognized. */
-  onSubmit: (code: string) => "speed" | "stamina" | "clip" | "life" | "skin" | null;
+  onSubmit: (code: string) => "speed" | "stamina" | "clip" | "life" | "skin" | "room" | null;
+  onUnlockRoom: () => void;
   /** Applies (or, with null, clears) the SKIN cheat's monster body. */
   onPickSkin: (type: SkinChoice | null) => void;
   /** Currently worn skin, if any — the picker highlights it. */
@@ -76,11 +77,11 @@ interface CheatTerminalModalProps {
  * open and just confirms each one, until SKIN switches it to the monster
  * picker or the player backs out / presses Escape.
  */
-export const CheatTerminalModal: React.FC<CheatTerminalModalProps> = ({ onSubmit, onPickSkin, currentSkin, onClose }) => {
+export const CheatTerminalModal: React.FC<CheatTerminalModalProps> = ({ onSubmit, onUnlockRoom, onPickSkin, currentSkin, onClose }) => {
   useLanguage();
   const [mode, setMode] = useState<"code" | "skin">("code");
   const [code, setCode] = useState("");
-  const [status, setStatus] = useState<"idle" | "denied" | "speed" | "stamina" | "clip" | "life">("idle");
+  const [status, setStatus] = useState<"idle" | "denied" | "speed" | "stamina" | "clip" | "life" | "room">("idle");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -102,6 +103,9 @@ export const CheatTerminalModal: React.FC<CheatTerminalModalProps> = ({ onSubmit
     if (result === "skin") {
       setMode("skin");
       setStatus("idle");
+    } else if (result === "room") {
+      onUnlockRoom();
+      onClose();
     } else if (result) {
       setStatus(result);
     } else {

@@ -60,9 +60,8 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     },
   },
 
-  // Level 3 ("Lights Out", secret): unchanged — out of scope for the main-
-  // progression rebalance. Summons on demand while a player's flashlight
-  // is on, instead of a fixed roster.
+  // Level 3 ("Lights Out", secret): summons stalkers while a player's
+  // flashlight remains on, rather than using a fixed roster.
   3: {
     id: 3,
     displayLabel: "LEVEL 6 (LIGHTS OUT)",
@@ -75,11 +74,7 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     },
   },
 
-  // Level 4 ("Level G", secret): unchanged — a fully bespoke boss
-  // ecosystem (closets, code puzzle, alarm, ambushes). This entry exists
-  // only so `LEVEL_DEFS[4]` is non-null for anything that enumerates
-  // "which levels have a definition"; GameEngine's own level===4
-  // special-casing is untouched.
+  // Level G (secret): fully bespoke boss ecosystem.
   4: {
     id: 4,
     displayLabel: "LEVEL G",
@@ -110,5 +105,30 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
         { type: EntityType.VIGIA, targetCell: [30, 24] },
       ],
     },
+  },
+
+  // Brick Offices: a pack of Hounds patrols the five-switch route.
+  8: {
+    id: 8,
+    displayLabel: "BRICK OFFICES",
+    spawn: {
+      kind: "static",
+      roster: [
+        { type: EntityType.HOUND, targetCell: [13, 7] },
+        { type: EntityType.HOUND, targetCell: [21, 10] },
+        { type: EntityType.HOUND, targetCell: [31, 8] },
+        { type: EntityType.HOUND, targetCell: [14, 24] },
+        { type: EntityType.HOUND, targetCell: [28, 24] },
+        { type: EntityType.HOUND, targetCell: [42, 25] },
+        { type: EntityType.HOUND, targetCell: [13, 41] },
+        { type: EntityType.HOUND, targetCell: [31, 41] },
+      ],
+    },
+  },
+
+  9: {
+    id: 9,
+    displayLabel: "MEG OFFICES",
+    spawn: { kind: "bespoke" },
   },
 };

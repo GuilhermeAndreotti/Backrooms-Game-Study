@@ -36,10 +36,12 @@ export interface GameEngineCallbacks {
   onFlashlightChange: (state: boolean) => void;
   onEscapeTrigger?: () => void;
   /** Fired once, when the player reaches the end of Level 1's secret dark corridor. */
-  /** A secret entrance was reached: 3 = Level 6 "Lights Out" (from Level 1), 4 = Level G (from Level 0). */
+  /** A secret entrance was reached: 3 = Lights Out, 4 = Level G. */
   onSecretLevelFound?: (level: number) => void;
   /** Context hint for the crosshair area, e.g. t("act.pushBox"); null clears it. */
   onInteractPrompt?: (text: string | null) => void;
+  onMegDialogue?: (employee: { name: string; grade: string; dialogue: string }) => void;
+  onMegDoorRequest?: () => void;
   /** Level G: digits found so far (null = missing) and whether the final alarm is on. */
   onLevelGProgress?: (progress: LevelGProgress) => void;
   onRedRoomExposureChange?: (val: number) => void;
@@ -74,7 +76,9 @@ function levelAtmosphere(level: number) {
       return { ambientColor: 0xfff6e0, ambientIntensity: 2.6, fogColor: 0x8fc7f0, dimmedFogColor: 0x4a6a8a };
     case 4: // Level G: dim, cold office under failing tubes
       return { ambientColor: 0x9aa4ad, ambientIntensity: 0.5, fogColor: 0x23272a, dimmedFogColor: 0x0b0c0d };
-    case 3: // "Lights Out": all but pitch black — the waypoints and your flashlight are it
+    case 8: // Brick Offices: dim industrial brick halls
+      return { ambientColor: 0xb4a092, ambientIntensity: 1.15, fogColor: 0x554039, dimmedFogColor: 0x241a17 };
+    case 3: // Lights Out: the waypoints and flashlight are all that remain
       return { ambientColor: 0x05050a, ambientIntensity: 0.008, fogColor: 0x000000, dimmedFogColor: 0x000000 };
     case 2: // Pipe Dreams: tense dark reddish brown
       return { ambientColor: 0x8a4a2c, ambientIntensity: 1.4, fogColor: 0x3a1608, dimmedFogColor: 0x1a0902 };
@@ -282,6 +286,7 @@ export class GameEngine {
   private levelGAlertTimer = 0;
   private fingerTapTimer = 0;
   private nearTerminal = false;
+  private level4DoorOpen = false;
   private scratchRight = new THREE.Vector3();
 
   // UI callbacks
@@ -291,6 +296,8 @@ export class GameEngine {
   private onEscapeTrigger?: () => void;
   private onSecretLevelFound?: (level: number) => void;
   private onInteractPrompt?: (text: string | null) => void;
+  private onMegDialogue?: (employee: { name: string; grade: string; dialogue: string }) => void;
+  private onMegDoorRequest?: () => void;
   private lastInteractPrompt: string | null = null;
   private interactPromptTimer = 0;
   private onLevelGProgress?: (progress: LevelGProgress) => void;
@@ -353,6 +360,8 @@ export class GameEngine {
     this.onEscapeTrigger = callbacks.onEscapeTrigger;
     this.onSecretLevelFound = callbacks.onSecretLevelFound;
     this.onInteractPrompt = callbacks.onInteractPrompt;
+    this.onMegDialogue = callbacks.onMegDialogue;
+    this.onMegDoorRequest = callbacks.onMegDoorRequest;
     this.onLevelGProgress = callbacks.onLevelGProgress;
     this.onRedRoomExposureChange = callbacks.onRedRoomExposureChange;
     this.onToxicWaterExposureChange = callbacks.onToxicWaterExposureChange;
@@ -571,7 +580,7 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === LOBBY_LEVEL ? 0.008 : level === 4 ? 0.06 : level === 3 ? 0.11 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
+    const authored = level === LOBBY_LEVEL ? 0.008 : level === 4 ? 0.06 : level === 8 ? 0.035 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
@@ -638,6 +647,10 @@ export class GameEngine {
     this.entities = [];
     if (this.level === 1) {
       this.spawnLevel1Entities();
+    }
+    if (this.level === 8) {
+      const def3 = LEVEL_DEFS[8];
+      if (def3.spawn.kind === "static") this.spawnStaticRoster(def3.spawn.roster, 8);
     }
 
     // Initial first-turn map culler tick
@@ -760,7 +773,16 @@ export class GameEngine {
 
       // Tick player controllers
       if (this.isDead) this.updateSpectator(delta);
-      else this.player.update(delta);
+      else {
+        this.player.update(delta);
+        if (this.level === 8 && this.map) {
+          const gx = Math.floor(this.player.position.x / this.map.cellSize);
+          const gz = Math.floor(this.player.position.z / this.map.cellSize);
+          if (this.map.level3LowCorridor.has(`${gx},${gz}`) && this.player.position.y > CROUCHED_EYE_HEIGHT + 0.18) {
+            this.onHUDNotification?.(t("eng.level3Crouch"));
+          }
+        }
+      }
       this.updateLobby(delta);
       this.updateInteractPrompt(delta);
 
@@ -1066,9 +1088,6 @@ export class GameEngine {
       // Update psychological Smilers
       this.updateSmilers(delta, aiTargets);
 
-      // Level 3 ("Lights Out"): turning the flashlight on summons stalkers.
-      this.updateLightsOutSummons(delta, aiTargets);
-
       // Stream monsters/smilers to the rest of the level (authority only).
       this.sendWorldState(delta);
 
@@ -1108,8 +1127,8 @@ export class GameEngine {
         if (!isFlashlightOn && this.level !== LOBBY_LEVEL) {
           if (this.map.globalEventState === "blackout") {
             darknessDepletion = 0.014; // completed blackout is terrifying (retuned ~3x slower)
-          } else if (this.level === 3) {
-            darknessDepletion = 0.010; // "Lights Out": genuinely unlit by design, worse than mere no-flashlight elsewhere
+          } else if (this.level === 8) {
+            darknessDepletion = 0.003; // Brick halls have working ceiling fixtures; the flashlight is still useful
           } else if (this.level === 1 || this.level === 2) {
             darknessDepletion = 0.008; // dark industrial environments (retuned ~3x slower)
           } else {
@@ -1183,7 +1202,7 @@ export class GameEngine {
       if (this.level !== 0 && this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
-        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ) {
+        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== 8 || this.map.level3GateOpen) && (this.level !== 9 || this.level4DoorOpen)) {
           this.audio.playGlitchNoclipSound();
           this.onEscapeTrigger?.();
         }
@@ -2237,6 +2256,11 @@ export class GameEngine {
       }
     }
 
+    if (level === 8) {
+      const def3 = LEVEL_DEFS[8];
+      if (def3.spawn.kind === "static") this.spawnStaticRoster(def3.spawn.roster, 8);
+    }
+
     // Level 7 (Dark Poolrooms): CLUMP + O Vigia.
     if (level === 7) {
       const def7 = LEVEL_DEFS[7];
@@ -2584,6 +2608,12 @@ export class GameEngine {
         text = t("act.pushBox");
       } else if (this.nearUntouchedValve()) {
         text = t("act.turnValve");
+      } else if (this.nearUntouchedLevel3Switch() !== -1) {
+        text = t("act.level3Switch");
+      } else if (this.nearMegEmployee()) {
+        text = t("act.megEmployee");
+      } else if (this.nearMegDoor()) {
+        text = t("act.megDoor");
       }
     }
     if (text !== this.lastInteractPrompt) {
@@ -2600,6 +2630,49 @@ export class GameEngine {
     return dx * dx + dz * dz < 2.2 * 2.2;
   }
 
+  private nearUntouchedLevel3Switch(): number {
+    if (this.level !== 8 || !this.map || !this.player) return -1;
+    for (let i = 0; i < this.map.level3Switches.length; i++) {
+      if (this.map.level3SwitchesOn.has(i)) continue;
+      const [gx, gz] = this.map.level3Switches[i];
+      const dx = this.player.position.x - (gx * this.map.cellSize + this.map.cellSize / 2);
+      const dz = this.player.position.z - (gz * this.map.cellSize + this.map.cellSize / 2);
+      if (dx * dx + dz * dz < 2.5 * 2.5) return i;
+    }
+    return -1;
+  }
+
+  private nearMegEmployee(): { name: string; grade: string; dialogue: string } | null {
+    if (this.level !== 9 || !this.map || !this.player) return null;
+    const cs = this.map.cellSize;
+    return this.map.level4Employees.find((employee) => {
+      const dx = this.player.position.x - (employee.gx * cs + cs / 2);
+      const dz = this.player.position.z - (employee.gz * cs + cs / 2);
+      return dx * dx + dz * dz < 3.0 * 3.0;
+    }) ?? null;
+  }
+
+  private nearMegDoor(): boolean {
+    if (this.level !== 9 || !this.map || !this.player) return false;
+    const cs = this.map.cellSize;
+    const dx = this.player.position.x - (this.map.level4DoorX * cs + cs / 2);
+    const dz = this.player.position.z - (this.map.level4DoorZ * cs + cs / 2);
+    return dx * dx + dz * dz < 3.2 * 3.2;
+  }
+
+  public handleLevel3Switch(index: number) {
+    if (this.level !== 8 || !this.map || index < 0 || index >= this.map.level3Switches.length) return;
+    this.map.level3SwitchesOn.add(index);
+    this.map.updateLevel3SwitchVisual(index);
+    if (this.map.level3SwitchesOn.size >= 5) {
+      this.map.level3GateOpen = true;
+      this.onHUDNotification?.(t("eng.level3GateOpen"));
+      this.audio.playTerminalBeep(true);
+    } else {
+      this.onHUDNotification?.(t("eng.level3Switch", { n: this.map.level3SwitchesOn.size }));
+    }
+  }
+
   /** The exit desk's paper as a readable note, or null. */
   public exitPaperNote(): { title: string; content: string } | null {
     const note = this.map?.exitPaperNote();
@@ -2607,8 +2680,23 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "paper" | "cheat" | null {
+  public tryInteract(): "terminal" | "paper" | "cheat" | "meg_employee" | "meg_door" | null {
     if (this.isDead) return null;
+    const switchIndex = this.nearUntouchedLevel3Switch();
+    if (switchIndex >= 0) {
+      this.handleLevel3Switch(switchIndex);
+      this.sendToServer({ type: "brick_office_switch", level: 8, index: switchIndex });
+      return null;
+    }
+    const employee = this.nearMegEmployee();
+    if (employee) {
+      this.onMegDialogue?.(employee);
+      return "meg_employee";
+    }
+    if (this.nearMegDoor()) {
+      this.onMegDoorRequest?.();
+      return "meg_door";
+    }
     if (this.nearExitDesk()) return "paper";
     if (this.nearCheatTerminal()) return "cheat";
     if (this.level !== 4 || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
@@ -2616,6 +2704,24 @@ export class GameEngine {
     const dx = this.player.position.x - (this.map.levelGTerminalX * cs + cs / 2);
     const dz = this.player.position.z - (this.map.levelGTerminalZ * cs + cs / 2);
     return dx * dx + dz * dz < 2.4 * 2.4 ? "terminal" : null;
+  }
+
+  public submitMegDoorNames(raw: string): boolean {
+    if (this.level !== 9 || !this.map) return false;
+    const names = raw.split(",").map((name) => name.trim().toLocaleLowerCase()).filter(Boolean);
+    const expected = [...this.map.level4Employees]
+      .sort((a, b) => ({ senior: 0, pleno: 1, junior: 2 }[a.grade] - { senior: 0, pleno: 1, junior: 2 }[b.grade]))
+      .map((employee) => employee.name.toLocaleLowerCase());
+    const ok = names.length === expected.length && names.every((name, index) => name === expected[index]);
+    if (ok) {
+      this.level4DoorOpen = true;
+      this.onHUDNotification?.(t("eng.megDoorOpen"));
+      this.audio.playTerminalBeep(true);
+    } else {
+      this.onHUDNotification?.(t("eng.megDoorDenied"));
+      this.audio.playTerminalBeep(false);
+    }
+    return ok;
   }
 
   /**
@@ -2669,7 +2775,7 @@ export class GameEngine {
    * through walls; SKIN sets nothing by itself — it tells the caller to open
    * the monster picker (see applySkinCheat).
    */
-  public submitCheatCode(code: string): "speed" | "stamina" | "clip" | "life" | "skin" | null {
+  public submitCheatCode(code: string): "speed" | "stamina" | "clip" | "life" | "skin" | "room" | null {
     const c = code.trim().toUpperCase();
     if (c === "MVJM") {
       this.cheatSpeed = true;
@@ -2692,6 +2798,7 @@ export class GameEngine {
       return "life";
     }
     if (c === "SKIN") return "skin";
+    if (c === "ROOM") return "room";
     return null;
   }
 
