@@ -118,8 +118,8 @@ function levelAtmosphere(level: number) {
       return { ambientColor: 0xaab5bd, ambientIntensity: 1.35, fogColor: 0x8a9299, dimmedFogColor: 0x24282c };
     case MOTION_LEVEL: // "Motion": bright open-air field by day
       return { ambientColor: 0xdff0ff, ambientIntensity: 2.2, fogColor: 0x9fd4f0, dimmedFogColor: 0x3a5a70 };
-    case POOLROOMS_LEVEL: // Poolrooms: cool, dim, underwater-tinted
-      return { ambientColor: 0x2a4a55, ambientIntensity: 0.6, fogColor: 0x0f2830, dimmedFogColor: 0x050f12 };
+    case POOLROOMS_LEVEL: // Classic Poolrooms: bright cyan tiles and clear water
+      return { ambientColor: 0xbceff5, ambientIntensity: 1.8, fogColor: 0x79c9d4, dimmedFogColor: 0x2f7180 };
     default: // Level 0: classic yellow
       return { ambientColor: 0xeae2c2, ambientIntensity: 1.05, fogColor: 0xede4c0, dimmedFogColor: 0x5c5740 };
   }
@@ -624,7 +624,7 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === LOBBY_LEVEL ? 0.008 : level === LEVEL_G ? 0.06 : level === ELECTRICAL_ROOM_LEVEL ? 0.035 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
+    const authored = level === LOBBY_LEVEL ? 0.008 : level === LEVEL_G ? 0.06 : level === ELECTRICAL_ROOM_LEVEL ? 0.035 : level === POOLROOMS_LEVEL ? 0.014 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
@@ -1194,7 +1194,7 @@ export class GameEngine {
       if (this.level !== 0 && this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
-        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== ELECTRICAL_ROOM_LEVEL || this.map.level3GateOpen) && (this.level !== ABANDONED_OFFICE_LEVEL || this.level4DoorOpen)) {
+        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== ELECTRICAL_ROOM_LEVEL || this.map.level3GateOpen) && (this.level !== ABANDONED_OFFICE_LEVEL || this.level4DoorOpen) && (this.level !== POOLROOMS_LEVEL || this.map.poolroomsSolved)) {
           this.audio.playGlitchNoclipSound();
           this.onEscapeTrigger?.();
         }
@@ -1218,6 +1218,7 @@ export class GameEngine {
         this.player.position.x,
         this.player.position.z
       );
+      this.map.updatePoolroomsWater(delta);
       const eventNow = this.map.globalEventState;
       if (this.map.rollGlobalEvents && eventBefore === "normal" && eventNow !== "normal") {
         this.sendToServer({ type: "world_event", level: this.level, state: eventNow, duration: this.map.globalEventTimer });
@@ -2796,12 +2797,20 @@ export class GameEngine {
   }
 
   private turnValve(index: number) {
-    if (this.valvesTurned.has(index)) return;
+    if (!this.map || this.valvesTurned.has(index)) return;
+    const total = this.map.valvePositions.length;
+    const expected = this.map.poolValveOrder[this.valvesTurned.size];
+    if (index !== expected) {
+      this.valvesTurned.clear();
+      this.map.setPoolroomsValveState(this.valvesTurned, 0);
+      this.audio.playTerminalBeep(false);
+      this.onHUDNotification?.(t("eng.denied"));
+      return;
+    }
     this.valvesTurned.add(index);
+    this.map.setPoolroomsValveState(this.valvesTurned, this.valvesTurned.size);
     this.audio.playTerminalBeep(true);
-    const total = this.map?.valvePositions.length ?? 3;
     if (this.valvesTurned.size >= total) {
-      this.map?.toxicWaterCells.clear();
       this.onHUDNotification?.(t("eng.valveAllTurned"));
       unlockAchievement("valves_drained");
     } else {
@@ -2915,8 +2924,8 @@ export class GameEngine {
     if (this.level !== ELECTRICAL_ROOM_LEVEL || !this.map || index < 0 || index >= this.map.level3Switches.length) return;
     this.map.level3SwitchesOn.add(index);
     this.map.updateLevel3SwitchVisual(index);
-    if (this.map.level3SwitchesOn.size >= 5) {
-      this.map.level3GateOpen = true;
+    if (this.map.level3SwitchesOn.size >= this.map.level3Switches.length) {
+      this.map.openLevel3Gate();
       this.onHUDNotification?.(t("eng.level3GateOpen"));
       this.audio.playTerminalBeep(true);
     } else {

@@ -42,13 +42,13 @@ float caustic(vec2 p) {
 /** Transparent, slightly reflective water whose surface waves in the vertex shader. */
 export function createWaterMaterial(toxic: boolean): THREE.MeshStandardMaterial {
   const mat = new THREE.MeshStandardMaterial({
-    color: toxic ? 0x3d6a1c : 0x2a8fa8,
-    emissive: toxic ? 0x2c5a10 : 0x0b3a48,
-    emissiveIntensity: toxic ? 0.35 : 0.25,
-    roughness: 0.06,
-    metalness: 0.15,
+    color: toxic ? 0x3d6a1c : 0x42bed2,
+    emissive: toxic ? 0x2c5a10 : 0x176f82,
+    emissiveIntensity: toxic ? 0.35 : 0.42,
+    roughness: 0.045,
+    metalness: 0.22,
     transparent: true,
-    opacity: toxic ? 0.82 : 0.62,
+    opacity: toxic ? 0.82 : 0.5,
     depthWrite: false,
     side: THREE.DoubleSide,
   });
@@ -118,7 +118,7 @@ export function createPoolTileMaterial(toxic: boolean): THREE.MeshStandardMateri
   map.repeat.set(4, 4);
   const mat = new THREE.MeshStandardMaterial({
     map,
-    color: toxic ? 0x9fbf7a : 0xcfe9ee,
+    color: toxic ? 0x9fbf7a : 0xd9f6f8,
     roughness: 0.35,
     metalness: 0.05,
   });

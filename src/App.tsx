@@ -804,6 +804,23 @@ export default function App() {
               if (nextLevel === 1) unlockAchievement("noclip_master");
             }
 
+            // Poolrooms completion is the main-route ending. The server resets
+            // the room to its lobby, but this client should see the existing
+            // extraction screen instead of silently rebuilding the lobby.
+            if (type === "return_to_lobby" && data.completed === true) {
+              unlockAchievement("absolute_survivor");
+              setLoadingMap(false);
+              setWaitingForExit(false);
+              setExitProgress(null);
+              document.exitPointerLock?.();
+              engine.destroy();
+              engineRef.current = null;
+              socketRef.current?.close();
+              socketRef.current = null;
+              setPhase(ConnectionPhase.ESCAPED);
+              return;
+            }
+
             // Everyone who died is back (server-side too).
             setIsDead(false);
             setAllDead(false);

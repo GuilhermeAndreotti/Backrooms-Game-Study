@@ -296,8 +296,17 @@ export class ProceduralMap {
   public hideCells = new Set<string>();
   /** Level 7's toxic ("Hydrolitis Plague") water cells — a subset of WATER_ROOM cells; the rest are safe to swim through. */
   public toxicWaterCells = new Set<string>();
-  /** Level 7's 3 valve interaction points — turning all of them drains toxicWaterCells (see GameEngine.tryTurnValve). */
+  /** Level 7's hydraulic valve interaction points. */
   public valvePositions: [number, number][] = [];
+  /** Symbols appear in this physical order on the valves. */
+  public readonly poolValveSymbols = ["○", "△", "□", "◇"] as const;
+  /** The sequence is printed visibly on the submerged pool floor. */
+  public readonly poolValveOrder = [3, 2, 1, 0] as const;
+  public poolroomsDrainStage = 0;
+  public poolroomsSolved = false;
+  private poolWaterMeshes: THREE.Mesh[] = [];
+  private poolExitDoor: THREE.Group | null = null;
+  private poolValveMeshes = new Map<number, THREE.Group>();
   /** Set by GameEngine right after construction — O Eco (sound-reactive) queries this. Not owned/populated here. */
   public noiseBus: NoiseBus | null = null;
   /** Set by GameEngine right after construction — O Ceifador's route-memory. Not owned/populated here. */
@@ -320,6 +329,10 @@ export class ProceduralMap {
   public level3LowCorridor = new Set<string>();
   public level3GateX = -1;
   public level3GateZ = -1;
+  /** A single continuous exit gate, hidden once the five panels are active. */
+  public level3GateMesh: THREE.Group | null = null;
+  /** Short architectural walls that break direct runs through the large rooms. */
+  public level3Partitions: { gx: number; gz: number; axis: "x" | "z"; length: number }[] = [];
 
   public updateLevel3SwitchVisual(index: number) {
     const [gx, gz] = this.level3Switches[index] ?? [];
@@ -337,6 +350,12 @@ export class ProceduralMap {
         }
       });
     });
+  }
+
+  /** Releases the Electrical Room's final barrier after every panel is active. */
+  public openLevel3Gate() {
+    this.level3GateOpen = true;
+    if (this.level3GateMesh) this.level3GateMesh.visible = false;
   }
 
   /** Opens the Level 4 access door visually and releases its collision gate. */
@@ -1889,11 +1908,11 @@ export class ProceduralMap {
 
     } else if (this.level === 8) {
       // LEVEL 3: brick service halls, broad rooms divided by narrow connectors.
-      // The gate at the start of the first room opens only after all five switches.
+      // The five panels release a final gate immediately before the exit.
       this.exitGridX = 44;
       this.exitGridZ = 44;
-      this.level3GateX = 10;
-      this.level3GateZ = 5;
+      this.level3GateX = 44;
+      this.level3GateZ = 42;
       const room = (x1: number, z1: number, x2: number, z2: number) => {
         for (let x = x1; x <= x2; x++) for (let z = z1; z <= z2; z++) this.grid[x][z] = CellType.ROOM_LARGE;
       };
@@ -1908,11 +1927,26 @@ export class ProceduralMap {
       corridor(10, 5, 14, 7); corridor(24, 5, 28, 7); corridor(8, 10, 8, 18);
       corridor(15, 15, 15, 18); corridor(30, 12, 30, 18); corridor(35, 24, 40, 24);
       corridor(12, 31, 12, 37); corridor(28, 31, 28, 37); corridor(36, 42, 40, 42);
-      corridor(2, 2, 8, 2); corridor(8, 2, 8, 5); corridor(40, 42, 44, 42); corridor(44, 42, 44, 44);
+      corridor(2, 2, 8, 2); corridor(8, 2, 8, 5);
+      // Seal the final room into a one-cell-wide approach. This prevents a
+      // player from walking around the final gate through the open room.
+      for (let x = 40; x <= 45; x++) for (let z = 41; z <= 45; z++) this.grid[x][z] = CellType.SOLID;
+      corridor(40, 42, 43, 42); corridor(44, 42, 44, 44);
       this.level3Switches = [[6, 6], [19, 8], [9, 25], [29, 25], [30, 41]];
       for (const [x, z] of this.level3Switches) this.grid[x][z] = CellType.CORRIDOR;
-      // A cramped final service crawlspace, visually low and physically gated by GameEngine.
-      for (let x = 40; x <= 44; x++) for (let z = 42; z <= 44; z++) this.level3LowCorridor.add(`${x},${z}`);
+      this.level3Partitions = [
+        { gx: 6, gz: 6, axis: "x", length: 2.35 },
+        { gx: 19, gz: 8, axis: "z", length: 2.65 },
+        { gx: 9, gz: 25, axis: "x", length: 2.9 },
+        { gx: 29, gz: 25, axis: "z", length: 2.35 },
+        { gx: 30, gz: 41, axis: "x", length: 2.6 },
+        { gx: 16, gz: 5, axis: "z", length: 2.4 },
+        { gx: 24, gz: 21, axis: "x", length: 2.7 },
+        { gx: 10, gz: 40, axis: "z", length: 2.3 },
+      ];
+      // A cramped final service crawlspace leading to the barred exit.
+      for (let x = 40; x <= 43; x++) this.level3LowCorridor.add(`${x},42`);
+      for (let z = 42; z <= 44; z++) this.level3LowCorridor.add(`44,${z}`);
 
     } else if (this.level === 6) {
       this.carveLevel6();
@@ -2473,11 +2507,9 @@ export class ProceduralMap {
   }
 
   /**
-   * LEVEL 7 ("LEVEL 5" display — theme: The Dark Poolrooms). A windowed
-   * start room leads into a snaking flooded corridor (WATER_ROOM); a
-   * pocket of it is toxic ("Hydrolitis Plague" — see GameEngine's
-   * toxic-water exposure timer) until all 3 valves scattered along the
-   * safe path are turned (see GameEngine.tryTurnValve), which drains it.
+   * LEVEL 7 ("LEVEL 5" display — classic Poolrooms). A windowed start room
+   * leads into a snaking flooded corridor and a broad central basin. Four
+   * hydraulic valves lower the water in stages and reveal its submerged exit.
    * CLUMP is this level's native hazard — see mobs/clump.ts's sense() for
    * its level-7-only "loses you if you're submerged in WATER_ROOM" weakness.
    */
@@ -2505,6 +2537,12 @@ export class ProceduralMap {
       }
     }
 
+    // A central basin invites the player to inspect the pool floor. The exit
+    // is in its side, not on the direct route through the level.
+    for (let x = 26; x <= 32; x++) {
+      for (let z = 22; z <= 28; z++) this.grid[x][z] = CellType.WATER_ROOM;
+    }
+
     // A toxic pocket, roughly a third of the way along — must drain the
     // valves before it's safe to swim through.
     for (let x = 18; x <= 22; x++) {
@@ -2513,16 +2551,17 @@ export class ProceduralMap {
       }
     }
 
-    // 3 valves along the safe stretch before the toxic pocket.
-    this.valvePositions = [[8, 4], [14, 8], [16, 12]];
+    // Four dry service ledges, distributed through the route rather than in a
+    // straight line. The submerged floor inscription gives their order.
+    this.valvePositions = [[8, 4], [14, 8], [22, 16], [30, 24]];
     for (const [vx, vz] of this.valvePositions) {
       if (this.grid[vx]?.[vz] !== undefined) this.grid[vx][vz] = CellType.ROOM_SMALL; // a dry ledge to stand on while turning it
     }
 
-    this.exitGridX = this.gridSize - 4;
-    this.exitGridZ = this.gridSize - 4;
+    this.exitGridX = 27;
+    this.exitGridZ = 26;
     this.grid[2][2] = CellType.ROOM_SMALL;
-    this.grid[this.exitGridX][this.exitGridZ] = CellType.ROOM_SMALL; // a dry landing at the exit
+    this.grid[this.exitGridX][this.exitGridZ] = CellType.WATER_ROOM;
   }
 
   private carveSideLabyrinth(xStart: number, zStart: number, xEnd: number, zEnd: number, cellType: CellType) {
@@ -2727,7 +2766,7 @@ export class ProceduralMap {
   public isWaterAt(worldX: number, worldZ: number): boolean {
     const gx = Math.floor(worldX / this.cellSize);
     const gz = Math.floor(worldZ / this.cellSize);
-    return this.grid[gx]?.[gz] === CellType.WATER_ROOM;
+    return this.grid[gx]?.[gz] === CellType.WATER_ROOM && !(this.level === 7 && this.poolroomsSolved);
   }
 
   private echoCache = new Map<string, number>();
@@ -2935,7 +2974,10 @@ export class ProceduralMap {
         if (this.level === 9 && !this.level4DoorOpen && gx === this.level4DoorX && gz === this.level4DoorZ) {
           return true;
         }
-        if (this.level === 8 && !this.level3GateOpen && gx === this.level3GateX && gz >= 5 && gz <= 7) {
+        if (this.level === 7 && !this.poolroomsSolved && gx === this.exitGridX && gz === this.exitGridZ) {
+          return true;
+        }
+        if (this.level === 8 && !this.level3GateOpen && gx === this.level3GateX && gz === this.level3GateZ) {
           const gateEdge = this.level3GateX * this.cellSize;
           if (Math.abs(x - gateEdge) < radius + 0.12) return true;
         }
@@ -3208,9 +3250,72 @@ export class ProceduralMap {
       return g;
     });
     const water = new THREE.Mesh(surfaceGeo, this.sharedMat(`pool_water_${toxic ? "toxic" : "clear"}`, () => createWaterMaterial(toxic)));
-    water.position.set(posX, WATER_SURFACE_Y, posZ);
+    const drainRatio = this.poolroomsDrainStage / Math.max(1, this.valvePositions.length);
+    const surfaceY = WATER_SURFACE_Y + (POOL_FLOOR_Y + 0.04 - WATER_SURFACE_Y) * drainRatio;
+    water.position.set(posX, surfaceY, posZ);
+    if (water.material instanceof THREE.MeshStandardMaterial) water.material.opacity = 0.62 - 0.34 * drainRatio;
     water.renderOrder = 1;
     group.add(water);
+    this.poolWaterMeshes.push(water);
+
+    if (gx === this.exitGridX && gz === this.exitGridZ) {
+      const door = new THREE.Group();
+      const frameMat = this.sharedMat("pool_exit_frame", () => new THREE.MeshStandardMaterial({ color: 0x176b7c, metalness: 0.65, roughness: 0.28, emissive: 0x07313c, emissiveIntensity: 0.65 }));
+      const leafMat = this.sharedMat("pool_exit_leaf", () => new THREE.MeshStandardMaterial({ color: 0x0d4d62, metalness: 0.35, roughness: 0.3, emissive: 0x0b5064, emissiveIntensity: 0.9 }));
+      const frame = new THREE.Mesh(this.sharedGeo("pool_exit_frame", () => new THREE.BoxGeometry(1.8, 2.25, 0.16)), frameMat);
+      frame.position.set(0, POOL_FLOOR_Y + 1.12, -this.cellSize / 2 + 0.1); door.add(frame);
+      const leaf = new THREE.Mesh(this.sharedGeo("pool_exit_leaf", () => new THREE.BoxGeometry(1.54, 1.96, 0.08)), leafMat);
+      leaf.position.set(0, POOL_FLOOR_Y + 1.1, -this.cellSize / 2 + 0.01); door.add(leaf);
+      door.position.set(posX, 0, posZ);
+      door.visible = this.poolroomsSolved;
+      group.add(door);
+      this.poolExitDoor = door;
+    }
+
+    // The answer is deliberately legible through the clear water: it is
+    // embedded in the pool tiles rather than exposed as a UI instruction.
+    if (gx === 29 && gz === 25) {
+      const canvas = document.createElement("canvas"); canvas.width = 512; canvas.height = 128;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.fillStyle = "#d7f3f5"; ctx.fillRect(0, 0, 512, 128);
+        ctx.fillStyle = "#0b6072"; ctx.font = "bold 62px sans-serif";
+        ctx.textAlign = "center"; ctx.fillText("◇   □   △   ○", 256, 83);
+      }
+      const clue = new THREE.Mesh(new THREE.PlaneGeometry(3.15, 0.8), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, opacity: 0.88 }));
+      clue.rotation.x = -Math.PI / 2;
+      clue.position.set(posX, POOL_FLOOR_Y + 0.012, posZ);
+      group.add(clue);
+    }
+  }
+
+  /** Applies a synchronized valve state and starts the corresponding drain stage. */
+  public setPoolroomsValveState(turned: ReadonlySet<number>, stage: number) {
+    this.poolroomsDrainStage = Math.max(0, Math.min(this.valvePositions.length, stage));
+    this.poolroomsSolved = this.poolroomsDrainStage >= this.valvePositions.length;
+    this.poolValveMeshes.forEach((valve, index) => {
+      valve.rotation.z = turned.has(index) ? Math.PI / 2 : 0;
+      valve.traverse((child) => {
+        if (child.name !== "pool_valve_indicator") return;
+        const mat = child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial ? child.material : null;
+        if (mat) { mat.color.setHex(turned.has(index) ? 0x54f4d0 : 0xffb04a); mat.emissive.setHex(turned.has(index) ? 0x167c6e : 0x7a3105); }
+      });
+    });
+    if (this.poolroomsSolved) {
+      this.toxicWaterCells.clear();
+      if (this.poolExitDoor) this.poolExitDoor.visible = true;
+    }
+  }
+
+  /** Smoothly lowers every water surface as correct valves change the pumps. */
+  public updatePoolroomsWater(delta: number) {
+    if (this.level !== 7 || this.poolWaterMeshes.length === 0) return;
+    const target = WATER_SURFACE_Y + (POOL_FLOOR_Y + 0.04 - WATER_SURFACE_Y) * (this.poolroomsDrainStage / this.valvePositions.length);
+    for (const water of this.poolWaterMeshes) {
+      water.position.y += (target - water.position.y) * Math.min(1, delta * 0.7);
+      const material = water.material;
+      if (material instanceof THREE.MeshStandardMaterial) material.opacity = 0.62 - 0.34 * (this.poolroomsDrainStage / this.valvePositions.length);
+    }
   }
 
   /**
@@ -3351,42 +3456,103 @@ export class ProceduralMap {
 
     if (this.level === 8) {
       const switchIndex = this.level3Switches.findIndex(([sx, sz]) => sx === gx && sz === gz);
+      const partition = this.level3Partitions.find((wall) => wall.gx === gx && wall.gz === gz);
+      if (partition) {
+        const wallMat = this.sharedMat("level3_partition", () => new THREE.MeshStandardMaterial({ color: 0x31363a, roughness: 0.72, metalness: 0.28 }));
+        const terminalOffset = switchIndex >= 0 ? -0.45 : 0;
+        const wall = new THREE.Mesh(this.sharedGeo(`level3_partition_${partition.axis}_${partition.length}`, () => new THREE.BoxGeometry(partition.axis === "x" ? partition.length : 0.16, 1.5, partition.axis === "z" ? partition.length : 0.16)), wallMat);
+        const wallX = posX + (partition.axis === "z" ? terminalOffset : 0);
+        const wallZ = posZ + (partition.axis === "x" ? terminalOffset : 0);
+        wall.position.set(wallX, 0.75, wallZ);
+        group.add(wall);
+
+        // A few small collision cylinders follow the wall's real length, so
+        // the divider blocks a straight run without sealing the whole room.
+        const pieces = Math.max(2, Math.ceil(partition.length / 0.8));
+        for (let i = 0; i < pieces; i++) {
+          const along = -partition.length / 2 + (i + 0.5) * partition.length / pieces;
+          this.addObstacle(gx, gz, wallX + (partition.axis === "x" ? along : 0), wallZ + (partition.axis === "z" ? along : 0), 0.34);
+        }
+      }
       if (switchIndex >= 0) {
         const plateMat = this.sharedMat("level3_switch_plate", () => new THREE.MeshStandardMaterial({ color: 0x252525, metalness: 0.8, roughness: 0.35 }));
         const isOn = this.level3SwitchesOn.has(switchIndex);
         const lightMat = this.sharedMat(`level3_switch_light_${switchIndex}`, () => new THREE.MeshStandardMaterial({ color: isOn ? 0x39ff88 : 0xff3b18, emissive: isOn ? 0x16a34a : 0xff2200, emissiveIntensity: 3.5 }));
+        const terminalGroup = new THREE.Group();
+        terminalGroup.position.set(posX, 0, posZ);
+        if (partition?.axis === "z") terminalGroup.rotation.y = Math.PI / 2;
         const terminal = new THREE.Mesh(this.sharedGeo("level3_switch_terminal", () => new THREE.BoxGeometry(0.72, 1.15, 0.46)), plateMat);
-        terminal.position.set(posX, 0.58, posZ);
-        group.add(terminal);
+        terminal.position.set(0, 0.58, 0);
+        terminalGroup.add(terminal);
         const lamp = new THREE.Mesh(this.sharedGeo("level3_switch_lamp", () => new THREE.BoxGeometry(0.36, 0.18, 0.05)), lightMat);
         lamp.name = `level3_switch_lamp_${switchIndex}`;
-        lamp.position.set(posX, 1.05, posZ - 0.24);
-        group.add(lamp);
+        lamp.position.set(0, 1.05, -0.24);
+        terminalGroup.add(lamp);
         const handle = new THREE.Mesh(this.sharedGeo("level3_switch_handle", () => new THREE.BoxGeometry(0.08, 0.28, 0.1)), this.metalMaterial);
-        handle.position.set(posX, 0.72, posZ - 0.27);
+        handle.position.set(0.72, 0.72, -0.27);
         handle.rotation.x = -0.35;
-        group.add(handle);
-        this.registerLight(gx, gz, posX, 1.1, posZ - 0.35, 0xff3b18, 4.5, 7.0, 1.0);
+        terminalGroup.add(handle);
+        group.add(terminalGroup);
+        const lightX = posX + (partition?.axis === "z" ? -0.35 : 0);
+        const lightZ = posZ + (partition?.axis === "z" ? 0 : -0.35);
+        this.registerLight(gx, gz, lightX, 1.1, lightZ, 0xff3b18, 4.5, 7.0, 1.0);
       }
-      if (gx === this.level3GateX && gz >= 5 && gz <= 7) {
+      if (gx === this.level3GateX && gz === this.level3GateZ && !this.level3GateOpen) {
         const gateMat = this.sharedMat("level3_gate", () => new THREE.MeshStandardMaterial({ color: 0x202326, metalness: 0.9, roughness: 0.3 }));
         const barGeo = this.sharedGeo("level3_gate_bar", () => new THREE.CylinderGeometry(0.055, 0.055, height - 0.18, 8));
-        for (let i = -2; i <= 2; i++) {
+        const gate = new THREE.Group();
+        gate.name = "level3_exit_gate";
+        const gateLength = this.cellSize - 0.2;
+        for (let z = -gateLength / 2 + 0.22; z < gateLength / 2; z += 0.42) {
           const bar = new THREE.Mesh(barGeo, gateMat);
-          bar.position.set(posX - hSize / 2 + 0.08, height / 2, posZ + i * 0.38);
-          group.add(bar);
+          bar.position.set(0, height / 2, z);
+          gate.add(bar);
         }
-        const frame = new THREE.Mesh(this.sharedGeo("level3_gate_frame", () => new THREE.BoxGeometry(0.14, 0.14, hSize - 0.25)), gateMat);
-        frame.position.set(posX - hSize / 2 + 0.08, height - 0.08, posZ);
-        group.add(frame);
-        const warning = new THREE.Mesh(this.sharedGeo("level3_gate_warning", () => new THREE.BoxGeometry(0.08, 0.08, hSize - 0.25)), this.sharedMat("level3_gate_warning", () => new THREE.MeshBasicMaterial({ color: 0xff5a24 })));
-        warning.position.set(posX - hSize / 2 - 0.04, 2.55, posZ);
-        group.add(warning);
+        const header = new THREE.Mesh(this.sharedGeo("level3_gate_frame", () => new THREE.BoxGeometry(0.16, 0.16, gateLength)), gateMat);
+        header.position.set(0, height - 0.08, 0); gate.add(header);
+        const postGeo = this.sharedGeo("level3_gate_post", () => new THREE.BoxGeometry(0.16, height, 0.16));
+        for (const z of [-gateLength / 2, gateLength / 2]) {
+          const post = new THREE.Mesh(postGeo, gateMat);
+          post.position.set(0, height / 2, z); gate.add(post);
+        }
+        const warning = new THREE.Mesh(this.sharedGeo("level3_gate_warning", () => new THREE.BoxGeometry(0.08, 0.08, gateLength)), this.sharedMat("level3_gate_warning", () => new THREE.MeshBasicMaterial({ color: 0xff5a24 })));
+        warning.position.set(-0.1, 2.55, 0); gate.add(warning);
+        gate.position.set(this.level3GateX * this.cellSize + 0.08, 0, (this.level3GateZ + 0.5) * this.cellSize);
+        group.add(gate);
+        this.level3GateMesh = gate;
       }
       if (this.level3LowCorridor.has(`${gx},${gz}`)) {
         const lowHeader = new THREE.Mesh(this.sharedGeo("level3_low_header", () => new THREE.BoxGeometry(hSize, 0.35, 0.18)), this.wallMaterial);
         lowHeader.position.set(posX, 1.42, posZ - hSize / 2);
         group.add(lowHeader);
+      }
+    }
+
+    if (this.level === 7) {
+      const valveIndex = this.valvePositions.findIndex(([vx, vz]) => vx === gx && vz === gz);
+      if (valveIndex >= 0) {
+        const valve = new THREE.Group();
+        const pipeMat = this.sharedMat("pool_valve_pipe", () => new THREE.MeshStandardMaterial({ color: 0x347484, metalness: 0.72, roughness: 0.28 }));
+        const wheelMat = this.sharedMat(`pool_valve_wheel_${valveIndex}`, () => new THREE.MeshStandardMaterial({ color: 0xffb04a, emissive: 0x7a3105, emissiveIntensity: 0.7, metalness: 0.5, roughness: 0.25 }));
+        const pipe = new THREE.Mesh(this.sharedGeo("pool_valve_pipe", () => new THREE.CylinderGeometry(0.12, 0.12, 1.25, 10)), pipeMat);
+        pipe.rotation.z = Math.PI / 2; pipe.position.set(0, 0.72, -0.36); valve.add(pipe);
+        const wheel = new THREE.Mesh(this.sharedGeo("pool_valve_wheel", () => new THREE.TorusGeometry(0.36, 0.07, 8, 16)), wheelMat);
+        wheel.name = "pool_valve_indicator";
+        wheel.position.set(0, 0.9, -0.48); wheel.rotation.x = Math.PI / 2; valve.add(wheel);
+        const plaque = new THREE.Mesh(this.sharedGeo("pool_valve_plaque", () => new THREE.BoxGeometry(0.74, 0.42, 0.05)), this.sharedMat("pool_valve_plaque_mat", () => new THREE.MeshStandardMaterial({ color: 0xd8f2f2, roughness: 0.55 })));
+        plaque.position.set(0, 1.52, -0.5); valve.add(plaque);
+        const symbolCanvas = document.createElement("canvas"); symbolCanvas.width = symbolCanvas.height = 128;
+        const symbolCtx = symbolCanvas.getContext("2d");
+        if (symbolCtx) { symbolCtx.fillStyle = "#d8f2f2"; symbolCtx.fillRect(0, 0, 128, 128); symbolCtx.fillStyle = "#0d6073"; symbolCtx.font = "bold 84px sans-serif"; symbolCtx.textAlign = "center"; symbolCtx.fillText(this.poolValveSymbols[valveIndex], 64, 92); }
+        const symbol = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.3), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(symbolCanvas) }));
+        symbol.position.set(0, 1.52, -0.535); valve.add(symbol);
+        if (this.poolValveOrder.indexOf(valveIndex as 0 | 1 | 2 | 3) < this.poolroomsDrainStage) {
+          valve.rotation.z = Math.PI / 2;
+          wheelMat.color.setHex(0x54f4d0); wheelMat.emissive.setHex(0x167c6e);
+        }
+        valve.position.set(posX, 0, posZ);
+        group.add(valve);
+        this.poolValveMeshes.set(valveIndex, valve);
       }
     }
 
@@ -4079,9 +4245,9 @@ export class ProceduralMap {
     // lobby has no ceiling to hang one from — sunlight (ambient) is its light.
     const isForcedDark = this.level === LOBBY_LEVEL || this.forcedDarkCells.has(`${gx},${gz}`);
     const lightRand = new SeededRandom(this.seed + gx * 7 + gz * 13);
-    const shouldSpawnLight = !isForcedDark && (cellType === CellType.CORRIDOR
-      ? lightRand.next() > 0.65
-      : lightRand.next() > 0.55);
+    const shouldSpawnLight = !isForcedDark && (this.level === 7
+      ? lightRand.next() > 0.28
+      : cellType === CellType.CORRIDOR ? lightRand.next() > 0.65 : lightRand.next() > 0.55);
 
     // We do NOT spawn fluorescent lighting in the exit cell to preserve the dramatic crimson visual contrast
     if (shouldSpawnLight && !(gx === this.exitGridX && gz === this.exitGridZ)) {
@@ -4104,8 +4270,8 @@ export class ProceduralMap {
       fixtureGroup.add(tubeMesh);
 
       // Point Light with soft, yellow-greenish tint for Level 0, or clean industrial white-grey for Level 1
-      let lightColor = (this.level === 4 || this.level === 9) ? 0xe8f0ff : (this.level === 1 ? 0xe6e6e6 : 0xfefdb5);
-      let lightIntensity = isBurntOut ? 0.0 : ((this.level === 4 || this.level === 9) ? 1.0 : this.level === 1 ? 1.05 : 1.4); // slightly dimmer office/warehouse lighting
+      let lightColor = (this.level === 4 || this.level === 9) ? 0xe8f0ff : this.level === 7 ? 0xc9faff : (this.level === 1 ? 0xe6e6e6 : 0xfefdb5);
+      let lightIntensity = isBurntOut ? 0.0 : ((this.level === 4 || this.level === 9) ? 1.0 : this.level === 7 ? 1.8 : this.level === 1 ? 1.05 : 1.4); // bright cyan pool lighting
 
       // Gild Sector gets gorgeous colorful lighting!
       const isGild = this.level === 1 && (gx >= 24 && gz < 24);
@@ -4144,7 +4310,7 @@ export class ProceduralMap {
     const isSpawnZone = (gx < 5 && gz < 5);
     const isExitZone = this.isKeepClearCell(gx, gz);
 
-    if (this.level !== 1 && this.level !== 4 && this.level !== 9 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
+    if (this.level !== 1 && this.level !== 4 && this.level !== 8 && this.level !== 9 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
       const wallRng = new SeededRandom(this.seed + gx * 11 + gz * 23);
       if (wallRng.next() < 0.16) {
         let addedDivider = false;
@@ -4228,7 +4394,7 @@ export class ProceduralMap {
             gridZ: gz,
           });
         }
-      } else if (this.level !== 9 && propRng.next() < (this.level === 1 && gx < 24 && gz >= 24 ? 0.62 : 0.22)) { // much higher 62% density in Crate Warehouse Sector!
+      } else if (this.level !== 8 && this.level !== 9 && propRng.next() < (this.level === 1 && gx < 24 && gz >= 24 ? 0.62 : 0.22)) { // much higher 62% density in Crate Warehouse Sector!
         const propRoll = propRng.next();
         
         if (this.level === 1) {
@@ -4593,7 +4759,7 @@ export class ProceduralMap {
     // On both Level 0 and Level 1, there is a sparse chance (e.g., 3.5%) to spawn a collectible item in a cell
     const itemRng = new SeededRandom(this.seed + gx * 83 + gz * 109);
     // Don't spawn collectibles at the exit or spawning point (0,0) or solid cells
-    if (this.level !== 4 && this.level !== 9 && this.level !== LOBBY_LEVEL && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
+    if (this.level !== 4 && this.level !== 8 && this.level !== 9 && this.level !== LOBBY_LEVEL && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
       const itemTypeRoll = itemRng.next();
       // Keep it within the cell boundaries (so + hSize/2 is center, range is -hSize/2 + 0.5 to hSize/2 - 0.5)
       const maxOffset = hSize / 2 - 0.6;
