@@ -29,6 +29,8 @@ import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, X, FileText, Compa
  */
 function displayLabelForLevel(level: number): string {
   if (level === 3) return "3";
+  if (level === 8) return "BRICK OFFICES";
+  if (level === 9) return "MEG OFFICES";
   if (level === 5) return "LOBBY";
   if (level === 6) return "4";
   if (level === 7) return "5";
@@ -521,7 +523,7 @@ export default function App() {
                       const engine = engineRef.current;
                       if (!engine) return;
 
-                      if (engine.level === 0 || engine.level === 1 || engine.level === 2 || engine.level === 3 || engine.level === 4 || engine.level === 6) {
+                      if (engine.level === 0 || engine.level === 1 || engine.level === 2 || engine.level === 6) {
                         // Ask the server to advance the whole room together instead
                         // of transitioning just this client: previously each player
                         // who found the exit noclipped into their own next level,
@@ -529,20 +531,19 @@ export default function App() {
                         // transition now runs for every player (this one included)
                         // when the server's "level_transition" broadcast comes back
                         // — see that handler below.
-                         // Progression: 0 -> 1 -> 2 -> 3 -> 4 -> 7 (LEVEL 5)
-                         // -> ESCAPED. Level 6 and Level G
-                         // remains a secret detour reached via onSecretLevelFound.
+                          // Progression: 0 -> 1 -> 2 -> 6 -> 7 -> ESCAPED.
+                          // Lights Out and Level G remain secret detours.
                         if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
                           socketRef.current.send(JSON.stringify({
                             type: "level_transition_request",
-                             level: engine.level === 2 ? 3 : engine.level === 3 ? 4 : engine.level === 4 ? 7 : engine.level === 6 ? 7 : engine.level + 1,
+                             level: engine.level === 2 ? 6 : engine.level === 6 ? 7 : engine.level + 1,
                           }));
                         }
                       } else {
                         console.log("Explorer successfully escaped the Backrooms!");
                         unlockAchievement("absolute_survivor");
                         // Level G's emergency door is its own, secret ending
-                         if (engine.level === 8) {
+                          if (engine.level === 4) {
                           unlockAchievement("level_g_escaped");
                           setLevelGEnding("message");
                         }
@@ -567,10 +568,10 @@ export default function App() {
                       // "Lights Out", Level 0 -> Level G), not room-wide
                       // progression events, so no server round-trip.
                       const engine = engineRef.current;
-                       const from = targetLevel === 8 ? 0 : 1;
+                       const from = targetLevel === 4 ? 0 : 1;
                       if (!engine || engine.level !== from) return;
 
-                       if (targetLevel === 8) {
+                       if (targetLevel === 4) {
                         console.log("Found the office door that shouldn't exist... entering LEVEL G.");
                         unlockAchievement("level_g_found");
                       } else {
@@ -867,7 +868,7 @@ export default function App() {
             engineRef.current?.handleValveTurn(data.index);
           }
 
-          else if (type === "level3_switch") {
+          else if (type === "brick_office_switch") {
             engineRef.current?.handleLevel3Switch(data.index);
           }
 

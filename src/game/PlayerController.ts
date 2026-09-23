@@ -57,7 +57,7 @@ export class PlayerController {
   public velZ = 0;
 
   // --- Lobby cheat codes (see GameEngine.submitCheatCode) ------------------
-  /** MVJM: 60% faster on foot, in every state (walk/run/crouch). */
+  /** MVJM: 120% faster on foot, in every state (walk/run/crouch). */
   public speedCheat = false;
   /** UHUM: stamina never drains. */
   public infiniteStaminaCheat = false;
@@ -106,6 +106,9 @@ export class PlayerController {
     this.onPlayFootstep = onPlayFootstep;
 
     this.initEvents();
+    // Level transitions replace the controller while the canvas can remain
+    // pointer-locked, so no new pointerlockchange event is guaranteed.
+    this.onLockChange();
   }
 
   private initEvents() {
@@ -256,7 +259,7 @@ export class PlayerController {
     }
 
     // Cheat: MVJM — flat speed multiplier, on top of whichever state applies.
-    if (this.speedCheat) currentSpeed *= 1.6;
+    if (this.speedCheat) currentSpeed *= 2.2;
 
     // 2. STAMINA MANAGEMENT
     if (this.infiniteStaminaCheat) {

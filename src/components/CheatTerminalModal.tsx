@@ -5,15 +5,63 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Terminal, X, Check, Skull } from "lucide-react";
+import * as THREE from "three";
 import { t, useLanguage } from "../i18n";
+import { EntityType, WanderingEntity } from "../game/WanderingEntity";
 
 /** The five monster bodies the SKIN cheat can hand out (mirrors GameEngine's MONSTER_SKIN_TYPES). */
 const SKIN_OPTIONS = ["DULLER", "HOUND", "CLUMP", "SKIN_STEALER", "WRETCH"] as const;
 export type SkinChoice = (typeof SKIN_OPTIONS)[number];
 
+/** Static 3D thumbnail used to identify each monster in the SKIN picker. */
+const MonsterSkinPreview: React.FC<{ type: SkinChoice }> = ({ type }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const width = canvas.clientWidth || 48;
+    const height = canvas.clientHeight || 48;
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(width, height, false);
+    renderer.setClearColor(0x000000, 0);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(24, width / height, 0.1, 100);
+    const ambient = new THREE.AmbientLight(0xffd27a, 2.2);
+    const key = new THREE.DirectionalLight(0xffffff, 3.4);
+    key.position.set(2, 4, 4);
+    scene.add(ambient, key);
+
+    const body = WanderingEntity.buildSkinMesh(type as EntityType);
+    const bounds = new THREE.Box3().setFromObject(body);
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    const maxSize = Math.max(size.x, size.y, size.z, 0.1);
+    body.position.sub(center);
+    body.rotation.y = Math.PI;
+    scene.add(body);
+
+    camera.position.set(0, maxSize * 0.08, maxSize * 2.5);
+    camera.lookAt(0, 0, 0);
+    renderer.render(scene, camera);
+
+    return () => {
+      scene.remove(body);
+      const tintMaterials = body.userData.tintMaterials as THREE.Material[] | undefined;
+      tintMaterials?.forEach((material) => material.dispose());
+      renderer.dispose();
+    };
+  }, [type]);
+
+  return <canvas ref={canvasRef} aria-hidden="true" className="w-12 h-12 shrink-0 pointer-events-none" />;
+};
+
 interface CheatTerminalModalProps {
   /** Tries a code; returns which cheat it unlocked, or null if it wasn't recognized. */
-  onSubmit: (code: string) => "speed" | "stamina" | "clip" | "skin" | "room" | null;
+  onSubmit: (code: string) => "speed" | "stamina" | "clip" | "life" | "skin" | "room" | null;
   onUnlockRoom: () => void;
   /** Applies (or, with null, clears) the SKIN cheat's monster body. */
   onPickSkin: (type: SkinChoice | null) => void;
@@ -23,9 +71,9 @@ interface CheatTerminalModalProps {
 }
 
 /**
- * The lobby's cheat terminal: fixed codes (MVJM/UHUM/CLIP/SKIN) unlock small
+ * The lobby's cheat terminal: fixed codes (MVJM/UHUM/CLIP/LIFE/SKIN) unlock small
  * fun modifiers for the rest of the session. Unlike Level G's terminal this
- * one doesn't close on a correct code — there are four to try, so it stays
+ * one doesn't close on a correct code — there are five to try, so it stays
  * open and just confirms each one, until SKIN switches it to the monster
  * picker or the player backs out / presses Escape.
  */
@@ -33,7 +81,7 @@ export const CheatTerminalModal: React.FC<CheatTerminalModalProps> = ({ onSubmit
   useLanguage();
   const [mode, setMode] = useState<"code" | "skin">("code");
   const [code, setCode] = useState("");
-  const [status, setStatus] = useState<"idle" | "denied" | "speed" | "stamina" | "clip" | "room">("idle");
+  const [status, setStatus] = useState<"idle" | "denied" | "speed" | "stamina" | "clip" | "life" | "room">("idle");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -107,6 +155,7 @@ export const CheatTerminalModal: React.FC<CheatTerminalModalProps> = ({ onSubmit
               {status === "speed" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedSpeed")}</span>}
               {status === "stamina" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedStamina")}</span>}
               {status === "clip" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedClip")}</span>}
+              {status === "life" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedLife")}</span>}
             </div>
 
             <button
@@ -157,7 +206,8 @@ export const CheatTerminalModal: React.FC<CheatTerminalModalProps> = ({ onSubmit
                   }`}
                 >
                   {currentSkin === s ? <Check className="w-3.5 h-3.5 shrink-0" /> : <Skull className="w-3.5 h-3.5 shrink-0 opacity-60" />}
-                  {t(`skin.${s}`)}
+                  <MonsterSkinPreview type={s} />
+                  <span className="min-w-0 text-left">{t(`skin.${s}`)}</span>
                 </button>
               ))}
             </div>

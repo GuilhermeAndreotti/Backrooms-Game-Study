@@ -75,10 +75,10 @@ function mixSeed(seed: number, salt: number): number {
 export const LEVEL_G_DOOR_OPEN_ANGLE = -Math.PI * 0.55;
 
 export function gridSizeForLevel(level: number): number {
-  if (level === 8) return 18; // Level G: a small office, on purpose
+  if (level === 4) return 18; // Level G: a small office, on purpose
   if (level === LOBBY_LEVEL) return 16; // the room lobby: small, open-air
   if (level === 6 || level === 7) return 40; // the new main-progression levels — simpler layouts than 1/2, a smaller grid to match
-  if (level === 3) return 48;
+  if (level === 3 || level === 8 || level === 9) return 48;
   return level === 0 ? 64 : 48;
 }
 
@@ -352,7 +352,7 @@ export class ProceduralMap {
   /** Cells monsters may walk into: not walls, and not Level G's exit while it's locked. */
   public isWalkableForEntities(gx: number, gz: number): boolean {
     if (this.grid[gx]?.[gz] === undefined || this.grid[gx][gz] === CellType.SOLID) return false;
-    if (this.level === 8 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) return false;
+    if (this.level === 4 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) return false;
     return true;
   }
 
@@ -595,7 +595,7 @@ export class ProceduralMap {
 
     // Level G: no breadcrumbs, drafts or wet trails to the exit — finding the
     // emergency door (and earning it) is the level.
-    if (this.level === 8 || this.level === LOBBY_LEVEL) foundPath = [];
+    if (this.level === 4 || this.level === LOBBY_LEVEL) foundPath = [];
 
     this.exitPath = foundPath;
     this.exitPathSet.clear();
@@ -1572,8 +1572,8 @@ export class ProceduralMap {
     });
 
     // Wallpaper/Concrete: Dull yellowish wallpaper, raw concrete blocks or rusted metal
-    const wallTex = this.level === 8 ? this.createOfficeWallTexture()
-      : this.level === 3 ? this.createBrickWallTexture()
+    const wallTex = this.level === 4 ? this.createOfficeWallTexture()
+      : this.level === 8 ? this.createBrickWallTexture()
       : this.level === 2 ? this.createRustedMetalWallTexture() : (this.level === 1 ? this.createConcreteWallTexture() : this.createWallTexture());
     this.wallMaterial = new THREE.MeshStandardMaterial({
       map: wallTex,
@@ -1583,13 +1583,13 @@ export class ProceduralMap {
 
     // Dark wood baseboard/skirting molding
     this.skirtingBoardMaterial = new THREE.MeshStandardMaterial({
-      color: this.level === 8 ? 0x3a3d42 : this.level === 2 ? 0x24180f : (this.level === 1 ? 0x222222 : 0x5a4d33),
+      color: this.level === 4 ? 0x3a3d42 : this.level === 2 ? 0x24180f : (this.level === 1 ? 0x222222 : 0x5a4d33),
       roughness: 0.9,
       metalness: 0.1,
     });
 
     // Carpet/Concrete Floor: Muddy textured yellowish-brown carpet, stained factory cement, or rusted steel plates
-    const carpetTex = this.level === 8 ? this.createOfficeCarpetTexture()
+    const carpetTex = this.level === 4 ? this.createOfficeCarpetTexture()
       : this.level === 2 ? this.createRustedMetalFloorTexture() : (this.level === 1 ? this.createConcreteFloorTexture() : this.createCarpetTexture());
     this.carpetMaterial = new THREE.MeshStandardMaterial({
       map: carpetTex,
@@ -1842,12 +1842,19 @@ export class ProceduralMap {
       this.carveLevel1SecretCorridor();
 
     } else if (this.level === 4) {
-      this.carveLevel4Office();
-    } else if (this.level === 8) {
       this.carveLevelG();
+    } else if (this.level === 9) {
+      this.carveLevel4Office();
     } else if (this.level === LOBBY_LEVEL) {
       this.carveLobby();
     } else if (this.level === 3) {
+      this.exitGridX = 34;
+      this.exitGridZ = 34;
+      this.carvePerfectMaze(2, 2, this.exitGridX, this.exitGridZ, 2, 2);
+      this.grid[2][2] = CellType.CORRIDOR;
+      this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
+
+    } else if (this.level === 8) {
       // LEVEL 3: brick service halls, broad rooms divided by narrow connectors.
       // The gate at the start of the first room opens only after all five switches.
       this.exitGridX = 44;
@@ -2102,7 +2109,7 @@ export class ProceduralMap {
 
     // Level G is hand-laid; the generic spawn clearing below would punch
     // through its reception walls.
-    if (this.level === 8 || this.level === LOBBY_LEVEL) return;
+    if (this.level === 4 || this.level === LOBBY_LEVEL) return;
 
     // Ensure spawn around (2,2) is safe, walkable, and fully cleared
     for (let dx = -1; dx <= 2; dx++) {
@@ -2811,10 +2818,10 @@ export class ProceduralMap {
           return true;
         }
         // Level G's emergency exit is a locked door until the code goes in
-        if (this.level === 8 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) {
+        if (this.level === 4 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) {
           return true;
         }
-        if (this.level === 3 && !this.level3GateOpen && gx === this.level3GateX && gz >= 5 && gz <= 7) {
+        if (this.level === 8 && !this.level3GateOpen && gx === this.level3GateX && gz >= 5 && gz <= 7) {
           const gateEdge = this.level3GateX * this.cellSize;
           if (Math.abs(x - gateEdge) < radius + 0.12) return true;
         }
@@ -3176,7 +3183,7 @@ export class ProceduralMap {
 
     }
 
-    if (this.level === 3) {
+    if (this.level === 8) {
       const switchIndex = this.level3Switches.findIndex(([sx, sz]) => sx === gx && sz === gz);
       if (switchIndex >= 0) {
         const plateMat = this.sharedMat("level3_switch_plate", () => new THREE.MeshStandardMaterial({ color: 0x252525, metalness: 0.8, roughness: 0.35 }));
@@ -3217,7 +3224,7 @@ export class ProceduralMap {
       }
     }
 
-    if (this.level === 4) {
+    if (this.level === 9) {
       const employee = this.level4Employees.find((person) => person.gx === gx && person.gz === gz);
       const deskMat = this.sharedMat("meg_desk", () => new THREE.MeshStandardMaterial({ color: 0x4a4038, roughness: 0.72 }));
       const chairMat = this.sharedMat("meg_chair", () => new THREE.MeshStandardMaterial({ color: 0x30343a, roughness: 0.8 }));
@@ -3256,7 +3263,7 @@ export class ProceduralMap {
       }
     }
 
-    if (this.level === 3) {
+    if (this.level === 8) {
       if ((gx + gz) % 2 === 0) this.registerLight(gx, gz, posX, fY + height - 0.35, posZ, 0xffc58a, 2.1, 8.5, 1.15);
       if (gx === 3 && gz === 2) {
         const canvas = document.createElement("canvas"); canvas.width = 512; canvas.height = 256;
@@ -3676,13 +3683,13 @@ export class ProceduralMap {
 
     // Level G builds its own furniture, terminal and emergency door; Level 0
     // has the secret office door in one nook.
-    if (this.level === 8) this.buildLevelGCell(group, gx, gz, posX, posZ, height);
+    if (this.level === 4) this.buildLevelGCell(group, gx, gz, posX, posZ, height);
     if (this.level === 0 && gx === this.officeDoorX && gz === this.officeDoorZ) {
       this.buildOfficeDoor(group, posX, posZ, height);
     }
 
     // 5. THE GLITCHING NOCLIP WALL EXIT ("flipar na parede / noclip")
-    if (gx === this.exitGridX && gz === this.exitGridZ && this.level !== 8 && this.level !== 4) {
+    if (gx === this.exitGridX && gz === this.exitGridZ && this.level !== 4 && this.level !== 9) {
       const exitGroup = new THREE.Group();
 
       // Find all adjacent solid neighbors
@@ -3910,7 +3917,7 @@ export class ProceduralMap {
       const lightRng = new SeededRandom(this.seed + gx * 41 + gz * 61);
       const burntRoll = lightRng.next();
       const isBurntOut = (this.level === 1 && burntRoll < 0.38) // 38% burnt out rate in warehouse Level 1!
-        || (this.level === 8 && burntRoll < 0.3); // Level G: a dead tube every few rooms
+        || (this.level === 4 && burntRoll < 0.3); // Level G: a dead tube every few rooms
 
       const glassMaterial = isBurntOut ? this.fluorescentGlassOff : this.fluorescentGlassOn;
       const tubeMesh = new THREE.Mesh(this.tubeGeo, glassMaterial);
@@ -3918,8 +3925,8 @@ export class ProceduralMap {
       fixtureGroup.add(tubeMesh);
 
       // Point Light with soft, yellow-greenish tint for Level 0, or clean industrial white-grey for Level 1
-      let lightColor = this.level === 8 ? 0xe8f0ff : (this.level === 1 ? 0xe6e6e6 : 0xfefdb5);
-      let lightIntensity = isBurntOut ? 0.0 : (this.level === 8 ? 1.0 : this.level === 1 ? 1.05 : 1.4); // slightly dimmer on average for warehouse
+      let lightColor = this.level === 4 ? 0xe8f0ff : (this.level === 1 ? 0xe6e6e6 : 0xfefdb5);
+      let lightIntensity = isBurntOut ? 0.0 : (this.level === 4 ? 1.0 : this.level === 1 ? 1.05 : 1.4); // slightly dimmer on average for warehouse
 
       // Gild Sector gets gorgeous colorful lighting!
       const isGild = this.level === 1 && (gx >= 24 && gz < 24);
@@ -3958,7 +3965,7 @@ export class ProceduralMap {
     const isSpawnZone = (gx < 5 && gz < 5);
     const isExitZone = this.isKeepClearCell(gx, gz);
 
-    if (this.level !== 1 && this.level !== 8 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
+    if (this.level !== 1 && this.level !== 4 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
       const wallRng = new SeededRandom(this.seed + gx * 11 + gz * 23);
       if (wallRng.next() < 0.16) {
         let addedDivider = false;
@@ -4407,7 +4414,7 @@ export class ProceduralMap {
     // On both Level 0 and Level 1, there is a sparse chance (e.g., 3.5%) to spawn a collectible item in a cell
     const itemRng = new SeededRandom(this.seed + gx * 83 + gz * 109);
     // Don't spawn collectibles at the exit or spawning point (0,0) or solid cells
-    if (this.level !== 8 && this.level !== LOBBY_LEVEL && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
+    if (this.level !== 4 && this.level !== LOBBY_LEVEL && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
       const itemTypeRoll = itemRng.next();
       // Keep it within the cell boundaries (so + hSize/2 is center, range is -hSize/2 + 0.5 to hSize/2 - 0.5)
       const maxOffset = hSize / 2 - 0.6;
@@ -5576,7 +5583,7 @@ export class ProceduralMap {
         } else {
           // Very rare natural spark flicker probability (0.0125% per frame);
           // Level G's tubes are on their last legs, so far more often there.
-          if (Math.random() < (this.level === 8 ? 0.0025 : 0.00018)) {
+          if (Math.random() < (this.level === 4 ? 0.0025 : 0.00018)) {
             const duration = Math.floor(250 + Math.random() * 500); // 250ms - 750ms flicker
             fixture.flickerTimer = duration / 1000;
 

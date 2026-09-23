@@ -527,12 +527,12 @@ async function startServer() {
         return;
       }
 
-      // Level 3: five idempotent wall switches open the barred gate.
-      if (type === "level3_switch") {
+      // Brick Offices: five idempotent wall switches open the barred gate.
+      if (type === "brick_office_switch") {
         const level = conn.player.level;
         const index = data.index;
-        if (level !== 3 || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 4) return;
-        broadcastToLevel(room, level, { type: "level3_switch", level, index }, conn);
+        if (level !== 8 || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 4) return;
+        broadcastToLevel(room, level, { type: "brick_office_switch", level, index }, conn);
         return;
       }
 
@@ -588,7 +588,7 @@ async function startServer() {
       if (type === "start_game") {
         if (room.level !== LOBBY_LEVEL || room.hostId !== conn.player.id) return;
         const requestedLevel = data.level === undefined ? 0 : data.level;
-        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || requestedLevel > 8 || requestedLevel === LOBBY_LEVEL) return;
+        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || requestedLevel > 9 || requestedLevel === LOBBY_LEVEL) return;
         room.level = requestedLevel;
         reviveAll(room);
         room.players.forEach((p) => { p.level = requestedLevel; });

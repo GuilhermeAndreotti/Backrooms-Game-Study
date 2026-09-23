@@ -36,7 +36,7 @@ export interface GameEngineCallbacks {
   onFlashlightChange: (state: boolean) => void;
   onEscapeTrigger?: () => void;
   /** Fired once, when the player reaches the end of Level 1's secret dark corridor. */
-  /** A secret entrance was reached: 3 = Level 6 "Lights Out", 8 = Level G. */
+  /** A secret entrance was reached: 3 = Lights Out, 4 = Level G. */
   onSecretLevelFound?: (level: number) => void;
   /** Context hint for the crosshair area, e.g. t("act.pushBox"); null clears it. */
   onInteractPrompt?: (text: string | null) => void;
@@ -74,10 +74,12 @@ function levelAtmosphere(level: number) {
   switch (level) {
     case LOBBY_LEVEL: // room lobby: open-air field under a clear blue sky
       return { ambientColor: 0xfff6e0, ambientIntensity: 2.6, fogColor: 0x8fc7f0, dimmedFogColor: 0x4a6a8a };
-    case 8: // Level G: dim, cold office under failing tubes
+    case 4: // Level G: dim, cold office under failing tubes
       return { ambientColor: 0x9aa4ad, ambientIntensity: 0.5, fogColor: 0x23272a, dimmedFogColor: 0x0b0c0d };
-    case 3: // Level 3: dim industrial brick halls
+    case 8: // Brick Offices: dim industrial brick halls
       return { ambientColor: 0xb4a092, ambientIntensity: 1.15, fogColor: 0x554039, dimmedFogColor: 0x241a17 };
+    case 3: // Lights Out: the waypoints and flashlight are all that remain
+      return { ambientColor: 0x05050a, ambientIntensity: 0.008, fogColor: 0x000000, dimmedFogColor: 0x000000 };
     case 2: // Pipe Dreams: tense dark reddish brown
       return { ambientColor: 0x8a4a2c, ambientIntensity: 1.4, fogColor: 0x3a1608, dimmedFogColor: 0x1a0902 };
     case 1: // warehouse: brighter industrial
@@ -331,6 +333,7 @@ export class GameEngine {
   private cheatSpeed = false;
   private cheatStamina = false;
   private cheatClip = false;
+  private cheatLife = false;
   /** SKIN cheat: the monster body worn instead of the hazmat suit, replicated to teammates; "" for none. */
   public cheatSkin: EntityType | null = null;
 
@@ -577,7 +580,7 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === LOBBY_LEVEL ? 0.008 : level === 8 ? 0.06 : level === 3 ? 0.035 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
+    const authored = level === LOBBY_LEVEL ? 0.008 : level === 4 ? 0.06 : level === 8 ? 0.035 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
@@ -645,8 +648,8 @@ export class GameEngine {
     if (this.level === 1) {
       this.spawnLevel1Entities();
     }
-    if (this.level === 3) {
-      const def3 = LEVEL_DEFS[3];
+    if (this.level === 8) {
+      const def3 = LEVEL_DEFS[8];
       if (def3.spawn.kind === "static") this.spawnStaticRoster(def3.spawn.roster, 8);
     }
 
@@ -772,7 +775,7 @@ export class GameEngine {
       if (this.isDead) this.updateSpectator(delta);
       else {
         this.player.update(delta);
-        if (this.level === 3 && this.map) {
+        if (this.level === 8 && this.map) {
           const gx = Math.floor(this.player.position.x / this.map.cellSize);
           const gz = Math.floor(this.player.position.z / this.map.cellSize);
           if (this.map.level3LowCorridor.has(`${gx},${gz}`) && this.player.position.y > CROUCHED_EYE_HEIGHT + 0.18) {
@@ -874,9 +877,9 @@ export class GameEngine {
         const gz = Math.floor(pz / this.map.cellSize);
 
         // 1. Sector Identification and Notification (Level 1 and Level G)
-        if (this.level === 1 || this.level === 8) {
+        if (this.level === 1 || this.level === 4) {
           let sec: string;
-          if (this.level === 8) {
+          if (this.level === 4) {
             const s = this.map.levelGSectorOf(gx, gz);
             sec = s === 1 ? t("sector.g1")
               : s === 2 ? t("sector.g2")
@@ -970,7 +973,7 @@ export class GameEngine {
               } else if (item.type === "liquid_pain") {
                 this.inventory.push("liquid_pain");
                 this.player.stamina = Math.max(0.05, this.player.stamina - 0.15);
-                this.sanity = Math.max(0.0, this.sanity - 0.12);
+                if (!this.cheatLife) this.sanity = Math.max(0.0, this.sanity - 0.12);
                 if (this.onHUDNotification) {
                   this.onHUDNotification(t("eng.pain"));
                 }
@@ -1046,7 +1049,7 @@ export class GameEngine {
         this.entities.forEach(entity => {
           if (aiTargets) {
             // Hunt whichever explorer is closest (on Level G, visible ones first).
-            const { target, distSq: entityDistSq } = this.level === 8
+            const { target, distSq: entityDistSq } = this.level === 4
               ? nearestHuntable(aiTargets, entity.mesh.position.x, entity.mesh.position.z)
               : nearestTarget(aiTargets, entity.mesh.position.x, entity.mesh.position.z);
             entity.targetHidden = target.hidden;
@@ -1069,7 +1072,7 @@ export class GameEngine {
           // Trigger reset when distance is less than 1.45 meters (squared is ~2.1)
           const dx = entity.mesh.position.x - px;
           const dz = entity.mesh.position.z - pz;
-          if (canBeCaught && !caught && dx * dx + dz * dz < 2.1) {
+          if (canBeCaught && !caught && !this.cheatLife && dx * dx + dz * dz < 2.1) {
             caught = true;
             console.warn(`[GameEngine] Explorer CAUGHT by ${entity.type}! Reseting state...`);
           }
@@ -1079,7 +1082,7 @@ export class GameEngine {
 
         // Being caught is fatal: the monster got you. You spectate until the
         // group advances a level (or, if everyone is dead, resets).
-        if (caught) this.die("caught");
+        if (caught && !this.cheatLife) this.die("caught");
       }
 
       // Update psychological Smilers
@@ -1124,7 +1127,7 @@ export class GameEngine {
         if (!isFlashlightOn && this.level !== LOBBY_LEVEL) {
           if (this.map.globalEventState === "blackout") {
             darknessDepletion = 0.014; // completed blackout is terrifying (retuned ~3x slower)
-          } else if (this.level === 3) {
+          } else if (this.level === 8) {
             darknessDepletion = 0.003; // Brick halls have working ceiling fixtures; the flashlight is still useful
           } else if (this.level === 1 || this.level === 2) {
             darknessDepletion = 0.008; // dark industrial environments (retuned ~3x slower)
@@ -1133,9 +1136,11 @@ export class GameEngine {
           }
         }
 
-        // Apply depletion or recovery. Sanity now falls slowly, but hitting zero
-        // still kills the player (App.tsx onSanityChange -> GAME_OVER).
-        if (nearMonster) {
+        // Apply depletion or recovery. LIFE keeps sanity full and prevents every
+        // sanity-based death while the cheat is active.
+        if (this.cheatLife) {
+          this.sanity = 1.0;
+        } else if (nearMonster) {
           this.sanity = Math.max(0.0, this.sanity - (monsterDepletionSum + darknessDepletion) * SANITY_DRAIN_SCALE * delta);
         } else if (darknessDepletion > 0) {
           this.sanity = Math.max(0.0, this.sanity - darknessDepletion * SANITY_DRAIN_SCALE * delta);
@@ -1172,7 +1177,7 @@ export class GameEngine {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
         if (pgX === this.map.officeDoorX && pgZ === this.map.officeDoorZ) {
-          this.onSecretLevelFound(8);
+          this.onSecretLevelFound(4);
         }
       }
 
@@ -1197,7 +1202,7 @@ export class GameEngine {
       if (this.level !== 0 && this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
-        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== 3 || this.map.level3GateOpen) && (this.level !== 4 || this.level4DoorOpen)) {
+        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== 8 || this.map.level3GateOpen) && (this.level !== 9 || this.level4DoorOpen)) {
           this.audio.playGlitchNoclipSound();
           this.onEscapeTrigger?.();
         }
@@ -1269,7 +1274,7 @@ export class GameEngine {
         }
 
         // Level G's final alarm: pulsing emergency red over the flickering tubes
-        if (this.level === 8 && this.levelGAlarm) {
+        if (this.level === 4 && this.levelGAlarm) {
           const pulse = 0.5 + 0.5 * Math.sin(this.totalPlayTime * 6.5);
           this.ambientLight.color.setHex(0xff2a1a);
           this.ambientLight.intensity = 0.2 + 0.6 * pulse;
@@ -1694,7 +1699,7 @@ export class GameEngine {
   private remoteDead = new Set<string>();
 
   private die(cause: "sanity" | "caught") {
-    if (this.isDead) return;
+    if (this.isDead || this.cheatLife) return;
     this.isDead = true;
     this.player.isFlashlightOn = false;
     this.player.state = "idle";
@@ -2228,7 +2233,7 @@ export class GameEngine {
 
     // Level G: fresh office, one Finger King
     this.resetLevelG();
-    if (level === 8) {
+    if (level === 4) {
       this.spawnLevelGEntities();
       this.onHUDNotification?.(t("eng.levelG"));
     }
@@ -2251,8 +2256,8 @@ export class GameEngine {
       }
     }
 
-    if (level === 3) {
-      const def3 = LEVEL_DEFS[3];
+    if (level === 8) {
+      const def3 = LEVEL_DEFS[8];
       if (def3.spawn.kind === "static") this.spawnStaticRoster(def3.spawn.roster, 8);
     }
 
@@ -2383,7 +2388,7 @@ export class GameEngine {
   }
 
   private updateLevelG(delta: number, targets: AiTarget[] | null) {
-    if (this.level !== 8 || !this.map || !this.player) return;
+    if (this.level !== 4 || !this.map || !this.player) return;
     this.levelGTime += delta;
 
     // --- This client's closet (HUD warnings; everyone runs this)
@@ -2626,7 +2631,7 @@ export class GameEngine {
   }
 
   private nearUntouchedLevel3Switch(): number {
-    if (this.level !== 3 || !this.map || !this.player) return -1;
+    if (this.level !== 8 || !this.map || !this.player) return -1;
     for (let i = 0; i < this.map.level3Switches.length; i++) {
       if (this.map.level3SwitchesOn.has(i)) continue;
       const [gx, gz] = this.map.level3Switches[i];
@@ -2638,7 +2643,7 @@ export class GameEngine {
   }
 
   private nearMegEmployee(): { name: string; grade: string; dialogue: string } | null {
-    if (this.level !== 4 || !this.map || !this.player) return null;
+    if (this.level !== 9 || !this.map || !this.player) return null;
     const cs = this.map.cellSize;
     return this.map.level4Employees.find((employee) => {
       const dx = this.player.position.x - (employee.gx * cs + cs / 2);
@@ -2648,7 +2653,7 @@ export class GameEngine {
   }
 
   private nearMegDoor(): boolean {
-    if (this.level !== 4 || !this.map || !this.player) return false;
+    if (this.level !== 9 || !this.map || !this.player) return false;
     const cs = this.map.cellSize;
     const dx = this.player.position.x - (this.map.level4DoorX * cs + cs / 2);
     const dz = this.player.position.z - (this.map.level4DoorZ * cs + cs / 2);
@@ -2656,7 +2661,7 @@ export class GameEngine {
   }
 
   public handleLevel3Switch(index: number) {
-    if (this.level !== 3 || !this.map || index < 0 || index >= this.map.level3Switches.length) return;
+    if (this.level !== 8 || !this.map || index < 0 || index >= this.map.level3Switches.length) return;
     this.map.level3SwitchesOn.add(index);
     this.map.updateLevel3SwitchVisual(index);
     if (this.map.level3SwitchesOn.size >= 5) {
@@ -2680,7 +2685,7 @@ export class GameEngine {
     const switchIndex = this.nearUntouchedLevel3Switch();
     if (switchIndex >= 0) {
       this.handleLevel3Switch(switchIndex);
-      this.sendToServer({ type: "level3_switch", level: 3, index: switchIndex });
+      this.sendToServer({ type: "brick_office_switch", level: 8, index: switchIndex });
       return null;
     }
     const employee = this.nearMegEmployee();
@@ -2694,7 +2699,7 @@ export class GameEngine {
     }
     if (this.nearExitDesk()) return "paper";
     if (this.nearCheatTerminal()) return "cheat";
-    if (this.level !== 8 || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
+    if (this.level !== 4 || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
     const cs = this.map.cellSize;
     const dx = this.player.position.x - (this.map.levelGTerminalX * cs + cs / 2);
     const dz = this.player.position.z - (this.map.levelGTerminalZ * cs + cs / 2);
@@ -2702,7 +2707,7 @@ export class GameEngine {
   }
 
   public submitMegDoorNames(raw: string): boolean {
-    if (this.level !== 4 || !this.map) return false;
+    if (this.level !== 9 || !this.map) return false;
     const names = raw.split(",").map((name) => name.trim().toLocaleLowerCase()).filter(Boolean);
     const expected = [...this.map.level4Employees]
       .sort((a, b) => ({ senior: 0, pleno: 1, junior: 2 }[a.grade] - { senior: 0, pleno: 1, junior: 2 }[b.grade]))
@@ -2724,7 +2729,7 @@ export class GameEngine {
    * refusal buzz, and the Finger King comes straight for you for a while.
    */
   public submitLevelGCode(code: string): boolean {
-    if (this.level !== 8 || !this.map) return false;
+    if (this.level !== 4 || !this.map) return false;
     const ok = code === this.map.levelGCode;
     this.audio.playTerminalBeep(ok);
     if (ok) {
@@ -2739,13 +2744,13 @@ export class GameEngine {
 
   /** A teammate typed a code (authority only): alarm them all, or send it after them. */
   public handleLevelGCodeRequest(msg: { level: number; ok: boolean }) {
-    if (msg.level !== 8 || this.level !== 8 || !this.isWorldAuthority) return;
+    if (msg.level !== 4 || this.level !== 4 || !this.isWorldAuthority) return;
     if (msg.ok) this.startLevelGAlarm(true);
     else this.levelGAlertTimer = 10;
   }
 
   // ---------------------------------------------------------------------------
-  // Lobby cheat terminal (MVJM / UHUM / CLIP / SKIN)
+  // Lobby cheat terminal (MVJM / UHUM / CLIP / LIFE / SKIN)
   // ---------------------------------------------------------------------------
 
   /** Within arm's reach of the lobby's cheat terminal. */
@@ -2764,13 +2769,13 @@ export class GameEngine {
   }
 
   /**
-   * Checks a code typed into the lobby's cheat terminal. MVJM and UHUM unlock
+   * Checks a code typed into the lobby's cheat terminal. MVJM, UHUM, and LIFE unlock
    * their effect immediately (re-entering an already-unlocked code just
    * confirms it, never toggles it off); CLIP unlocks holding V to phase
    * through walls; SKIN sets nothing by itself — it tells the caller to open
    * the monster picker (see applySkinCheat).
    */
-  public submitCheatCode(code: string): "speed" | "stamina" | "clip" | "skin" | "room" | null {
+  public submitCheatCode(code: string): "speed" | "stamina" | "clip" | "life" | "skin" | "room" | null {
     const c = code.trim().toUpperCase();
     if (c === "MVJM") {
       this.cheatSpeed = true;
@@ -2786,6 +2791,11 @@ export class GameEngine {
       this.cheatClip = true;
       this.player.clipCheat = true;
       return "clip";
+    }
+    if (c === "LIFE") {
+      this.cheatLife = true;
+      this.sanity = 1.0;
+      return "life";
     }
     if (c === "SKIN") return "skin";
     if (c === "ROOM") return "room";
@@ -2803,7 +2813,7 @@ export class GameEngine {
    * `broadcast`: whether this call originates the alarm (vs. replaying one).
    */
   private startLevelGAlarm(broadcast: boolean) {
-    if (this.levelGAlarm || this.level !== 8 || !this.map) return;
+    if (this.levelGAlarm || this.level !== 4 || !this.map) return;
     this.levelGAlarm = true;
     this.map.emergencyDoorOpen = true;
     this.map.startGlobalEvent("flicker_storm", 1e6);
@@ -3274,7 +3284,7 @@ export class GameEngine {
       } else if (gazing) {
         smiler.gazeTimer += delta;
         const drainRate = 0.010 + Math.min(smiler.gazeTimer, 8) * 0.006; // ~0.01/s -> ~0.058/s after 8s
-        this.sanity = Math.max(0.0, this.sanity - drainRate * delta);
+        if (!this.cheatLife) this.sanity = Math.max(0.0, this.sanity - drainRate * delta);
         if (Math.random() < delta * 0.18) {
           this.audio.triggerHumFlicker(90);
         }

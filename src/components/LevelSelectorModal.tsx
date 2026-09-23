@@ -6,7 +6,7 @@ interface LevelSelectorModalProps {
 
 const LEVELS = [
   [0, "Level 0"], [1, "Level 1"], [2, "Level 2"], [3, "Level 3"],
-  [4, "Level 4"], [6, "Level 6 · secreto"], [7, "Level 5"], [8, "Level G · secreto"],
+  [4, "Level G · secreto"], [6, "Level 4"], [7, "Level 5"], [8, "Brick Offices"], [9, "MEG Offices"],
 ] as const;
 
 export function LevelSelectorModal({ isHost, onStart, onClose }: LevelSelectorModalProps) {

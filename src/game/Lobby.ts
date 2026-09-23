@@ -153,7 +153,6 @@ export class Lobby {
       }
       const top = new THREE.Mesh(topGeo, netMat);
       top.rotation.x = -Math.PI / 2;
-      top.rotation.z = Math.PI / 2;
       top.position.set((lineX + backX) / 2, 2.4, cz);
       this.group.add(top);
     }
