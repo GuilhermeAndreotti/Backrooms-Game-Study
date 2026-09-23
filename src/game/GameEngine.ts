@@ -1218,7 +1218,7 @@ export class GameEngine {
         this.player.position.x,
         this.player.position.z
       );
-      this.map.updatePoolroomsWater(delta);
+      this.map.updatePoolroomsWater(delta, this.player?.position.x, this.player?.position.z);
       const eventNow = this.map.globalEventState;
       if (this.map.rollGlobalEvents && eventBefore === "normal" && eventNow !== "normal") {
         this.sendToServer({ type: "world_event", level: this.level, state: eventNow, duration: this.map.globalEventTimer });
