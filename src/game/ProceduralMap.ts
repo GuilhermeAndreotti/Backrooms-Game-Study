@@ -11,6 +11,7 @@ import { QualityProfile, getQualityProfile } from "./Quality";
 import { NoiseBus } from "./systems/noiseBus";
 import { VisitTracker } from "./systems/visitTracker";
 import { contentLevelFor } from "./levels/constants";
+import * as Decor from "./LevelDecor";
 import { POOL_FLOOR_Y, WATER_SURFACE_Y, createPoolTileMaterial, createWallTileMaterial, createWaterMaterial } from "./Water";
 
 // Deterministic Mulbery32 Random Number Generator
@@ -179,7 +180,7 @@ export class ProceduralMap {
   private anomalyMaterial!: THREE.Material;
 
   // Track animating/glitching meshes
-  public animatingMeshes: { mesh: THREE.Object3D; type: "bob" | "spin" | "glitch"; initialY: number; phase: number; gridX: number; gridZ: number }[] = [];
+  public animatingMeshes: { mesh: THREE.Object3D; type: "bob" | "spin" | "glitch" | "fan"; initialY: number; phase: number; gridX: number; gridZ: number }[] = [];
 
   // Wet spilling & drip assets based on Backrooms Level 0 lore
   public wetSpills = new Set<string>();
@@ -3388,6 +3389,125 @@ export class ProceduralMap {
     return this.wetSpills.has(`${gx},${gz}`);
   }
 
+  private decorKit: Decor.DecorKit | null = null;
+
+  /**
+   * Wiki-inspired set dressing (see LevelDecor.ts) for Level 3, Level 4 and
+   * the Poolrooms. Pieces hug a wall and keep clear of doorways, corridor
+   * mouths, exits, entrances and every puzzle fixture, so the layout and the
+   * routes through it stay exactly as generated.
+   */
+  private placeLevelDecor(group: THREE.Group, gx: number, gz: number, posX: number, posZ: number, cellType: CellType, height: number) {
+    if (this.level !== 7 && this.level !== 8 && this.level !== 9) return;
+    if (this.isKeepClearCell(gx, gz)) return;
+    this.decorKit ??= {
+      geo: (key, build) => this.sharedGeo(key, build),
+      mat: (key, build) => this.sharedMat(key, build),
+      wallTile: this.wallMaterial,
+      track: (texture) => { this.sharedTextures.push(texture); },
+    };
+    const kit = this.decorKit;
+    const half = this.cellSize / 2;
+    const rng = new SeededRandom(this.seed + gx * 389 + gz * 733 + 0xdec0);
+    const at = (x: number, z: number) => this.grid[x]?.[z];
+    const isSolid = (x: number, z: number) => at(x, z) === undefined || at(x, z) === CellType.SOLID;
+    // Local north (the piece's back wall) mapped onto each side, as the valves do.
+    const sides: [number, number, number][] = [[0, -1, 0], [0, 1, Math.PI], [-1, 0, Math.PI / 2], [1, 0, -Math.PI / 2]];
+    const pickSide = (ok: (dx: number, dz: number) => boolean): number | null => {
+      const options = sides.filter(([dx, dz]) => ok(dx, dz));
+      return options.length ? options[rng.nextInt(0, options.length)][2] : null;
+    };
+    const place = (piece: Decor.DecorPiece, rot: number) => {
+      piece.object.rotation.y = rot;
+      piece.object.position.set(posX, 0, posZ);
+      group.add(piece.object);
+      const c = Math.cos(rot), s = Math.sin(rot);
+      for (const [lx, lz, r] of piece.footprint) this.addObstacle(gx, gz, posX + lx * c + lz * s, posZ - lx * s + lz * c, r);
+      for (const fan of piece.fans ?? []) this.animatingMeshes.push({ mesh: fan, type: "fan", initialY: fan.position.y, phase: 0, gridX: gx, gridZ: gz });
+    };
+
+    if (this.level === 7) {
+      if (gx <= 6 && gz <= 6) return; // the dry start room
+      if (gx === 8 && gz === 10) return; // the floor inscription
+      if (cellType !== CellType.WATER_ROOM) return; // dry decks stay clear for the valves
+      const zone = this.poolZoneOf(gx, gz);
+      let open = true;
+      for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+        if (!dx && !dz) continue;
+        const n = at(gx + dx, gz + dz);
+        if (n === CellType.WATER_ROOM && this.poolZoneOf(gx + dx, gz + dz) !== zone) return; // a doorway between halls
+        if (n !== CellType.WATER_ROOM) open = false;
+      }
+      const deckSide = pickSide((dx, dz) => { const n = at(gx + dx, gz + dz); return n !== undefined && n !== CellType.SOLID && n !== CellType.WATER_ROOM; });
+      if (deckSide !== null) {
+        if (rng.next() < 0.5) place(Decor.poolLadder(kit, rng, half), deckSide);
+        return;
+      }
+      // Near a valve deck only ladders — nothing that could crowd a valve.
+      if (this.valvePositions.some(([vx, vz]) => Math.abs(vx - gx) <= 2 && Math.abs(vz - gz) <= 2)) return;
+      if (open) {
+        const roll = rng.next();
+        if (roll < 0.08) place(Decor.poolPillar(kit, height), 0);
+        else if (roll < 0.2) place(Decor.poolLightShaft(kit, rng), 0);
+        else if (roll < 0.3) place(Decor.poolDrain(kit, rng), 0);
+        return;
+      }
+      const wallSide = pickSide((dx, dz) => isSolid(gx + dx, gz + dz));
+      if (wallSide === null) return;
+      const roll = rng.next();
+      if (roll < 0.1) place(Decor.poolStairs(kit, rng, half), wallSide);
+      else if (roll < 0.3) place(Decor.poolWallVent(kit, rng, half), wallSide);
+      return;
+    }
+
+    const walkable = (x: number, z: number) => !isSolid(x, z);
+    if (gx <= 3 && gz <= 3) return; // spawn / entrance
+    const corridor = cellType === CellType.CORRIDOR;
+    if (corridor) {
+      // Straight runs only: never a junction, a bend or a room mouth.
+      const ns = walkable(gx, gz - 1) && walkable(gx, gz + 1) && !walkable(gx - 1, gz) && !walkable(gx + 1, gz);
+      const ew = walkable(gx - 1, gz) && walkable(gx + 1, gz) && !walkable(gx, gz - 1) && !walkable(gx, gz + 1);
+      if (!ns && !ew) return;
+      for (const [dx, dz] of sides) {
+        const n = at(gx + dx, gz + dz);
+        if (n !== undefined && n !== CellType.SOLID && n !== CellType.CORRIDOR) return;
+      }
+    } else {
+      // A room cell right at a corridor mouth stays clear.
+      for (const [dx, dz] of sides) if (at(gx + dx, gz + dz) === CellType.CORRIDOR) return;
+    }
+
+    if (this.level === 8) {
+      if (this.level3LowCorridor.has(`${gx},${gz}`)) return;
+      if (this.level3Switches.some(([x, z]) => x === gx && z === gz)) return;
+      if (this.level3Partitions.some((w) => w.gx === gx && w.gz === gz)) return;
+      if (Math.abs(gx - this.level3GateX) + Math.abs(gz - this.level3GateZ) <= 1) return;
+      if (rng.next() > (corridor ? 0.3 : 0.4)) return;
+      const side = pickSide((dx, dz) => isSolid(gx + dx, gz + dz));
+      if (side !== null) place(Decor.electricalStationDecor(kit, rng, half, corridor), side);
+      return;
+    }
+
+    // Level 4 (Abandoned Office).
+    if (gx === this.level4DoorX && gz === this.level4DoorZ) return;
+    if (gx === this.abandonedSecretX && gz === this.abandonedSecretZ) return;
+    if (this.level4DeskCells.some((d) => d.gx === gx && d.gz === gz)) return;
+    if (this.level4Employees.some((e) => Math.abs(e.gx - gx) <= 1 && Math.abs(e.gz - gz) <= 1)) return;
+    if ((gx === 5 && gz === 5) || (gx === 18 && gz === 5) || (gx === 31 && gz === 5)) return; // meeting tables
+    if (new SeededRandom(this.seed + gx * 149 + gz * 211).next() < 0.14) return; // an almond water bottle lies here
+    const side = pickSide((dx, dz) => isSolid(gx + dx, gz + dz));
+    if (side === null) {
+      if (!corridor && rng.next() < 0.14) {
+        const marks = Decor.carpetIndents(kit, rng);
+        marks.position.set(posX, 0, posZ);
+        group.add(marks);
+      }
+      return;
+    }
+    if (rng.next() > (corridor ? 0.25 : 0.38)) return;
+    place(Decor.abandonedOfficeDecor(kit, rng, half, corridor), side);
+  }
+
   /**
    * Instantiates 3D meshes for a specific cell based on its coordinates and surrounding walls.
    */
@@ -4305,6 +4425,9 @@ export class ProceduralMap {
       }
     }
 
+    // 5b. LEVEL FURNITURE — Level 3's machinery, Level 4's office leftovers, the Poolrooms' fittings.
+    this.placeLevelDecor(group, gx, gz, posX, posZ, cellType, height);
+
     // 6. FLUORESCENT LIGHT LUMINAIRE FIXTURE (Deterministic placement)
     // Place a fluorescent lightbox on the ceiling. (45% probability on corridor cells or room centers)
     // Level 3 ("Lights Out") never gets one — total darkness is the whole level.
@@ -4377,7 +4500,7 @@ export class ProceduralMap {
     const isSpawnZone = (gx < 5 && gz < 5);
     const isExitZone = this.isKeepClearCell(gx, gz);
 
-    if (this.level !== 1 && this.level !== 4 && this.level !== 8 && this.level !== 9 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
+    if (this.level !== 1 && this.level !== 4 && this.level !== 7 && this.level !== 8 && this.level !== 9 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
       const wallRng = new SeededRandom(this.seed + gx * 11 + gz * 23);
       if (wallRng.next() < 0.16) {
         let addedDivider = false;
@@ -6111,6 +6234,8 @@ export class ProceduralMap {
       anim.phase += delta * 1.5;
       if (anim.type === "bob") {
         anim.mesh.position.y = anim.initialY + Math.sin(anim.phase) * 0.12;
+      } else if (anim.type === "fan") {
+        anim.mesh.rotation.z += delta * 7;
       } else if (anim.type === "spin") {
         anim.mesh.rotation.y += delta * 0.4;
         anim.mesh.position.y = anim.initialY + Math.sin(anim.phase * 1.5) * 0.1;
