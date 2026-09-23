@@ -20,6 +20,7 @@
 import * as THREE from "three";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
+import { animateBiped } from "./anim";
 import { isPointLit } from "../systems/lightQuery";
 
 const DARK_SENSE_RADIUS = 16;
@@ -36,25 +37,44 @@ export const sombra: MobDefinition = {
   type: EntityType.SOMBRA,
   baseSpeed: IDLE_SPEED,
   baseHeight: 1.35,
+  strideLength: 1.2,
   bobFreq: 1.2, bobAmp: 0.06,
   speechBubbleLocalY: 0.9,
   forcedChaseSpeed: 3.4,
 
   build(ctx) {
-    const { group } = ctx;
+    const V = ctx.V;
     const mat = ctx.smat("sombra_body", () => new THREE.MeshStandardMaterial({ color: 0x030303, roughness: 1.0, metalness: 0 }));
 
     // A simple, featureless humanoid mass — deliberately low detail, so it
     // reads as a shapeless dark blob rather than a creature with anatomy.
-    group.add(ctx.limbBetween(mat, ctx.V(0, 0.45, 0), ctx.V(0, -0.4, 0), 0.19, 0.85));
-    group.add(ctx.limbBetween(mat, ctx.V(-0.02, 0.35, 0), ctx.V(-0.28, -0.3, 0.05), 0.09));
-    group.add(ctx.limbBetween(mat, ctx.V(0.02, 0.35, 0), ctx.V(0.28, -0.3, 0.05), 0.09));
-    group.add(ctx.limbBetween(mat, ctx.V(-0.06, -0.4, 0), ctx.V(-0.1, -1.15, 0), 0.11));
-    group.add(ctx.limbBetween(mat, ctx.V(0.06, -0.4, 0), ctx.V(0.1, -1.15, 0), 0.11));
+    const spine = ctx.joint("spine", 0, -0.4, 0);
+    ctx.limbIn(spine, mat, V(0, 0.45, 0), V(0, -0.4, 0), 0.19, 0.85);
+    for (const side of [-1, 1]) {
+      const n = side < 0 ? "L" : "R";
+      const arm = ctx.joint(`arm${n}`, side * 0.02, 0.35, 0, spine);
+      ctx.limbIn(arm, mat, V(side * 0.02, 0.35, 0), V(side * 0.18, 0.02, 0.03), 0.09);
+      const fore = ctx.joint(`fore${n}`, side * 0.18, 0.02, 0.03, arm);
+      ctx.limbIn(fore, mat, V(side * 0.18, 0.02, 0.03), V(side * 0.28, -0.3, 0.05), 0.08);
+      const leg = ctx.joint(`leg${n}`, side * 0.06, -0.4, 0);
+      ctx.limbIn(leg, mat, V(side * 0.06, -0.4, 0), V(side * 0.08, -0.86, 0.02), 0.11);
+      const shin = ctx.joint(`shin${n}`, side * 0.08, -0.86, 0.02, leg);
+      ctx.limbIn(shin, mat, V(side * 0.08, -0.86, 0.02), V(side * 0.1, -1.33, 0), 0.1);
+    }
 
-    const head = new THREE.Mesh(ctx.sgeo("sombra_head", () => new THREE.SphereGeometry(0.17, 8, 6)), mat);
-    head.position.set(0, 0.58, 0);
-    group.add(head);
+    const head = ctx.joint("head", 0, 0.45, 0, spine);
+    const skull = new THREE.Mesh(ctx.sgeo("sombra_head", () => new THREE.SphereGeometry(0.17, 8, 6)), mat);
+    skull.position.set(0, 0.58, 0);
+    ctx.put(head, skull);
+  },
+
+  animate(ctx) {
+    // A shadow that walks like it's wading: heavy, and the whole mass
+    // squashes and stretches as if it were liquid.
+    animateBiped(ctx, { stride: 0.35, armSwing: 0.2, knee: 0.7, elbow: 0.2, lean: 0.25, bounce: 0.05, breathe: 0.04 });
+    const { time } = ctx;
+    const ooze = Math.sin(time * 3.8);
+    ctx.body.scale.set(1 + ooze * 0.035, 1 - ooze * 0.04, 1 + Math.sin(time * 2.7) * 0.03);
   },
 
   sense(ctx) {

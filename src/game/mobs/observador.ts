@@ -21,6 +21,7 @@
 import * as THREE from "three";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
+import { animateBiped } from "./anim";
 
 const GAZE_COS_THRESHOLD = 0.86; // a fairly direct stare, narrower cone than HOUND's 0.81
 const SENSE_RADIUS = 18;
@@ -28,39 +29,51 @@ const STARE_THRESHOLD_S = 3.0;
 const WATCH_SPEED = 1.05;
 const RUSH_SPEED = 3.55;
 
+/** Eyes scattered over the body. */
+const EYES = 22;
+
 export const observador: MobDefinition = {
   type: EntityType.OBSERVADOR,
   baseSpeed: WATCH_SPEED,
   baseHeight: 1.5, // unnaturally tall
+  strideLength: 1.1,
+  facesViewer: true,
   bobFreq: 1.4, bobAmp: 0.04, // mostly still, a slow watching sway
   speechBubbleLocalY: 1.0,
   forcedChaseSpeed: 3.6,
 
   build(ctx) {
-    const { group } = ctx;
+    const V = ctx.V;
     const skinMat = ctx.smat("observador_skin", () => new THREE.MeshStandardMaterial({ color: 0x241f2e, roughness: 0.75 }));
 
     // Tall, thin torso
-    group.add(ctx.limbBetween(skinMat, ctx.V(0, 0.6, 0), ctx.V(0, -0.5, 0), 0.16));
-    // Long thin arms hanging at the sides
-    group.add(ctx.limbBetween(skinMat, ctx.V(0, 0.45, 0), ctx.V(-0.12, -0.55, 0.05), 0.05));
-    group.add(ctx.limbBetween(skinMat, ctx.V(0, 0.45, 0), ctx.V(0.12, -0.55, 0.05), 0.05));
-    // Long thin legs
-    group.add(ctx.limbBetween(skinMat, ctx.V(-0.06, -0.5, 0), ctx.V(-0.1, -1.5, 0), 0.07));
-    group.add(ctx.limbBetween(skinMat, ctx.V(0.06, -0.5, 0), ctx.V(0.1, -1.5, 0), 0.07));
+    const spine = ctx.joint("spine", 0, -0.5, 0);
+    ctx.limbIn(spine, skinMat, V(0, 0.6, 0), V(0, -0.5, 0), 0.16);
+    // Long thin arms hanging at the sides; long thin legs
+    for (const side of [-1, 1]) {
+      const n = side < 0 ? "L" : "R";
+      const arm = ctx.joint(`arm${n}`, side * 0.1, 0.45, 0, spine);
+      ctx.limbIn(arm, skinMat, V(side * 0.1, 0.45, 0), V(side * 0.14, -0.05, 0.03), 0.05);
+      const fore = ctx.joint(`fore${n}`, side * 0.14, -0.05, 0.03, arm);
+      ctx.limbIn(fore, skinMat, V(side * 0.14, -0.05, 0.03), V(side * 0.16, -0.58, 0.05), 0.045);
+      const leg = ctx.joint(`leg${n}`, side * 0.06, -0.5, 0);
+      ctx.limbIn(leg, skinMat, V(side * 0.06, -0.5, 0), V(side * 0.08, -1.0, 0.03), 0.07);
+      const shin = ctx.joint(`shin${n}`, side * 0.08, -1.0, 0.03, leg);
+      ctx.limbIn(shin, skinMat, V(side * 0.08, -1.0, 0.03), V(side * 0.1, -1.5, 0), 0.06);
+    }
 
     // Elongated head
-    const head = new THREE.Mesh(ctx.sgeo("observador_head", () => new THREE.SphereGeometry(0.16, 10, 8)), skinMat);
-    head.position.set(0, 0.78, 0);
-    head.scale.set(0.85, 1.3, 0.85);
-    group.add(head);
+    const head = ctx.joint("head", 0, 0.62, 0, spine);
+    const skull = new THREE.Mesh(ctx.sgeo("observador_head", () => new THREE.SphereGeometry(0.16, 10, 8)), skinMat);
+    skull.position.set(0, 0.78, 0);
+    skull.scale.set(0.85, 1.3, 0.85);
+    ctx.put(head, skull);
 
     // Small eyes scattered deterministically over the torso/head (golden-angle
     // spiral, same technique CLUMP uses for its spikes, so it looks identical
-    // on every instance).
+    // on every instance). Each sits on its own pivot so it can blink.
     const eyeMat = ctx.smat("observador_eye", () => new THREE.MeshStandardMaterial({ color: 0xfef9c3, emissive: 0xfde68a, emissiveIntensity: 1.3 }));
     const eyeGeo = ctx.sgeo("observador_eye_geo", () => new THREE.SphereGeometry(0.02, 6, 6));
-    const EYES = 22;
     for (let i = 0; i < EYES; i++) {
       const t = i / EYES;
       const theta = Math.acos(1 - 2 * t);
@@ -69,9 +82,24 @@ export const observador: MobDefinition = {
       const y = 0.15 + Math.cos(theta) * 0.35;
       const x = Math.sin(theta) * Math.cos(phi) * r;
       const z = Math.sin(theta) * Math.sin(phi) * r;
+      const socket = ctx.joint(`eye${i}`, x, y, z, spine);
       const eye = new THREE.Mesh(eyeGeo, eyeMat);
       eye.position.set(x, y, z);
-      group.add(eye);
+      ctx.put(socket, eye);
+    }
+  },
+
+  animate(ctx) {
+    // Slow, measured steps; when it stops to watch, it goes rigid and every
+    // eye on its body widens while they blink out of sync.
+    animateBiped(ctx, { stride: 0.3, armSwing: 0.12, knee: 0.6, elbow: 0.05, lean: 0.15, bounce: 0.03, breathe: 0.02, headReach: 1.2 });
+    const { time, observe } = ctx;
+    for (let i = 0; i < EYES; i++) {
+      const eye = ctx.joints[`eye${i}`];
+      if (!eye) continue;
+      const blink = Math.sin(time * (0.7 + (i % 5) * 0.23) + i * 2.1) > 0.97 ? 0.1 : 1;
+      const wide = 1 + observe * 0.5;
+      eye.scale.set(wide, wide * blink, wide);
     }
   },
 

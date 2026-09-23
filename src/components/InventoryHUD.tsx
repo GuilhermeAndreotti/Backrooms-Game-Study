@@ -5,7 +5,7 @@
 
 import { t, useLanguage } from "../i18n";
 import React, { useState } from "react";
-import { X, Backpack, Search, Calendar, Landmark, Info, Key, Image, Volume2, Sparkles, AlertTriangle, FileText, GlassWater } from "lucide-react";
+import { X, Backpack, Search, Calendar, Landmark, Info, Image, Volume2, Sparkles, AlertTriangle, GlassWater } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
 interface InventoryHUDProps {
@@ -14,6 +14,9 @@ interface InventoryHUDProps {
   onClose: () => void;
   onUseItem?: (itemId: string) => void;
 }
+
+/** Items with a "use" action (GameEngine.useInventoryItem); strange_crystal is passive. */
+const USABLE_ITEMS = new Set(["almond_water", "old_photo", "liquid_pain", "cassette_tape"]);
 
 interface ItemDetails {
   id: string;
@@ -53,16 +56,6 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
       clueTitle: t("item.old_photo.clueTitle"),
       clueText: t("item.old_photo.clueText")
     },
-    rusty_key: {
-      id: "rusty_key",
-      name: t("item.rusty_key.name"),
-      type: t("item.rusty_key.type"),
-      icon: <Key className="w-5 h-5 text-amber-500" />,
-      description: t("item.rusty_key.desc"),
-      lore: t("item.rusty_key.lore"),
-      clueTitle: t("item.rusty_key.clueTitle"),
-      clueText: t("item.rusty_key.clueText")
-    },
     cassette_tape: {
       id: "cassette_tape",
       name: t("item.cassette_tape.name"),
@@ -92,16 +85,6 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
       lore: t("item.liquid_pain.lore"),
       clueTitle: t("item.liquid_pain.clueTitle"),
       clueText: t("item.liquid_pain.clueText")
-    },
-    diary_page: {
-      id: "diary_page",
-      name: t("item.diary_page.name"),
-      type: t("item.diary_page.type"),
-      icon: <FileText className="w-5 h-5 text-yellow-300" />,
-      description: t("item.diary_page.desc"),
-      lore: t("item.diary_page.lore"),
-      clueTitle: t("item.diary_page.clueTitle"),
-      clueText: t("item.diary_page.clueText")
     },
     almond_water: {
       id: "almond_water",
@@ -286,34 +269,6 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
                     </motion.div>
                   )}
 
-                  {selectedItem === "rusty_key" && (
-                    <motion.div 
-                      initial={{ scale: 0.85, rotate: 15 }}
-                      animate={{ scale: 1, rotate: -45 }}
-                      className="relative w-16 h-28 flex flex-col items-center justify-center z-10"
-                    >
-                      {/* Glowing orange background aura */}
-                      <div className="absolute w-24 h-24 rounded-full bg-amber-500/10 filter blur-xl" />
-
-                      {/* Pure CSS Skeleton Key Drawing */}
-                      <div className="flex flex-col items-center">
-                        {/* Key head ring */}
-                        <div className="w-9 h-9 rounded-full border-[6px] border-[#9c5c3c] shadow-[0_0_12px_rgba(156,92,60,0.5)] flex items-center justify-center">
-                          <div className="w-2 h-2 rounded-full bg-[#14140a]" />
-                        </div>
-                        {/* Collar shaft separator */}
-                        <div className="w-4 h-1.5 bg-[#8b4513] rounded-sm -mt-0.5" />
-                        {/* Shaft */}
-                        <div className="w-2.5 h-14 bg-[#9c5c3c]" />
-                        {/* Base bite */}
-                        <div className="w-6 h-5 flex flex-col justify-between items-end -mt-3 mr-4">
-                          <div className="w-4.5 h-1.5 bg-[#8b4513] rounded-sm" />
-                          <div className="w-3 h-1.5 bg-[#9c5c3c] rounded-sm" />
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-
                   {selectedItem === "cassette_tape" && (
                     <motion.div 
                       initial={{ scale: 0.85, rotate: -15 }}
@@ -373,25 +328,6 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
                     </motion.div>
                   )}
 
-                  {selectedItem === "diary_page" && (
-                    <motion.div 
-                      initial={{ rotate: -5, scale: 0.9 }}
-                      animate={{ rotate: 2, scale: 1 }}
-                      className="w-28 h-36 bg-[#ede6d0] border border-stone-400 p-3 flex flex-col justify-between relative shadow-[0_12px_24px_rgba(0,0,0,0.7)] z-10"
-                      style={{ clipPath: "polygon(0% 0%, 95% 0%, 100% 5%, 100% 95%, 92% 100%, 5% 100%, 0% 92%)" }}
-                    >
-                      <div className="flex-1 border-l border-red-400/50 pl-2 select-text text-[7px] text-stone-700 leading-tight space-y-1">
-                        <div className="text-[5px] text-stone-400 text-right uppercase tracking-wider font-bold">PAGE 47</div>
-                        <p className="italic">{t("inv.diary0")}</p>
-                        <p className="italic">{t("inv.diary1")}</p>
-                        <p className="italic">{t("inv.diary2")}</p>
-                        <p className="italic">{t("inv.diary3")}</p>
-                      </div>
-                      <div className="h-0.5 bg-gradient-to-r from-transparent via-stone-400/40 to-transparent" />
-                      <div className="text-[6px] text-stone-400 uppercase text-center tracking-widest font-semibold italic">{t("inv.diaryLabel")}</div>
-                    </motion.div>
-                  )}
-
                   {selectedItem === "almond_water" && (
                     <motion.div 
                       initial={{ scale: 0.85, rotate: -5 }}
@@ -443,22 +379,25 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
 
               {/* Action back instructions */}
               <div className="pt-4 flex flex-col sm:flex-row items-center justify-center gap-3">
-                {selectedItem === "almond_water" && (
+                {selectedItem && USABLE_ITEMS.has(selectedItem) && (
                   <button
-                    id="btn-consume-almond-water"
+                    id="btn-use-item"
                     onClick={() => {
-                      if (onUseItem) {
-                        onUseItem("almond_water");
-                      }
-                      const count = inventory.filter(id => id === "almond_water").length;
+                      onUseItem?.(selectedItem);
+                      const count = inventory.filter(id => id === selectedItem).length;
                       if (count <= 1) {
                         setSelectedItem(null);
                       }
                     }}
                     className="bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 border border-amber-300 text-black text-[11px] uppercase font-black px-5 py-2 rounded cursor-pointer transition-all shadow-[0_0_15px_rgba(245,158,11,0.3)] animate-pulse pointer-events-auto"
                   >
-                    {t("inv.consume")}
+                    {selectedItem === "almond_water" ? t("inv.consume") : t("inv.use")}
                   </button>
+                )}
+                {selectedItem === "strange_crystal" && (
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-cyan-300 border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 rounded">
+                    {t("inv.passive")}
+                  </span>
                 )}
 
                 <button

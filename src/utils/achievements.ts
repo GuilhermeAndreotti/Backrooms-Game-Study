@@ -31,13 +31,6 @@ export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
     unlocked: false,
   },
   {
-    id: "key_finder",
-    title: "",
-    description: "",
-    iconName: "Key",
-    unlocked: false,
-  },
-  {
     id: "collector_extraordinary",
     title: "",
     description: "",

@@ -210,7 +210,7 @@ export class ProceduralMap {
     mesh: THREE.Object3D;
     initialY: number;
     collected: boolean;
-    type: "almond_water" | "energy_bar" | "old_photo" | "rusty_key" | "cassette_tape" | "strange_crystal" | "liquid_pain" | "diary_page" | "scrap_of_note" | "g_document";
+    type: "almond_water" | "energy_bar" | "old_photo" | "cassette_tape" | "strange_crystal" | "liquid_pain" | "diary_page" | "scrap_of_note" | "g_document";
     /** Level G documents: which digit of the terminal code this one reveals. */
     docIndex?: number;
     x: number;
@@ -3235,7 +3235,6 @@ export class ProceduralMap {
     }
 
     if (this.level === 9) {
-      const employee = this.level4Employees.find((person) => person.gx === gx && person.gz === gz);
       const deskMat = this.sharedMat("meg_desk", () => new THREE.MeshStandardMaterial({ color: 0x4a4038, roughness: 0.72 }));
       const chairMat = this.sharedMat("meg_chair", () => new THREE.MeshStandardMaterial({ color: 0x30343a, roughness: 0.8 }));
       const screenMat = this.sharedMat("meg_screen", () => new THREE.MeshStandardMaterial({ color: 0x182c32, emissive: 0x164e63, emissiveIntensity: 0.8 }));
@@ -3258,12 +3257,7 @@ export class ProceduralMap {
         table.position.set(posX, 0.78, posZ); group.add(table);
         this.addObstacle(gx, gz, posX, posZ, 1.0);
       }
-      if (employee) {
-        const body = new THREE.Mesh(this.sharedGeo("meg_employee_body", () => new THREE.CylinderGeometry(0.22, 0.28, 0.95, 8)), this.sharedMat("meg_employee_suit", () => new THREE.MeshStandardMaterial({ color: 0x53616a, roughness: 0.75 })));
-        body.position.set(posX, 0.48, posZ + 0.7); group.add(body);
-        const head = new THREE.Mesh(this.sharedGeo("meg_employee_head", () => new THREE.SphereGeometry(0.18, 8, 8)), this.sharedMat("meg_employee_skin", () => new THREE.MeshStandardMaterial({ color: 0xb98268, roughness: 0.9 })));
-        head.position.set(posX, 1.15, posZ + 0.7); group.add(head);
-      }
+      // The employees themselves are animated NPCs (npc/OfficeWorker.ts), spawned by GameEngine.
       if (gx === this.level4DoorX && gz === this.level4DoorZ) {
         const blue = this.sharedMat("meg_blue_door", () => new THREE.MeshStandardMaterial({ color: 0x155e91, emissive: 0x0b3554, emissiveIntensity: 0.55, metalness: 0.55, roughness: 0.35 }));
         const door = new THREE.Mesh(this.sharedGeo("meg_blue_door", () => new THREE.BoxGeometry(hSize - 0.35, 2.65, 0.16)), blue);
@@ -4440,7 +4434,7 @@ export class ProceduralMap {
                      cellType === CellType.ARCH_ROOM ||
                      cellType === CellType.RED_ROOM;
 
-      let selectedType: "old_photo" | "rusty_key" | "cassette_tape" | "strange_crystal" | "liquid_pain" | "diary_page" | "scrap_of_note";
+      let selectedType: "old_photo" | "cassette_tape" | "strange_crystal" | "liquid_pain" | "diary_page" | "scrap_of_note";
       let spawnedMesh: THREE.Group;
 
       if (isRoom && itemTypeRoll < 0.45) {
@@ -4452,15 +4446,12 @@ export class ProceduralMap {
           selectedType = "old_photo";
           spawnedMesh = this.createOldPhotoMesh();
         } else if (adjustedRoll < 0.50) {
-          selectedType = "rusty_key";
-          spawnedMesh = this.createRustyKeyMesh();
-        } else if (adjustedRoll < 0.65) {
           selectedType = "cassette_tape";
           spawnedMesh = this.createCassetteTapeMesh();
-        } else if (adjustedRoll < 0.80) {
+        } else if (adjustedRoll < 0.68) {
           selectedType = "strange_crystal";
           spawnedMesh = this.createStrangeCrystalMesh();
-        } else if (adjustedRoll < 0.90) {
+        } else if (adjustedRoll < 0.85) {
           selectedType = "liquid_pain";
           spawnedMesh = this.createLiquidPainMesh();
         } else {
@@ -5246,46 +5237,6 @@ export class ProceduralMap {
     const photoGlow = this.createItemGlow(0xffcc66, 0.85, 0.5);
     photoGlow.position.set(0, 0.15, 0);
     group.add(photoGlow);
-
-    return group;
-  }
-
-  /**
-   * Generates a 3D low-poly Rusty Key
-   */
-  public createRustyKeyMesh(): THREE.Group {
-    const group = new THREE.Group();
-    
-    const keyMat = new THREE.MeshStandardMaterial({
-      color: 0x9c5c3c, // Rusty orange-brown
-      roughness: 0.9,
-      metalness: 0.85
-    });
-
-    // Top head loop
-    const torusGeo = new THREE.TorusGeometry(0.05, 0.015, 6, 12);
-    const head = new THREE.Mesh(torusGeo, keyMat);
-    head.rotation.x = Math.PI / 2;
-    head.position.set(0, 0.02, -0.06);
-    group.add(head);
-
-    // Key shaft
-    const shaftGeo = new THREE.CylinderGeometry(0.015, 0.015, 0.18, 6);
-    const shaft = new THREE.Mesh(shaftGeo, keyMat);
-    shaft.rotation.x = Math.PI / 2;
-    shaft.position.set(0, 0.02, 0.04);
-    group.add(shaft);
-
-    // Key teeth
-    const teethGeo = new THREE.BoxGeometry(0.04, 0.015, 0.05);
-    const teeth = new THREE.Mesh(teethGeo, keyMat);
-    teeth.position.set(0.025, 0.02, 0.11);
-    group.add(teeth);
-
-    // Soft golden-rusty glow
-    const keyGlow = this.createItemGlow(0xff7733, 0.85, 0.55);
-    keyGlow.position.set(0, 0.15, 0);
-    group.add(keyGlow);
 
     return group;
   }

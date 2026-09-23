@@ -150,12 +150,15 @@ export const CheatTerminalModal: React.FC<CheatTerminalModalProps> = ({ onSubmit
               placeholder="____"
             />
 
-            <div className="h-5 mt-2 text-[11px] uppercase tracking-wider text-center">
+            <div className="min-h-5 mt-2 text-[11px] uppercase tracking-wider text-center">
               {status === "denied" && <span className="text-red-500 font-bold">{t("cheat.denied")}</span>}
               {status === "speed" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedSpeed")}</span>}
               {status === "stamina" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedStamina")}</span>}
               {status === "clip" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedClip")}</span>}
               {status === "life" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedLife")}</span>}
+              {(status === "speed" || status === "stamina" || status === "clip" || status === "life") && (
+                <div className="text-[9px] text-[#3cff7a]/70 normal-case tracking-normal">{t("cheat.roomWide")}</div>
+              )}
             </div>
 
             <button

@@ -23,6 +23,7 @@
 import * as THREE from "three";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
+import { animateBiped } from "./anim";
 
 const SENSE_RADIUS = 22;
 const IDLE_SPEED = 1.3;
@@ -33,34 +34,49 @@ export const ceifador: MobDefinition = {
   type: EntityType.CEIFADOR,
   baseSpeed: IDLE_SPEED,
   baseHeight: 1.45,
+  strideLength: 1.8,
   bobFreq: 4.0, bobAmp: 0.07, // fast, purposeful stride
   speechBubbleLocalY: 1.05,
   forcedChaseSpeed: CHASE_SPEED,
 
   build(ctx) {
-    const { group } = ctx;
+    const V = ctx.V;
     const mat = ctx.smat("ceifador_body", () => new THREE.MeshStandardMaterial({ color: 0x0a0a0c, roughness: 0.5, metalness: 0.3 }));
 
     // Tall, gaunt frame — built for speed, not bulk.
-    group.add(ctx.limbBetween(mat, ctx.V(0, 0.55, 0), ctx.V(0, -0.45, 0), 0.11));
-    // Blade-like arms, angled sharply
-    group.add(ctx.limbBetween(mat, ctx.V(0, 0.45, 0), ctx.V(-0.5, -0.1, 0.1), 0.035, 0.4));
-    group.add(ctx.limbBetween(mat, ctx.V(0, 0.45, 0), ctx.V(0.5, -0.1, -0.1), 0.035, 0.4));
-    // Long sprinting legs
-    group.add(ctx.limbBetween(mat, ctx.V(-0.08, -0.45, 0), ctx.V(-0.22, -1.4, 0.15), 0.075));
-    group.add(ctx.limbBetween(mat, ctx.V(0.08, -0.45, 0), ctx.V(0.22, -1.4, -0.15), 0.075));
+    const spine = ctx.joint("spine", 0, -0.45, 0);
+    ctx.limbIn(spine, mat, V(0, 0.55, 0), V(0, -0.45, 0), 0.11);
+    for (const side of [-1, 1]) {
+      const n = side < 0 ? "L" : "R";
+      // Blade-like arms, angled sharply
+      const arm = ctx.joint(`arm${n}`, side * 0.08, 0.45, 0, spine);
+      ctx.limbIn(arm, mat, V(side * 0.08, 0.45, 0), V(side * 0.28, 0.12, 0.04), 0.035, 0.8);
+      const fore = ctx.joint(`fore${n}`, side * 0.28, 0.12, 0.04, arm);
+      ctx.limbIn(fore, mat, V(side * 0.28, 0.12, 0.04), V(side * 0.5, -0.25, 0.1), 0.03, 0.3);
+      // Long sprinting legs
+      const leg = ctx.joint(`leg${n}`, side * 0.08, -0.45, 0);
+      ctx.limbIn(leg, mat, V(side * 0.08, -0.45, 0), V(side * 0.15, -0.95, 0.04), 0.075);
+      const shin = ctx.joint(`shin${n}`, side * 0.15, -0.95, 0.04, leg);
+      ctx.limbIn(shin, mat, V(side * 0.15, -0.95, 0.04), V(side * 0.2, -1.43, 0), 0.065);
+    }
 
     // Hooded head — a cowl silhouette, no face.
+    const head = ctx.joint("head", 0, 0.58, 0, spine);
     const hoodMat = ctx.smat("ceifador_hood", () => new THREE.MeshStandardMaterial({ color: 0x050506, roughness: 0.85, side: THREE.DoubleSide }));
     const hood = new THREE.Mesh(ctx.sgeo("ceifador_hood_geo", () => new THREE.ConeGeometry(0.18, 0.4, 8, 1, true)), hoodMat);
     hood.position.set(0, 0.78, 0);
-    group.add(hood);
+    ctx.put(head, hood);
 
     // A single point of pale light where a face would be — all that's visible under the hood.
     const eyeMat = ctx.smat("ceifador_eye", () => new THREE.MeshStandardMaterial({ color: 0xe5e7eb, emissive: 0xf8fafc, emissiveIntensity: 1.2 }));
     const eye = new THREE.Mesh(ctx.sgeo("ceifador_eye_geo", () => new THREE.SphereGeometry(0.025, 6, 6)), eyeMat);
     eye.position.set(0, 0.68, 0.1);
-    group.add(eye);
+    ctx.put(head, eye);
+  },
+
+  animate(ctx) {
+    // A sprinter: deep knee drive, blades pumping and angled forward when it runs.
+    animateBiped(ctx, { stride: 0.6, armSwing: 0.5, knee: 1.2, elbow: 0.5, lean: 0.55, bounce: 0.07, breathe: 0.02, reach: 0.4 });
   },
 
   sense(ctx) {

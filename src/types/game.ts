@@ -28,6 +28,10 @@ export interface RemotePlayer {
 
 export type DeathAction = 'current_level' | 'level_0' | 'lobby';
 
+/** Lobby cheat-terminal effects. Unlocked for the whole room, not just whoever typed the code. */
+export type RoomCheat = 'speed' | 'stamina' | 'clip' | 'life';
+export const ROOM_CHEATS: readonly RoomCheat[] = ['speed', 'stamina', 'clip', 'life'];
+
 export interface RoomConfig {
   deathAction: DeathAction;
   /** Whether secret level routes are enabled for the room. */

@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { GameSettings, ConnectionPhase, RemotePlayer, ChatMessage, DEFAULT_SUIT_COLOR, RoomConfig, DeathAction } from "./types/game";
+import { GameSettings, ConnectionPhase, RemotePlayer, ChatMessage, DEFAULT_SUIT_COLOR, RoomConfig, DeathAction, ROOM_CHEATS, type RoomCheat } from "./types/game";
 import { GameEngine, LevelGProgress } from "./game/GameEngine";
 import { MainMenu } from "./components/MainMenu";
 import { GameHUD } from "./components/GameHUD";
@@ -20,7 +20,7 @@ import { isTypingInField, lockGameInput } from "./utils/input";
 import { EMPTY_FACE } from "./utils/face";
 import { BackroomsLore, generateProceduralLore } from "./utils/lore";
 import { t, useLanguage, localeTag } from "./i18n";
-import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, X, FileText, Compass, Skull } from "lucide-react";
+import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, FileText, Compass, Skull } from "lucide-react";
 
 /**
  * Player-facing level label. Internal level ids and what's shown on screen
@@ -79,6 +79,15 @@ type JoinRequest = { create: true } | { code: string };
 
 function inviteLink(code: string): string {
   return `${window.location.origin}/${code}`;
+}
+
+
+/** The terminal code that unlocks each room cheat, for the chat announcement. */
+const CHEAT_CODES: Record<RoomCheat, string> = { speed: "MVJM", stamina: "UHUM", clip: "CLIP", life: "LIFE" };
+
+/** Keeps only known cheat ids from a server message. */
+function sanitizeRoomCheats(value: unknown): RoomCheat[] {
+  return Array.isArray(value) ? value.filter((c): c is RoomCheat => (ROOM_CHEATS as readonly unknown[]).includes(c)) : [];
 }
 
 export default function App() {
@@ -271,6 +280,82 @@ export default function App() {
     }
   }, [settings.quality]);
 
+  const megDialogueRef = useRef(megDialogue);
+  megDialogueRef.current = megDialogue;
+  const activeLoreNoteRef = useRef(activeLoreNote);
+  activeLoreNoteRef.current = activeLoreNote;
+  const loreNoteScrollRef = useRef<HTMLDivElement>(null);
+
+  /** Closes whichever in-game reading overlay (MEG dialogue / exit paper) is open. */
+  const closeReading = () => {
+    setMegDialogue(null);
+    setActiveLoreNote(null);
+    engineRef.current?.endReading();
+  };
+
+  /**
+   * E on an interactable. tryInteract() has side effects (it opens the MEG
+   * dialogue, flips switches), so it runs exactly once per key press.
+   * Returns whether the key was consumed.
+   */
+  const handleInteract = (): boolean => {
+    const engine = engineRef.current;
+    if (!engine) return false;
+    switch (engine.tryInteract()) {
+      case "meg_employee":
+        // The dialogue itself arrives through onMegDialogue; it's read in-game,
+        // pointer lock kept.
+        return true;
+      case "meg_door":
+        setIsMegDoorOpen(true);
+        document.exitPointerLock?.();
+        return true;
+      case "terminal":
+        // Level G's terminal
+        setIsInventoryOpen(false);
+        setIsAchievementsOpen(false);
+        setIsTerminalOpen(true);
+        document.exitPointerLock?.();
+        return true;
+      case "cheat":
+        // The lobby's cheat terminal
+        setIsInventoryOpen(false);
+        setIsAchievementsOpen(false);
+        setIsCheatTerminalOpen(true);
+        document.exitPointerLock?.();
+        return true;
+      case "paper": {
+        // The paper on the exit desk — read in-game, pointer lock kept.
+        const note = engine.exitPaperNote();
+        if (note) {
+          setActiveLoreNote({
+            title: note.title,
+            author: t("note.paperAuthor"),
+            date: "—",
+            location: `Level ${engine.level}`,
+            content: note.content,
+          });
+        } else {
+          engine.endReading();
+        }
+        return true;
+      }
+      default:
+        return false;
+    }
+  };
+
+  // Long papers scroll with the mouse wheel: wheel events still fire while
+  // the pointer is locked, the cursor just can't hover the panel.
+  useEffect(() => {
+    if (!activeLoreNote) return;
+    const onWheel = (e: WheelEvent) => {
+      loreNoteScrollRef.current?.scrollBy({ top: e.deltaY });
+    };
+    window.addEventListener("wheel", onWheel, { passive: true });
+    return () => window.removeEventListener("wheel", onWheel);
+  }, [activeLoreNote]);
+
   // Keyboard listener for toggling inventory & achievements
   useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
@@ -280,6 +365,13 @@ export default function App() {
       // Typing a chat message: "i"/"k" should land in the message, not pop
       // open the inventory/achievements panels over it.
       if (isTypingInField()) return;
+      // Reading a MEG dialogue / exit paper: E closes it (the pointer stays
+      // locked the whole time, so the game never drops into the pause menu).
+      if ((e.key === "e" || e.key === "E") && (megDialogueRef.current || activeLoreNoteRef.current)) {
+        e.preventDefault();
+        if (!e.repeat) closeReading();
+        return;
+      }
       // Lobby: the host starts the expedition.
       if (e.key === "Enter" && !e.repeat && engineRef.current?.level === LOBBY_LEVEL && clientIdRef.current && clientIdRef.current === hostIdRef.current) {
         e.preventDefault();
@@ -302,41 +394,8 @@ export default function App() {
           }
           return nextState;
         });
-      } else if ((e.key === "e" || e.key === "E") && engineRef.current?.tryInteract() === "meg_employee") {
+      } else if ((e.key === "e" || e.key === "E") && !e.repeat && handleInteract()) {
         e.preventDefault();
-        document.exitPointerLock?.();
-      } else if ((e.key === "e" || e.key === "E") && engineRef.current?.tryInteract() === "meg_door") {
-        e.preventDefault();
-        setIsMegDoorOpen(true);
-        document.exitPointerLock?.();
-      } else if ((e.key === "e" || e.key === "E") && engineRef.current?.tryInteract() === "terminal") {
-        // Level G's terminal
-        e.preventDefault();
-        setIsInventoryOpen(false);
-        setIsAchievementsOpen(false);
-        setIsTerminalOpen(true);
-        document.exitPointerLock?.();
-      } else if ((e.key === "e" || e.key === "E") && engineRef.current?.tryInteract() === "cheat") {
-        // The lobby's cheat terminal
-        e.preventDefault();
-        setIsInventoryOpen(false);
-        setIsAchievementsOpen(false);
-        setIsCheatTerminalOpen(true);
-        document.exitPointerLock?.();
-      } else if ((e.key === "e" || e.key === "E") && engineRef.current?.tryInteract() === "paper") {
-        // The paper on the exit desk
-        e.preventDefault();
-        const note = engineRef.current.exitPaperNote();
-        if (note) {
-          setActiveLoreNote({
-            title: note.title,
-            author: t("note.paperAuthor"),
-            date: "—",
-            location: `Level ${engineRef.current.level}`,
-            content: note.content,
-          });
-          document.exitPointerLock?.();
-        }
       } else if ((e.key === "e" || e.key === "E") && !e.repeat && engineRef.current?.tryPushBox()) {
         // Shove the box in front of you out of the way
         e.preventDefault();
@@ -371,6 +430,10 @@ export default function App() {
       setPointerLocked(locked);
       if (locked) {
         setPointerLockedOverride(false);
+      } else if (megDialogueRef.current || activeLoreNoteRef.current) {
+        // Esc / alt-tab released the lock: close the reading overlay rather
+        // than leave it stacked over the pause menu.
+        closeReading();
       }
     };
 
@@ -473,7 +536,7 @@ export default function App() {
           }
 
           else if (type === "joined") {
-            const { id: myId, seed, players: currentOn, level: roomLevel = 0, authority = {}, code: joinedCode = "", hostId: joinedHost = "", roomConfig: joinedConfig } = data;
+            const { id: myId, seed, players: currentOn, level: roomLevel = 0, authority = {}, code: joinedCode = "", hostId: joinedHost = "", roomConfig: joinedConfig, cheats: joinedCheats } = data;
             // A server from before rooms/lobbies answers without an invite code
             // (and drops you straight into Level 0): say so instead of playing on.
             if (!joinedCode) {
@@ -574,7 +637,11 @@ export default function App() {
                       }
                     },
                     onInteractPrompt: (text) => setInteractPrompt(text),
-                    onMegDialogue: (employee) => setMegDialogue(employee),
+                    onMegDialogue: (employee) => setMegDialogue({ name: employee.name, grade: employee.grade, dialogue: employee.dialogue }),
+                    onReadingEnd: () => {
+                      setMegDialogue(null);
+                      setActiveLoreNote(null);
+                    },
                     onMegDoorRequest: () => setIsMegDoorOpen(true),
                     onSecretLevelFound: (targetLevel: number) => {
                       if (roomConfigRef.current.secretRoutes === false) return;
@@ -638,6 +705,16 @@ export default function App() {
                       setSpectateName(engineRef.current?.spectateName() ?? null);
                       socketRef.current?.send(JSON.stringify({ type: "died" }));
                     },
+                    onDiaryPageCollected: () => {
+                      const page: BackroomsLore = {
+                        title: t("item.diary_page.name"),
+                        author: t("note.diaryAuthor"),
+                        date: "—",
+                        location: `Level ${engineRef.current?.level ?? 0}`,
+                        content: `${t("item.diary_page.lore")}\n\n${t("item.diary_page.clueText")}`,
+                      };
+                      setCollectedNotes((prev) => (prev.some((n) => n.title === page.title) ? prev : [...prev, page]));
+                    },
                     onScrapOfNoteCollected: (noteSeed, doorMarker) => {
                       const lore = generateProceduralLore(noteSeed);
                       // Same clue on every note this seed, appended to the body
@@ -668,6 +745,8 @@ export default function App() {
 
                 // Replicated monsters/blackouts: who simulates which level.
                 engineRef.current.localPlayerId = myId;
+                // Cheats this room already unlocked at the lobby terminal.
+                engineRef.current.applyRoomCheats(sanitizeRoomCheats(joinedCheats));
                 engineRef.current.onSpectateChange = setSpectateName;
                 engineRef.current.setWorldAuthority(worldAuthorityRef.current);
 
@@ -766,6 +845,13 @@ export default function App() {
 
           else if (type === "host") {
             setHostId(data.id);
+          }
+
+          else if (type === "room_cheats") {
+            engineRef.current?.applyRoomCheats(sanitizeRoomCheats(data.cheats));
+            if (typeof data.cheat === "string" && typeof data.by === "string") {
+              logSystemMessage(t("sys.cheat", { name: data.by.toUpperCase(), code: CHEAT_CODES[data.cheat as RoomCheat] ?? data.cheat }));
+            }
           }
 
           else if (type === "room_config") {
@@ -1516,23 +1602,36 @@ export default function App() {
           {isMegDoorOpen && currentLevel === 4 && (
             <MegDoorModal
               onSubmit={(names) => engineRef.current?.submitMegDoorNames(names) ?? false}
-              onClose={() => setIsMegDoorOpen(false)}
+              onClose={() => {
+                setIsMegDoorOpen(false);
+                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+                if (canvasEl) lockGameInput(canvasEl);
+              }}
             />
           )}
+          {/* MEG employee dialogue: a subtitle box, read without leaving the game */}
           {megDialogue && currentLevel === 4 && !isMegDoorOpen && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4" onClick={() => setMegDialogue(null)}>
-              <div className="max-w-lg border border-amber-500/60 bg-[#171513] p-6 text-slate-100" onClick={(event) => event.stopPropagation()}>
-                <div className="mb-1 text-xs tracking-[0.25em] text-amber-400">MEG // FUNCIONÁRIO {megDialogue.grade.toUpperCase()}</div>
-                <h2 className="mb-3 text-2xl font-bold">{megDialogue.name}</h2>
-                <p className="mb-5 text-slate-300">{megDialogue.dialogue}</p>
-                <button onClick={() => setMegDialogue(null)} className="bg-amber-700 px-5 py-2 text-sm font-bold hover:bg-amber-600">FECHAR</button>
+            <div className="pointer-events-none fixed inset-x-0 bottom-24 z-40 flex justify-center px-4">
+              <div className="w-full max-w-2xl border border-amber-500/60 bg-[#171513]/90 px-6 py-4 text-slate-100 shadow-[0_0_30px_rgba(0,0,0,0.6)]">
+                <div className="mb-1 text-[10px] tracking-[0.25em] text-amber-400">{t("dialog.megEmployee", { grade: megDialogue.grade.toUpperCase() })}</div>
+                <h2 className="mb-2 text-xl font-bold">{megDialogue.name}</h2>
+                <p className="text-sm text-slate-300">{megDialogue.dialogue}</p>
+                <div className="mt-3 text-right text-[10px] uppercase tracking-widest text-amber-500/80">{t("dialog.closeHint")}</div>
               </div>
             </div>
           )}
 
           {isCheatTerminalOpen && currentLevel === LOBBY_LEVEL && (
             <CheatTerminalModal
-                     onSubmit={(code) => engineRef.current?.submitCheatCode(code) ?? null}
+                     onSubmit={(code) => {
+                       const result = engineRef.current?.submitCheatCode(code) ?? null;
+                       // Room cheats are unlocked by the server for everyone in the
+                       // room; the effect lands when its "room_cheats" broadcast returns.
+                       if (result && (ROOM_CHEATS as readonly string[]).includes(result)) {
+                         socketRef.current?.send(JSON.stringify({ type: "cheat_unlock", cheat: result }));
+                       }
+                       return result;
+                     }}
                      onUnlockRoom={() => setIsLevelSelectorOpen(true)}
               currentSkin={cheatSkin}
               onPickSkin={(skin) => {
@@ -1576,7 +1675,7 @@ export default function App() {
 
           {/* Achievement Unlock Popup Toast */}
           {/* Context hint (e.g. "[E] Empurrar caixa") just below the crosshair */}
-          {interactPrompt && !isInventoryOpen && !isAchievementsOpen && !isTerminalOpen && !isCheatTerminalOpen && (
+          {interactPrompt && !megDialogue && !activeLoreNote && !isInventoryOpen && !isAchievementsOpen && !isTerminalOpen && !isCheatTerminalOpen && (
             <div className="fixed left-1/2 top-[58%] -translate-x-1/2 z-40 pointer-events-none font-mono">
               <div className="bg-[#0b0b05]/80 border border-[#deb81d]/60 rounded px-3 py-1.5 text-[11px] tracking-widest uppercase text-[#deb81d] shadow-[0_0_12px_rgba(222,184,29,0.25)]">
                 {interactPrompt}
@@ -1608,49 +1707,35 @@ export default function App() {
             </div>
           )}
 
-          {/* Scrap of Note Lore Popup Modal */}
+          {/* Exit-desk paper: read in-game (pointer lock kept, the world keeps running) */}
           {activeLoreNote && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm select-none font-mono">
-              <div 
+            <div className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center p-4 select-none font-mono">
+              <div
                 id="lore-note-modal"
-                className="relative w-full max-w-xl bg-[#1e1c14] border-2 border-[#deb81d]/50 rounded p-6 sm:p-8 shadow-[0_0_50px_rgba(222,184,29,0.15)] flex flex-col gap-6"
+                className="relative w-full max-w-xl bg-[#1e1c14]/92 border-2 border-[#deb81d]/50 rounded p-6 sm:p-8 shadow-[0_0_50px_rgba(222,184,29,0.15)] flex flex-col gap-6"
               >
                 {/* Paper texture aesthetics */}
                 <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(222,184,29,0.03)_0%,rgba(0,0,0,0.4)_100%)] pointer-events-none rounded" />
-                
+
                 {/* Header */}
-                <div className="flex justify-between items-start border-b border-[#a28e3b]/30 pb-4 z-10">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-amber-400/10 border border-[#deb81d]/30 rounded">
-                      <FileText className="w-5 h-5 text-[#deb81d]" />
-                    </div>
-                    <div>
-                      <div className="text-[9px] uppercase tracking-widest text-[#a28e3b]">{t("note.found")}</div>
-                      <h3 className="text-sm font-black text-[#deb81d] uppercase tracking-wider">{activeLoreNote.title}</h3>
-                    </div>
+                <div className="flex items-center gap-3 border-b border-[#a28e3b]/30 pb-4 z-10">
+                  <div className="p-2 bg-amber-400/10 border border-[#deb81d]/30 rounded">
+                    <FileText className="w-5 h-5 text-[#deb81d]" />
                   </div>
-                  <button
-                    id="btn-close-lore-note"
-                    onClick={() => {
-                      setActiveLoreNote(null);
-                      if (engineRef.current && engineRef.current.player) {
-                        engineRef.current.player.mapFullyLoaded = true;
-                      }
-                    }}
-                    className="p-1 hover:bg-[#deb81d]/10 border border-transparent hover:border-[#deb81d]/30 rounded transition-all cursor-pointer pointer-events-auto"
-                  >
-                    <X className="w-5 h-5 text-[#deb81d]" />
-                  </button>
+                  <div>
+                    <div className="text-[9px] uppercase tracking-widest text-[#a28e3b]">{t("note.found")}</div>
+                    <h3 className="text-sm font-black text-[#deb81d] uppercase tracking-wider">{activeLoreNote.title}</h3>
+                  </div>
                 </div>
 
                 {/* Meta details */}
                 <div className="grid grid-cols-2 gap-3 bg-black/30 border border-[#a28e3b]/10 p-3 rounded text-[10px] z-10 text-stone-300">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[#a28e3b] font-bold">AUTOR:</span>
+                    <span className="text-[#a28e3b] font-bold">{t("note.author")}</span>
                     <span className="truncate">{activeLoreNote.author}</span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[#a28e3b] font-bold">DATA:</span>
+                    <span className="text-[#a28e3b] font-bold">{t("note.date")}</span>
                     <span>{activeLoreNote.date}</span>
                   </div>
                   <div className="flex items-center gap-1.5 col-span-2">
@@ -1660,27 +1745,17 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Main Content */}
-                <div className="flex-1 overflow-y-auto max-h-[300px] pr-2 scrollbar-thin scrollbar-thumb-amber-500/20 z-10">
-                  <p className="text-xs sm:text-sm text-amber-100/90 leading-relaxed font-serif italic whitespace-pre-wrap selection:bg-[#deb81d] selection:text-black">
+                {/* Main Content — scrolled by the mouse wheel (see loreNoteScrollRef) */}
+                <div ref={loreNoteScrollRef} className="flex-1 overflow-y-auto max-h-[300px] pr-2 scrollbar-thin scrollbar-thumb-amber-500/20 z-10">
+                  <p className="text-xs sm:text-sm text-amber-100/90 leading-relaxed font-serif italic whitespace-pre-wrap">
                     {activeLoreNote.content}
                   </p>
                 </div>
 
                 {/* Footer instructions */}
                 <div className="border-t border-[#a28e3b]/20 pt-4 flex justify-between items-center z-10 text-[9px] text-[#a28e3b]">
-                  <span className="animate-pulse">▲ INSIGHT ADQUIRIDO</span>
-                  <button
-                    onClick={() => {
-                      setActiveLoreNote(null);
-                      if (engineRef.current && engineRef.current.player) {
-                        engineRef.current.player.mapFullyLoaded = true;
-                      }
-                    }}
-                    className="bg-[#deb81d] hover:bg-[#ebd255] text-black font-black uppercase px-4 py-2 rounded cursor-pointer transition-all pointer-events-auto text-[10px]"
-                  >
-                    {t("note.finish")}
-                  </button>
+                  <span className="animate-pulse">{t("note.insight")}</span>
+                  <span className="uppercase tracking-widest text-[#deb81d]">{t("note.closeHint")}</span>
                 </div>
               </div>
             </div>

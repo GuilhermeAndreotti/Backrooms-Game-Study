@@ -15,7 +15,7 @@ import path from "path";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { ALL_ENTITY_TYPES } from "./src/shared/entityTypes";
-import type { DeathAction, RoomConfig } from "./src/types/game";
+import { ROOM_CHEATS, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
 import { LOBBY_LEVEL, MAIN_LEVELS, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
 
 // ---------------------------------------------------------------------------
@@ -139,6 +139,8 @@ interface Room {
   level: number;
   /** Host-controlled settings, mutable only while the room is in the lobby. */
   config: RoomConfig;
+  /** Cheats unlocked at the lobby terminal — they apply to every player in the room, for the room's lifetime. */
+  cheats: Set<RoomCheat>;
   /** Player who can start the expedition from the lobby (first to join; passes on when they leave). */
   hostId: string;
   players: Map<string, PlayerState>;
@@ -431,6 +433,7 @@ async function startServer() {
             seed,
             level: LOBBY_LEVEL,
             config: { ...DEFAULT_ROOM_CONFIG },
+            cheats: new Set(),
             hostId: "",
             players: new Map(),
             connections: new Set(),
@@ -496,6 +499,7 @@ async function startServer() {
           code: roomKey,
           hostId: room.hostId,
           roomConfig: room.config,
+          cheats: [...room.cheats],
           players: Array.from(room.players.values()).filter((p) => p.id !== playerId),
           authority: computeAuthority(room),
         });
@@ -699,6 +703,17 @@ async function startServer() {
         const requestedConfig = data.config === undefined ? data : data.config;
         room.config = sanitizeRoomConfig(requestedConfig, room.config);
         broadcastToRoom(room, { type: "room_config", config: room.config });
+        return;
+      }
+
+      // A code typed at the lobby's cheat terminal: unlocks the effect for the
+      // whole room. Anyone in the lobby may unlock; there is no turning one off.
+      if (type === "cheat_unlock") {
+        if (room.level !== LOBBY_LEVEL || conn.player.level !== LOBBY_LEVEL) return;
+        const cheat = data.cheat as RoomCheat;
+        if (!ROOM_CHEATS.includes(cheat) || room.cheats.has(cheat)) return;
+        room.cheats.add(cheat);
+        broadcastToRoom(room, { type: "room_cheats", cheats: [...room.cheats], cheat, by: conn.player.name });
         return;
       }
 
