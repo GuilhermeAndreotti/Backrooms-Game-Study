@@ -107,7 +107,7 @@ function levelAtmosphere(level: number) {
     case LEVEL_G: // Level G: dim, cold office under failing tubes
       return { ambientColor: 0x9aa4ad, ambientIntensity: 0.5, fogColor: 0x23272a, dimmedFogColor: 0x0b0c0d };
     case ABANDONED_OFFICE_LEVEL: // Abandoned Office: cold monitors and dust
-      return { ambientColor: 0x9aa4ad, ambientIntensity: 0.75, fogColor: 0x303438, dimmedFogColor: 0x101214 };
+      return { ambientColor: 0xd8e8ed, ambientIntensity: 1.35, fogColor: 0x687b82, dimmedFogColor: 0x243238 };
     case ELECTRICAL_ROOM_LEVEL: // Electrical Room: dim industrial halls
       return { ambientColor: 0xb4a092, ambientIntensity: 1.15, fogColor: 0x554039, dimmedFogColor: 0x241a17 };
     case LIGHTS_OUT_LEVEL: // Lights Out: the waypoints and flashlight are all that remain
@@ -119,7 +119,7 @@ function levelAtmosphere(level: number) {
     case MOTION_LEVEL: // "Motion": bright open-air field by day
       return { ambientColor: 0xdff0ff, ambientIntensity: 2.2, fogColor: 0x9fd4f0, dimmedFogColor: 0x3a5a70 };
     case POOLROOMS_LEVEL: // Classic Poolrooms: bright cyan tiles and clear water
-      return { ambientColor: 0xbceff5, ambientIntensity: 1.8, fogColor: 0x79c9d4, dimmedFogColor: 0x2f7180 };
+      return { ambientColor: 0xfff8e6, ambientIntensity: 3.2, fogColor: 0xd9e8d2, dimmedFogColor: 0x5e7f78 };
     default: // Level 0: classic yellow
       return { ambientColor: 0xeae2c2, ambientIntensity: 1.05, fogColor: 0xede4c0, dimmedFogColor: 0x5c5740 };
   }
@@ -624,7 +624,7 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === LOBBY_LEVEL ? 0.008 : level === LEVEL_G ? 0.06 : level === ELECTRICAL_ROOM_LEVEL ? 0.035 : level === POOLROOMS_LEVEL ? 0.014 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
+    const authored = level === LOBBY_LEVEL ? 0.008 : level === LEVEL_G ? 0.06 : level === ABANDONED_OFFICE_LEVEL ? 0.016 : level === ELECTRICAL_ROOM_LEVEL ? 0.035 : level === POOLROOMS_LEVEL ? 0.006 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
@@ -2975,12 +2975,12 @@ export class GameEngine {
 
   public submitMegDoorIds(raw: string): boolean {
     if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map) return false;
-    const ids = raw.split(/[\s,;>-]+/).map((id) => id.trim()).filter(Boolean);
+    const ids = raw.replace(/\D/g, "");
     const expected = [...this.map.level4Employees]
       .filter((employee) => employee.role === "programmer")
       .sort((a, b) => ({ senior: 0, pleno: 1, junior: 2 }[a.grade] - { senior: 0, pleno: 1, junior: 2 }[b.grade]))
       .map((employee) => employee.accessId);
-    const ok = ids.length === expected.length && ids.every((id, index) => id === expected[index]);
+    const ok = ids === expected.join("");
     if (ok) {
       this.level4DoorOpen = true;
       this.map.openLevel4Door();

@@ -42,13 +42,13 @@ float caustic(vec2 p) {
 /** Transparent, slightly reflective water whose surface waves in the vertex shader. */
 export function createWaterMaterial(toxic: boolean): THREE.MeshStandardMaterial {
   const mat = new THREE.MeshStandardMaterial({
-    color: toxic ? 0x3d6a1c : 0x42bed2,
-    emissive: toxic ? 0x2c5a10 : 0x176f82,
-    emissiveIntensity: toxic ? 0.35 : 0.42,
+    color: toxic ? 0x3d6a1c : 0x3fc9a2,
+    emissive: toxic ? 0x2c5a10 : 0x1f8f74,
+    emissiveIntensity: toxic ? 0.35 : 0.6,
     roughness: 0.045,
     metalness: 0.22,
     transparent: true,
-    opacity: toxic ? 0.82 : 0.5,
+    opacity: toxic ? 0.85 : 0.72,
     depthWrite: false,
     side: THREE.DoubleSide,
   });
@@ -118,7 +118,7 @@ export function createPoolTileMaterial(toxic: boolean): THREE.MeshStandardMateri
   map.repeat.set(4, 4);
   const mat = new THREE.MeshStandardMaterial({
     map,
-    color: toxic ? 0x9fbf7a : 0xd9f6f8,
+    color: toxic ? 0x9fbf7a : 0xbfeedb,
     roughness: 0.35,
     metalness: 0.05,
   });
@@ -236,4 +236,32 @@ export class WaterRipples {
     this.dropPoints.geometry.dispose();
     (this.dropPoints.material as THREE.Material).dispose();
   }
+}
+
+let wallTileTexture: THREE.CanvasTexture | null = null;
+
+/** Cream-white 25 cm wall/ceiling tiles with thin dark grout — the Poolrooms' walls and pillars. */
+export function createWallTileMaterial(): THREE.MeshStandardMaterial {
+  if (!wallTileTexture) {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 128;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#5f6a5c";
+      ctx.fillRect(0, 0, 128, 128);
+      const tile = 32;
+      for (let y = 0; y < 128; y += tile) {
+        for (let x = 0; x < 128; x += tile) {
+          const shade = 236 + ((x * 7 + y * 13) % 4) * 4;
+          ctx.fillStyle = `rgb(${shade}, ${shade - 2}, ${shade - 20})`;
+          ctx.fillRect(x + 1, y + 1, tile - 2, tile - 2);
+        }
+      }
+    }
+    wallTileTexture = new THREE.CanvasTexture(canvas);
+    wallTileTexture.wrapS = wallTileTexture.wrapT = THREE.RepeatWrapping;
+    wallTileTexture.colorSpace = THREE.SRGBColorSpace;
+    wallTileTexture.repeat.set(4, 4);
+  }
+  return new THREE.MeshStandardMaterial({ map: wallTileTexture, color: 0xffffff, emissive: 0x3a3a30, emissiveIntensity: 0.5, roughness: 0.4, metalness: 0.0 });
 }
