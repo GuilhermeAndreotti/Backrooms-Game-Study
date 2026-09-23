@@ -18,8 +18,11 @@ export class AudioManager {
   // Dynamic background procedural music system
   private musicGain: GainNode | null = null;
   private isMusicPlaying = false;
+  private musicGeneration = 0;
   private currentSanity = 1.0;
   private activeMusicOscillators: OscillatorNode[] = [];
+  private backgroundAmbienceEnabled = false;
+  private distantAmbianceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Dynamic procedural breathing and heart rate state
   private breathingCycleTimer = 0;
@@ -45,12 +48,8 @@ export class AudioManager {
       this.masterGain.gain.setValueAtTime(this.settings.volumeMaster, this.ctx.currentTime);
       this.masterGain.connect(this.ctx.destination);
 
-      // Start the oppressive background fluorescent hum
-      this.startFluorescentHum();
-      this.startDistantAmbianceScheduler();
-      this.startBackgroundMusic();
-
       this.initialized = true;
+      this.setBackgroundAmbienceEnabled(this.backgroundAmbienceEnabled);
       console.log("Web Audio API Initialized Successfully");
     } catch (e) {
       console.error("Failed to initialize audio:", e);
@@ -71,6 +70,32 @@ export class AudioManager {
     if (this.musicGain && this.ctx) {
       this.musicGain.gain.linearRampToValueAtTime(settings.volumeHum * 0.15, this.ctx.currentTime + 0.1); // Scaled music volume
     }
+  }
+
+  /** Enables the level ambience while keeping lobby effects and controls audible. */
+  public setBackgroundAmbienceEnabled(enabled: boolean) {
+    this.backgroundAmbienceEnabled = enabled;
+    if (!this.initialized) return;
+
+    if (!enabled) {
+      this.stopFluorescentHum();
+      this.stopDistantAmbianceScheduler();
+      this.stopBackgroundMusic();
+      return;
+    }
+
+    this.stopFluorescentHum();
+    this.startFluorescentHum();
+    this.startDistantAmbianceScheduler();
+    this.startBackgroundMusic();
+  }
+
+  private stopFluorescentHum() {
+    if (this.humOsc1) { try { this.humOsc1.stop(); this.humOsc1.disconnect(); } catch {} }
+    if (this.humOsc2) { try { this.humOsc2.stop(); this.humOsc2.disconnect(); } catch {} }
+    this.humOsc1 = null;
+    this.humOsc2 = null;
+    this.humGain = null;
   }
 
   /**
@@ -343,21 +368,20 @@ export class AudioManager {
    * Periodic scheduler that generates haunting, sparse distant mechanical echoes and pipeline thuds.
    */
   private startDistantAmbianceScheduler() {
-    const playAmbiance = () => {
-      if (!this.ctx || !this.initialized) return;
+    if (!this.ctx || !this.backgroundAmbienceEnabled || this.distantAmbianceTimer) return;
 
-      // Random wait interval between 15 and 35 seconds
-      const nextDelaySec = 15 + Math.random() * 20;
+    const nextDelaySec = 15 + Math.random() * 20;
+    this.distantAmbianceTimer = setTimeout(() => {
+      this.distantAmbianceTimer = null;
+      if (!this.backgroundAmbienceEnabled || !this.ctx || !this.masterGain) return;
+      this.triggerDistantEchoSound();
+      this.startDistantAmbianceScheduler();
+    }, nextDelaySec * 1000);
+  }
 
-      setTimeout(() => {
-        if (this.ctx && this.masterGain) {
-          this.triggerDistantEchoSound();
-        }
-        playAmbiance();
-      }, nextDelaySec * 1000);
-    };
-
-    playAmbiance();
+  private stopDistantAmbianceScheduler() {
+    if (this.distantAmbianceTimer) clearTimeout(this.distantAmbianceTimer);
+    this.distantAmbianceTimer = null;
   }
 
   private triggerDistantEchoSound() {
@@ -703,6 +727,7 @@ export class AudioManager {
   public startBackgroundMusic() {
     if (!this.ctx || !this.masterGain || this.isMusicPlaying) return;
     this.isMusicPlaying = true;
+    const musicGeneration = ++this.musicGeneration;
 
     // Create a music-specific gain node
     this.musicGain = this.ctx.createGain();
@@ -712,7 +737,7 @@ export class AudioManager {
     this.musicGain.connect(this.masterGain);
 
     const playNextChord = () => {
-      if (!this.initialized || !this.ctx || !this.isMusicPlaying) return;
+      if (!this.initialized || !this.ctx || !this.isMusicPlaying || musicGeneration !== this.musicGeneration) return;
 
       // Calculate time for this chord loop
       const chordDuration = 12 + Math.random() * 8; // Each chord pad runs for 12 to 20 seconds
@@ -729,6 +754,17 @@ export class AudioManager {
     setTimeout(() => {
       playNextChord();
     }, 1000);
+  }
+
+  private stopBackgroundMusic() {
+    this.musicGeneration++;
+    this.isMusicPlaying = false;
+    this.activeMusicOscillators.forEach((osc) => {
+      try { osc.stop(); osc.disconnect(); } catch {}
+    });
+    this.activeMusicOscillators = [];
+    this.musicGain?.disconnect();
+    this.musicGain = null;
   }
 
   /**
@@ -1189,16 +1225,9 @@ export class AudioManager {
   public destroy() {
     try {
       this.stopAlarm();
-      this.isMusicPlaying = false;
-      this.activeMusicOscillators.forEach(osc => {
-        try {
-          osc.stop();
-          osc.disconnect();
-        } catch (e) {}
-      });
-      this.activeMusicOscillators = [];
-      if (this.humOsc1) { this.humOsc1.stop(); this.humOsc1.disconnect(); }
-      if (this.humOsc2) { this.humOsc2.stop(); this.humOsc2.disconnect(); }
+      this.stopDistantAmbianceScheduler();
+      this.stopBackgroundMusic();
+      this.stopFluorescentHum();
       if (this.ctx) {
         this.ctx.close();
       }

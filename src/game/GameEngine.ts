@@ -596,7 +596,7 @@ export class GameEngine {
 
     // Pass level to both map and audio
     this.audio.level = this.level;
-    this.audio.startFluorescentHum();
+    this.audio.setBackgroundAmbienceEnabled(this.level !== LOBBY_LEVEL);
 
     // Instantiate Procedural Level 0 or 1 Map
     this.map = new ProceduralMap(seed, this.level, this.quality);
@@ -2195,9 +2195,9 @@ export class GameEngine {
     const spawnZ = this.map.spawnGridZ * this.map.cellSize + this.map.cellSize / 2;
     this.map.performProximityCulling(this.scene, spawnX, spawnZ, true);
 
-    // 5. Update audio settings with new level selection to change background ambient hums/gains
+    // 5. Enable ambience outside the lobby and select the new level's sound profile.
     this.audio.level = level;
-    this.audio.startFluorescentHum(); // start appropriate level hum / warehouse boiler hum
+    this.audio.setBackgroundAmbienceEnabled(level !== LOBBY_LEVEL);
     
     // 6. Spawn the player again safely at spawn coordinates (2,2) with preloaded map
     this.player = new PlayerController(this.camera, this.renderer.domElement, this.map, (speed) => {
