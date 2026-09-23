@@ -376,6 +376,8 @@ export class GameEngine {
   private cheatStamina = false;
   private cheatClip = false;
   private cheatLife = false;
+  /** SETA: the radar points toward this level's secret entrance. */
+  public cheatArrow = false;
   /** SKIN cheat: the monster body worn instead of the hazmat suit, replicated to teammates; "" for none. */
   public cheatSkin: EntityType | null = null;
 
@@ -3051,6 +3053,7 @@ export class GameEngine {
     if (c === "UHUM") return "stamina";
     if (c === "CLIP") return "clip";
     if (c === "LIFE") return "life";
+    if (c === "SETA") return "arrow";
     if (c === "SUDO") return "sudo"; // every room cheat at once
     if (c === "SKIN") return "skin";
     if (c === "ROOM") return "room";
@@ -3065,7 +3068,18 @@ export class GameEngine {
     this.cheatStamina = has("stamina");
     this.cheatClip = has("clip");
     this.cheatLife = has("life");
+    this.cheatArrow = has("arrow");
     if (this.player) this.applyCheatsToPlayer();
+  }
+
+  /** World position of this level's secret entrance (Level 1 → Lights Out, Abandoned Office → Level G), if any. */
+  public secretEntranceTarget(): { x: number; z: number; label: string } | null {
+    const map = this.map;
+    if (!map) return null;
+    const cs = map.cellSize;
+    if (this.level === 1 && map.secretGridX >= 0) return { x: (map.secretGridX + 0.5) * cs, z: (map.secretGridZ + 0.5) * cs, label: "6" };
+    if (this.level === ABANDONED_OFFICE_LEVEL && map.abandonedSecretX >= 0) return { x: (map.abandonedSecretX + 0.5) * cs, z: (map.abandonedSecretZ + 0.5) * cs, label: "G" };
+    return null;
   }
 
   /** Sets (or, with null, clears) the SKIN cheat's monster body; replicated to teammates on the next network tick. */

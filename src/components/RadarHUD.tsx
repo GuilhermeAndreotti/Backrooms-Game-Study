@@ -253,6 +253,38 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
         }
       }
 
+      // 4b. SETA cheat: an arrow toward this level's secret entrance (Level 6 / Level G).
+      const secret = engine.cheatArrow ? engine.secretEntranceTarget() : null;
+      if (secret) {
+        const rx = secret.x - px;
+        const rz = secret.z - pz;
+        const dist = Math.sqrt(rx * rx + rz * rz);
+        const pulse = 0.55 + Math.abs(Math.sin(Date.now() * 0.005)) * 0.45;
+        ctx.fillStyle = `rgba(217, 70, 239, ${pulse})`;
+        ctx.strokeStyle = "#f0abfc";
+        ctx.lineWidth = 1.4;
+        ctx.font = "bold 8px Courier New, monospace";
+        ctx.textAlign = "center";
+        if (dist < maxRange - 6) {
+          const rX = rx * scale, rY = rz * scale;
+          ctx.beginPath(); ctx.arc(rX, rY, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = "#f0abfc";
+          ctx.fillText(`→ ${secret.label}`, rX, rY - 9);
+        } else {
+          // Off the scope: an arrow riding the rim, pointing the way.
+          const ang = Math.atan2(rz, rx);
+          const rim = cx - 22;
+          ctx.save();
+          ctx.translate(Math.cos(ang) * rim, Math.sin(ang) * rim);
+          ctx.rotate(ang + Math.PI / 2);
+          ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(7, 6); ctx.lineTo(0, 2); ctx.lineTo(-7, 6); ctx.closePath();
+          ctx.fill(); ctx.stroke();
+          ctx.restore();
+          ctx.fillStyle = "#f0abfc";
+          ctx.fillText(`${secret.label} ${Math.round(dist)}m`, Math.cos(ang) * (rim - 16), Math.sin(ang) * (rim - 16) + 3);
+        }
+      }
+
       // 5. Draw peer remote player teammates (VHF Transceivers tracked)
       playersRef.current.forEach((p) => {
         // Only render teammates who are currently exploring the same level

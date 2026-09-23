@@ -12,6 +12,7 @@ import { InventoryHUD } from "./components/InventoryHUD";
 import { AchievementsHUD } from "./components/AchievementsHUD";
 import { TerminalModal } from "./components/TerminalModal";
 import { CheatTerminalModal, SkinChoice } from "./components/CheatTerminalModal";
+import { PauseSettings } from "./components/PauseSettings";
 import { LevelSelectorModal } from "./components/LevelSelectorModal";
 import { MegDoorModal } from "./components/MegDoorModal";
 import { LOBBY_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, MOTION_LEVEL, nextMainLevel } from "./game/levels/constants";
@@ -83,7 +84,7 @@ function inviteLink(code: string): string {
 
 
 /** The terminal code that unlocks each room cheat, for the chat announcement. */
-const CHEAT_CODES: Record<RoomCheat | typeof SUDO_CHEAT, string> = { speed: "MVJM", stamina: "UHUM", clip: "CLIP", life: "LIFE", sudo: "SUDO" };
+const CHEAT_CODES: Record<RoomCheat | typeof SUDO_CHEAT, string> = { speed: "MVJM", stamina: "UHUM", clip: "CLIP", life: "LIFE", arrow: "SETA", sudo: "SUDO" };
 
 /** Keeps only known cheat ids from a server message. */
 function sanitizeRoomCheats(value: unknown): RoomCheat[] {
@@ -127,7 +128,7 @@ export default function App() {
   const [inventory, setInventory] = useState<string[]>([]);
   const [activeLoreNote, setActiveLoreNote] = useState<BackroomsLore | null>(null);
   const [collectedNotes, setCollectedNotes] = useState<BackroomsLore[]>([]);
-  const [pauseMenuTab, setPauseMenuTab] = useState<"controles" | "diario">("controles");
+  const [pauseMenuTab, setPauseMenuTab] = useState<"controles" | "diario" | "config">("controles");
   const [selectedJournalNote, setSelectedJournalNote] = useState<BackroomsLore | null>(null);
   const [isInventoryOpen, setIsInventoryOpen] = useState(false);
   const [isAchievementsOpen, setIsAchievementsOpen] = useState(false);
@@ -1200,6 +1201,16 @@ export default function App() {
                       {t("pause.tabControls")}
                     </button>
                     <button
+                      onClick={() => setPauseMenuTab("config")}
+                      className={`px-4 py-1.5 rounded text-xs font-bold uppercase tracking-wider border cursor-pointer transition-all ${
+                        pauseMenuTab === "config"
+                          ? "bg-[#deb81d] text-black border-[#deb81d]"
+                          : "bg-black/40 text-[#a28e3b] border-transparent hover:border-[#a28e3b]/30"
+                      }`}
+                    >
+                      {t("pause.tabSettings")}
+                    </button>
+                    <button
                       onClick={() => setPauseMenuTab("diario")}
                       className={`px-4 py-1.5 rounded text-xs font-bold uppercase tracking-wider border cursor-pointer transition-all flex items-center gap-2 ${
                         pauseMenuTab === "diario"
@@ -1267,6 +1278,8 @@ export default function App() {
                         <div className="flex justify-between"><span>{t("controls.release")}</span><span className="text-[#deb81d] font-bold">ESC</span></div>
                       </div>
                     </div>
+                  ) : pauseMenuTab === "config" ? (
+                    <PauseSettings settings={settings} onUpdateSettings={handleUpdateSettings} />
                   ) : (
                     /* Diário / Journal Tab Content */
                     <div className="flex-1 flex overflow-hidden">
