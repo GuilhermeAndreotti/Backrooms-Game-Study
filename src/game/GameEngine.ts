@@ -3024,18 +3024,19 @@ export class GameEngine {
 
   /**
    * Checks a code typed into the lobby's cheat terminal. MVJM, UHUM, CLIP and
-   * LIFE only *identify* a room cheat here — the caller sends it to the server,
+   * LIFE (or SUDO, all four) only *identify* a room cheat here — the caller sends it to the server,
    * which unlocks it for everyone in the room and broadcasts it back, and
    * applyRoomCheats() is what actually turns it on (re-entering an unlocked
    * code just confirms it, never toggles it off). SKIN sets nothing by itself
    * — it tells the caller to open the monster picker (see applySkinCheat).
    */
-  public submitCheatCode(code: string): RoomCheat | "skin" | "room" | null {
+  public submitCheatCode(code: string): RoomCheat | "sudo" | "skin" | "room" | null {
     const c = code.trim().toUpperCase();
     if (c === "MVJM") return "speed";
     if (c === "UHUM") return "stamina";
     if (c === "CLIP") return "clip";
     if (c === "LIFE") return "life";
+    if (c === "SUDO") return "sudo"; // every room cheat at once
     if (c === "SKIN") return "skin";
     if (c === "ROOM") return "room";
     return null;

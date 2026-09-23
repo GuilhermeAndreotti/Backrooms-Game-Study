@@ -31,6 +31,8 @@ export type DeathAction = 'current_level' | 'level_0' | 'lobby';
 /** Lobby cheat-terminal effects. Unlocked for the whole room, not just whoever typed the code. */
 export type RoomCheat = 'speed' | 'stamina' | 'clip' | 'life';
 export const ROOM_CHEATS: readonly RoomCheat[] = ['speed', 'stamina', 'clip', 'life'];
+/** SUDO: unlocks every room cheat at once. */
+export const SUDO_CHEAT = 'sudo';
 
 export interface RoomConfig {
   deathAction: DeathAction;

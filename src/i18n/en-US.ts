@@ -493,6 +493,7 @@ export const enUS: Record<MessageKey, string> = {
   "cheat.unlockedStamina": "INFINITE STAMINA UNLOCKED!",
   "cheat.unlockedClip": "NOCLIP UNLOCKED! Hold [V] to walk through walls.",
   "cheat.unlockedLife": "IMMORTALITY UNLOCKED!",
+  "cheat.unlockedSudo": "SUDO: ALL CHEATS UNLOCKED! (speed, stamina, noclip [V], immortality)",
   "cheat.roomWide": "Applies to every player in the room.",
   "cheat.submit": "Submit",
   "cheat.pickSkin": "Choose a monster skin",

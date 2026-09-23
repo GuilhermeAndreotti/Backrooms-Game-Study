@@ -15,7 +15,7 @@ import path from "path";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { ALL_ENTITY_TYPES } from "./src/shared/entityTypes";
-import { ROOM_CHEATS, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
+import { ROOM_CHEATS, SUDO_CHEAT, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
 import { LOBBY_LEVEL, MAIN_LEVELS, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
 
 // ---------------------------------------------------------------------------
@@ -710,9 +710,12 @@ async function startServer() {
       // whole room. Anyone in the lobby may unlock; there is no turning one off.
       if (type === "cheat_unlock") {
         if (room.level !== LOBBY_LEVEL || conn.player.level !== LOBBY_LEVEL) return;
-        const cheat = data.cheat as RoomCheat;
-        if (!ROOM_CHEATS.includes(cheat) || room.cheats.has(cheat)) return;
-        room.cheats.add(cheat);
+        // SUDO unlocks every room cheat at once.
+        const cheat = data.cheat === SUDO_CHEAT ? SUDO_CHEAT : data.cheat as RoomCheat;
+        const unlocks = cheat === SUDO_CHEAT ? [...ROOM_CHEATS] : ROOM_CHEATS.includes(cheat) ? [cheat] : [];
+        const fresh = unlocks.filter((c) => !room.cheats.has(c));
+        if (fresh.length === 0) return;
+        fresh.forEach((c) => room.cheats.add(c));
         broadcastToRoom(room, { type: "room_cheats", cheats: [...room.cheats], cheat, by: conn.player.name });
         return;
       }

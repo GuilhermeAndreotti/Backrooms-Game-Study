@@ -491,6 +491,7 @@ export const ptBR = {
   "cheat.unlockedStamina": "STAMINA INFINITA LIBERADA!",
   "cheat.unlockedClip": "NOCLIP LIBERADO! Segure [V] para atravessar paredes.",
   "cheat.unlockedLife": "IMORTALIDADE LIBERADA!",
+  "cheat.unlockedSudo": "SUDO: TODOS OS CHEATS LIBERADOS! (velocidade, stamina, noclip [V], imortalidade)",
   "cheat.roomWide": "Vale para todos os jogadores da sala.",
   "cheat.submit": "Enviar",
   "cheat.pickSkin": "Escolher skin de monstro",

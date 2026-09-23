@@ -61,7 +61,7 @@ const MonsterSkinPreview: React.FC<{ type: SkinChoice }> = ({ type }) => {
 
 interface CheatTerminalModalProps {
   /** Tries a code; returns which cheat it unlocked, or null if it wasn't recognized. */
-  onSubmit: (code: string) => "speed" | "stamina" | "clip" | "life" | "skin" | "room" | null;
+  onSubmit: (code: string) => "speed" | "stamina" | "clip" | "life" | "sudo" | "skin" | "room" | null;
   onUnlockRoom: () => void;
   /** Applies (or, with null, clears) the SKIN cheat's monster body. */
   onPickSkin: (type: SkinChoice | null) => void;
@@ -71,7 +71,7 @@ interface CheatTerminalModalProps {
 }
 
 /**
- * The lobby's cheat terminal: fixed codes (MVJM/UHUM/CLIP/LIFE/SKIN) unlock small
+ * The lobby's cheat terminal: fixed codes (MVJM/UHUM/CLIP/LIFE/SKIN, and SUDO for every room cheat at once) unlock small
  * fun modifiers for the rest of the session. Unlike Level G's terminal this
  * one doesn't close on a correct code — there are five to try, so it stays
  * open and just confirms each one, until SKIN switches it to the monster
@@ -81,7 +81,7 @@ export const CheatTerminalModal: React.FC<CheatTerminalModalProps> = ({ onSubmit
   useLanguage();
   const [mode, setMode] = useState<"code" | "skin">("code");
   const [code, setCode] = useState("");
-  const [status, setStatus] = useState<"idle" | "denied" | "speed" | "stamina" | "clip" | "life" | "room">("idle");
+  const [status, setStatus] = useState<"idle" | "denied" | "speed" | "stamina" | "clip" | "life" | "sudo" | "room">("idle");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -156,7 +156,8 @@ export const CheatTerminalModal: React.FC<CheatTerminalModalProps> = ({ onSubmit
               {status === "stamina" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedStamina")}</span>}
               {status === "clip" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedClip")}</span>}
               {status === "life" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedLife")}</span>}
-              {(status === "speed" || status === "stamina" || status === "clip" || status === "life") && (
+              {status === "sudo" && <span className="text-[#3cff7a] font-bold">{t("cheat.unlockedSudo")}</span>}
+              {(status === "speed" || status === "stamina" || status === "clip" || status === "life" || status === "sudo") && (
                 <div className="text-[9px] text-[#3cff7a]/70 normal-case tracking-normal">{t("cheat.roomWide")}</div>
               )}
             </div>

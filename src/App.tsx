@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { GameSettings, ConnectionPhase, RemotePlayer, ChatMessage, DEFAULT_SUIT_COLOR, RoomConfig, DeathAction, ROOM_CHEATS, type RoomCheat } from "./types/game";
+import { GameSettings, ConnectionPhase, RemotePlayer, ChatMessage, DEFAULT_SUIT_COLOR, RoomConfig, DeathAction, ROOM_CHEATS, SUDO_CHEAT, type RoomCheat } from "./types/game";
 import { GameEngine, LevelGProgress } from "./game/GameEngine";
 import { MainMenu } from "./components/MainMenu";
 import { GameHUD } from "./components/GameHUD";
@@ -83,7 +83,7 @@ function inviteLink(code: string): string {
 
 
 /** The terminal code that unlocks each room cheat, for the chat announcement. */
-const CHEAT_CODES: Record<RoomCheat, string> = { speed: "MVJM", stamina: "UHUM", clip: "CLIP", life: "LIFE" };
+const CHEAT_CODES: Record<RoomCheat | typeof SUDO_CHEAT, string> = { speed: "MVJM", stamina: "UHUM", clip: "CLIP", life: "LIFE", sudo: "SUDO" };
 
 /** Keeps only known cheat ids from a server message. */
 function sanitizeRoomCheats(value: unknown): RoomCheat[] {
@@ -850,7 +850,7 @@ export default function App() {
           else if (type === "room_cheats") {
             engineRef.current?.applyRoomCheats(sanitizeRoomCheats(data.cheats));
             if (typeof data.cheat === "string" && typeof data.by === "string") {
-              logSystemMessage(t("sys.cheat", { name: data.by.toUpperCase(), code: CHEAT_CODES[data.cheat as RoomCheat] ?? data.cheat }));
+              logSystemMessage(t("sys.cheat", { name: data.by.toUpperCase(), code: CHEAT_CODES[data.cheat as RoomCheat | typeof SUDO_CHEAT] ?? data.cheat }));
             }
           }
 
@@ -1627,7 +1627,7 @@ export default function App() {
                        const result = engineRef.current?.submitCheatCode(code) ?? null;
                        // Room cheats are unlocked by the server for everyone in the
                        // room; the effect lands when its "room_cheats" broadcast returns.
-                       if (result && (ROOM_CHEATS as readonly string[]).includes(result)) {
+                       if (result && (result === SUDO_CHEAT || (ROOM_CHEATS as readonly string[]).includes(result))) {
                          socketRef.current?.send(JSON.stringify({ type: "cheat_unlock", cheat: result }));
                        }
                        return result;
