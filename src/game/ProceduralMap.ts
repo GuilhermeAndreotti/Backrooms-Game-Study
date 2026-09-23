@@ -38,6 +38,9 @@ export class SeededRandom {
   }
 }
 
+/** Wall height in the Poolrooms (m). No ceiling: walls just rise into the haze. */
+const POOLROOMS_WALL_HEIGHT = 24;
+
 export enum CellType {
   SOLID = 0,      // Wall pillar block
   CORRIDOR = 1,   // Standard hallway
@@ -318,6 +321,11 @@ export class ProceduralMap {
   /** Current (animated) water surface height of each room. */
   private poolZoneSurface: number[] = [];
   private poolPlayerZone = -1;
+  /** Water cells that are a staircase up into a valve room -> [dx, dz] toward the room. */
+  private poolStairCells = new Map<string, [number, number]>();
+  private readonly poolStairSteps = 6;
+  /** Cells LevelDecor already dressed, so wall dividers don't pile onto the same spot. */
+  private decoredCells = new Set<string>();
   private poolExitDoor: THREE.Group | null = null;
   private poolValveMeshes = new Map<number, THREE.Group>();
   /** Set by GameEngine right after construction — O Eco (sound-reactive) queries this. Not owned/populated here. */
@@ -445,6 +453,7 @@ export class ProceduralMap {
 
   /** Starts a level-wide event received from the level's authority. */
   public startGlobalEvent(state: "flicker_storm" | "blackout", duration: number) {
+    if (this.level === 7) return; // the Poolrooms' daylight never flickers
     this.globalEventState = state;
     this.globalEventTimer = duration;
   }
@@ -1531,7 +1540,7 @@ export class ProceduralMap {
 
   private initMaterials() {
     const hSize = this.cellSize;
-    const height = 3.0;
+    const height = this.level === 7 ? POOLROOMS_WALL_HEIGHT : 3.0;
 
     // Compile and share geometries once to maximize FPS performance
     this.floorGeo = new THREE.PlaneGeometry(hSize, hSize);
@@ -1541,6 +1550,11 @@ export class ProceduralMap {
     this.ceilGeo.rotateX(Math.PI / 2);
 
     this.wallGeo = new THREE.PlaneGeometry(hSize, height);
+    if (this.level === 7) {
+      // Keep the 25 cm wall tiles square however tall the wall runs.
+      const uv = this.wallGeo.getAttribute("uv") as THREE.BufferAttribute;
+      for (let i = 0; i < uv.count; i++) uv.setY(i, uv.getY(i) * (height / hSize));
+    }
 
     this.baseGeo = new THREE.BoxGeometry(hSize, 0.12, 0.05);
 
@@ -2552,16 +2566,43 @@ export class ProceduralMap {
       for (let z = 2; z <= 6; z++) this.grid[x][z] = CellType.ROOM_SMALL;
     }
 
-    // Four valves, always mounted on a perimeter wall, each on its own dry
-    // deck. Order of use is poolValveOrder: A, B, C, C — each stage lowers the
-    // water enough to open the next room.
-    this.valvePositions = [[34, 2], [hi, 10], [18, 2], [9, 2]];
-    for (const [vx, vz] of this.valvePositions) {
-      for (let x = vx - 1; x <= vx + 1; x++) {
-        for (let z = vz - 1; z <= vz + 1; z++) {
-          if (x >= lo && x <= hi && z >= lo && z <= hi && this.grid[x][z] === CellType.WATER_ROOM) this.grid[x][z] = CellType.ROOM_SMALL;
-        }
+    // Extra wall stubs breaking up the halls (fewer than Levels 3/4, more than
+    // an empty hall). Each hangs off an existing wall and stays clear of
+    // doorways, valve rooms, the exit and its approach.
+    const stub = (x1: number, z1: number, x2: number, z2: number) => {
+      for (let x = x1; x <= x2; x++) for (let z = z1; z <= z2; z++) this.grid[x][z] = CellType.SOLID;
+    };
+    stub(2, 12, 4, 12); stub(9, 24, 11, 24); stub(5, 34, 5, 37);
+    stub(13, 28, 15, 28); stub(22, 30, 24, 30); stub(24, 14, 24, 16); stub(13, 10, 15, 10);
+    stub(26, 16, 28, 16); stub(28, 18, 28, 19);
+    stub(26, 25, 28, 25); stub(35, 29, 37, 29); stub(33, 35, 33, 37);
+
+    // Four valves, each in its own closed little room set into a perimeter
+    // wall (north, east...). A tiled staircase climbs out of the water into it;
+    // the room is walled on every other side. Order of use is poolValveOrder:
+    // A, B, C, C — each stage lowers the water enough to open the next hall.
+    // Local frame: u runs along the wall, v is the depth away from it.
+    const valveRooms: { side: "N" | "S" | "W" | "E"; along: number }[] = [
+      { side: "N", along: 34 }, { side: "E", along: 10 }, { side: "N", along: 18 }, { side: "N", along: 9 },
+    ];
+    const cellAt = (side: "N" | "S" | "W" | "E", along: number, u: number, v: number): [number, number] =>
+      side === "N" ? [along + u, lo + v] : side === "S" ? [along + u, hi - v] : side === "W" ? [lo + v, along + u] : [hi - v, along + u];
+    const towardWall: Record<string, [number, number]> = { N: [0, -1], S: [0, 1], W: [-1, 0], E: [1, 0] };
+    this.valvePositions = [];
+    this.poolStairCells.clear();
+    for (const { side, along } of valveRooms) {
+      for (let u = -2; u <= 2; u++) for (let v = 0; v <= 2; v++) {
+        const [x, z] = cellAt(side, along, u, v);
+        this.grid[x][z] = CellType.SOLID;
       }
+      for (let u = -1; u <= 1; u++) for (let v = 0; v <= 1; v++) {
+        const [x, z] = cellAt(side, along, u, v);
+        this.grid[x][z] = CellType.ROOM_SMALL;
+      }
+      const [sx, sz] = cellAt(side, along, 0, 2);
+      this.grid[sx][sz] = CellType.WATER_ROOM;
+      this.poolStairCells.set(`${sx},${sz}`, towardWall[side]);
+      this.valvePositions.push(cellAt(side, along, 0, 0));
     }
     this.poolZoneSurface = this.poolZoneBaseDepth.map((_, zone) => this.poolZoneTargetSurface(zone, 0));
 
@@ -2786,7 +2827,15 @@ export class ProceduralMap {
     const gz = Math.floor(worldZ / this.cellSize);
     if (gx < 0 || gz < 0 || gx >= this.gridSize || gz >= this.gridSize) return 0;
     // Flooded pool cells are sunken: wading in is a step down, leaving is a step up.
-    const pool = this.grid[gx][gz] === CellType.WATER_ROOM ? POOL_FLOOR_Y : 0;
+    let pool = this.grid[gx][gz] === CellType.WATER_ROOM ? POOL_FLOOR_Y : 0;
+    const stair = this.level === 7 ? this.poolStairCells.get(`${gx},${gz}`) : undefined;
+    if (stair) {
+      // A staircase rising out of the water toward its valve room, step for step with the tiled blocks.
+      const cs = this.cellSize;
+      const t = ((worldX - (gx + 0.5) * cs) * stair[0] + (worldZ - (gz + 0.5) * cs) * stair[1] + cs / 2) / cs;
+      const k = Math.max(0, Math.min(this.poolStairSteps - 1, Math.floor(t * this.poolStairSteps)));
+      pool = POOL_FLOOR_Y * (1 - (k + 1) / this.poolStairSteps);
+    }
     return (this.floorHeight[gx][gz] || 0) + pool;
   }
 
@@ -3249,6 +3298,21 @@ export class ProceduralMap {
     floor.receiveShadow = true;
     group.add(floor);
 
+    const stairDir = this.poolStairCells.get(`${gx},${gz}`);
+    if (stairDir) {
+      const steps = this.poolStairSteps, rise = -POOL_FLOOR_Y / steps, run = size / steps;
+      for (let k = 0; k < steps; k++) {
+        const h = (k + 1) * rise;
+        const alongX = stairDir[0] !== 0;
+        const geo = this.sharedGeo(`pool_step_${alongX ? "x" : "z"}_${k}`, () => alongX ? new THREE.BoxGeometry(run, h, size) : new THREE.BoxGeometry(size, h, run));
+        const step = new THREE.Mesh(geo, this.wallMaterial);
+        const off = -size / 2 + run * (k + 0.5);
+        step.position.set(posX + stairDir[0] * off, POOL_FLOOR_Y + h / 2, posZ + stairDir[1] * off);
+        step.receiveShadow = true;
+        group.add(step);
+      }
+    }
+
     const depth = -POOL_FLOOR_Y;
     const wallGeo = this.sharedGeo("pool_wall", () => {
       const g = new THREE.PlaneGeometry(size, depth);
@@ -3391,6 +3455,26 @@ export class ProceduralMap {
 
   private decorKit: Decor.DecorKit | null = null;
 
+  /** Whether a Level 3/4 cell may take a thin wall divider without crowding anything. */
+  private dividerAllowed(gx: number, gz: number, cellType: CellType): boolean {
+    if (cellType === CellType.CORRIDOR || this.decoredCells.has(`${gx},${gz}`)) return false;
+    if (gx <= 3 && gz <= 3) return false;
+    for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+      if (this.grid[gx + dx]?.[gz + dz] === CellType.CORRIDOR) return false; // a doorway into the room
+    }
+    if (this.level === 8) {
+      if (this.level3LowCorridor.has(`${gx},${gz}`)) return false;
+      if (this.level3Switches.some(([x, z]) => Math.abs(x - gx) <= 1 && Math.abs(z - gz) <= 1)) return false;
+      if (this.level3Partitions.some((w) => Math.abs(w.gx - gx) <= 1 && Math.abs(w.gz - gz) <= 1)) return false;
+      return Math.abs(gx - this.level3GateX) + Math.abs(gz - this.level3GateZ) > 2;
+    }
+    if (gx === this.level4DoorX && gz === this.level4DoorZ) return false;
+    if (Math.abs(gx - this.abandonedSecretX) <= 1 && Math.abs(gz - this.abandonedSecretZ) <= 1) return false;
+    if (this.level4DeskCells.some((d) => Math.abs(d.gx - gx) <= 1 && Math.abs(d.gz - gz) <= 1)) return false;
+    if (this.level4Employees.some((e) => Math.abs(e.gx - gx) <= 1 && Math.abs(e.gz - gz) <= 1)) return false;
+    return !((gx === 5 && gz === 5) || (gx === 18 && gz === 5) || (gx === 31 && gz === 5));
+  }
+
   /**
    * Wiki-inspired set dressing (see LevelDecor.ts) for Level 3, Level 4 and
    * the Poolrooms. Pieces hug a wall and keep clear of doorways, corridor
@@ -3418,6 +3502,7 @@ export class ProceduralMap {
       return options.length ? options[rng.nextInt(0, options.length)][2] : null;
     };
     const place = (piece: Decor.DecorPiece, rot: number) => {
+      this.decoredCells.add(`${gx},${gz}`);
       piece.object.rotation.y = rot;
       piece.object.position.set(posX, 0, posZ);
       group.add(piece.object);
@@ -3438,13 +3523,15 @@ export class ProceduralMap {
         if (n === CellType.WATER_ROOM && this.poolZoneOf(gx + dx, gz + dz) !== zone) return; // a doorway between halls
         if (n !== CellType.WATER_ROOM) open = false;
       }
+      if (this.poolStairCells.has(`${gx},${gz}`)) return;
+      // The dry side of a wading cell: only when no valve room is near (checked below).
       const deckSide = pickSide((dx, dz) => { const n = at(gx + dx, gz + dz); return n !== undefined && n !== CellType.SOLID && n !== CellType.WATER_ROOM; });
       if (deckSide !== null) {
-        if (rng.next() < 0.5) place(Decor.poolLadder(kit, rng, half), deckSide);
+        if (!this.valvePositions.some(([vx, vz]) => Math.abs(vx - gx) <= 3 && Math.abs(vz - gz) <= 3) && rng.next() < 0.5) place(Decor.poolLadder(kit, rng, half), deckSide);
         return;
       }
-      // Near a valve deck only ladders — nothing that could crowd a valve.
-      if (this.valvePositions.some(([vx, vz]) => Math.abs(vx - gx) <= 2 && Math.abs(vz - gz) <= 2)) return;
+      // Nothing near a valve room that could crowd its staircase.
+      if (this.valvePositions.some(([vx, vz]) => Math.abs(vx - gx) <= 3 && Math.abs(vz - gz) <= 3)) return;
       if (open) {
         const roll = rng.next();
         if (roll < 0.08) place(Decor.poolPillar(kit, height), 0);
@@ -3521,7 +3608,9 @@ export class ProceduralMap {
     }
 
     const hSize = this.cellSize;
-    const height = 3.0; // Backrooms standard height: 3.0 meters
+    // Backrooms standard height: 3.0 meters — except the Poolrooms, whose walls
+    // soar out of sight (there is no ceiling, so the hall seems to have no top).
+    const height = this.level === 7 ? POOLROOMS_WALL_HEIGHT : 3.0;
     const posX = gx * hSize + hSize / 2;
     const posZ = gz * hSize + hSize / 2;
     // This cell's floor elevation (0 except Level 1's stacked sectors/ramps).
@@ -3740,6 +3829,42 @@ export class ProceduralMap {
         group.add(valve);
         this.poolValveMeshes.set(valveIndex, valve);
       }
+    }
+
+    // Level 4's hidden way down to Level G: a worn service door at the end of a
+    // short blind corridor. Walking up to it triggers the transition (GameEngine).
+    if (this.level === 9 && gx === this.abandonedSecretX && gz === this.abandonedSecretZ) {
+      const wallDir = [[0, 1, 0], [0, -1, Math.PI], [1, 0, Math.PI / 2], [-1, 0, -Math.PI / 2]].find(([dx, dz]) => this.grid[gx + dx]?.[gz + dz] === CellType.SOLID);
+      const door = new THREE.Group();
+      const steel = this.sharedMat("levelg_door_steel", () => new THREE.MeshStandardMaterial({ color: 0x4a5560, roughness: 0.45, metalness: 0.7 }));
+      const frameMat = this.sharedMat("levelg_door_frame", () => new THREE.MeshStandardMaterial({ color: 0x1d2226, roughness: 0.6, metalness: 0.6 }));
+      const glow = this.sharedMat("levelg_door_glow", () => new THREE.MeshBasicMaterial({ color: 0x4dff8a }));
+      const z = hSize / 2 - 0.12; // against the wall behind, facing into the cell (local -z)
+      door.add(Object.assign(new THREE.Mesh(this.sharedGeo("levelg_door_leaf", () => new THREE.BoxGeometry(1.5, 2.3, 0.1)), steel), { position: new THREE.Vector3(0, 1.15, z) }));
+      door.add(Object.assign(new THREE.Mesh(this.sharedGeo("levelg_door_post", () => new THREE.BoxGeometry(0.16, 2.5, 0.18)), frameMat), { position: new THREE.Vector3(-0.83, 1.25, z) }));
+      door.add(Object.assign(new THREE.Mesh(this.sharedGeo("levelg_door_post", () => new THREE.BoxGeometry(0.16, 2.5, 0.18)), frameMat), { position: new THREE.Vector3(0.83, 1.25, z) }));
+      door.add(Object.assign(new THREE.Mesh(this.sharedGeo("levelg_door_lintel", () => new THREE.BoxGeometry(1.82, 0.16, 0.18)), frameMat), { position: new THREE.Vector3(0, 2.42, z) }));
+      door.add(Object.assign(new THREE.Mesh(this.sharedGeo("levelg_door_bar", () => new THREE.BoxGeometry(0.6, 0.06, 0.06)), frameMat), { position: new THREE.Vector3(0.45, 1.05, z - 0.09) }));
+      const symbolMat = this.sharedMat("levelg_door_g", () => {
+        const canvas = document.createElement("canvas"); canvas.width = canvas.height = 128;
+        const ctx = canvas.getContext("2d");
+        if (ctx) { ctx.fillStyle = "#0b1a10"; ctx.fillRect(0, 0, 128, 128); ctx.fillStyle = "#4dff8a"; ctx.font = "bold 96px monospace"; ctx.textAlign = "center"; ctx.fillText("G", 64, 100); }
+        const map = new THREE.CanvasTexture(canvas);
+        this.sharedTextures.push(map);
+        return new THREE.MeshBasicMaterial({ map });
+      });
+      const plate = new THREE.Mesh(this.sharedGeo("levelg_door_plate", () => new THREE.PlaneGeometry(0.42, 0.42)), symbolMat);
+      plate.position.set(0, 1.75, z - 0.06); plate.rotation.y = Math.PI;
+      door.add(plate);
+      const strip = new THREE.Mesh(this.sharedGeo("levelg_door_strip", () => new THREE.BoxGeometry(1.5, 0.04, 0.04)), glow);
+      strip.position.set(0, 2.32, z - 0.08);
+      door.add(strip);
+      // Rotate the north-wall model onto whichever side the wall really is (default: south wall).
+      const rot = wallDir ? wallDir[2] : 0;
+      door.rotation.y = rot;
+      door.position.set(posX, 0, posZ);
+      group.add(door);
+      this.registerLight(gx, gz, posX, 2.3, posZ, 0x4dff8a, 1.4, 6, 1.5);
     }
 
     if (this.level === 9) {
@@ -4500,9 +4625,14 @@ export class ProceduralMap {
     const isSpawnZone = (gx < 5 && gz < 5);
     const isExitZone = this.isKeepClearCell(gx, gz);
 
-    if (this.level !== 1 && this.level !== 4 && this.level !== 7 && this.level !== 8 && this.level !== 9 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
+    // Levels 3 and 4 (content ids 8/9) get them too, but thinner on the ground
+    // than Level 0, and never where a puzzle fixture, prop or doorway needs room.
+    const officeLike = this.level === 8 || this.level === 9;
+    if (this.level !== 1 && this.level !== 4 && this.level !== 7 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone
+      && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)
+      && (!officeLike || this.dividerAllowed(gx, gz, cellType))) {
       const wallRng = new SeededRandom(this.seed + gx * 11 + gz * 23);
-      if (wallRng.next() < 0.16) {
+      if (wallRng.next() < (officeLike ? 0.1 : 0.16)) {
         let addedDivider = false;
         let rot = 0;
         let ox = 0;
@@ -6054,7 +6184,7 @@ export class ProceduralMap {
         this.globalEventState = "normal";
         this.eventCooldown = 30.0 + Math.random() * 25.0; // Cooldown for 30-55 seconds
       }
-    } else if (this.rollGlobalEvents) {
+    } else if (this.rollGlobalEvents && this.level !== 7) {
       this.eventCooldown -= delta;
       if (this.eventCooldown <= 0) {
         // Cooldown finished! Roll for a random scare/flicker event (38% occurrence chance)
@@ -6317,7 +6447,7 @@ export class ProceduralMap {
             const fY = this.floorHeight[gx]?.[gz] ?? 0;
             cellGroup.userData.aabb = new THREE.Box3(
               new THREE.Vector3(gx * hSize, fY - 0.5, gz * hSize),
-              new THREE.Vector3((gx + 1) * hSize, fY + 3.5, (gz + 1) * hSize)
+              new THREE.Vector3((gx + 1) * hSize, fY + (this.level === 7 ? POOLROOMS_WALL_HEIGHT : 3.0) + 0.5, (gz + 1) * hSize)
             );
           }
           culling.push({ group: cellGroup, box: cellGroup.userData.aabb });
