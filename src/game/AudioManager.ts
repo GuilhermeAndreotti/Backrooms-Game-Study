@@ -11,6 +11,9 @@ export class AudioManager {
   private humOsc2: OscillatorNode | null = null;
   private humGain: GainNode | null = null;
   private masterGain: GainNode | null = null;
+  /** Echo bus: sounds that should ring in the room send a copy here (see setEcho). */
+  private reverbIn: GainNode | null = null;
+  private echoTarget = -1;
   private settings: GameSettings;
   private initialized = false;
   public level = 0;
@@ -47,6 +50,7 @@ export class AudioManager {
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.setValueAtTime(this.settings.volumeMaster, this.ctx.currentTime);
       this.masterGain.connect(this.ctx.destination);
+      this.buildReverb();
 
       this.initialized = true;
       this.setBackgroundAmbienceEnabled(this.backgroundAmbienceEnabled);
@@ -54,6 +58,166 @@ export class AudioManager {
     } catch (e) {
       console.error("Failed to initialize audio:", e);
     }
+  }
+
+  /**
+   * A synthetic room: a few discrete early reflections (the slap-back you hear
+   * in an empty hall) over a dark, 2.8 s decaying tail. Its input level is
+   * driven by setEcho() from how open/empty the listener's surroundings are.
+   */
+  private buildReverb() {
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
+    const len = Math.floor(ctx.sampleRate * 2.8);
+    const ir = ctx.createBuffer(2, len, ctx.sampleRate);
+    const taps: [number, number][] = [[0.11, 0.55], [0.23, 0.4], [0.37, 0.28], [0.54, 0.18], [0.76, 0.1]];
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6) * 0.35;
+      for (const [at, amp] of taps) {
+        // Slightly different per ear, so the echo feels like it comes off walls around you.
+        const start = Math.floor((at + ch * 0.013) * ctx.sampleRate);
+        for (let k = 0; k < 220; k++) d[start + k] += (Math.random() * 2 - 1) * amp * Math.exp(-k / 60);
+      }
+    }
+    const conv = ctx.createConvolver();
+    conv.buffer = ir;
+    const dark = ctx.createBiquadFilter();
+    dark.type = "lowpass";
+    dark.frequency.value = 3200;
+    this.reverbIn = ctx.createGain();
+    this.reverbIn.gain.value = 0.1;
+    const out = ctx.createGain();
+    out.gain.value = 0.9;
+    this.reverbIn.connect(dark);
+    dark.connect(conv);
+    conv.connect(out);
+    out.connect(this.masterGain);
+  }
+
+  /** How much the listener's surroundings echo, 0 (cramped/cluttered) .. 1 (empty hall, tiled pool). */
+  public setEcho(amount: number) {
+    if (!this.ctx || !this.reverbIn) return;
+    const target = 0.05 + Math.max(0, Math.min(1, amount)) * 0.65;
+    if (Math.abs(target - this.echoTarget) < 0.02) return;
+    this.echoTarget = target;
+    this.reverbIn.gain.setTargetAtTime(target, this.ctx.currentTime, 0.4);
+  }
+
+  /** Sends a copy of `node` into the echo bus, scaled by `amount`. */
+  private toReverb(node: AudioNode, amount = 1) {
+    if (!this.ctx || !this.reverbIn) return;
+    if (amount === 1) { node.connect(this.reverbIn); return; }
+    const g = this.ctx.createGain();
+    g.gain.value = amount;
+    node.connect(g);
+    g.connect(this.reverbIn);
+  }
+
+  /**
+   * Wading: a low slosh of displaced water, a few bubbles, and (running) a
+   * bright splash on top. Played into `dest` so callers pan/echo it.
+   */
+  private waterSlosh(t: number, speed: 'walk' | 'run' | 'crouch', vol: number, dest: AudioNode) {
+    const ctx = this.ctx!;
+    const dur = speed === 'run' ? 0.5 : speed === 'crouch' ? 0.34 : 0.42;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise();
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.Q.value = 1.4;
+    bp.frequency.setValueAtTime(320, t);
+    bp.frequency.exponentialRampToValueAtTime(speed === 'run' ? 1300 : 850, t + dur * 0.35);
+    bp.frequency.exponentialRampToValueAtTime(260, t + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.05);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(bp); bp.connect(g); g.connect(dest);
+    src.start(t, Math.random() * 1.5, dur + 0.05);
+
+    if (speed === 'run') {
+      const sp = ctx.createBufferSource();
+      sp.buffer = this.noise();
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.value = 2600;
+      const sg = ctx.createGain();
+      sg.gain.setValueAtTime(vol * 0.55, t);
+      sg.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      sp.connect(hp); hp.connect(sg); sg.connect(dest);
+      sp.start(t, Math.random() * 1.5, 0.2);
+    }
+
+    // Bubbles: short rising blips as the water closes behind the foot.
+    const bubbles = speed === 'crouch' ? 1 : 2 + Math.floor(Math.random() * 2);
+    for (let i = 0; i < bubbles; i++) {
+      const at = t + 0.06 + Math.random() * dur * 0.6;
+      const o = ctx.createOscillator();
+      o.type = "sine";
+      const f = 280 + Math.random() * 420;
+      o.frequency.setValueAtTime(f, at);
+      o.frequency.exponentialRampToValueAtTime(f * 2.4, at + 0.05);
+      const bg = ctx.createGain();
+      bg.gain.setValueAtTime(vol * 0.18, at);
+      bg.gain.exponentialRampToValueAtTime(0.001, at + 0.06);
+      o.connect(bg); bg.connect(dest);
+      o.start(at); o.stop(at + 0.07);
+    }
+  }
+
+  /** A footstep in the pool's water (local or a teammate's, via pan/volume). */
+  public playWaterStep(speed: 'walk' | 'run' | 'crouch', pan = 0, volume = 1) {
+    if (!this.ctx || !this.masterGain || volume < 0.02) return;
+    const t = this.ctx.currentTime;
+    const panner = this.ctx.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, pan));
+    panner.connect(this.masterGain);
+    this.toReverb(panner);
+    const base = speed === 'run' ? 0.85 : speed === 'crouch' ? 0.3 : 0.6;
+    this.waterSlosh(t, speed, base * volume * this.settings.volumeSfx, panner);
+  }
+
+  /**
+   * A monster's footfall: a heavy, low thud with a claw/skin scrape, pushed
+   * harder into the echo bus than the players' steps — you hear them coming
+   * down the hall before you see them.
+   * `weight` 0..1 (light/skittering .. massive).
+   */
+  public playMobFootstep(weight: number, volume: number, pan: number, inWater: boolean) {
+    if (!this.ctx || !this.masterGain || volume < 0.02) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const vol = Math.min(1, volume) * this.settings.volumeSfx;
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, pan));
+    panner.connect(this.masterGain);
+    this.toReverb(panner, 1.6);
+
+    const dur = 0.14 + weight * 0.14;
+    const o = ctx.createOscillator();
+    o.type = "triangle";
+    o.frequency.setValueAtTime(95 - weight * 45, t);
+    o.frequency.exponentialRampToValueAtTime(22, t + dur);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(vol * (0.45 + weight * 0.5), t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(og); og.connect(panner);
+    o.start(t); o.stop(t + dur + 0.02);
+
+    const scrape = ctx.createBufferSource();
+    scrape.buffer = this.noise();
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = 700 + (1 - weight) * 1200;
+    bp.Q.value = 2.2;
+    const sg = ctx.createGain();
+    sg.gain.setValueAtTime(vol * 0.18, t);
+    sg.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+    scrape.connect(bp); bp.connect(sg); sg.connect(panner);
+    scrape.start(t, Math.random() * 1.5, 0.1);
+
+    if (inWater) this.waterSlosh(t, weight > 0.6 ? 'run' : 'walk', vol * 0.8, panner);
   }
 
   public setSettings(settings: GameSettings) {
@@ -224,7 +388,7 @@ export class AudioManager {
    * @param pan -1.0 to 1.0 (spatial placement for multiplayer players)
    * @param isWet boolean flag whether the footstep lands on wet/moist carpet
    */
-  public playFootstep(speed: 'walk' | 'run' | 'crouch', pan = 0.0, isWet = false) {
+  public playFootstep(speed: 'walk' | 'run' | 'crouch', pan = 0.0, isWet = false, volumeScale = 1) {
     if (!this.ctx || !this.masterGain) return;
 
     const t = this.ctx.currentTime;
@@ -251,6 +415,7 @@ export class AudioManager {
       volume = 0.2;
     }
 
+    volume *= volumeScale;
     osc.frequency.setValueAtTime(pitchStart, t);
     osc.frequency.exponentialRampToValueAtTime(pitchEnd, t + duration);
 
@@ -292,6 +457,7 @@ export class AudioManager {
     noiseGain.connect(panner);
 
     panner.connect(this.masterGain);
+    this.toReverb(panner);
 
     // Trigger footstep sound
     osc.start(t);
@@ -367,6 +533,7 @@ export class AudioManager {
     osc.connect(gain);
     gain.connect(panner);
     panner.connect(this.masterGain);
+    this.toReverb(panner);
 
     osc.start(t);
     osc.stop(t + 0.08);
@@ -946,6 +1113,7 @@ export class AudioManager {
     panner.pan.value = Math.max(-1, Math.min(1, pan));
     out.connect(panner);
     panner.connect(this.masterGain);
+    this.toReverb(panner, 1.3);
 
     const osc = (kind: OscillatorType, f0: number, f1: number, dur: number, dest: AudioNode, at = t) => {
       const o = ctx.createOscillator();

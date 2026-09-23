@@ -50,6 +50,60 @@ export interface MobBuildCtx {
   setCalmHostileEyes(calm: THREE.Object3D, hostile: THREE.Object3D): void;
   /** Finger King's eye material, retinted red by updateVisual() while hunting/chasing. */
   setKingEyeMaterial(m: THREE.MeshStandardMaterial): void;
+
+  // --- Rig (see animate()) ------------------------------------------------
+  // Every coordinate below is in BODY space (the same space `group` and
+  // limbBetween use), whatever the parent: the ctx converts it into the
+  // parent joint's local space. Joints carry no rotation at build time, so
+  // a whole body can be laid out in one coordinate system and then animated
+  // by rotating pivots. Convention: +Z is forward (the face), +Y up.
+  /** Joints created so far, by name — what animate() receives. */
+  readonly joints: MobJoints;
+  /** A named pivot at body-space (x, y, z), parented to `parent` (the body root when omitted). */
+  joint(name: string, x: number, y: number, z: number, parent?: THREE.Object3D): THREE.Group;
+  /** limbBetween with body-space endpoints, parented to `joint` so it moves with it. */
+  limbIn(joint: THREE.Object3D, mat: THREE.Material, a: THREE.Vector3, b: THREE.Vector3, radius: number, taper?: number): THREE.Mesh;
+  /** Parents `obj` (positioned in body space) to `joint`, keeping where it sits. */
+  put<T extends THREE.Object3D>(joint: THREE.Object3D, obj: T): T;
+}
+
+/** A mob's animatable pivots, by name (see MobBuildCtx.joint). */
+export type MobJoints = Record<string, THREE.Group>;
+
+// ---------------------------------------------------------------------------
+// animate()
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-frame inputs to a mob's animate(). Purely visual and local: nothing
+ * here feeds back into the AI or the replicated state, so the authority and
+ * the replicas can each animate from what they already know.
+ *
+ * The four weights are smoothed 0..1 blends (never snap), so a mob that
+ * stops, starts chasing or notices the player eases between poses.
+ */
+export interface MobAnimCtx {
+  joints: MobJoints;
+  /** The body root below the viewer/heading-facing mesh — for whole-body bounce, lean and squash. */
+  body: THREE.Group;
+  /** Seconds since spawn. */
+  time: number;
+  delta: number;
+  /** Stride phase in radians: advances with ground speed, so feet keep pace with the motion. */
+  phase: number;
+  /** 0 standing .. 1 walking. */
+  move: number;
+  /** 0 walking .. 1 running (only meaningful while move > 0). */
+  run: number;
+  /** 0 .. 1: stopped close to the player and staring at them. */
+  observe: number;
+  /** 0 .. 1: how much the head should track the player. */
+  look: number;
+  /** Where the player is relative to the body's forward, in radians (already clamped to a neck's reach). */
+  lookYaw: number;
+  lookPitch: number;
+  agitated: boolean;
+  chasing: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +223,15 @@ export interface MobDefinition {
   speech?(ctx: MobSenseCtx): MobSpeechResult;
   /** Only mobs whose 3D look reacts to AI state beyond bob/scale need this (SKIN_STEALER, FINGER_KING today). */
   updateVisual?(ctx: MobVisualCtx): void;
+
+  /** Poses the rig built by build() for this frame: idle / walk / run / observe (see MobAnimCtx). */
+  animate(ctx: MobAnimCtx): void;
+  /** Meters covered per full stride cycle (two steps) — sets how fast `phase` turns. */
+  strideLength: number;
+  /** Footfall loudness/heaviness 0..1 (0 = no footsteps: it floats); defaults to 0.5. */
+  stepWeight?: number;
+  /** Always turns its whole body to face the player instead of its walking direction (watchers). */
+  facesViewer?: boolean;
 
   /** Radar HUD identity. */
   radar: { color: string; strokeColor: string; labelKey: string };

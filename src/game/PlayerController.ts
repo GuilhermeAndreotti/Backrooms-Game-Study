@@ -61,6 +61,8 @@ export class PlayerController {
   public speedCheat = false;
   /** UHUM: stamina never drains. */
   public infiniteStaminaCheat = false;
+  /** Liquid Pain adrenaline: seconds left of undrained stamina and a slightly faster sprint. */
+  public adrenalineTimer = 0;
   /** CLIP: holding V phases through walls while unlocked. */
   public clipCheat = false;
   /** True this frame while CLIP is unlocked and held — GameHUD shows it. */
@@ -261,9 +263,17 @@ export class PlayerController {
     // Cheat: MVJM — flat speed multiplier, on top of whichever state applies.
     if (this.speedCheat) currentSpeed *= 2.2;
 
+    // Wading through the Poolrooms' flooded cells drags at your legs.
+    if (this.map.isWaterAt(this.position.x, this.position.z)) currentSpeed *= 0.72;
+
+    if (this.adrenalineTimer > 0) {
+      this.adrenalineTimer = Math.max(0, this.adrenalineTimer - dt);
+      if (this.state === "running") currentSpeed *= 1.15;
+    }
+
     // 2. STAMINA MANAGEMENT
-    if (this.infiniteStaminaCheat) {
-      // Cheat: UHUM — never drains, regardless of state.
+    if (this.infiniteStaminaCheat || this.adrenalineTimer > 0) {
+      // Cheat: UHUM / Liquid Pain adrenaline — never drains, regardless of state.
       this.stamina = this.maxStamina;
     } else if (this.state === "running") {
       this.stamina = Math.max(0, this.stamina - this.staminaDrainRate * dt);

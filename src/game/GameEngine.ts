@@ -5,14 +5,16 @@
 
 import { Lobby, LOBBY, LOBBY_LEVEL, BallNetState } from "./Lobby";
 import { Voip } from "./Voip";
-import { t } from "../i18n";
+import { t, type MessageKey } from "../i18n";
+import { OfficeWorker } from "./npc/OfficeWorker";
+import { WaterRipples, waterUniforms } from "./Water";
 import * as THREE from "three";
 import { ProceduralMap, LEVEL_G_DOOR_OPEN_ANGLE } from "./ProceduralMap";
 import { PlayerController, PLAYER_STANDING_HEIGHT, PLAYER_CROUCH_HEIGHT } from "./PlayerController";
 import { FACE_SIZE, drawFace, hasFace } from "../utils/face";
 import { AudioManager } from "./AudioManager";
 import { WanderingEntity, EntityType, EntityNetState } from "./WanderingEntity";
-import { GameSettings, RemotePlayer } from "../types/game";
+import { GameSettings, RemotePlayer, RoomCheat } from "../types/game";
 import { unlockAchievement } from "../utils/achievements";
 import { LightPool } from "./LightPool";
 import { NoiseBus, footstepLoudness } from "./systems/noiseBus";
@@ -50,6 +52,10 @@ export interface GameEngineCallbacks {
   onInteractPrompt?: (text: string | null) => void;
   onMegDialogue?: (employee: { name: string; grade: string; dialogue: string }) => void;
   onMegDoorRequest?: () => void;
+  /** A diary page was picked up — it goes into the journal, not the inventory. */
+  onDiaryPageCollected?: () => void;
+  /** The MEG dialogue / exit paper the player was reading closed itself (they walked away). */
+  onReadingEnd?: () => void;
   /** Level G: digits found so far (null = missing) and whether the final alarm is on. */
   onLevelGProgress?: (progress: LevelGProgress) => void;
   onRedRoomExposureChange?: (val: number) => void;
@@ -76,6 +82,22 @@ export interface GameEngineCallbacks {
 
 /** Multiplier on every sanity drain source: sanity falls slower than the raw tuning. */
 const SANITY_DRAIN_SCALE = 0.6;
+/** Strange Crystal: while carried, every sanity drain is cut by this factor. */
+const CRYSTAL_DRAIN_FACTOR = 0.65;
+/** Cassette Tape: radar range while the recording plays, and for how long. */
+export const RADAR_BASE_RANGE = 26;
+const RADAR_BOOST_RANGE = 70;
+const RADAR_BOOST_SECONDS = 30;
+const ADRENALINE_SECONDS = 10;
+
+/** Consumables that go into the inventory on pickup (see useInventoryItem for what each does). */
+const INVENTORY_PICKUPS: Partial<Record<string, { notification: MessageKey; achievement?: string }>> = {
+  almond_water: { notification: "eng.almond" },
+  old_photo: { notification: "eng.photo", achievement: "collector_extraordinary" },
+  cassette_tape: { notification: "eng.tape", achievement: "collector_extraordinary" },
+  strange_crystal: { notification: "eng.crystal", achievement: "collector_extraordinary" },
+  liquid_pain: { notification: "eng.pain" },
+};
 
 /** Ambient light and fog per level, shared by level setup and the per-frame event code. */
 function levelAtmosphere(level: number) {
@@ -308,6 +330,16 @@ export class GameEngine {
   private onInteractPrompt?: (text: string | null) => void;
   private onMegDialogue?: (employee: { name: string; grade: string; dialogue: string }) => void;
   private onMegDoorRequest?: () => void;
+  private onReadingEnd?: () => void;
+  /**
+   * Where the dialogue / paper being read lives. Reading never releases the
+   * pointer lock (that would drop the player into the pause menu), so the
+   * overlay instead closes itself once the player walks out of range.
+   */
+  private readingAnchor: { x: number; z: number } | null = null;
+  /** Cassette tape: seconds left of extended radar range. */
+  private radarBoostTimer = 0;
+  private onDiaryPageCollected?: () => void;
   private lastInteractPrompt: string | null = null;
   private interactPromptTimer = 0;
   private onLevelGProgress?: (progress: LevelGProgress) => void;
@@ -372,6 +404,8 @@ export class GameEngine {
     this.onInteractPrompt = callbacks.onInteractPrompt;
     this.onMegDialogue = callbacks.onMegDialogue;
     this.onMegDoorRequest = callbacks.onMegDoorRequest;
+    this.onReadingEnd = callbacks.onReadingEnd;
+    this.onDiaryPageCollected = callbacks.onDiaryPageCollected;
     this.onLevelGProgress = callbacks.onLevelGProgress;
     this.onRedRoomExposureChange = callbacks.onRedRoomExposureChange;
     this.onToxicWaterExposureChange = callbacks.onToxicWaterExposureChange;
@@ -622,11 +656,7 @@ export class GameEngine {
     this.map.performProximityCulling(this.scene, spawnX, spawnZ, true);
 
     // Local Footstep triggers
-    const triggerAudioFootstep = (speed: 'walk' | 'run' | 'crouch') => {
-      const isWet = this.map ? this.map.isCellWet(this.player.position.x, this.player.position.z) : false;
-      this.audio.playFootstep(speed, 0.0, isWet); // panning 0.0 for self
-      this.noiseBus.emit(this.player.position.x, this.player.position.z, footstepLoudness(speed), "footstep", this.totalPlayTime);
-    };
+    const triggerAudioFootstep = (speed: 'walk' | 'run' | 'crouch') => this.onLocalFootstep(speed);
 
     // Instantiate Player movement controller after map is pre-loaded
     this.player = new PlayerController(this.camera, this.renderer.domElement, this.map, triggerAudioFootstep);
@@ -634,6 +664,7 @@ export class GameEngine {
     this.player.spawnSafely();
     this.applyCheatsToPlayer();
     this.setupLobby();
+    this.setupOfficeWorkers();
 
     // Spotlight representing local F key Flashlight
     this.flashlight = new THREE.SpotLight(0xfffaec, 2.8, 16, Math.PI / 5, 0.45, 1.0);
@@ -668,6 +699,7 @@ export class GameEngine {
 
     // Dynamic global dust cloud centered on player
     this.initGlobalDust();
+    this.ripples = new WaterRipples(this.scene);
   }
 
   public async precreateMap(onProgress?: (p: number) => void): Promise<void> {
@@ -794,7 +826,10 @@ export class GameEngine {
         }
       }
       this.updateLobby(delta);
+      this.updateOfficeWorkers(delta);
       this.updateInteractPrompt(delta);
+      this.updateReadingRange();
+      if (this.radarBoostTimer > 0) this.radarBoostTimer = Math.max(0, this.radarBoostTimer - delta);
 
 
       // Detect if explorer has entered creeping crimson Red Rooms
@@ -930,76 +965,23 @@ export class GameEngine {
               // Play pickup sound (using exit glitch sound which is clear and beautiful!)
               this.audio.playGlitchNoclipSound();
               
-              if (item.type === "almond_water") {
-                this.inventory.push("almond_water");
-                if (this.onHUDNotification) {
-                  this.onHUDNotification(t("eng.almond"));
-                }
-                if (this.onInventoryChange) {
-                  this.onInventoryChange([...this.inventory]);
-                }
+              const pickup = INVENTORY_PICKUPS[item.type];
+              if (pickup) {
+                this.inventory.push(item.type);
+                this.onHUDNotification?.(t(pickup.notification));
+                if (pickup.achievement) unlockAchievement(pickup.achievement);
+                this.onInventoryChange?.([...this.inventory]);
               } else if (item.type === "energy_bar") {
                 this.player.stamina = Math.min(this.player.maxStamina, this.player.stamina + 0.25);
                 this.sanity = Math.min(1.0, this.sanity + 0.15);
                 if (this.onHUDNotification) {
                   this.onHUDNotification(t("eng.energy"));
                 }
-              } else if (item.type === "old_photo") {
-                this.inventory.push("old_photo");
-                if (this.onHUDNotification) {
-                  this.onHUDNotification(t("eng.photo"));
-                }
-                unlockAchievement("collector_extraordinary");
-                if (this.onInventoryChange) {
-                  this.onInventoryChange([...this.inventory]);
-                }
-              } else if (item.type === "rusty_key") {
-                this.inventory.push("rusty_key");
-                if (this.onHUDNotification) {
-                  this.onHUDNotification(t("eng.key"));
-                }
-                unlockAchievement("key_finder");
-                if (this.onInventoryChange) {
-                  this.onInventoryChange([...this.inventory]);
-                }
-              } else if (item.type === "cassette_tape") {
-                this.inventory.push("cassette_tape");
-                if (this.onHUDNotification) {
-                  this.onHUDNotification(t("eng.tape"));
-                }
-                unlockAchievement("collector_extraordinary");
-                if (this.onInventoryChange) {
-                  this.onInventoryChange([...this.inventory]);
-                }
-              } else if (item.type === "strange_crystal") {
-                this.inventory.push("strange_crystal");
-                if (this.onHUDNotification) {
-                  this.onHUDNotification(t("eng.crystal"));
-                }
-                unlockAchievement("collector_extraordinary");
-                if (this.onInventoryChange) {
-                  this.onInventoryChange([...this.inventory]);
-                }
-              } else if (item.type === "liquid_pain") {
-                this.inventory.push("liquid_pain");
-                this.player.stamina = Math.max(0.05, this.player.stamina - 0.15);
-                if (!this.cheatLife) this.sanity = Math.max(0.0, this.sanity - 0.12);
-                if (this.onHUDNotification) {
-                  this.onHUDNotification(t("eng.pain"));
-                }
-                unlockAchievement("pain_survivor");
-                if (this.onInventoryChange) {
-                  this.onInventoryChange([...this.inventory]);
-                }
               } else if (item.type === "diary_page") {
-                this.inventory.push("diary_page");
-                if (this.onHUDNotification) {
-                  this.onHUDNotification(t("eng.diary"));
-                }
+                // Not an inventory item: the page goes straight into the journal.
+                this.onHUDNotification?.(t("eng.diary"));
                 unlockAchievement("collector_extraordinary");
-                if (this.onInventoryChange) {
-                  this.onInventoryChange([...this.inventory]);
-                }
+                this.onDiaryPageCollected?.();
               } else if (item.type === "g_document" && item.docIndex !== undefined) {
                 const i = item.docIndex;
                 const digit = Number(this.map.levelGCode[i]);
@@ -1151,9 +1133,9 @@ export class GameEngine {
         if (this.cheatLife) {
           this.sanity = 1.0;
         } else if (nearMonster) {
-          this.sanity = Math.max(0.0, this.sanity - (monsterDepletionSum + darknessDepletion) * SANITY_DRAIN_SCALE * delta);
+          this.sanity = Math.max(0.0, this.sanity - (monsterDepletionSum + darknessDepletion) * SANITY_DRAIN_SCALE * this.sanityDrainFactor() * delta);
         } else if (darknessDepletion > 0) {
-          this.sanity = Math.max(0.0, this.sanity - darknessDepletion * SANITY_DRAIN_SCALE * delta);
+          this.sanity = Math.max(0.0, this.sanity - darknessDepletion * SANITY_DRAIN_SCALE * this.sanityDrainFactor() * delta);
         } else {
           // Recover sanity in normal illuminated space (trimmed only slightly, so a
           // careful player still recovers at close to the old pace)
@@ -1363,6 +1345,7 @@ export class GameEngine {
 
       // Interpolate position/movement animations for Remote Hazmat Explorers
       this.animateRemotePlayers(delta);
+      this.updateFootfalls(delta);
 
       // Proximity VOIP: fade teammates in/out of hearing range, and poll the
       // local mic for the speaking indicator. No-ops entirely while disabled.
@@ -1446,70 +1429,107 @@ export class GameEngine {
       // Black boot soles / rubber belt
       const darkMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9, metalness: 0.1 });
 
+      // Rig: hips -> spine -> (head, arms), hips -> legs. Every pivot is named
+      // so animateRemotePlayers can pose walk / run / crouch / idle; limbs hang
+      // along -Y from their pivot, the visor faces +Z.
+      const hips = new THREE.Group();
+      hips.name = "hips";
+      hips.position.set(0, 0.47, 0);
+      group.add(hips);
+
+      const spine = new THREE.Group();
+      spine.name = "spine";
+      hips.add(spine);
+
       // Torso (Main bodysuit body)
-      const bodyGeo = new THREE.CylinderGeometry(0.24, 0.28, 0.9, 8);
-      const body = new THREE.Mesh(bodyGeo, suitMat);
-      body.position.set(0, 0.75, 0);
-      group.add(body);
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 0.9, 8), suitMat);
+      body.position.set(0, 0.28, 0);
+      spine.add(body);
 
       // Breathing Apparatus Back Oxygen Tank
-      const tankGeo = new THREE.BoxGeometry(0.35, 0.65, 0.18);
-      const tank = new THREE.Mesh(tankGeo, suitMat);
-      tank.position.set(0, 0.78, -0.18);
-      group.add(tank);
+      const tank = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.65, 0.18), suitMat);
+      tank.position.set(0, 0.31, -0.18);
+      spine.add(tank);
 
       // Belt
-      const beltGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.08, 8);
-      const belt = new THREE.Mesh(beltGeo, darkMat);
-      belt.position.set(0, 0.45, 0);
-      group.add(belt);
+      const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.08, 8), darkMat);
+      belt.position.set(0, -0.02, 0);
+      spine.add(belt);
 
-      // Head (Suit Hood helmet sphere)
-      const headGeo = new THREE.SphereGeometry(0.2, 10, 10);
       // Everything on the head hangs off a pivot at the neck so the whole head
       // (helmet, visor, drawn face) tilts up/down with where the player looks.
       const headPivot = new THREE.Group();
       headPivot.name = "head";
-      headPivot.position.set(0, 1.3, 0);
-      group.add(headPivot);
-      const head = new THREE.Mesh(headGeo, suitMat);
+      headPivot.position.set(0, 0.83, 0);
+      spine.add(headPivot);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 10), suitMat);
       headPivot.add(head);
 
       // Distinctive Level 0 reflective Visor Mask — skipped when the player has
       // drawn a custom face, so the drawing shows through the hood opening
       // instead of sitting behind a dark glass plate.
       if (!hasFace(face)) {
-        const visorGeo = new THREE.BoxGeometry(0.22, 0.1, 0.12);
-        const visor = new THREE.Mesh(visorGeo, visorMat);
+        const visor = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.1, 0.12), visorMat);
         // Face the positive Z direction as default orientation
         visor.position.set(0, 0.03, 0.14);
         headPivot.add(visor);
       }
 
-      // Visual shoulders
-      const lLegGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.45, 6);
+      // Arms: shoulder -> elbow -> glove; the right hand carries the flashlight.
+      const upperArmGeo = new THREE.CylinderGeometry(0.07, 0.065, 0.3, 6);
+      const forearmGeo = new THREE.CylinderGeometry(0.062, 0.055, 0.27, 6);
+      const gloveGeo = new THREE.SphereGeometry(0.065, 6, 6);
+      for (const side of [-1, 1]) {
+        const prefix = side < 0 ? "l" : "r";
+        const shoulder = new THREE.Group();
+        shoulder.name = `${prefix}Arm`;
+        shoulder.position.set(side * 0.31, 0.64, 0);
+        spine.add(shoulder);
+        const upper = new THREE.Mesh(upperArmGeo, suitMat);
+        upper.position.y = -0.15;
+        shoulder.add(upper);
+        const elbow = new THREE.Group();
+        elbow.name = `${prefix}Forearm`;
+        elbow.position.y = -0.3;
+        shoulder.add(elbow);
+        const fore = new THREE.Mesh(forearmGeo, suitMat);
+        fore.position.y = -0.135;
+        elbow.add(fore);
+        const glove = new THREE.Mesh(gloveGeo, darkMat);
+        glove.position.y = -0.29;
+        elbow.add(glove);
+        if (side > 0) {
+          const torch = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.2, 8), darkMat);
+          torch.rotation.x = Math.PI / 2;
+          torch.position.set(0, -0.3, 0.08);
+          elbow.add(torch);
+        }
+      }
 
-      // Left Leg
-      const lLeg = new THREE.Mesh(lLegGeo, suitMat);
-      lLeg.name = "lLeg";
-      lLeg.position.set(-0.11, 0.225, 0);
-      group.add(lLeg);
-
-      // Right Leg
-      const rLeg = new THREE.Mesh(lLegGeo, suitMat);
-      rLeg.name = "rLeg";
-      rLeg.position.set(0.11, 0.225, 0);
-      group.add(rLeg);
-
-      // Boot soles
-      const bootGeo = new THREE.BoxGeometry(0.1, 0.06, 0.16);
-      const lBoot = new THREE.Mesh(bootGeo, darkMat);
-      lBoot.position.set(-0.11, 0.03, 0.03);
-      group.add(lBoot);
-
-      const rBoot = new THREE.Mesh(bootGeo, darkMat);
-      rBoot.position.set(0.11, 0.03, 0.03);
-      group.add(rBoot);
+      // Legs: hip (lLeg/rLeg) -> knee (lShin/rShin) -> boot
+      const thighGeo = new THREE.CylinderGeometry(0.09, 0.08, 0.24, 6);
+      const shinGeo = new THREE.CylinderGeometry(0.08, 0.075, 0.2, 6);
+      const bootGeo = new THREE.BoxGeometry(0.11, 0.07, 0.18);
+      for (const side of [-1, 1]) {
+        const prefix = side < 0 ? "l" : "r";
+        const hip = new THREE.Group();
+        hip.name = `${prefix}Leg`;
+        hip.position.set(side * 0.11, 0, 0);
+        hips.add(hip);
+        const thigh = new THREE.Mesh(thighGeo, suitMat);
+        thigh.position.y = -0.11;
+        hip.add(thigh);
+        const knee = new THREE.Group();
+        knee.name = `${prefix}Shin`;
+        knee.position.y = -0.23;
+        hip.add(knee);
+        const shin = new THREE.Mesh(shinGeo, suitMat);
+        shin.position.y = -0.1;
+        knee.add(shin);
+        const boot = new THREE.Mesh(bootGeo, darkMat);
+        boot.position.set(0, -0.2, 0.03);
+        knee.add(boot);
+      }
 
       // Hand-drawn face from the customization screen, as a pixel-art decal just
       // in front of the helmet. Transparent pixels let the visor show through.
@@ -1570,6 +1590,87 @@ export class GameEngine {
     return eyeY - eyeHeight;
   }
 
+  /** Distance from the local player and stereo pan for a world position. */
+  private listenerPan(x: number, z: number): { dist: number; pan: number } {
+    this.camera.getWorldDirection(this.scratchCamDir);
+    const rx = -this.scratchCamDir.z, rz = this.scratchCamDir.x;
+    const rl = Math.hypot(rx, rz) || 1;
+    const dx = x - this.player.position.x, dz = z - this.player.position.z;
+    const dist = Math.hypot(dx, dz);
+    const pan = dist > 0.01 ? ((dx * rx + dz * rz) / (dist * rl)) * Math.min(1, dist / 3) : 0;
+    return { dist, pan };
+  }
+
+  /** The local player's footstep: splashing in the pool, carpet/concrete anywhere else. */
+  private onLocalFootstep(speed: 'walk' | 'run' | 'crouch') {
+    const { x, z } = this.player.position;
+    if (this.map?.isWaterAt(x, z)) {
+      this.audio.playWaterStep(speed);
+      this.ripples?.spawn(x, z, speed === 'run' ? 1.3 : speed === 'crouch' ? 0.6 : 1, speed === 'run');
+    } else {
+      const isWet = this.map ? this.map.isCellWet(x, z) : false;
+      this.audio.playFootstep(speed, 0.0, isWet); // panning 0.0 for self
+    }
+    this.noiseBus.emit(x, z, footstepLoudness(speed), "footstep", this.totalPlayTime);
+  }
+
+  /** A teammate's footstep (from their avatar's gait): heard nearby, rippling the water. */
+  private onRemoteFootstep(x: number, z: number, state: string) {
+    if (!this.map || !this.player) return;
+    const speed: 'walk' | 'run' | 'crouch' = state === "running" ? "run" : state === "crouching" ? "crouch" : "walk";
+    const inWater = this.map.isWaterAt(x, z);
+    if (inWater) this.ripples?.spawn(x, z, speed === 'run' ? 1.3 : 0.9, speed === 'run');
+    const { dist, pan } = this.listenerPan(x, z);
+    const HEARING = 22;
+    if (dist > HEARING) return;
+    const vol = Math.pow(1 - dist / HEARING, 1.5);
+    if (inWater) this.audio.playWaterStep(speed, pan, vol);
+    else this.audio.playFootstep(speed, pan, this.map.isCellWet(x, z), vol);
+  }
+
+  /**
+   * Monster footfalls (one per step of their walk cycle), the pool's water
+   * clock and ripples, and how much the local player's surroundings echo.
+   * Runs every frame on every client — the gait is animated locally.
+   */
+  private updateFootfalls(delta: number) {
+    waterUniforms.uTime.value += delta;
+    this.ripples?.update(delta);
+    if (!this.map || !this.player) return;
+
+    this.audio.setEcho(this.map.echoAt(this.player.position.x, this.player.position.z));
+
+    // Every stepping mob ripples the water; only the nearest few are heard,
+    // so a whole pack sprinting at you stays a clear, scary rhythm, not mush.
+    const HEARING = 26;
+    const MAX_AUDIBLE_STEPS = 3;
+    const audible: { dist: number; pan: number; weight: number; inWater: boolean }[] = [];
+    for (const e of this.entities) {
+      if (!e.consumeStep()) continue;
+      const weight = e.stepWeight;
+      if (weight <= 0) continue;
+      const { x, z } = e.mesh.position;
+      const inWater = this.map.isWaterAt(x, z);
+      if (inWater) this.ripples?.spawn(x, z, 0.8 + weight * 0.6, e.runningGait);
+      const { dist, pan } = this.listenerPan(x, z);
+      if (dist <= HEARING) audible.push({ dist, pan, weight, inWater });
+    }
+    audible.sort((a, b) => a.dist - b.dist);
+    for (const step of audible.slice(0, MAX_AUDIBLE_STEPS)) {
+      this.audio.playMobFootstep(step.weight, Math.pow(1 - step.dist / HEARING, 1.4) * (0.5 + step.weight * 0.5), step.pan, step.inWater);
+    }
+
+    // Standing in the pool still stirs the water a little.
+    const { x, z } = this.player.position;
+    if (this.map.isWaterAt(x, z)) {
+      this.wadeTimer -= delta;
+      if (this.wadeTimer <= 0) {
+        this.wadeTimer = 1.1 + Math.random() * 0.8;
+        this.ripples?.spawn(x, z, 0.35);
+      }
+    }
+  }
+
   /**
    * Positional monster voices: each monster within earshot speaks on its own
    * timer (faster and harsher while hunting), louder and more centred the
@@ -1623,6 +1724,43 @@ export class GameEngine {
 
   private lobby: Lobby | null = null;
   private lobbySendTimer = 0;
+  /** Rings and splashes on the Poolrooms' water (see Water.ts); created with the scene. */
+  private ripples: WaterRipples | null = null;
+  /** Seconds until the next faint ripple around the local player's legs while standing in water. */
+  private wadeTimer = 0;
+  /** Abandoned Office: the animated MEG employees (see npc/OfficeWorker.ts). */
+  private officeWorkers: OfficeWorker[] = [];
+  /** Name of the MEG employee whose dialogue is open, so they gesture while talking. */
+  private talkingEmployee: string | null = null;
+
+  /** (Re)spawns the MEG employees on the Abandoned Office; clears them anywhere else. */
+  private setupOfficeWorkers() {
+    this.officeWorkers.forEach((w) => w.dispose(this.scene));
+    this.officeWorkers = [];
+    this.talkingEmployee = null;
+    if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map) return;
+    const cs = this.map.cellSize;
+    this.map.level4Employees.forEach((employee, i) => {
+      const x = employee.gx * cs + cs / 2;
+      const z = employee.gz * cs + cs / 2 + 0.7;
+      const worker = new OfficeWorker({
+        name: employee.name,
+        grade: employee.grade,
+        x,
+        z,
+        floorY: this.map.getFloorHeightAt(x, z),
+        seed: (employee.gx * 73856093) ^ (employee.gz * 19349663) ^ (i * 83492791),
+      });
+      this.scene.add(worker.group);
+      this.officeWorkers.push(worker);
+    });
+  }
+
+  private updateOfficeWorkers(delta: number) {
+    if (this.officeWorkers.length === 0 || !this.player) return;
+    const { x, z } = this.player.position;
+    for (const worker of this.officeWorkers) worker.update(delta, x, z, worker.name === this.talkingEmployee);
+  }
 
   /** (Re)builds the lobby props when the current level is the lobby; tears them down otherwise. */
   private setupLobby() {
@@ -1980,36 +2118,106 @@ export class GameEngine {
           target.position.z = Math.cos(pitch) * 4;
         }
 
-        // Head follows the look pitch (the model faces +Z, so looking up tilts back: -x)
-        const headPivot = group.getObjectByName("head");
-        if (headPivot) {
-          const targetTilt = -THREE.MathUtils.clamp(pitch, -1.2, 1.2);
-          headPivot.rotation.x += (targetTilt - headPivot.rotation.x) * Math.min(1, 15 * delta);
-        }
-
-        // Bobbing legs representation for walking/running
-        const state = anyG.animState || 'idle';
-        if (state === 'walking' || state === 'running') {
-          const pace = state === 'running' ? 18 : 10;
-          const amplitude = state === 'running' ? 0.22 : 0.12;
-          const swing = Math.sin(this.totalPlayTime * pace);
-
-          const lLeg = group.getObjectByName("lLeg");
-          const rLeg = group.getObjectByName("rLeg");
-          if (lLeg && rLeg) {
-            lLeg.rotation.x = swing * amplitude;
-            rLeg.rotation.x = -swing * amplitude;
-          }
-        } else {
-          const lLeg = group.getObjectByName("lLeg");
-          const rLeg = group.getObjectByName("rLeg");
-          if (lLeg && rLeg) {
-            lLeg.rotation.x *= 0.85; // return to idle
-            rLeg.rotation.x *= 0.85;
-          }
-        }
+        this.poseRemotePlayer(group, pitch, delta, this.remotePlayerLights.get(id)?.visible ?? false);
       }
     });
+  }
+
+  /**
+   * Walk / run / crouch / idle for a remote explorer's rig (see
+   * createHazmatExplorer), driven by how fast the avatar is actually moving
+   * on screen so the feet keep pace with the interpolated position. Skin-cheat
+   * bodies get their monster's own rig animation instead.
+   */
+  private poseRemotePlayer(group: THREE.Group, pitch: number, delta: number, flashOn: boolean) {
+    const anim = (group.userData.anim ??= {
+      lastX: group.position.x, lastZ: group.position.z,
+      speed: 0, phase: 0, time: Math.random() * 10, move: 0, run: 0, crouch: 0, watch: 0,
+    }) as { lastX: number; lastZ: number; speed: number; phase: number; time: number; move: number; run: number; crouch: number; watch: number; stepDist?: number };
+    const dt = Math.max(delta, 1e-4);
+    const vx = (group.position.x - anim.lastX) / dt;
+    const vz = (group.position.z - anim.lastZ) / dt;
+    anim.lastX = group.position.x;
+    anim.lastZ = group.position.z;
+    const damp = THREE.MathUtils.damp;
+    const rawSpeed = Math.min(Math.hypot(vx, vz), 12);
+    anim.speed = damp(anim.speed, rawSpeed, 10, delta);
+    anim.time += delta;
+
+    const state = (group as any).animState || "idle";
+    const running = state === "running";
+
+    // Footfalls: one every half stride of distance actually covered.
+    anim.stepDist = (anim.stepDist ?? 0) + anim.speed * delta;
+    const halfStride = running ? 1.1 : state === "crouching" ? 0.45 : 0.7;
+    if (anim.speed > 0.35 && anim.stepDist >= halfStride) {
+      anim.stepDist = 0;
+      this.onRemoteFootstep(group.position.x, group.position.z, state);
+    }
+
+    const skinBody = group.getObjectByName("monsterSkinBody") as THREE.Group | undefined;
+    if (skinBody) {
+      WanderingEntity.animateSkinBody(skinBody, delta, anim.speed, running);
+      return;
+    }
+
+    // Walking backwards: the gait runs in reverse instead of moonwalking.
+    const fx = Math.sin(group.rotation.y), fz = Math.cos(group.rotation.y);
+    const backwards = vx * fx + vz * fz < -0.1 * rawSpeed;
+    anim.move = damp(anim.move, anim.speed > 0.35 ? 1 : 0, 8, delta);
+    anim.run = damp(anim.run, running ? 1 : 0, 6, delta);
+    anim.crouch = damp(anim.crouch, state === "crouching" ? 1 : 0, 8, delta);
+    const strideLength = running ? 2.2 : anim.crouch > 0.5 ? 0.9 : 1.4;
+    anim.phase += (backwards ? -1 : 1) * (anim.speed / strideLength) * Math.PI * 2 * delta;
+
+    const { move, run, crouch, phase, time } = anim;
+    const sin = Math.sin(phase), cos = Math.cos(phase);
+    const gait = move * (1 + run * 0.6) * (1 - crouch * 0.4);
+    const breath = Math.sin(time * 1.8) * 0.025 * (1 - move);
+
+    // Looked up once per avatar (it's rebuilt, and this cache with it, on a skin change).
+    const parts = (group.userData.rigParts ??= Object.fromEntries(
+      ["hips", "spine", "head", "lLeg", "rLeg", "lShin", "rShin", "lArm", "rArm", "lForearm", "rForearm"]
+        .map((n) => [n, group.getObjectByName(n)]),
+    )) as Record<string, THREE.Object3D | undefined>;
+    const { hips, spine, head, lLeg, rLeg, lShin, rShin, lArm, rArm } = parts;
+    const lFore = parts.lForearm, rFore = parts.rForearm;
+
+    // Legs: stride + knee lift; crouching folds hips forward and knees back.
+    const stride = 0.55 * gait;
+    const knee = 0.9 * gait;
+    if (lLeg) lLeg.rotation.x = -sin * stride - crouch * 1.0;
+    if (rLeg) rLeg.rotation.x = sin * stride - crouch * 1.0;
+    if (lShin) lShin.rotation.x = Math.max(0, cos) * knee + crouch * 1.7;
+    if (rShin) rShin.rotation.x = Math.max(0, -cos) * knee + crouch * 1.7;
+
+    // Hips: two bounces per stride, lowered in a crouch.
+    if (hips) hips.position.y = 0.47 - crouch * 0.2 + (Math.abs(sin) - 0.5) * 0.05 * gait;
+
+    // Torso: running lean, crouch hunch, shoulder counter-twist, breathing.
+    if (spine) spine.rotation.set(0.28 * run * move + crouch * 0.45 + breath, sin * 0.1 * gait, Math.sin(time * 0.7) * 0.02 * (1 - move));
+
+    // Arms: counter-swing. The flashlight hand (right) is held forward and
+    // steadier whenever the flashlight is on.
+    const swing = 0.5 * gait;
+    if (lArm) lArm.rotation.set(sin * swing - crouch * 0.4 + breath * 2, 0, -0.08);
+    if (rArm) rArm.rotation.set(-sin * swing * (flashOn ? 0.3 : 1) - (flashOn ? 0.9 : 0) - crouch * 0.3 + breath * 2, 0, 0.08);
+    if (lFore) lFore.rotation.x = -(0.2 + run * move * 1.0 + crouch * 0.4);
+    if (rFore) rFore.rotation.x = -(0.2 + run * move * 1.0 + (flashOn ? 0.5 : 0));
+
+    // Head: follows the look pitch (the model faces +Z, so looking up tilts
+    // back: -x). Standing still near us, the explorer turns to look at us.
+    if (head) {
+      const targetTilt = -THREE.MathUtils.clamp(pitch, -1.2, 1.2);
+      head.rotation.x += (targetTilt - head.rotation.x) * Math.min(1, 15 * delta);
+      const dx = this.player.position.x - group.position.x;
+      const dz = this.player.position.z - group.position.z;
+      const near = !this.isDead && dx * dx + dz * dz < 6 * 6 && move < 0.3;
+      anim.watch = damp(anim.watch, near ? 1 : 0, 4, delta);
+      let rel = Math.atan2(dx, dz) - group.rotation.y;
+      rel = Math.atan2(Math.sin(rel), Math.cos(rel));
+      head.rotation.y = THREE.MathUtils.clamp(rel, -1.1, 1.1) * anim.watch + Math.sin(time * 0.4) * 0.2 * (1 - anim.watch) * (1 - move);
+    }
   }
 
   private initGlobalDust() {
@@ -2224,17 +2432,14 @@ export class GameEngine {
     this.audio.setBackgroundAmbienceEnabled(level !== LOBBY_LEVEL);
     
     // 6. Spawn the player again safely at spawn coordinates (2,2) with preloaded map
-    this.player = new PlayerController(this.camera, this.renderer.domElement, this.map, (speed) => {
-      const isWet = this.map ? this.map.isCellWet(this.player.position.x, this.player.position.z) : false;
-      this.audio.playFootstep(speed, 0.0, isWet);
-      this.noiseBus.emit(this.player.position.x, this.player.position.z, footstepLoudness(speed), "footstep", this.totalPlayTime);
-    });
+    this.player = new PlayerController(this.camera, this.renderer.domElement, this.map, (speed) => this.onLocalFootstep(speed));
     this.player.setMouseSensitivity(settings.mouseSensitivity);
     this.player.spawnSafely();
     this.applyCheatsToPlayer();
     this.player.mapFullyLoaded = false; // start with map loading animation!
     this.revive();
     this.setupLobby();
+    this.setupOfficeWorkers();
 
     // Reset total play time for the new layout
     this.totalPlayTime = 0;
@@ -2646,6 +2851,24 @@ export class GameEngine {
     }
   }
 
+  /** Closes the dialogue / paper overlay once the player walks away from it. */
+  private updateReadingRange() {
+    if (!this.readingAnchor || !this.player) return;
+    const dx = this.player.position.x - this.readingAnchor.x;
+    const dz = this.player.position.z - this.readingAnchor.z;
+    if (dx * dx + dz * dz > 4.0 * 4.0) {
+      this.readingAnchor = null;
+      this.talkingEmployee = null;
+      this.onReadingEnd?.();
+    }
+  }
+
+  /** The UI closed the dialogue / paper itself (E, lost pointer lock). */
+  public endReading() {
+    this.readingAnchor = null;
+    this.talkingEmployee = null;
+  }
+
   /** Within arm's reach of the desk that holds the exit paper (Levels 0 and 1). */
   private nearExitDesk(): boolean {
     if (!this.map || !this.player || this.map.exitDeskX < 0) return false;
@@ -2666,7 +2889,7 @@ export class GameEngine {
     return -1;
   }
 
-  private nearMegEmployee(): { name: string; grade: string; dialogue: string } | null {
+  private nearMegEmployee(): { name: string; grade: string; dialogue: string; gx: number; gz: number } | null {
     if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map || !this.player) return null;
     const cs = this.map.cellSize;
     return this.map.level4Employees.find((employee) => {
@@ -2714,6 +2937,9 @@ export class GameEngine {
     }
     const employee = this.nearMegEmployee();
     if (employee) {
+      const cs = this.map.cellSize;
+      this.readingAnchor = { x: employee.gx * cs + cs / 2, z: employee.gz * cs + cs / 2 };
+      this.talkingEmployee = employee.name;
       this.onMegDialogue?.(employee);
       return "meg_employee";
     }
@@ -2721,7 +2947,11 @@ export class GameEngine {
       this.onMegDoorRequest?.();
       return "meg_door";
     }
-    if (this.nearExitDesk()) return "paper";
+    if (this.nearExitDesk()) {
+      this.readingAnchor = { x: this.map.exitDeskX, z: this.map.exitDeskZ };
+      this.talkingEmployee = null;
+      return "paper";
+    }
     if (this.nearCheatTerminal()) return "cheat";
     if (this.level !== LEVEL_G || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
     const cs = this.map.cellSize;
@@ -2793,37 +3023,33 @@ export class GameEngine {
   }
 
   /**
-   * Checks a code typed into the lobby's cheat terminal. MVJM, UHUM, and LIFE unlock
-   * their effect immediately (re-entering an already-unlocked code just
-   * confirms it, never toggles it off); CLIP unlocks holding V to phase
-   * through walls; SKIN sets nothing by itself — it tells the caller to open
-   * the monster picker (see applySkinCheat).
+   * Checks a code typed into the lobby's cheat terminal. MVJM, UHUM, CLIP and
+   * LIFE only *identify* a room cheat here — the caller sends it to the server,
+   * which unlocks it for everyone in the room and broadcasts it back, and
+   * applyRoomCheats() is what actually turns it on (re-entering an unlocked
+   * code just confirms it, never toggles it off). SKIN sets nothing by itself
+   * — it tells the caller to open the monster picker (see applySkinCheat).
    */
-  public submitCheatCode(code: string): "speed" | "stamina" | "clip" | "life" | "skin" | "room" | null {
+  public submitCheatCode(code: string): RoomCheat | "skin" | "room" | null {
     const c = code.trim().toUpperCase();
-    if (c === "MVJM") {
-      this.cheatSpeed = true;
-      this.player.speedCheat = true;
-      return "speed";
-    }
-    if (c === "UHUM") {
-      this.cheatStamina = true;
-      this.player.infiniteStaminaCheat = true;
-      return "stamina";
-    }
-    if (c === "CLIP") {
-      this.cheatClip = true;
-      this.player.clipCheat = true;
-      return "clip";
-    }
-    if (c === "LIFE") {
-      this.cheatLife = true;
-      this.sanity = 1.0;
-      return "life";
-    }
+    if (c === "MVJM") return "speed";
+    if (c === "UHUM") return "stamina";
+    if (c === "CLIP") return "clip";
+    if (c === "LIFE") return "life";
     if (c === "SKIN") return "skin";
     if (c === "ROOM") return "room";
     return null;
+  }
+
+  /** The room's unlocked cheats (server-broadcast): applies every one of them to this player. */
+  public applyRoomCheats(cheats: readonly RoomCheat[]) {
+    const has = (c: RoomCheat) => cheats.includes(c);
+    if (has("life") && !this.cheatLife) this.sanity = 1.0;
+    this.cheatSpeed = has("speed");
+    this.cheatStamina = has("stamina");
+    this.cheatClip = has("clip");
+    this.cheatLife = has("life");
+    if (this.player) this.applyCheatsToPlayer();
   }
 
   /** Sets (or, with null, clears) the SKIN cheat's monster body; replicated to teammates on the next network tick. */
@@ -3308,7 +3534,7 @@ export class GameEngine {
       } else if (gazing) {
         smiler.gazeTimer += delta;
         const drainRate = 0.010 + Math.min(smiler.gazeTimer, 8) * 0.006; // ~0.01/s -> ~0.058/s after 8s
-        if (!this.cheatLife) this.sanity = Math.max(0.0, this.sanity - drainRate * delta);
+        if (!this.cheatLife) this.sanity = Math.max(0.0, this.sanity - drainRate * this.sanityDrainFactor() * delta);
         if (Math.random() < delta * 0.18) {
           this.audio.triggerHumFlicker(90);
         }
@@ -3375,33 +3601,53 @@ export class GameEngine {
     const idx = this.inventory.indexOf(itemId);
     if (idx === -1) return;
 
+    switch (itemId) {
+      case "almond_water":
+        this.sanity = Math.min(1.0, this.sanity + 0.20);
+        this.player.stamina = Math.min(this.player.maxStamina, this.player.stamina + 0.15); // restores physical stamina too
+        this.audio.playGlitchNoclipSound();
+        this.onHUDNotification?.(t("eng.almondUsed"));
+        unlockAchievement("restored_mind");
+        break;
+      case "old_photo":
+        // Remembering who you are: the strongest sanity restore, no stamina.
+        this.sanity = Math.min(1.0, this.sanity + 0.35);
+        this.audio.playGlitchNoclipSound();
+        this.onHUDNotification?.(t("eng.photoUsed"));
+        break;
+      case "liquid_pain":
+        // Adrenaline: a burst of undrained, slightly faster sprinting that burns the mind.
+        this.player.adrenalineTimer = ADRENALINE_SECONDS;
+        this.player.stamina = this.player.maxStamina;
+        if (!this.cheatLife) this.sanity = Math.max(0.0, this.sanity - 0.15);
+        this.onHUDNotification?.(t("eng.painUsed"));
+        unlockAchievement("pain_survivor");
+        break;
+      case "cassette_tape":
+        // The recording's static sweeps the halls: the radar reaches much farther for a while.
+        this.radarBoostTimer = RADAR_BOOST_SECONDS;
+        this.audio.triggerHumFlicker(400);
+        this.onHUDNotification?.(t("eng.tapeUsed"));
+        break;
+      default:
+        // Passive (strange_crystal) or unknown: nothing to consume.
+        return;
+    }
+
     // Remove one instance of the item
     this.inventory.splice(idx, 1);
+    this.onInventoryChange?.([...this.inventory]);
+    this.onSanityChange?.(this.sanity);
+  }
 
-    if (itemId === "almond_water") {
-      this.sanity = Math.min(1.0, this.sanity + 0.20);
-      if (this.player) {
-        this.player.stamina = Math.min(this.player.maxStamina, this.player.stamina + 0.15); // restores physical stamina too
-      }
-      
-      // Play healing sound effect via AudioManager
-      if (this.audio) {
-        this.audio.playGlitchNoclipSound();
-      }
-      
-      if (this.onHUDNotification) {
-        this.onHUDNotification(t("eng.almondUsed"));
-      }
+  /** Strange Crystal cuts every sanity drain while it's carried (one is enough; they don't stack). */
+  private sanityDrainFactor(): number {
+    return this.inventory.includes("strange_crystal") ? CRYSTAL_DRAIN_FACTOR : 1.0;
+  }
 
-      unlockAchievement("restored_mind");
-    }
-
-    if (this.onInventoryChange) {
-      this.onInventoryChange([...this.inventory]);
-    }
-    if (this.onSanityChange) {
-      this.onSanityChange(this.sanity);
-    }
+  /** Radar display range in meters — extended while a cassette tape plays. */
+  public get radarRange(): number {
+    return this.radarBoostTimer > 0 ? RADAR_BOOST_RANGE : RADAR_BASE_RANGE;
   }
 
   /**
@@ -3424,6 +3670,10 @@ export class GameEngine {
     this.entities.forEach(entity => entity.returnToPool(this.scene));
     this.entities = [];
     if (this.lobby) { this.lobby.dispose(this.scene); this.lobby = null; }
+    this.officeWorkers.forEach((w) => w.dispose(this.scene));
+    this.officeWorkers = [];
+    this.ripples?.dispose();
+    this.ripples = null;
 
     window.removeEventListener("resize", this.handleResize);
     

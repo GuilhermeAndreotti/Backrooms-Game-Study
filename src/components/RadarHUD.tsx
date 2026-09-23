@@ -179,12 +179,12 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
       }
 
       // 3. Render Maze Walls
-      const maxRange = 26; // Display range (meters)
+      const maxRange = engine.radarRange; // Display range (meters) — a playing cassette tape extends it
       const scale = (cx - 12) / maxRange; // map pixels scale factor
 
       const pCellX = Math.floor(px / map.cellSize);
       const pCellZ = Math.floor(pz / map.cellSize);
-      const searchRadius = 7;
+      const searchRadius = Math.ceil(maxRange / map.cellSize) + 1;
 
       ctx.save();
       ctx.translate(cx, cy);

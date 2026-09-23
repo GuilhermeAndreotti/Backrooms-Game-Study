@@ -8,7 +8,8 @@ import * as THREE from "three";
 import { ProceduralMap, CellType } from "./ProceduralMap";
 import { EntityType } from "../shared/entityTypes";
 import { MOB_DEFS } from "./mobs/registry";
-import { MobBuildCtx, MobSenseCtx } from "./mobs/types";
+import { MobBuildCtx, MobJoints, MobSenseCtx } from "./mobs/types";
+import { resetRig } from "./mobs/anim";
 import { ELECTRICAL_ROOM_LEVEL, LEVEL_2, LIGHTS_OUT_LEVEL } from "./levels/constants";
 
 // Re-exported for existing import sites (GameEngine.ts etc.) — the type now
@@ -68,6 +69,18 @@ export class WanderingEntity {
   // Animations and visual states
   private bobTime = 0.0;
   private glitchTimer = 0.0;
+  /** The rig's pivots (see MobBuildCtx.joint), posed each frame by the type's animate(). */
+  private joints: MobJoints = {};
+  /** World yaw the body faces: its walking direction, or the player when it stops to look. */
+  private heading = 0;
+  private stridePhase = 0;
+  /** Footfall counter (two per stride cycle) — see consumeStep(). */
+  private lastStep = 0;
+  // Smoothed 0..1 pose blends (see MobAnimCtx).
+  private moveWeight = 0;
+  private runWeight = 0;
+  private observeWeight = 0;
+  private lookWeight = 0;
 
   // AI-Specific states
   private isAgitated = false; // Used for Skin-Stealer reveal, Wretch spotting, Clump alarm
@@ -181,6 +194,15 @@ export class WanderingEntity {
 
   /** Builds a MobBuildCtx bound to this instance's caches/scratch fields — see mobs/types.ts's MobBuildCtx doc. */
   private buildCtx(group: THREE.Group): MobBuildCtx {
+    // The joint map lives in this closure, not a class field: buildSkinMesh
+    // runs this on an Object.create'd instance whose field initializers never ran.
+    const joints: MobJoints = {};
+    /** Body-space position of `o`'s origin (joints have no rotation at build time). */
+    const origin = (o: THREE.Object3D): THREE.Vector3 => {
+      const v = new THREE.Vector3();
+      for (let n: THREE.Object3D | null = o; n && n !== group; n = n.parent) v.add(n.position);
+      return v;
+    };
     return {
       group,
       sgeo: (key, build) => this.sgeo(key, build),
@@ -190,13 +212,36 @@ export class WanderingEntity {
       addTintMaterial: (m) => { this.tintMaterials.push(m); },
       setCalmHostileEyes: (calm, hostile) => { this.calmEyes = calm; this.hostileEyes = hostile; },
       setKingEyeMaterial: (m) => { this.kingEyeMaterial = m; },
+      joints,
+      joint: (name, x, y, z, parent = group) => {
+        const j = new THREE.Group();
+        j.name = name;
+        j.position.set(x, y, z).sub(origin(parent));
+        j.userData.rest = j.position.clone();
+        parent.add(j);
+        joints[name] = j;
+        return j;
+      },
+      limbIn: (joint, mat, a, b, radius, taper) => {
+        const o = origin(joint);
+        const m = this.limbBetween(mat, a.clone().sub(o), b.clone().sub(o), radius, taper);
+        joint.add(m);
+        return m;
+      },
+      put: (joint, obj) => {
+        obj.position.sub(origin(joint));
+        joint.add(obj);
+        return obj;
+      },
     };
   }
 
   private createVisualMesh(): THREE.Group {
     const group = new THREE.Group();
     const body = new THREE.Group();
-    MOB_DEFS[this.type].build(this.buildCtx(body));
+    const ctx = this.buildCtx(body);
+    MOB_DEFS[this.type].build(ctx);
+    this.joints = ctx.joints;
     group.add(body);
     this.bodyRoot = body;
     group.castShadow = true;
@@ -392,24 +437,73 @@ export class WanderingEntity {
       this.mesh.position.z += dz * k;
     }
 
-    this.animate(delta);
-    this.mesh.lookAt(viewerX, this.mesh.position.y, viewerZ);
+    this.animate(delta, viewerX, viewerZ);
   }
 
-  /** Bobbing, species-specific body motion, and glitch-scale flicker. */
-  private animate(delta: number) {
+  /**
+   * Bobbing, facing, the type's rig animation and glitch-scale flicker.
+   * Purely local and visual: it reads the AI/replicated state but never
+   * writes it, so the authority and every replica can each run it.
+   */
+  private animate(delta: number, viewerX: number, viewerZ: number) {
     this.bobTime += delta;
     this.glitchTimer += delta;
 
-    const animDef = MOB_DEFS[this.type];
-    const bobFreq = animDef.bobFreq;
-    const bobAmp = animDef.bobAmp;
-    const bobOffset = Math.sin(this.bobTime * bobFreq) * bobAmp;
-    const baseHeight = animDef.baseHeight;
+    const def = MOB_DEFS[this.type];
+    const pos = this.mesh.position;
+    const dx = viewerX - pos.x;
+    const dz = viewerZ - pos.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const near = dist < 14;
 
-    const floorY = this.map.getFloorHeightAt(this.mesh.position.x, this.mesh.position.z);
-    this.mesh.position.y = floorY + baseHeight + bobOffset;
-    this.animateBody();
+    // --- Pose blends
+    const running = this.isMoving && (this.isChasing || this.moveSpeed > 2.2);
+    const damp = THREE.MathUtils.damp;
+    this.moveWeight = damp(this.moveWeight, this.isMoving ? 1 : 0, 8, delta);
+    this.runWeight = damp(this.runWeight, running ? 1 : 0, 5, delta);
+    this.observeWeight = damp(this.observeWeight, !this.isMoving && !this.isChasing && dist < 12 ? 1 : 0, 3, delta);
+    this.lookWeight = damp(this.lookWeight, near ? 1 : 0, 4, delta);
+    if (this.isMoving) this.stridePhase += (this.moveSpeed / def.strideLength) * Math.PI * 2 * delta;
+
+    // --- Facing: where it walks, or the player once it stops near them.
+    const toViewer = Math.atan2(dx, dz);
+    let want = this.heading;
+    const stepX = this.targetGridX - this.gridX;
+    const stepZ = this.targetGridZ - this.gridZ;
+    if (def.facesViewer) want = toViewer;
+    else if (this.isMoving && (stepX !== 0 || stepZ !== 0)) want = Math.atan2(stepX, stepZ);
+    else if (near) want = toViewer;
+    this.heading = wrapAngle(this.heading + wrapAngle(want - this.heading) * Math.min(1, (this.isChasing ? 10 : 5) * delta));
+    this.mesh.rotation.set(0, this.heading, 0);
+
+    // --- Height: floor + hover bob (gait bounce takes over while walking)
+    const bobOffset = Math.sin(this.bobTime * def.bobFreq) * def.bobAmp * (1 - this.moveWeight * 0.7);
+    const floorY = this.map.getFloorHeightAt(pos.x, pos.z);
+    pos.y = floorY + def.baseHeight + bobOffset;
+
+    // --- Rig (skipped far away: nobody can read a limb at 40 m)
+    const body = this.bodyRoot;
+    if (body && dist < 40) {
+      body.position.set(0, 0, 0);
+      body.rotation.set(0, 0, 0);
+      body.scale.set(1, 1, 1);
+      const eyeY = this.map.getFloorHeightAt(viewerX, viewerZ) + 1.6;
+      def.animate({
+        joints: this.joints,
+        body,
+        time: this.bobTime,
+        delta,
+        phase: this.stridePhase,
+        move: this.moveWeight,
+        run: this.runWeight,
+        observe: this.observeWeight,
+        look: this.lookWeight,
+        lookYaw: THREE.MathUtils.clamp(wrapAngle(toViewer - this.heading), -1.2, 1.2),
+        lookPitch: THREE.MathUtils.clamp(Math.atan2(eyeY - (pos.y + 0.4), Math.max(dist, 0.5)), -0.7, 0.7),
+        agitated: this.isAgitated,
+        chasing: this.isChasing,
+      });
+    }
 
     // Glitch animation (subtle scaling artifacts)
     if (this.glitchTimer >= 0.11) {
@@ -426,71 +520,31 @@ export class WanderingEntity {
     }
   }
 
-  /**
-   * Purely local animation: transforms the body below the viewer-facing root,
-   * so it does not affect AI, collision, or the replicated world state.
-   */
-  private animateBody() {
-    const body = this.bodyRoot;
-    if (!body) return;
-
-    const time = this.bobTime;
-    const moving = this.isMoving ? 1 : 0.35;
-    body.position.set(0, 0, 0);
-    body.rotation.set(0, 0, 0);
-    body.scale.set(1, 1, 1);
-
-    switch (this.type) {
-      case EntityType.HOUND:
-        body.position.y = Math.abs(Math.sin(time * 11)) * 0.035 * moving;
-        body.rotation.set(Math.sin(time * 11) * 0.1 * moving, 0, Math.sin(time * 5.5) * 0.055 * moving);
-        break;
-      case EntityType.DULLER:
-        body.position.y = Math.sin(time * 1.7) * 0.09;
-        body.rotation.set(Math.sin(time * 1.2) * 0.08, 0, Math.sin(time * 0.9) * 0.12);
-        break;
-      case EntityType.CLUMP:
-        body.rotation.set(time * (this.isMoving ? 3.4 : 0.7), 0, time * (this.isMoving ? 2.6 : 0.45));
-        body.scale.setScalar(1 + Math.sin(time * 5.2) * 0.045);
-        break;
-      case EntityType.WRETCH:
-        body.position.y = Math.abs(Math.sin(time * 5.8)) * 0.04 * moving;
-        body.rotation.set(Math.sin(time * 5.8) * 0.12 * moving, 0, Math.sin(time * 2.9) * 0.075);
-        break;
-      case EntityType.SKIN_STEALER:
-      case EntityType.IMITADOR:
-        body.rotation.set(Math.sin(time * 1.9) * 0.045, 0, Math.sin(time * 1.3) * 0.055);
-        body.position.y = Math.sin(time * 3.1) * 0.018;
-        break;
-      case EntityType.FINGER_KING:
-        body.rotation.set(Math.sin(time * 1.5) * 0.04, 0, Math.sin(time * 2.2) * 0.07);
-        body.position.y = Math.sin(time * 3.8) * 0.025;
-        break;
-      case EntityType.ECO:
-        body.position.y = Math.sin(time * 4.6) * 0.045;
-        body.rotation.set(Math.sin(time * 6.4) * 0.045, 0, Math.sin(time * 3.2) * 0.08);
-        break;
-      case EntityType.OBSERVADOR:
-        body.rotation.set(Math.sin(time * 1.1) * 0.06, 0, Math.sin(time * 1.7) * 0.05);
-        break;
-      case EntityType.SOMBRA:
-        body.position.y = Math.sin(time * 2.3) * 0.055;
-        body.scale.set(1 + Math.sin(time * 3.8) * 0.035, 1 - Math.sin(time * 3.8) * 0.04, 1 + Math.sin(time * 2.7) * 0.03);
-        break;
-      case EntityType.VIGIA:
-        body.rotation.z = Math.sin(time * 0.75) * 0.035;
-        break;
-      case EntityType.CEIFADOR:
-        body.position.y = Math.sin(time * 2.1) * 0.028;
-        body.rotation.set(Math.sin(time * 1.4) * 0.05, 0, Math.sin(time * 1.05) * 0.045);
-        break;
-    }
+  /** True once per footfall while it walks; GameEngine turns these into footstep sounds and ripples. */
+  public consumeStep(): boolean {
+    const step = Math.floor(this.stridePhase / Math.PI);
+    if (step === this.lastStep) return false;
+    this.lastStep = step;
+    return this.moveWeight > 0.3;
   }
+
+  /** Running gait right now (heavier, splashier steps). */
+  public get runningGait(): boolean { return this.runWeight > 0.5; }
+
+  /** How heavy its footfalls sound, 0 (silent: it floats) .. 1. */
+  public get stepWeight(): number { return MOB_DEFS[this.type].stepWeight ?? 0.5; }
 
   private resetBodyAnimation() {
     this.bodyRoot?.position.set(0, 0, 0);
     this.bodyRoot?.rotation.set(0, 0, 0);
     this.bodyRoot?.scale.set(1, 1, 1);
+    resetRig(this.joints);
+    this.stridePhase = 0;
+    this.lastStep = 0;
+    this.moveWeight = 0;
+    this.runWeight = 0;
+    this.observeWeight = 0;
+    this.lookWeight = 0;
   }
 
   /**
@@ -553,11 +607,8 @@ export class WanderingEntity {
     cameraDir?: THREE.Vector3,
     isFlashlightOn?: boolean
   ) {
-    // 1. Organic Bobbing / Hover Animation + glitch flicker
-    this.animate(delta);
-
-    // 2. Rotate mesh horizontally to keep facing the voyager directly (Billboard sprite)
-    this.mesh.lookAt(playerX, this.mesh.position.y, playerZ);
+    // 1. Body animation (idle / walk / run / observe), facing and glitch flicker
+    this.animate(delta, playerX, playerZ);
 
     // 3. Distance vector math
     const cSize = this.map.cellSize;
@@ -906,10 +957,39 @@ export class WanderingEntity {
     proto.tintMaterials = [];
     proto.type = type;
     const group = new THREE.Group();
-    MOB_DEFS[type].build(proto.buildCtx(group));
+    const ctx = proto.buildCtx(group);
+    MOB_DEFS[type].build(ctx);
     group.name = "monsterSkinBody";
     group.userData.tintMaterials = proto.tintMaterials;
+    group.userData.rig = { type, joints: ctx.joints, phase: 0, time: 0, move: 0, run: 0 };
     return group;
+  }
+
+  /**
+   * Animates a SKIN-cheat body (see buildSkinMesh) worn by a player avatar,
+   * with the same rig animation the monster itself uses.
+   * `speed`: the avatar's ground speed (m/s).
+   */
+  public static animateSkinBody(body: THREE.Group, delta: number, speed: number, running: boolean) {
+    const rig = body.userData.rig as { type: EntityType; joints: MobJoints; phase: number; time: number; move: number; run: number; anchorY?: number } | undefined;
+    if (!rig) return;
+    const def = MOB_DEFS[rig.type];
+    const moving = speed > 0.3;
+    rig.time += delta;
+    rig.move = THREE.MathUtils.damp(rig.move, moving ? 1 : 0, 8, delta);
+    rig.run = THREE.MathUtils.damp(rig.run, moving && running ? 1 : 0, 5, delta);
+    rig.phase += (speed / def.strideLength) * Math.PI * 2 * delta;
+    // The avatar sets the body's anchor height once (skinAnchorY); animate()
+    // bounces it relative to 0, so remember the anchor and add it back.
+    rig.anchorY ??= body.position.y;
+    body.position.y = 0;
+    body.rotation.set(0, 0, 0);
+    def.animate({
+      joints: rig.joints, body, time: rig.time, delta, phase: rig.phase,
+      move: rig.move, run: rig.run, observe: 0, look: 0, lookYaw: 0, lookPitch: 0,
+      agitated: false, chasing: running,
+    });
+    body.position.y += rig.anchorY;
   }
 
   /** Height above the floor the type's body is centred at — mirrors syncWorldPosition's `ey`. */
@@ -1018,4 +1098,9 @@ export class WanderingEntity {
     this.entityPool.clear();
     WanderingEntity.disposeSharedAssets();
   }
+}
+
+/** Wraps an angle into (-PI, PI]. */
+function wrapAngle(a: number): number {
+  return Math.atan2(Math.sin(a), Math.cos(a));
 }

@@ -11,6 +11,7 @@ import { QualityProfile, getQualityProfile } from "./Quality";
 import { NoiseBus } from "./systems/noiseBus";
 import { VisitTracker } from "./systems/visitTracker";
 import { contentLevelFor } from "./levels/constants";
+import { POOL_FLOOR_Y, WATER_SURFACE_Y, createPoolTileMaterial, createWaterMaterial } from "./Water";
 
 // Deterministic Mulbery32 Random Number Generator
 export class SeededRandom {
@@ -210,7 +211,7 @@ export class ProceduralMap {
     mesh: THREE.Object3D;
     initialY: number;
     collected: boolean;
-    type: "almond_water" | "energy_bar" | "old_photo" | "rusty_key" | "cassette_tape" | "strange_crystal" | "liquid_pain" | "diary_page" | "scrap_of_note" | "g_document";
+    type: "almond_water" | "energy_bar" | "old_photo" | "cassette_tape" | "strange_crystal" | "liquid_pain" | "diary_page" | "scrap_of_note" | "g_document";
     /** Level G documents: which digit of the terminal code this one reveals. */
     docIndex?: number;
     x: number;
@@ -2668,7 +2669,56 @@ export class ProceduralMap {
     const gx = Math.floor(worldX / this.cellSize);
     const gz = Math.floor(worldZ / this.cellSize);
     if (gx < 0 || gz < 0 || gx >= this.gridSize || gz >= this.gridSize) return 0;
-    return this.floorHeight[gx][gz] || 0;
+    // Flooded pool cells are sunken: wading in is a step down, leaving is a step up.
+    const pool = this.grid[gx][gz] === CellType.WATER_ROOM ? POOL_FLOOR_Y : 0;
+    return (this.floorHeight[gx][gz] || 0) + pool;
+  }
+
+  /** Whether a world position is standing in a flooded pool cell. */
+  public isWaterAt(worldX: number, worldZ: number): boolean {
+    const gx = Math.floor(worldX / this.cellSize);
+    const gz = Math.floor(worldZ / this.cellSize);
+    return this.grid[gx]?.[gz] === CellType.WATER_ROOM;
+  }
+
+  private echoCache = new Map<string, number>();
+
+  /**
+   * How much a space rings (0 dead .. 1 cavernous) at a world position: wide,
+   * empty rooms and tiled pools echo, cramped corridors and cluttered rooms
+   * don't. Cached per cell — the layout never changes after generation.
+   */
+  public echoAt(worldX: number, worldZ: number): number {
+    const gx = Math.floor(worldX / this.cellSize);
+    const gz = Math.floor(worldZ / this.cellSize);
+    const key = `${gx},${gz}`;
+    const cached = this.echoCache.get(key);
+    if (cached !== undefined) return cached;
+
+    let open = 0;
+    let clutter = 0;
+    for (let dx = -3; dx <= 3; dx++) {
+      for (let dz = -3; dz <= 3; dz++) {
+        const cell = this.grid[gx + dx]?.[gz + dz];
+        if (cell === undefined || cell === CellType.SOLID) continue;
+        open++;
+        clutter += this.cellObstacles.get(`${gx + dx},${gz + dz}`)?.length ?? 0;
+      }
+    }
+    const openness = open / 49;
+    const clutterFactor = Math.min(1, clutter / 14);
+    const here = this.grid[gx]?.[gz];
+    const typeBoost = here === CellType.WATER_ROOM ? 0.45 // hard tiles over water
+      : here === CellType.OPEN_AREA || here === CellType.ROOM_LARGE || here === CellType.ARCH_ROOM || here === CellType.PIT_ROOM ? 0.12
+      : here === CellType.RED_ROOM ? -0.15
+      : 0;
+    // Poolrooms: tiled everywhere; Pipe Dreams: bare metal; the room lobby: kept dry.
+    const levelBoost = this.level === 7 ? 0.25 : this.level === 2 ? 0.2 : this.level === LOBBY_LEVEL ? -0.4 : 0;
+    // Only genuinely wide-open surroundings ring; ordinary halls stay mostly dry.
+    const space = THREE.MathUtils.smoothstep(openness, 0.6, 1.0) * 0.85;
+    const echo = THREE.MathUtils.clamp(space * (1 - 0.6 * clutterFactor) + typeBoost + levelBoost, 0, 1);
+    this.echoCache.set(key, echo);
+    return echo;
   }
 
   /** Tears down the passage placards on level transition. */
@@ -3062,6 +3112,54 @@ export class ProceduralMap {
   }
 
   /**
+   * A flooded pool cell: tiled floor sunk to POOL_FLOOR_Y, tiled side walls
+   * down from every edge that borders a non-pool cell (so the step up out of
+   * the water is a visible ledge), and the moving water surface on top.
+   */
+  private buildPoolCell(group: THREE.Group, gx: number, gz: number, posX: number, posZ: number, toxic: boolean) {
+    const size = this.cellSize;
+    const tile = this.sharedMat(`pool_tile_${toxic ? "toxic" : "clear"}`, () => createPoolTileMaterial(toxic));
+    const floor = new THREE.Mesh(this.floorGeo, tile);
+    floor.position.set(posX, POOL_FLOOR_Y, posZ);
+    floor.receiveShadow = true;
+    group.add(floor);
+
+    const depth = -POOL_FLOOR_Y;
+    const wallGeo = this.sharedGeo("pool_wall", () => {
+      const g = new THREE.PlaneGeometry(size, depth);
+      // Keep the tiles square: the texture repeats 4x over a full 4 m side.
+      const uv = g.getAttribute("uv") as THREE.BufferAttribute;
+      for (let i = 0; i < uv.count; i++) uv.setY(i, uv.getY(i) * (depth / size));
+      return g;
+    });
+    const sides: [number, number, number, number, number][] = [
+      // neighbour dx, dz, wall offset x, offset z, rotation (facing into the pool)
+      [0, -1, 0, -size / 2, 0],
+      [0, 1, 0, size / 2, Math.PI],
+      [-1, 0, -size / 2, 0, Math.PI / 2],
+      [1, 0, size / 2, 0, -Math.PI / 2],
+    ];
+    for (const [dx, dz, ox, oz, rot] of sides) {
+      if (this.grid[gx + dx]?.[gz + dz] === CellType.WATER_ROOM) continue;
+      const wall = new THREE.Mesh(wallGeo, tile);
+      wall.position.set(posX + ox, POOL_FLOOR_Y / 2, posZ + oz);
+      wall.rotation.y = rot;
+      wall.receiveShadow = true;
+      group.add(wall);
+    }
+
+    const surfaceGeo = this.sharedGeo("pool_surface", () => {
+      const g = new THREE.PlaneGeometry(size, size, 12, 12);
+      g.rotateX(-Math.PI / 2);
+      return g;
+    });
+    const water = new THREE.Mesh(surfaceGeo, this.sharedMat(`pool_water_${toxic ? "toxic" : "clear"}`, () => createWaterMaterial(toxic)));
+    water.position.set(posX, WATER_SURFACE_Y, posZ);
+    water.renderOrder = 1;
+    group.add(water);
+  }
+
+  /**
    * Evaluates if a given world coordinate represents a moist/wet carpet cell.
    */
   public isCellWet(worldX: number, worldZ: number): boolean {
@@ -3176,10 +3274,14 @@ export class ProceduralMap {
         : cellType === CellType.WATER_ROOM
         ? this.sharedMat("water_floor", () => new THREE.MeshStandardMaterial({ color: 0x1b4a5c, roughness: 0.25, metalness: 0.2 }))
         : (isRamp ? this.getRampFloorMaterial() : this.carpetMaterial);
-      const floorMesh = new THREE.Mesh(this.floorGeo, mat);
-      floorMesh.position.set(posX, 0, posZ);
-      floorMesh.receiveShadow = true;
-      group.add(floorMesh);
+      if (cellType === CellType.WATER_ROOM) {
+        this.buildPoolCell(group, gx, gz, posX, posZ, isToxicWater);
+      } else {
+        const floorMesh = new THREE.Mesh(this.floorGeo, mat);
+        floorMesh.position.set(posX, 0, posZ);
+        floorMesh.receiveShadow = true;
+        group.add(floorMesh);
+      }
 
       if (isRamp) {
         // Raised hazard-yellow lips at the cell's ends read as incline steps.
@@ -3235,7 +3337,6 @@ export class ProceduralMap {
     }
 
     if (this.level === 9) {
-      const employee = this.level4Employees.find((person) => person.gx === gx && person.gz === gz);
       const deskMat = this.sharedMat("meg_desk", () => new THREE.MeshStandardMaterial({ color: 0x4a4038, roughness: 0.72 }));
       const chairMat = this.sharedMat("meg_chair", () => new THREE.MeshStandardMaterial({ color: 0x30343a, roughness: 0.8 }));
       const screenMat = this.sharedMat("meg_screen", () => new THREE.MeshStandardMaterial({ color: 0x182c32, emissive: 0x164e63, emissiveIntensity: 0.8 }));
@@ -3258,12 +3359,7 @@ export class ProceduralMap {
         table.position.set(posX, 0.78, posZ); group.add(table);
         this.addObstacle(gx, gz, posX, posZ, 1.0);
       }
-      if (employee) {
-        const body = new THREE.Mesh(this.sharedGeo("meg_employee_body", () => new THREE.CylinderGeometry(0.22, 0.28, 0.95, 8)), this.sharedMat("meg_employee_suit", () => new THREE.MeshStandardMaterial({ color: 0x53616a, roughness: 0.75 })));
-        body.position.set(posX, 0.48, posZ + 0.7); group.add(body);
-        const head = new THREE.Mesh(this.sharedGeo("meg_employee_head", () => new THREE.SphereGeometry(0.18, 8, 8)), this.sharedMat("meg_employee_skin", () => new THREE.MeshStandardMaterial({ color: 0xb98268, roughness: 0.9 })));
-        head.position.set(posX, 1.15, posZ + 0.7); group.add(head);
-      }
+      // The employees themselves are animated NPCs (npc/OfficeWorker.ts), spawned by GameEngine.
       if (gx === this.level4DoorX && gz === this.level4DoorZ) {
         const blue = this.sharedMat("meg_blue_door", () => new THREE.MeshStandardMaterial({ color: 0x155e91, emissive: 0x0b3554, emissiveIntensity: 0.55, metalness: 0.55, roughness: 0.35 }));
         const door = new THREE.Mesh(this.sharedGeo("meg_blue_door", () => new THREE.BoxGeometry(hSize - 0.35, 2.65, 0.16)), blue);
@@ -4430,7 +4526,8 @@ export class ProceduralMap {
       const maxOffset = hSize / 2 - 0.6;
       const ix = posX + itemRng.nextRange(-maxOffset, maxOffset);
       const iz = posZ + itemRng.nextRange(-maxOffset, maxOffset);
-      const iy = 0.45; // floating slightly off the floor
+      // Floating slightly off the floor — or bobbing on the surface in a flooded pool cell.
+      const iy = this.grid[gx][gz] === CellType.WATER_ROOM ? WATER_SURFACE_Y + 0.12 : 0.45;
 
       const cellType = this.grid[gx][gz];
       const isRoom = cellType === CellType.ROOM_SMALL ||
@@ -4440,7 +4537,7 @@ export class ProceduralMap {
                      cellType === CellType.ARCH_ROOM ||
                      cellType === CellType.RED_ROOM;
 
-      let selectedType: "old_photo" | "rusty_key" | "cassette_tape" | "strange_crystal" | "liquid_pain" | "diary_page" | "scrap_of_note";
+      let selectedType: "old_photo" | "cassette_tape" | "strange_crystal" | "liquid_pain" | "diary_page" | "scrap_of_note";
       let spawnedMesh: THREE.Group;
 
       if (isRoom && itemTypeRoll < 0.45) {
@@ -4452,15 +4549,12 @@ export class ProceduralMap {
           selectedType = "old_photo";
           spawnedMesh = this.createOldPhotoMesh();
         } else if (adjustedRoll < 0.50) {
-          selectedType = "rusty_key";
-          spawnedMesh = this.createRustyKeyMesh();
-        } else if (adjustedRoll < 0.65) {
           selectedType = "cassette_tape";
           spawnedMesh = this.createCassetteTapeMesh();
-        } else if (adjustedRoll < 0.80) {
+        } else if (adjustedRoll < 0.68) {
           selectedType = "strange_crystal";
           spawnedMesh = this.createStrangeCrystalMesh();
-        } else if (adjustedRoll < 0.90) {
+        } else if (adjustedRoll < 0.85) {
           selectedType = "liquid_pain";
           spawnedMesh = this.createLiquidPainMesh();
         } else {
@@ -5251,46 +5345,6 @@ export class ProceduralMap {
   }
 
   /**
-   * Generates a 3D low-poly Rusty Key
-   */
-  public createRustyKeyMesh(): THREE.Group {
-    const group = new THREE.Group();
-    
-    const keyMat = new THREE.MeshStandardMaterial({
-      color: 0x9c5c3c, // Rusty orange-brown
-      roughness: 0.9,
-      metalness: 0.85
-    });
-
-    // Top head loop
-    const torusGeo = new THREE.TorusGeometry(0.05, 0.015, 6, 12);
-    const head = new THREE.Mesh(torusGeo, keyMat);
-    head.rotation.x = Math.PI / 2;
-    head.position.set(0, 0.02, -0.06);
-    group.add(head);
-
-    // Key shaft
-    const shaftGeo = new THREE.CylinderGeometry(0.015, 0.015, 0.18, 6);
-    const shaft = new THREE.Mesh(shaftGeo, keyMat);
-    shaft.rotation.x = Math.PI / 2;
-    shaft.position.set(0, 0.02, 0.04);
-    group.add(shaft);
-
-    // Key teeth
-    const teethGeo = new THREE.BoxGeometry(0.04, 0.015, 0.05);
-    const teeth = new THREE.Mesh(teethGeo, keyMat);
-    teeth.position.set(0.025, 0.02, 0.11);
-    group.add(teeth);
-
-    // Soft golden-rusty glow
-    const keyGlow = this.createItemGlow(0xff7733, 0.85, 0.55);
-    keyGlow.position.set(0, 0.15, 0);
-    group.add(keyGlow);
-
-    return group;
-  }
-
-  /**
    * Generates a 3D low-poly Cassette Tape
    */
   public createCassetteTapeMesh(): THREE.Group {
@@ -5937,6 +5991,7 @@ export class ProceduralMap {
     this.slidingMovables = [];
     this.movableScene = null;
     this.cellObstacles.clear();
+    this.echoCache.clear();
     this.obstacleGrid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill(null));
     this.cellGroupGrid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill(null));
     this.lightFixtures = [];
