@@ -99,7 +99,7 @@ export const observador: MobDefinition = {
   },
 
   speech(ctx) {
-    return { key: ctx.isChasing ? "sp.observador.chase" : "sp.observador.watch" };
+    return { key: "" };
   },
 
   radar: { color: "#e2e8f0", strokeColor: "#94a3b8", labelKey: "radar.observador" },

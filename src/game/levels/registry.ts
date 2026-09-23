@@ -2,7 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * The level -> mob roster table. Levels 0 (start) and 5 (LOBBY_LEVEL) have
+ * The level -> mob roster table. Levels 0 (start) and 10 (LOBBY_LEVEL) have
  * no entry here, on purpose — GameEngine's spawn dispatcher treats a
  * missing key as "no mobs" structurally, not as an empty roster someone
  * could edit into existence by accident.
@@ -10,6 +10,16 @@
 
 import { EntityType } from "../../shared/entityTypes";
 import { LevelDefinition } from "./types";
+import {
+  ABANDONED_OFFICE_LEVEL,
+  ELECTRICAL_ROOM_LEVEL,
+  LEVEL_1,
+  LEVEL_2,
+  LEVEL_G,
+  LIGHTS_OUT_LEVEL,
+  MOTION_LEVEL,
+  POOLROOMS_LEVEL,
+} from "./constants";
 
 export const LEVEL_DEFS: Record<number, LevelDefinition> = {
   // Level 1: the "learn the ropes" level. DULLER/CLUMP teach basic
@@ -19,8 +29,8 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
   // HOUND and SKIN_STEALER moved to level 2 (see below) — their lessons
   // ("don't hold eye contact", "is this really a person?") land better
   // once the player has already met the basics.
-  1: {
-    id: 1,
+  [LEVEL_1]: {
+    id: LEVEL_1,
     displayLabel: "LEVEL 1",
     spawn: {
       kind: "static",
@@ -33,14 +43,13 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     },
   },
 
-  // Level 2 ("Pipe Dreams"): forced-chase for every mob regardless of type
-  // (see WanderingEntity.update()'s level===2||3 branch) — unchanged.
+  // Level 2 ("Pipe Dreams"): forced-chase for every mob regardless of type.
   // HOUND/SKIN_STEALER/WRETCH keep their original repeated presence;
   // IMITADOR/SOMBRA take over the slots CLUMP/DULLER used to fill (they
   // moved to being level-1-only — see above), keeping the same 11-slot,
   // 5-distinct-type shape the level always had.
-  2: {
-    id: 2,
+  [LEVEL_2]: {
+    id: LEVEL_2,
     displayLabel: "LEVEL 2",
     spawn: {
       kind: "static",
@@ -60,10 +69,10 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     },
   },
 
-  // Level 3 ("Lights Out", secret): summons stalkers while a player's
+  // Level 6 ("Lights Out", secret): summons stalkers while a player's
   // flashlight remains on, rather than using a fixed roster.
-  3: {
-    id: 3,
+  [LIGHTS_OUT_LEVEL]: {
+    id: LIGHTS_OUT_LEVEL,
     displayLabel: "LEVEL 6 (LIGHTS OUT)",
     spawn: {
       kind: "timedSummon",
@@ -75,8 +84,8 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
   },
 
   // Level G (secret): fully bespoke boss ecosystem.
-  4: {
-    id: 4,
+  [LEVEL_G]: {
+    id: LEVEL_G,
     displayLabel: "LEVEL G",
     spawn: { kind: "bespoke" },
   },
@@ -85,8 +94,8 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
   // timedSummon roster — day is mob-free by design, and O Ceifador is
   // spawned/despawned with the day/night cycle itself (GameEngine's
   // updateLevel6/spawnCeifadorNightHunt), not through this table.
-  6: {
-    id: 6,
+  [MOTION_LEVEL]: {
+    id: MOTION_LEVEL,
     displayLabel: "LEVEL 4",
     spawn: { kind: "bespoke" },
   },
@@ -95,9 +104,9 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
   // is the level's native hazard (see LevelDefinition consumers for its
   // "loses you if you're submerged" override), O Vigia guards the route
   // past the valve puzzle.
-  7: {
-    id: 7,
-    displayLabel: "LEVEL 5",
+  [POOLROOMS_LEVEL]: {
+    id: POOLROOMS_LEVEL,
+    displayLabel: "POOLROOMS",
     spawn: {
       kind: "static",
       roster: [
@@ -108,9 +117,9 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
   },
 
   // Brick Offices: a pack of Hounds patrols the five-switch route.
-  8: {
-    id: 8,
-    displayLabel: "BRICK OFFICES",
+  [ELECTRICAL_ROOM_LEVEL]: {
+    id: ELECTRICAL_ROOM_LEVEL,
+    displayLabel: "ELECTRICAL ROOM",
     spawn: {
       kind: "static",
       roster: [
@@ -126,9 +135,9 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     },
   },
 
-  9: {
-    id: 9,
-    displayLabel: "MEG OFFICES",
+  [ABANDONED_OFFICE_LEVEL]: {
+    id: ABANDONED_OFFICE_LEVEL,
+    displayLabel: "ABANDONED OFFICE",
     spawn: { kind: "bespoke" },
   },
 };

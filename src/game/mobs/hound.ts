@@ -71,9 +71,7 @@ export const hound: MobDefinition = {
   },
 
   speech(ctx) {
-    if (ctx.scratch > 0.1) return { key: "sp.hound.scared" };
-    if (ctx.isChasing) return { key: "sp.hound.chase" };
-    return { key: "sp.hound.idle" };
+    return { key: "" };
   },
 
   radar: { color: "#f97316", strokeColor: "#c2410c", labelKey: "radar.hound" },

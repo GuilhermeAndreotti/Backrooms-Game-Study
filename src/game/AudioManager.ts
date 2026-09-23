@@ -330,6 +330,14 @@ export class AudioManager {
     }
   }
 
+  /** A misleading off-screen footstep pattern used by Eco while hunting. */
+  public playFalseFootsteps(pan = 0, wet = false) {
+    if (!this.ctx || !this.masterGain) return;
+    this.playFootstep("walk", pan, wet);
+    window.setTimeout(() => this.playFootstep("walk", pan * 0.8, wet), 155);
+    window.setTimeout(() => this.playFootstep("walk", pan * 0.55, wet), 320);
+  }
+
   /**
    * Synthesizes a wet water droplet drip plopping from the damp ceiling.
    * Ramps frequency exponentially from mid-range to high-pitch.

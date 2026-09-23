@@ -10,6 +10,7 @@ import { DynamicLightSource } from "./LightPool";
 import { QualityProfile, getQualityProfile } from "./Quality";
 import { NoiseBus } from "./systems/noiseBus";
 import { VisitTracker } from "./systems/visitTracker";
+import { contentLevelFor } from "./levels/constants";
 
 // Deterministic Mulbery32 Random Number Generator
 export class SeededRandom {
@@ -75,6 +76,7 @@ function mixSeed(seed: number, salt: number): number {
 export const LEVEL_G_DOOR_OPEN_ANGLE = -Math.PI * 0.55;
 
 export function gridSizeForLevel(level: number): number {
+  level = contentLevelFor(level);
   if (level === 4) return 18; // Level G: a small office, on purpose
   if (level === LOBBY_LEVEL) return 16; // the room lobby: small, open-air
   if (level === 6 || level === 7) return 40; // the new main-progression levels — simpler layouts than 1/2, a smaller grid to match
@@ -340,6 +342,9 @@ export class ProceduralMap {
   public level4Employees: { name: string; grade: "junior" | "pleno" | "senior"; gx: number; gz: number; dialogue: string }[] = [];
   public level4DoorX = -1;
   public level4DoorZ = -1;
+  /** Hidden convergence door from Abandoned Office to Level G. */
+  public abandonedSecretX = -1;
+  public abandonedSecretZ = -1;
 
   /** Level G sector of a cell: 1 reception, 2 archive, 3 main room, 0 corridors. */
   public levelGSectorOf(gx: number, gz: number): 0 | 1 | 2 | 3 {
@@ -391,6 +396,8 @@ export class ProceduralMap {
   }
 
   public level = 0;
+  /** Network-visible id; `level` remains the legacy content id during re-theming. */
+  public readonly networkLevel: number;
 
   /** Quality budget driving light counts, particle counts and view distance. */
   public quality: QualityProfile;
@@ -429,12 +436,13 @@ export class ProceduralMap {
 
   constructor(seed: number, level = 0, quality?: QualityProfile) {
     this.seed = seed;
-    this.level = level;
+    this.networkLevel = level;
+    this.level = contentLevelFor(level);
     this.gridSize = gridSizeForLevel(level);
     this.quality = quality ?? getQualityProfile("medium");
     // Stay within the fog cutoff; Level 1 (warehouse) is more open so it needs
     // a little more reach. The quality profile scales both.
-    this.maxVisibleDistance = this.quality.viewDistance * (level === 1 ? 1.15 : 1.0);
+    this.maxVisibleDistance = this.quality.viewDistance * (this.level === 1 ? 1.15 : 1.0);
 
     // Dense per-cell grids: allocated here, not as field initializers, because
     // gridSize now varies by level and field initializers run before this body.
@@ -2147,6 +2155,8 @@ export class ProceduralMap {
     corridor(29, 35, 34, 35); corridor(29, 42, 34, 42); corridor(42, 25, 42, 30);
     corridor(2, 2, 2, 6); corridor(42, 42, 44, 44);
     this.level4DoorX = this.exitGridX; this.level4DoorZ = this.exitGridZ;
+    this.abandonedSecretX = 18; this.abandonedSecretZ = 35;
+    corridor(18, 33, 18, 35);
     this.level4Employees = [
       { name: "Marina Alves", grade: "junior", gx: 6, gz: 6, dialogue: "Não toque nos terminais vermelhos. O inventário da MEG ainda está sendo conferido." },
       { name: "Rafael Costa", grade: "pleno", gx: 20, gz: 24, dialogue: "A porta azul reconhece nomes, não crachás. Pergunte aos três e anote a hierarquia." },

@@ -74,7 +74,7 @@ export const clump: MobDefinition = {
   },
 
   speech(ctx) {
-    return { key: ctx.isChasing ? "sp.clump.chase" : "sp.clump.idle" };
+    return { key: "" };
   },
 
   radar: { color: "#ec4899", strokeColor: "#be185d", labelKey: "radar.clump" },

@@ -4,6 +4,7 @@
  */
 
 import { t, useLanguage } from "../i18n";
+import { LEVEL_G } from "../game/levels/constants";
 import React, { useState, useEffect, useRef } from "react";
 import { Flashlight, ShieldAlert, Send, MessageSquare, Terminal, Backpack, Trophy, Mic, MicOff } from "lucide-react";
 import { ChatMessage, RemotePlayer } from "../types/game";
@@ -203,7 +204,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
             <span>{t("hud.explorer")} <span className="text-[#deb81d]">{playerName}</span></span>
             <span className="text-[#a28e3b]/30">•</span>
             <span>{t("hud.location")} <span className="text-[#deb81d]">{t(`hud.loc.${level}`)}</span></span>
-            {(level === 1 || level === 4) && currentSector && (
+            {(level === 1 || level === LEVEL_G) && currentSector && (
               <>
                 <span className="text-[#a28e3b]/30">•</span>
                 <span className="text-[#deb81d] font-bold bg-[#deb81d]/10 px-1 border border-[#deb81d]/20 rounded tracking-widest text-[9px] animate-pulse">
@@ -212,7 +213,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
               </>
             )}
           </div>
-          {level === 4 && levelGProgress && (
+          {level === LEVEL_G && levelGProgress && (
             <div className={`mt-1 ml-1 inline-flex items-center gap-2 px-2 py-1 rounded border text-[10px] font-bold uppercase tracking-widest ${
               levelGProgress.alarm
                 ? "text-red-400 bg-red-950/60 border-red-600/50 animate-pulse"

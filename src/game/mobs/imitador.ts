@@ -80,10 +80,10 @@ export const imitador: MobDefinition = {
   speech(ctx) {
     if (ctx.isAgitated) {
       const lines = [0, 1, 2].map((n) => `sp.imitador.reveal${n}`);
-      return { key: lines[Math.floor(Math.random() * lines.length)] };
+      return { key: lines[Math.floor(ctx.random() * lines.length)] };
     }
     const lines = [0, 1, 2, 3].map((n) => `sp.imitador.calm${n}`);
-    return { key: lines[Math.floor(Math.random() * lines.length)] };
+    return { key: lines[Math.floor(ctx.random() * lines.length)] };
   },
 
   updateVisual(ctx) {

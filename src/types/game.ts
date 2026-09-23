@@ -20,8 +20,18 @@ export interface RemotePlayer {
   face?: string;
   /** Died and is spectating (server-authoritative). */
   dead?: boolean;
+  /** Reached the current exit and is waiting for the other living explorers. */
+  exitReady?: boolean;
   /** SKIN cheat: an EntityType name ("HOUND", ...) worn instead of the hazmat suit, or "" for none. */
   monsterSkin?: string;
+}
+
+export type DeathAction = 'current_level' | 'level_0' | 'lobby';
+
+export interface RoomConfig {
+  deathAction: DeathAction;
+  /** Whether secret level routes are enabled for the room. */
+  secretRoutes?: boolean;
 }
 
 /** Hazmat suit colours offered in the character-customization screen. */

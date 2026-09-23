@@ -113,8 +113,6 @@ export const fingerKing: MobDefinition = {
 
   speech(ctx) {
     // Mostly silent — the taps (GameEngine) carry the warning, not text.
-    if (ctx.hunting) return { key: "sp.king.hunt" };
-    if (ctx.isChasing) return { key: "sp.king.chase" };
     return { key: "" };
   },
 

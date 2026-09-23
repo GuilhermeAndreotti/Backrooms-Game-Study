@@ -15,6 +15,8 @@ import path from "path";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { ALL_ENTITY_TYPES } from "./src/shared/entityTypes";
+import type { DeathAction, RoomConfig } from "./src/types/game";
+import { LOBBY_LEVEL, MAIN_LEVELS, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
 
 // ---------------------------------------------------------------------------
 // Configuration (everything overridable from the environment / .env)
@@ -72,6 +74,7 @@ interface PlayerState {
    * player is dead.
    */
   dead: boolean;
+  exitReady: boolean;
   /**
    * Hand-drawn helmet face: 16x16 palette digits (see src/utils/face.ts), or
    * "" for none. Sent with the join/roster messages only — stripped from the
@@ -134,6 +137,8 @@ interface Room {
    * their own separate next level.
    */
   level: number;
+  /** Host-controlled settings, mutable only while the room is in the lobby. */
+  config: RoomConfig;
   /** Player who can start the expedition from the lobby (first to join; passes on when they leave). */
   hostId: string;
   players: Map<string, PlayerState>;
@@ -148,6 +153,12 @@ interface Room {
 const rooms = new Map<string, Room>();
 const connections = new Map<WebSocket, Connection>();
 
+const DEFAULT_ROOM_CONFIG: RoomConfig = {
+  deathAction: "current_level",
+  secretRoutes: true,
+};
+const DEATH_ACTIONS = new Set<DeathAction>(["current_level", "level_0", "lobby"]);
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -159,9 +170,6 @@ function sanitizeText(value: unknown, maxLength: number): string {
   if (typeof value !== "string") return "";
   return value.replace(CONTROL_CHARS, "").trim().slice(0, maxLength);
 }
-
-/** Level id of the room lobby (see src/game/Lobby.ts): where every room starts. */
-const LOBBY_LEVEL = 5;
 
 /** Invite codes: 6 characters, no lookalikes (0/O, 1/I). Example: AB4D3X. */
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -184,6 +192,19 @@ function sanitizeRoomCode(value: unknown): string {
 
 function finiteNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function sanitizeRoomConfig(value: unknown, current: RoomConfig): RoomConfig {
+  const raw = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const deathAction = DEATH_ACTIONS.has(raw.deathAction as DeathAction)
+    ? raw.deathAction as DeathAction
+    : current.deathAction;
+  const secretRoutes = typeof raw.secretRoutes === "boolean"
+    ? raw.secretRoutes
+    : current.secretRoutes ?? DEFAULT_ROOM_CONFIG.secretRoutes;
+  return { deathAction, secretRoutes };
 }
 
 function send(ws: WebSocket, payload: unknown) {
@@ -218,11 +239,11 @@ function computeAuthority(room: Room): Record<string, string> {
   // Living players first: a spectator shouldn't be the one simulating monsters.
   room.players.forEach((p) => {
     const key = String(p.level);
-    if (!p.dead && !(key in byLevel)) byLevel[key] = p.id;
+    if (!p.dead && !p.exitReady && !(key in byLevel)) byLevel[key] = p.id;
   });
   room.players.forEach((p) => {
     const key = String(p.level);
-    if (!(key in byLevel)) byLevel[key] = p.id;
+    if (!p.exitReady && !(key in byLevel)) byLevel[key] = p.id;
   });
   return byLevel;
 }
@@ -301,16 +322,28 @@ function sanitizeEntities(data: Record<string, unknown>) {
   return { list, smilers };
 }
 
-/** Tells the room every player is dead so it can offer a reset; no-op otherwise. */
-function checkAllDead(room: Room) {
+function resetRoom(room: Room, action: DeathAction) {
+  const scratch = action === "level_0";
+  const toLobby = action === "lobby";
+  if (scratch) room.level = 0;
+  if (toLobby) room.level = LOBBY_LEVEL;
+  reviveAll(room);
+  room.players.forEach((p) => { p.level = room.level; });
+  refreshAuthority(room);
+  broadcastToRoom(room, { type: "respawn", level: room.level, seed: room.seed, scratch, toLobby });
+}
+
+/** Tells the room every player is dead and applies its configured reset once. */
+function checkAllDead(room: Room, autoReset = true) {
   if (room.players.size === 0) return;
   for (const p of room.players.values()) if (!p.dead) return;
   broadcastToRoom(room, { type: "all_dead" });
+  if (autoReset) resetRoom(room, room.config.deathAction);
 }
 
 function reviveAll(room: Room) {
   // Marked dirty so the next snapshot tells every client they're alive again.
-  room.players.forEach((p) => { p.dead = false; room.dirty.add(p.id); });
+  room.players.forEach((p) => { p.dead = false; p.exitReady = false; room.dirty.add(p.id); });
 }
 
 function removeConnection(conn: Connection) {
@@ -329,7 +362,7 @@ function removeConnection(conn: Connection) {
 
   broadcastToRoom(room, { type: "player_left", id: conn.player.id });
   refreshAuthority(room);
-  checkAllDead(room); // the last living player leaving strands the dead ones
+  checkAllDead(room, false); // the last living player leaving strands the dead ones
 
   if (room.players.size === 0) {
     rooms.delete(conn.player.room);
@@ -394,7 +427,16 @@ async function startServer() {
             typeof requestedSeed === "number" && requestedSeed > 0 && Number.isFinite(requestedSeed)
               ? Math.floor(requestedSeed)
               : Math.floor(Math.random() * 999999) + 1;
-          room = { seed, level: LOBBY_LEVEL, hostId: "", players: new Map(), connections: new Set(), dirty: new Set(), authorityKey: "" };
+          room = {
+            seed,
+            level: LOBBY_LEVEL,
+            config: { ...DEFAULT_ROOM_CONFIG },
+            hostId: "",
+            players: new Map(),
+            connections: new Set(),
+            dirty: new Set(),
+            authorityKey: "",
+          };
           rooms.set(roomKey, room);
           console.log(`Created new room "${roomKey}" with seed ${seed}`);
         } else {
@@ -432,6 +474,7 @@ async function startServer() {
           level: room.level,
           suitColor: sanitizeSuitColor(data.suitColor),
           dead: false,
+          exitReady: false,
           face: sanitizeFace(data.face),
           monsterSkin: sanitizeMonsterSkin(data.monsterSkin),
         };
@@ -452,6 +495,7 @@ async function startServer() {
           level: room.level,
           code: roomKey,
           hostId: room.hostId,
+          roomConfig: room.config,
           players: Array.from(room.players.values()).filter((p) => p.id !== playerId),
           authority: computeAuthority(room),
         });
@@ -470,6 +514,7 @@ async function startServer() {
       // --- movement ---------------------------------------------------------
       if (type === "update") {
         const p = conn.player;
+        if (p.dead || p.exitReady) return;
         p.x = finiteNumber(data.x, p.x);
         p.y = finiteNumber(data.y, p.y);
         p.z = finiteNumber(data.z, p.z);
@@ -477,7 +522,12 @@ async function startServer() {
         p.pitch = finiteNumber(data.pitch, p.pitch);
         p.flashlight = typeof data.flashlight === "boolean" ? data.flashlight : p.flashlight;
         p.state = typeof data.state === "string" ? data.state.slice(0, 16) : p.state;
-        p.level = finiteNumber(data.level, p.level);
+        const requestedPlayerLevel = finiteNumber(data.level, p.level);
+        const isPrivateLevel = requestedPlayerLevel === LIGHTS_OUT_LEVEL || requestedPlayerLevel === LEVEL_G || requestedPlayerLevel === MOTION_LEVEL;
+        const isAllowedMainLevel = (MAIN_LEVELS as readonly number[]).includes(requestedPlayerLevel) || requestedPlayerLevel === LOBBY_LEVEL;
+        if (Number.isInteger(requestedPlayerLevel) && (isPrivateLevel || (isAllowedMainLevel && requestedPlayerLevel === room.level))) {
+          p.level = requestedPlayerLevel;
+        }
         if (data.monsterSkin !== undefined) p.monsterSkin = sanitizeMonsterSkin(data.monsterSkin);
 
         // Queued instead of relayed immediately: see the room tick below.
@@ -522,7 +572,7 @@ async function startServer() {
       if (type === "valve_turn") {
         const level = conn.player.level;
         const index = data.index;
-        if (level !== 7 || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 5) return;
+        if (level !== POOLROOMS_LEVEL || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 5) return;
         broadcastToLevel(room, level, { type: "valve_turn", level, index }, conn);
         return;
       }
@@ -531,7 +581,7 @@ async function startServer() {
       if (type === "brick_office_switch") {
         const level = conn.player.level;
         const index = data.index;
-        if (level !== 8 || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 4) return;
+        if (level !== ELECTRICAL_ROOM_LEVEL || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 4) return;
         broadcastToLevel(room, level, { type: "brick_office_switch", level, index }, conn);
         return;
       }
@@ -562,24 +612,69 @@ async function startServer() {
       }
 
       // --- level transition ---------------------------------------------------
-      // A player reached the exit and is asking to advance. Whoever's request
-      // lands first wins; a duplicate/stale one (two players finding the exit
-      // together, or a message arriving after the room already moved on) is
-      // simply ignored, since `data.level` must be strictly ahead of the room.
+      // Reaching an exit is a readiness signal, not an immediate room-wide
+      // transition. The room advances only when every living explorer on the
+      // current main route is ready.
       if (type === "level_transition_request") {
         const requestedLevel = data.level;
         if (typeof requestedLevel !== "number" || !Number.isFinite(requestedLevel)) return;
-        if (requestedLevel <= room.level) return;
+        if (conn.player.dead || conn.player.exitReady) return;
+        const requested = Math.floor(requestedLevel);
+        if (data.secret === true && room.config.secretRoutes === false) return;
 
-        if (conn.player.dead) return; // spectators can't open the way
-        room.level = Math.floor(requestedLevel);
-        reviveAll(room); // a new level: everyone who died comes back
+        // Lights Out is a private route that converges at Abandoned Office.
+        if ((conn.player.level === LIGHTS_OUT_LEVEL || conn.player.level === LEVEL_G) && requested === ABANDONED_OFFICE_LEVEL && data.secret === true) {
+          conn.player.level = ABANDONED_OFFICE_LEVEL;
+          conn.player.exitReady = false;
+          room.dirty.add(conn.player.id);
+          send(conn.ws, { type: "level_transition", level: 4, seed: room.seed, secret: true });
+          refreshAuthority(room);
+          return;
+        }
+
+        const expected = nextMainLevel(room.level);
+        const completingPoolrooms = room.level === POOLROOMS_LEVEL && requested === LOBBY_LEVEL;
+        if ((!expected || requested !== expected) && !completingPoolrooms) return;
+        if (conn.player.level !== room.level) return;
+
+        conn.player.exitReady = true;
+        room.dirty.add(conn.player.id);
+        const participants = Array.from(room.players.values()).filter((p) =>
+          !p.dead && p.level === room.level && !p.exitReady
+        );
+        broadcastToRoom(room, {
+          type: "exit_progress",
+          id: conn.player.id,
+          level: room.level,
+          ready: Array.from(room.players.values()).filter((p) => p.level === room.level && p.exitReady).length,
+          required: participants.length + 1,
+        });
+        if (participants.length > 0) return;
+
+        if (completingPoolrooms) {
+          room.level = LOBBY_LEVEL;
+          reviveAll(room);
+          room.players.forEach((p) => { p.level = LOBBY_LEVEL; p.exitReady = false; room.dirty.add(p.id); });
+          refreshAuthority(room);
+          broadcastToRoom(room, { type: "return_to_lobby", level: LOBBY_LEVEL, seed: room.seed, completed: true });
+          return;
+        }
+
+        room.level = expected!;
+        reviveAll(room);
         room.players.forEach((p) => {
-          p.level = room.level;
+          // Secret players may finish their detour independently. They join
+          // the main room once it reaches their convergence point.
+          if (p.level === LIGHTS_OUT_LEVEL || p.level === LEVEL_G) {
+            if (room.level >= 4) p.level = room.level;
+          } else {
+            p.level = room.level;
+          }
+          p.exitReady = false;
+          room.dirty.add(p.id);
         });
         refreshAuthority(room);
-
-        broadcastToRoom(room, { type: "level_transition", level: room.level, seed: room.seed });
+        broadcastToRoom(room, { type: "level_transition", level: room.level, seed: room.seed, convergence: room.level >= 4 });
         return;
       }
 
@@ -588,12 +683,22 @@ async function startServer() {
       if (type === "start_game") {
         if (room.level !== LOBBY_LEVEL || room.hostId !== conn.player.id) return;
         const requestedLevel = data.level === undefined ? 0 : data.level;
-        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || requestedLevel > 9 || requestedLevel === LOBBY_LEVEL) return;
+        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || requestedLevel > MOTION_LEVEL || requestedLevel === LOBBY_LEVEL) return;
         room.level = requestedLevel;
         reviveAll(room);
         room.players.forEach((p) => { p.level = requestedLevel; });
         refreshAuthority(room);
         broadcastToRoom(room, { type: "level_transition", level: requestedLevel, seed: room.seed, start: true });
+        return;
+      }
+
+      // Room settings are authoritative and can only be changed by the host
+      // before the expedition starts.
+      if (type === "room_config_update") {
+        if (room.level !== LOBBY_LEVEL || room.hostId !== conn.player.id) return;
+        const requestedConfig = data.config === undefined ? data : data.config;
+        room.config = sanitizeRoomConfig(requestedConfig, room.config);
+        broadcastToRoom(room, { type: "room_config", config: room.config });
         return;
       }
 
@@ -650,18 +755,11 @@ async function startServer() {
         return;
       }
 
-      // Every player is dead: any of them picks how the room starts over.
-      // "level" restarts the current level; "scratch" goes back to Level 0.
+      // Compatibility fallback for clients that still send a reset request.
+      // The host's locked room policy remains authoritative.
       if (type === "room_reset") {
         for (const p of room.players.values()) if (!p.dead) return;
-        const scratch = data.mode === "scratch";
-        const toLobby = data.mode === "lobby";
-        if (scratch) room.level = 0;
-        if (toLobby) room.level = LOBBY_LEVEL;
-        reviveAll(room);
-        room.players.forEach((p) => { p.level = room.level; });
-        refreshAuthority(room);
-        broadcastToRoom(room, { type: "respawn", level: room.level, seed: room.seed, scratch, toLobby });
+        resetRoom(room, room.config.deathAction);
         return;
       }
 

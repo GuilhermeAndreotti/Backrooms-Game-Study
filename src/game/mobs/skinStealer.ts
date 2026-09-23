@@ -85,12 +85,12 @@ export const skinStealer: MobDefinition = {
     if (ctx.distanceMeters > 5.5) {
       // Innocent explorer mimicking phrases.
       const mimics = [0, 1, 2, 3, 4, 5].map((n) => `sp.stealer.m${n}`);
-      return { key: mimics[Math.floor(Math.random() * mimics.length)], agitated: false };
+      return { key: mimics[Math.floor(ctx.random() * mimics.length)], agitated: false };
     }
     // Angry morph trigger close-up!
     if (!ctx.isAgitated) console.warn("[Skin-Stealer] Mask slipped! Attacking voyager.");
     const hostiles = [0, 1, 2, 3, 4].map((n) => `sp.stealer.h${n}`);
-    return { key: hostiles[Math.floor(Math.random() * hostiles.length)], agitated: true };
+    return { key: hostiles[Math.floor(ctx.random() * hostiles.length)], agitated: true };
   },
 
   updateVisual(ctx) {

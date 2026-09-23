@@ -11,8 +11,7 @@
  */
 
 import * as THREE from "three";
-
-export const LOBBY_LEVEL = 5;
+export { LOBBY_LEVEL } from "./levels/constants";
 
 /** Layout in world metres (the hall itself is grid cells 2..21 x 2..15, 4 m each). */
 export const LOBBY = {

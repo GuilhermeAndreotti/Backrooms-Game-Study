@@ -71,6 +71,8 @@ export interface MobBuildCtx {
  * to silently drop.
  */
 export interface MobSenseCtx {
+  /** Stable per-entity random source owned by the world authority. */
+  random: () => number;
   delta: number;
   distanceMeters: number;
   playerState: PlayerMoveState;
@@ -84,7 +86,7 @@ export interface MobSenseCtx {
   /** Whether the entity's current grid cell is CellType.SOLID (DULLER regularly noclips through walls). */
   inSolidCell: boolean;
   isFlashlightOn?: boolean;
-  /** True on levels where every mob force-chases (2 and 3 today) — sense() is not called in that case, but forcedChaseSpeed is read instead. Exposed here for mobs whose speech() wants to know. */
+  /** True on levels where every mob force-chases (2 and secret Level 6) — sense() is not called in that case, but forcedChaseSpeed is read instead. */
   levelForcedChase: boolean;
   /** Finger-King-only elsewhere 0/false; carried generically so future mobs can reuse the same ramp. */
   aggression: number;
@@ -156,7 +158,7 @@ export interface MobDefinition {
   bobAmp: number;
   /** How high above baseHeight the speech bubble floats. */
   speechBubbleLocalY: number;
-  /** m/s on levels where every mob force-chases (2 and 3 today). */
+  /** m/s on levels where every mob force-chases (2 and secret Level 6). */
   forcedChaseSpeed: number;
   /** SKIN_STEALER also flips agitated (its "mask slipped" reveal) the moment forced-chase kicks in. */
   forcedChaseAgitated?: boolean;

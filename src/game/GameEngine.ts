@@ -19,6 +19,14 @@ import { NoiseBus, footstepLoudness } from "./systems/noiseBus";
 import { VisitTracker } from "./systems/visitTracker";
 import { LEVEL_DEFS } from "./levels/registry";
 import {
+  ABANDONED_OFFICE_LEVEL,
+  ELECTRICAL_ROOM_LEVEL,
+  LEVEL_G,
+  LIGHTS_OUT_LEVEL,
+  MOTION_LEVEL,
+  POOLROOMS_LEVEL,
+} from "./levels/constants";
+import {
   AdaptiveResolution,
   QualityLevel,
   QualityProfile,
@@ -74,19 +82,21 @@ function levelAtmosphere(level: number) {
   switch (level) {
     case LOBBY_LEVEL: // room lobby: open-air field under a clear blue sky
       return { ambientColor: 0xfff6e0, ambientIntensity: 2.6, fogColor: 0x8fc7f0, dimmedFogColor: 0x4a6a8a };
-    case 4: // Level G: dim, cold office under failing tubes
+    case LEVEL_G: // Level G: dim, cold office under failing tubes
       return { ambientColor: 0x9aa4ad, ambientIntensity: 0.5, fogColor: 0x23272a, dimmedFogColor: 0x0b0c0d };
-    case 8: // Brick Offices: dim industrial brick halls
+    case ABANDONED_OFFICE_LEVEL: // Abandoned Office: cold monitors and dust
+      return { ambientColor: 0x9aa4ad, ambientIntensity: 0.75, fogColor: 0x303438, dimmedFogColor: 0x101214 };
+    case ELECTRICAL_ROOM_LEVEL: // Electrical Room: dim industrial halls
       return { ambientColor: 0xb4a092, ambientIntensity: 1.15, fogColor: 0x554039, dimmedFogColor: 0x241a17 };
-    case 3: // Lights Out: the waypoints and flashlight are all that remain
+    case LIGHTS_OUT_LEVEL: // Lights Out: the waypoints and flashlight are all that remain
       return { ambientColor: 0x05050a, ambientIntensity: 0.008, fogColor: 0x000000, dimmedFogColor: 0x000000 };
     case 2: // Pipe Dreams: tense dark reddish brown
       return { ambientColor: 0x8a4a2c, ambientIntensity: 1.4, fogColor: 0x3a1608, dimmedFogColor: 0x1a0902 };
     case 1: // warehouse: brighter industrial
       return { ambientColor: 0xaab5bd, ambientIntensity: 1.35, fogColor: 0x8a9299, dimmedFogColor: 0x24282c };
-    case 6: // "Motion": bright open-air field by day (night is a live override — see updateLevel6/the per-frame ambient block)
+    case MOTION_LEVEL: // "Motion": bright open-air field by day
       return { ambientColor: 0xdff0ff, ambientIntensity: 2.2, fogColor: 0x9fd4f0, dimmedFogColor: 0x3a5a70 };
-    case 7: // Dark Poolrooms: cool, dim, underwater-tinted
+    case POOLROOMS_LEVEL: // Poolrooms: cool, dim, underwater-tinted
       return { ambientColor: 0x2a4a55, ambientIntensity: 0.6, fogColor: 0x0f2830, dimmedFogColor: 0x050f12 };
     default: // Level 0: classic yellow
       return { ambientColor: 0xeae2c2, ambientIntensity: 1.05, fogColor: 0xede4c0, dimmedFogColor: 0x5c5740 };
@@ -580,7 +590,7 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === LOBBY_LEVEL ? 0.008 : level === 4 ? 0.06 : level === 8 ? 0.035 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
+    const authored = level === LOBBY_LEVEL ? 0.008 : level === LEVEL_G ? 0.06 : level === ELECTRICAL_ROOM_LEVEL ? 0.035 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
@@ -648,8 +658,8 @@ export class GameEngine {
     if (this.level === 1) {
       this.spawnLevel1Entities();
     }
-    if (this.level === 8) {
-      const def3 = LEVEL_DEFS[8];
+    if (this.level === ELECTRICAL_ROOM_LEVEL) {
+      const def3 = LEVEL_DEFS[ELECTRICAL_ROOM_LEVEL];
       if (def3.spawn.kind === "static") this.spawnStaticRoster(def3.spawn.roster, 8);
     }
 
@@ -772,10 +782,10 @@ export class GameEngine {
       this.audio.init();
 
       // Tick player controllers
-      if (this.isDead) this.updateSpectator(delta);
+      if (this.isDead || this.isWaitingForTransition) this.updateSpectator(delta);
       else {
         this.player.update(delta);
-        if (this.level === 8 && this.map) {
+        if (this.level === ELECTRICAL_ROOM_LEVEL && this.map) {
           const gx = Math.floor(this.player.position.x / this.map.cellSize);
           const gz = Math.floor(this.player.position.z / this.map.cellSize);
           if (this.map.level3LowCorridor.has(`${gx},${gz}`) && this.player.position.y > CROUCHED_EYE_HEIGHT + 0.18) {
@@ -845,7 +855,7 @@ export class GameEngine {
       // "in seconds" if you linger), with a proportionally faster recovery
       // once you're clear of it.
       let inToxicWater = false;
-      if (this.level === 7 && this.map && this.player) {
+      if (this.level === POOLROOMS_LEVEL && this.map && this.player) {
         const gx = Math.floor(this.player.position.x / this.map.cellSize);
         const gz = Math.floor(this.player.position.z / this.map.cellSize);
         if (this.map.toxicWaterCells.has(`${gx},${gz}`)) inToxicWater = true;
@@ -877,9 +887,9 @@ export class GameEngine {
         const gz = Math.floor(pz / this.map.cellSize);
 
         // 1. Sector Identification and Notification (Level 1 and Level G)
-        if (this.level === 1 || this.level === 4) {
+        if (this.level === 1 || this.level === LEVEL_G) {
           let sec: string;
-          if (this.level === 4) {
+          if (this.level === LEVEL_G) {
             const s = this.map.levelGSectorOf(gx, gz);
             sec = s === 1 ? t("sector.g1")
               : s === 2 ? t("sector.g2")
@@ -1049,7 +1059,7 @@ export class GameEngine {
         this.entities.forEach(entity => {
           if (aiTargets) {
             // Hunt whichever explorer is closest (on Level G, visible ones first).
-            const { target, distSq: entityDistSq } = this.level === 4
+            const { target, distSq: entityDistSq } = this.level === LEVEL_G
               ? nearestHuntable(aiTargets, entity.mesh.position.x, entity.mesh.position.z)
               : nearestTarget(aiTargets, entity.mesh.position.x, entity.mesh.position.z);
             entity.targetHidden = target.hidden;
@@ -1127,7 +1137,7 @@ export class GameEngine {
         if (!isFlashlightOn && this.level !== LOBBY_LEVEL) {
           if (this.map.globalEventState === "blackout") {
             darknessDepletion = 0.014; // completed blackout is terrifying (retuned ~3x slower)
-          } else if (this.level === 8) {
+          } else if (this.level === ELECTRICAL_ROOM_LEVEL) {
             darknessDepletion = 0.003; // Brick halls have working ceiling fixtures; the flashlight is still useful
           } else if (this.level === 1 || this.level === 2) {
             darknessDepletion = 0.008; // dark industrial environments (retuned ~3x slower)
@@ -1167,17 +1177,17 @@ export class GameEngine {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
         if (pgX === this.map.secretGridX && pgZ === this.map.secretGridZ) {
-          this.onSecretLevelFound(3);
+          this.onSecretLevelFound(LIGHTS_OUT_LEVEL);
         }
       }
 
-      // Level 0's secret office door: stepping into the dark nook behind it
-      // takes you to Level G — a solo detour, like Lights Out.
-      if (this.level === 0 && this.map && this.map.officeDoorX >= 0 && this.onSecretLevelFound) {
+      // The abandoned office contains a hidden route into Level G. The old
+      // office-door marker is reused as a deterministic convergence point.
+      if (this.level === ABANDONED_OFFICE_LEVEL && this.map && this.map.abandonedSecretX >= 0 && this.onSecretLevelFound) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
-        if (pgX === this.map.officeDoorX && pgZ === this.map.officeDoorZ) {
-          this.onSecretLevelFound(4);
+        if (pgX === this.map.abandonedSecretX && pgZ === this.map.abandonedSecretZ) {
+          this.onSecretLevelFound(LEVEL_G);
         }
       }
 
@@ -1202,7 +1212,7 @@ export class GameEngine {
       if (this.level !== 0 && this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
-        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== 8 || this.map.level3GateOpen) && (this.level !== 9 || this.level4DoorOpen)) {
+        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== ELECTRICAL_ROOM_LEVEL || this.map.level3GateOpen) && (this.level !== ABANDONED_OFFICE_LEVEL || this.level4DoorOpen)) {
           this.audio.playGlitchNoclipSound();
           this.onEscapeTrigger?.();
         }
@@ -1239,7 +1249,7 @@ export class GameEngine {
         // Level 6's day/night cycle overrides its own base (daylight) atmosphere
         // live, rather than going through levelAtmosphere (which only knows the
         // level id, not this runtime cycle state).
-        const isLevel6Night = this.level === 6 && this.level6IsNight;
+      const isLevel6Night = this.level === LIGHTS_OUT_LEVEL && this.level6IsNight;
         const baseInt = isLevel6Night ? 0.12 : atmosphere.ambientIntensity;
         const defaultFog = isLevel6Night ? 0x040608 : atmosphere.fogColor;
 
@@ -1274,7 +1284,7 @@ export class GameEngine {
         }
 
         // Level G's final alarm: pulsing emergency red over the flickering tubes
-        if (this.level === 4 && this.levelGAlarm) {
+        if (this.level === LEVEL_G && this.levelGAlarm) {
           const pulse = 0.5 + 0.5 * Math.sin(this.totalPlayTime * 6.5);
           this.ambientLight.color.setHex(0xff2a1a);
           this.ambientLight.intensity = 0.2 + 0.6 * pulse;
@@ -1587,7 +1597,13 @@ export class GameEngine {
       const near = 1 - dist / EARSHOT;
       const vol = Math.pow(near, 1.5);
       const pan = dist > 0.01 ? ((dx * rx + dz * rz) / (dist * rl)) * Math.min(1, dist / 3) : 0;
-      this.audio.playMonsterSound(e.type, alertNow, vol, pan);
+       if (e.type === EntityType.ECO && alertNow) {
+         // Eco's chase cue is deliberately not a voice: the source is offset
+         // in the stereo field so it sounds like footsteps behind the player.
+         this.audio.playFalseFootsteps(pan, this.map?.isCellWet(e.mesh.position.x, e.mesh.position.z) ?? false);
+       } else {
+         this.audio.playMonsterSound(e.type, alertNow, vol, pan);
+       }
       e.voiceTimer = alertNow ? 1.6 + Math.random() * 2.2 : 4 + Math.random() * 6;
     }
   }
@@ -1598,6 +1614,7 @@ export class GameEngine {
 
   /** Dead explorers spectate a living teammate (first-person) until the room revives everyone. */
   public isDead = false;
+  public isWaitingForTransition = false;
   private noclipDwell = 0;
 
   // ---------------------------------------------------------------------------
@@ -1719,6 +1736,7 @@ export class GameEngine {
     this.remoteStates.forEach((st) => { st.dead = false; });
     const wasDead = this.isDead;
     this.isDead = false;
+    this.isWaitingForTransition = false;
     this.spectateId = null;
     if (wasDead) {
       this.sanity = Math.max(this.sanity, 0.5); // died of sanity: half a mind back; caught: unchanged
@@ -1764,6 +1782,12 @@ export class GameEngine {
   public spectateName(): string | null {
     if (!this.spectateId) return null;
     return this.remoteStates.get(this.spectateId)?.name ?? null;
+  }
+
+  public setWaitingForTransition(waiting: boolean) {
+    this.isWaitingForTransition = waiting;
+    if (waiting && !this.spectateId) this.cycleSpectate(1);
+    this.refreshRemoteVisibility();
   }
 
   /** Hides dead teammates entirely, and the spectated one's body (we're inside its head; its flashlight stays). */
@@ -2233,7 +2257,7 @@ export class GameEngine {
 
     // Level G: fresh office, one Finger King
     this.resetLevelG();
-    if (level === 4) {
+    if (level === LEVEL_G) {
       this.spawnLevelGEntities();
       this.onHUDNotification?.(t("eng.levelG"));
     }
@@ -2256,14 +2280,14 @@ export class GameEngine {
       }
     }
 
-    if (level === 8) {
-      const def3 = LEVEL_DEFS[8];
+    if (level === ELECTRICAL_ROOM_LEVEL) {
+      const def3 = LEVEL_DEFS[ELECTRICAL_ROOM_LEVEL];
       if (def3.spawn.kind === "static") this.spawnStaticRoster(def3.spawn.roster, 8);
     }
 
     // Level 7 (Dark Poolrooms): CLUMP + O Vigia.
-    if (level === 7) {
-      const def7 = LEVEL_DEFS[7];
+    if (level === POOLROOMS_LEVEL) {
+      const def7 = LEVEL_DEFS[POOLROOMS_LEVEL];
       if (def7.spawn.kind === "static") {
         this.spawnStaticRoster(def7.spawn.roster, 8);
       }
@@ -2388,7 +2412,7 @@ export class GameEngine {
   }
 
   private updateLevelG(delta: number, targets: AiTarget[] | null) {
-    if (this.level !== 4 || !this.map || !this.player) return;
+    if (this.level !== LEVEL_G || !this.map || !this.player) return;
     this.levelGTime += delta;
 
     // --- This client's closet (HUD warnings; everyone runs this)
@@ -2531,7 +2555,7 @@ export class GameEngine {
 
   /** Index of the nearest untouched valve within arm's reach, or -1. */
   private nearestUntouchedValveIndex(): number {
-    if (this.level !== 7 || !this.map || !this.player) return -1;
+    if (this.level !== POOLROOMS_LEVEL || !this.map || !this.player) return -1;
     const cs = this.map.cellSize;
     for (let i = 0; i < this.map.valvePositions.length; i++) {
       if (this.valvesTurned.has(i)) continue;
@@ -2580,7 +2604,7 @@ export class GameEngine {
 
   /** A teammate turned a valve (relayed by the server — see server.ts's "valve_turn" handler). */
   public handleValveTurn(index: number) {
-    if (this.level !== 7) return;
+    if (this.level !== POOLROOMS_LEVEL) return;
     this.turnValve(index);
   }
 
@@ -2631,7 +2655,7 @@ export class GameEngine {
   }
 
   private nearUntouchedLevel3Switch(): number {
-    if (this.level !== 8 || !this.map || !this.player) return -1;
+    if (this.level !== ELECTRICAL_ROOM_LEVEL || !this.map || !this.player) return -1;
     for (let i = 0; i < this.map.level3Switches.length; i++) {
       if (this.map.level3SwitchesOn.has(i)) continue;
       const [gx, gz] = this.map.level3Switches[i];
@@ -2643,7 +2667,7 @@ export class GameEngine {
   }
 
   private nearMegEmployee(): { name: string; grade: string; dialogue: string } | null {
-    if (this.level !== 9 || !this.map || !this.player) return null;
+    if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map || !this.player) return null;
     const cs = this.map.cellSize;
     return this.map.level4Employees.find((employee) => {
       const dx = this.player.position.x - (employee.gx * cs + cs / 2);
@@ -2653,7 +2677,7 @@ export class GameEngine {
   }
 
   private nearMegDoor(): boolean {
-    if (this.level !== 9 || !this.map || !this.player) return false;
+    if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map || !this.player) return false;
     const cs = this.map.cellSize;
     const dx = this.player.position.x - (this.map.level4DoorX * cs + cs / 2);
     const dz = this.player.position.z - (this.map.level4DoorZ * cs + cs / 2);
@@ -2661,7 +2685,7 @@ export class GameEngine {
   }
 
   public handleLevel3Switch(index: number) {
-    if (this.level !== 8 || !this.map || index < 0 || index >= this.map.level3Switches.length) return;
+    if (this.level !== ELECTRICAL_ROOM_LEVEL || !this.map || index < 0 || index >= this.map.level3Switches.length) return;
     this.map.level3SwitchesOn.add(index);
     this.map.updateLevel3SwitchVisual(index);
     if (this.map.level3SwitchesOn.size >= 5) {
@@ -2685,7 +2709,7 @@ export class GameEngine {
     const switchIndex = this.nearUntouchedLevel3Switch();
     if (switchIndex >= 0) {
       this.handleLevel3Switch(switchIndex);
-      this.sendToServer({ type: "brick_office_switch", level: 8, index: switchIndex });
+      this.sendToServer({ type: "brick_office_switch", level: ELECTRICAL_ROOM_LEVEL, index: switchIndex });
       return null;
     }
     const employee = this.nearMegEmployee();
@@ -2699,7 +2723,7 @@ export class GameEngine {
     }
     if (this.nearExitDesk()) return "paper";
     if (this.nearCheatTerminal()) return "cheat";
-    if (this.level !== 4 || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
+    if (this.level !== LEVEL_G || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
     const cs = this.map.cellSize;
     const dx = this.player.position.x - (this.map.levelGTerminalX * cs + cs / 2);
     const dz = this.player.position.z - (this.map.levelGTerminalZ * cs + cs / 2);
@@ -2707,7 +2731,7 @@ export class GameEngine {
   }
 
   public submitMegDoorNames(raw: string): boolean {
-    if (this.level !== 9 || !this.map) return false;
+    if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map) return false;
     const names = raw.split(",").map((name) => name.trim().toLocaleLowerCase()).filter(Boolean);
     const expected = [...this.map.level4Employees]
       .sort((a, b) => ({ senior: 0, pleno: 1, junior: 2 }[a.grade] - { senior: 0, pleno: 1, junior: 2 }[b.grade]))
@@ -2729,7 +2753,7 @@ export class GameEngine {
    * refusal buzz, and the Finger King comes straight for you for a while.
    */
   public submitLevelGCode(code: string): boolean {
-    if (this.level !== 4 || !this.map) return false;
+    if (this.level !== LEVEL_G || !this.map) return false;
     const ok = code === this.map.levelGCode;
     this.audio.playTerminalBeep(ok);
     if (ok) {
@@ -2744,7 +2768,7 @@ export class GameEngine {
 
   /** A teammate typed a code (authority only): alarm them all, or send it after them. */
   public handleLevelGCodeRequest(msg: { level: number; ok: boolean }) {
-    if (msg.level !== 4 || this.level !== 4 || !this.isWorldAuthority) return;
+    if (msg.level !== LEVEL_G || this.level !== LEVEL_G || !this.isWorldAuthority) return;
     if (msg.ok) this.startLevelGAlarm(true);
     else this.levelGAlertTimer = 10;
   }
@@ -2813,7 +2837,7 @@ export class GameEngine {
    * `broadcast`: whether this call originates the alarm (vs. replaying one).
    */
   private startLevelGAlarm(broadcast: boolean) {
-    if (this.levelGAlarm || this.level !== 4 || !this.map) return;
+    if (this.levelGAlarm || this.level !== LEVEL_G || !this.map) return;
     this.levelGAlarm = true;
     this.map.emergencyDoorOpen = true;
     this.map.startGlobalEvent("flicker_storm", 1e6);
@@ -2930,7 +2954,7 @@ export class GameEngine {
         entity = WanderingEntity.getOrCreate(this.map, s.gx, s.gz, s.t, this.scene);
         entity.netId = s.id;
         this.entities.push(entity);
-        if (this.level === 3 && this.onHUDNotification) {
+        if (this.level === LIGHTS_OUT_LEVEL && this.onHUDNotification) {
           this.onHUDNotification(t("eng.lightAttract"));
         }
       }
@@ -3150,10 +3174,10 @@ export class GameEngine {
    * the next one comes.
    */
   private updateLightsOutSummons(delta: number, targets: AiTarget[] | null) {
-    const def = LEVEL_DEFS[3];
+    const def = LEVEL_DEFS[LIGHTS_OUT_LEVEL];
     // Authority only (targets is null elsewhere): the summoned stalkers reach
     // everyone else on the level through the replicated stream.
-    if (this.level !== 3 || !this.player || !this.map || !targets || def.spawn.kind !== "timedSummon") {
+    if (this.level !== LIGHTS_OUT_LEVEL || !this.player || !this.map || !targets || def.spawn.kind !== "timedSummon") {
       this.lightsOutSummonTimer = 0;
       return;
     }
@@ -3176,7 +3200,7 @@ export class GameEngine {
 
   /** Summons a stalker from LEVEL_DEFS[3]'s pool, spawnRadiusCells away from the explorer whose light drew it, at (x, z). */
   private spawnLightsOutStalker(x: number, z: number) {
-    const def = LEVEL_DEFS[3];
+    const def = LEVEL_DEFS[LIGHTS_OUT_LEVEL];
     if (!this.player || !this.map || def.spawn.kind !== "timedSummon") return;
     const { pool, spawnRadiusCells: [minR, maxR] } = def.spawn;
     const pgX = Math.floor(x / this.map.cellSize);
@@ -3220,7 +3244,7 @@ export class GameEngine {
       // Smilers live in Level 1's sector 3 (the final hall) and, at night,
       // all over Level 6 (see updateLevel6's day/night cycle) — everywhere
       // else, clear them out.
-      const level6Night = this.level === 6 && this.level6IsNight;
+      const level6Night = this.level === LIGHTS_OUT_LEVEL && this.level6IsNight;
       const hunted = this.level === 1 ? targets.filter((t) => inSector3(t.x, t.z))
         : level6Night ? targets
         : [];
@@ -3305,7 +3329,7 @@ export class GameEngine {
    * separately scripted boss encounter.
    */
   private updateLevel6(delta: number) {
-    if (this.level !== 6 || !this.map || !this.player) return;
+    if (this.level !== MOTION_LEVEL || !this.map || !this.player) return;
     this.level6Time += delta;
     const cycleLength = this.LEVEL6_DAY_S + this.LEVEL6_NIGHT_S;
     const phase = this.level6Time % cycleLength;

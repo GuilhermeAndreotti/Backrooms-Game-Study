@@ -51,7 +51,7 @@ export const duller: MobDefinition = {
   },
 
   speech(ctx) {
-    return { key: ctx.inSolidCell ? "sp.duller.wall" : "..." };
+    return { key: "" };
   },
 
   radar: { color: "#3b82f6", strokeColor: "#1d4ed8", labelKey: "radar.duller" },

@@ -72,7 +72,7 @@ export const sombra: MobDefinition = {
   },
 
   speech(ctx) {
-    return { key: ctx.isChasing ? "sp.sombra.chase" : "sp.sombra.lurk" };
+    return { key: "" };
   },
 
   radar: { color: "#4c1d95", strokeColor: "#2e1065", labelKey: "radar.sombra" },

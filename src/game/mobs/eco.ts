@@ -80,7 +80,7 @@ export const eco: MobDefinition = {
   },
 
   speech(ctx) {
-    return { key: ctx.isChasing ? "sp.eco.chase" : "sp.eco.idle" };
+    return { key: "" };
   },
 
   radar: { color: "#22d3ee", strokeColor: "#0e7490", labelKey: "radar.eco" },

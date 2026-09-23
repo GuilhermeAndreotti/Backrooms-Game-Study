@@ -68,7 +68,7 @@ export const vigia: MobDefinition = {
   },
 
   speech(ctx) {
-    return { key: ctx.isChasing ? "sp.vigia.advance" : "" };
+    return { key: "" };
   },
 
   radar: { color: "#78716c", strokeColor: "#44403c", labelKey: "radar.vigia" },

@@ -8,6 +8,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { GameEngine } from "../game/GameEngine";
 import { RemotePlayer } from "../types/game";
 import { Radio, Crosshair, Compass } from "lucide-react";
+import { LOBBY_LEVEL, LEVEL_G } from "../game/levels/constants";
 
 interface RadarHUDProps {
   engineRef: React.MutableRefObject<GameEngine | null>;
@@ -166,10 +167,10 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
       } else if (level === 0) {
         ctx.fillText(t("radar.l0a"), cx, cy - 25);
         ctx.fillText(t("radar.l0b"), cx, cy + 25);
-      } else if (level === 5) {
+      } else if (level === LOBBY_LEVEL) {
         ctx.fillText(t("radar.l5a"), cx, cy - 25);
         ctx.fillText(t("radar.l5b"), cx, cy + 25);
-      } else if (level === 4) {
+      } else if (level === LEVEL_G) {
         ctx.fillText(t("radar.lga"), cx, cy - 25);
         ctx.fillText(t("radar.lgb"), cx, cy + 25);
       } else {
@@ -223,7 +224,7 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
 
       // 4. Render Exit glitch gateway (Level 1 exit portal or Level 0 anomaly exit)
       // Level G keeps its emergency door off the radar until the alarm opens it.
-      const hasExit = (map.exitGridX !== 0 || map.exitGridZ !== 0) && (level !== 4 || engine.levelGAlarm);
+      const hasExit = (map.exitGridX !== 0 || map.exitGridZ !== 0) && (level !== LEVEL_G || engine.levelGAlarm);
       if (hasExit) {
         const exitX = map.exitGridX * map.cellSize + map.cellSize / 2;
         const exitZ = map.exitGridZ * map.cellSize + map.cellSize / 2;

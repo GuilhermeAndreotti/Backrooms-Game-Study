@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { GameSettings, ConnectionPhase, RemotePlayer, ChatMessage, DEFAULT_SUIT_COLOR } from "./types/game";
+import { GameSettings, ConnectionPhase, RemotePlayer, ChatMessage, DEFAULT_SUIT_COLOR, RoomConfig, DeathAction } from "./types/game";
 import { GameEngine, LevelGProgress } from "./game/GameEngine";
 import { MainMenu } from "./components/MainMenu";
 import { GameHUD } from "./components/GameHUD";
@@ -14,6 +14,7 @@ import { TerminalModal } from "./components/TerminalModal";
 import { CheatTerminalModal, SkinChoice } from "./components/CheatTerminalModal";
 import { LevelSelectorModal } from "./components/LevelSelectorModal";
 import { MegDoorModal } from "./components/MegDoorModal";
+import { LOBBY_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, MOTION_LEVEL, nextMainLevel } from "./game/levels/constants";
 import { addAchievementListener, removeAchievementListener, unlockAchievement } from "./utils/achievements";
 import { isTypingInField, lockGameInput } from "./utils/input";
 import { EMPTY_FACE } from "./utils/face";
@@ -23,17 +24,18 @@ import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, X, FileText, Compa
 
 /**
  * Player-facing level label. Internal level ids and what's shown on screen
- * are deliberately decoupled (Lights Out is internal id 3, shown as
+ * are deliberately decoupled (Lights Out is internal id 6, shown as
  * "6 · LIGHTS OUT" per Backrooms-wiki lore numbering) — this keeps every
  * such special case in one place instead of scattered ternaries.
  */
 function displayLabelForLevel(level: number): string {
-  if (level === 3) return "3";
-  if (level === 8) return "BRICK OFFICES";
-  if (level === 9) return "MEG OFFICES";
-  if (level === 5) return "LOBBY";
-  if (level === 6) return "4";
-  if (level === 7) return "5";
+  if (level === ELECTRICAL_ROOM_LEVEL) return "ELECTRICAL ROOM";
+  if (level === ABANDONED_OFFICE_LEVEL) return "ABANDONED OFFICE";
+  if (level === POOLROOMS_LEVEL) return "POOLROOMS";
+  if (level === LOBBY_LEVEL) return "LOBBY";
+  if (level === LIGHTS_OUT_LEVEL) return "6 · SECRET";
+  if (level === LEVEL_G) return "LEVEL G · SECRET";
+  if (level === MOTION_LEVEL) return "MOTION";
   return String(level);
 }
 
@@ -101,6 +103,11 @@ export default function App() {
   const [isDead, setIsDead] = useState(false);
   const [spectateName, setSpectateName] = useState<string | null>(null);
   const [allDead, setAllDead] = useState(false);
+  const [exitProgress, setExitProgress] = useState<{ level: number; ready: number; required: number } | null>(null);
+  const [waitingForExit, setWaitingForExit] = useState(false);
+  const [roomConfig, setRoomConfig] = useState<RoomConfig>({ deathAction: "current_level", secretRoutes: true });
+  const roomConfigRef = useRef(roomConfig);
+  useEffect(() => { roomConfigRef.current = roomConfig; }, [roomConfig]);
   const [isFlashlightOn, setIsFlashlightOn] = useState(false);
   const [playerState, setPlayerState] = useState("idle");
   const [pointerLocked, setPointerLocked] = useState(false);
@@ -274,7 +281,7 @@ export default function App() {
       // open the inventory/achievements panels over it.
       if (isTypingInField()) return;
       // Lobby: the host starts the expedition.
-      if (e.key === "Enter" && !e.repeat && engineRef.current?.level === 5 && clientIdRef.current && clientIdRef.current === hostIdRef.current) {
+      if (e.key === "Enter" && !e.repeat && engineRef.current?.level === LOBBY_LEVEL && clientIdRef.current && clientIdRef.current === hostIdRef.current) {
         e.preventDefault();
         socketRef.current?.send(JSON.stringify({ type: "start_game", level: 0 }));
         return;
@@ -466,7 +473,7 @@ export default function App() {
           }
 
           else if (type === "joined") {
-            const { id: myId, seed, players: currentOn, level: roomLevel = 0, authority = {}, code: joinedCode = "", hostId: joinedHost = "" } = data;
+            const { id: myId, seed, players: currentOn, level: roomLevel = 0, authority = {}, code: joinedCode = "", hostId: joinedHost = "", roomConfig: joinedConfig } = data;
             // A server from before rooms/lobbies answers without an invite code
             // (and drops you straight into Level 0): say so instead of playing on.
             if (!joinedCode) {
@@ -483,12 +490,15 @@ export default function App() {
             setIsTerminalOpen(false);
             setIsDead(false);
             setAllDead(false);
+            setExitProgress(null);
+            setWaitingForExit(false);
             setSpectateName(null);
             playersRef.current = currentOn;
             setConnectedPlayers(currentOn);
             setCurrentSeed(seed);
             setRoomCode(joinedCode);
             setHostId(joinedHost);
+            if (joinedConfig && typeof joinedConfig === "object") setRoomConfig(joinedConfig as RoomConfig);
             try { window.history.replaceState(null, "", `/${joinedCode}`); } catch { /* not critical */ }
             setPhase(ConnectionPhase.PLAYING);
 
@@ -523,7 +533,8 @@ export default function App() {
                       const engine = engineRef.current;
                       if (!engine) return;
 
-                      if (engine.level === 0 || engine.level === 1 || engine.level === 2 || engine.level === 6) {
+                      const nextLevel = nextMainLevel(engine.level);
+                      if (nextLevel !== null) {
                         // Ask the server to advance the whole room together instead
                         // of transitioning just this client: previously each player
                         // who found the exit noclipped into their own next level,
@@ -531,19 +542,21 @@ export default function App() {
                         // transition now runs for every player (this one included)
                         // when the server's "level_transition" broadcast comes back
                         // — see that handler below.
-                          // Progression: 0 -> 1 -> 2 -> 6 -> 7 -> ESCAPED.
-                          // Lights Out and Level G remain secret detours.
-                        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+                         if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
                           socketRef.current.send(JSON.stringify({
                             type: "level_transition_request",
-                             level: engine.level === 2 ? 6 : engine.level === 6 ? 7 : engine.level + 1,
-                          }));
-                        }
+                             level: nextLevel,
+                           }));
+                         }
+                      } else if (engine.level === POOLROOMS_LEVEL) {
+                        socketRef.current?.send(JSON.stringify({ type: "level_transition_request", level: LOBBY_LEVEL }));
+                      } else if ((engine.level === LIGHTS_OUT_LEVEL || engine.level === LEVEL_G) && socketRef.current?.readyState === WebSocket.OPEN) {
+                        socketRef.current.send(JSON.stringify({ type: "level_transition_request", level: ABANDONED_OFFICE_LEVEL, secret: true }));
                       } else {
                         console.log("Explorer successfully escaped the Backrooms!");
                         unlockAchievement("absolute_survivor");
                         // Level G's emergency door is its own, secret ending
-                          if (engine.level === 4) {
+                           if (engine.level === LEVEL_G) {
                           unlockAchievement("level_g_escaped");
                           setLevelGEnding("message");
                         }
@@ -564,25 +577,26 @@ export default function App() {
                     onMegDialogue: (employee) => setMegDialogue(employee),
                     onMegDoorRequest: () => setIsMegDoorOpen(true),
                     onSecretLevelFound: (targetLevel: number) => {
-                      // Purely local — optional solo detours (Level 1 -> Level 6
-                      // "Lights Out", Level 0 -> Level G), not room-wide
-                      // progression events, so no server round-trip.
+                      if (roomConfigRef.current.secretRoutes === false) return;
+                       // Secret detours are local map changes, but their return
+                       // is sent to the server so the convergence at Level 4
+                       // remains synchronized.
                       const engine = engineRef.current;
-                       const from = targetLevel === 4 ? 0 : 1;
+                        const from = targetLevel === LEVEL_G ? 4 : 1;
                       if (!engine || engine.level !== from) return;
 
-                       if (targetLevel === 4) {
+                        if (targetLevel === LEVEL_G) {
                         console.log("Found the office door that shouldn't exist... entering LEVEL G.");
                         unlockAchievement("level_g_found");
                       } else {
-                        console.log("Found the dark corridor... entering Level 6: Lights Out.");
+                         console.log("Found the dark corridor... entering Level 6: Lights Out.");
                         unlockAchievement("secret_level_found");
                       }
 
                       setLoadingMap(true);
                       setLoadingProgress(0);
                       setCurrentLevel(targetLevel);
-                      engine.transitionToLevel(targetLevel, seed, settings);
+                       engine.transitionToLevel(targetLevel, seed, settings);
 
                       if (engine.player) {
                         engine.player.mapFullyLoaded = false;
@@ -695,14 +709,14 @@ export default function App() {
           // Server-authoritative "the room advanced to the next level" broadcast —
           // fires for every player in the room (including whoever triggered it),
           // so the group always transitions together onto the same level.
-          else if (type === "level_transition" || type === "respawn") {
+          else if (type === "level_transition" || type === "respawn" || type === "return_to_lobby") {
             const engine = engineRef.current;
             const nextLevel = data.level;
             const roomSeed = data.seed;
             // A respawn (whole room died, group chose a reset) may repeat or
             // go back to an earlier level; a plain transition only moves forward.
-            const forced = type === "respawn";
-            if (!engine || typeof nextLevel !== "number" || (!forced && !data.start && nextLevel <= engine.level)) return;
+            const forced = type === "respawn" || type === "return_to_lobby";
+            if (!engine || typeof nextLevel !== "number" || (!forced && !data.secret && !data.convergence && !data.start && nextLevel <= engine.level)) return;
 
             if (forced) {
               logSystemMessage(data.toLobby ? t("sys.resetLobby") : data.scratch ? t("sys.resetScratch") : t("sys.resetLevel", { n: nextLevel }));
@@ -714,6 +728,8 @@ export default function App() {
             // Everyone who died is back (server-side too).
             setIsDead(false);
             setAllDead(false);
+            setWaitingForExit(false);
+            setExitProgress(null);
             setSpectateName(null);
             if (forced && (data.scratch || data.toLobby)) {
               setInventory([]);
@@ -750,6 +766,18 @@ export default function App() {
 
           else if (type === "host") {
             setHostId(data.id);
+          }
+
+          else if (type === "room_config") {
+            if (data.config && typeof data.config === "object") setRoomConfig(data.config as RoomConfig);
+          }
+
+          else if (type === "exit_progress") {
+            setExitProgress({ level: data.level, ready: data.ready, required: data.required });
+            if (data.id === clientIdRef.current) {
+              setWaitingForExit(true);
+              engineRef.current?.setWaitingForTransition(true);
+            }
           }
 
           else if (type === "ball") {
@@ -1328,6 +1356,16 @@ export default function App() {
           )}
 
           {/* Death: spectating a living teammate */}
+          {waitingForExit && exitProgress && (
+            <div className="absolute top-20 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 font-mono select-none pointer-events-none">
+              <div className="bg-black/75 border border-cyan-800 rounded px-5 py-3 text-center text-cyan-300 uppercase tracking-widest text-[10px]">
+                {t("exit.waiting")}<br />
+                <span className="text-stone-300">{exitProgress.ready}/{exitProgress.required}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Death: spectating a living teammate */}
           {isDead && !allDead && (
             <div className="absolute top-20 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 font-mono select-none pointer-events-none">
               <div className="flex items-center gap-2 text-red-500 font-black tracking-[0.3em] text-sm uppercase animate-pulse">
@@ -1354,7 +1392,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Everyone died: the group chooses how to start over */}
+          {/* Everyone died: the configured room policy is applied by the server. */}
           {allDead && (
             <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/85 px-4 font-mono select-none">
               <div className="max-w-md w-full border border-red-950 bg-[#090303] p-8 rounded text-center space-y-5 shadow-[0_0_40px_rgba(220,38,38,0.2)]">
@@ -1363,33 +1401,15 @@ export default function App() {
                 <p className="text-xs text-stone-400 uppercase leading-relaxed font-sans">
                   {t("alldead.text")}
                 </p>
-                <div className="grid gap-3">
-                  <button
-                    onClick={() => socketRef.current?.send(JSON.stringify({ type: "room_reset", mode: "level" }))}
-                    className="w-full bg-red-700 hover:bg-red-600 text-white font-extrabold uppercase tracking-widest py-3 px-4 rounded text-xs transition-colors cursor-pointer border border-red-600/30"
-                  >
-                    {t("alldead.level", { n: currentLevel })}
-                  </button>
-                  <button
-                    onClick={() => socketRef.current?.send(JSON.stringify({ type: "room_reset", mode: "scratch" }))}
-                    className="w-full bg-transparent hover:bg-red-950/40 text-red-400 font-extrabold uppercase tracking-widest py-3 px-4 rounded text-xs transition-colors cursor-pointer border border-red-900"
-                  >
-                    {t("alldead.scratch")}
-                  </button>
-                  <button
-                    onClick={() => socketRef.current?.send(JSON.stringify({ type: "room_reset", mode: "lobby" }))}
-                    className="w-full bg-transparent hover:bg-red-950/40 text-stone-300 font-extrabold uppercase tracking-widest py-3 px-4 rounded text-xs transition-colors cursor-pointer border border-stone-700"
-                  >
-                    {t("alldead.lobby")}
-                  </button>
+                <div className="border border-red-900/70 bg-red-950/20 px-4 py-3 text-xs text-red-300 uppercase tracking-wider">
+                  {t("roomConfig.autoReset")} {roomConfig.deathAction === "current_level" ? t("roomConfig.currentLevel") : roomConfig.deathAction === "level_0" ? t("roomConfig.levelZero") : t("roomConfig.lobby")}
                 </div>
-                <p className="text-[9px] text-stone-500 uppercase tracking-widest">{t("alldead.anyone")}</p>
               </div>
             </div>
           )}
 
           {/* Room lobby: invite code, who's here, and the host's start button */}
-          {currentLevel === 5 && !loadingMap && (
+          {currentLevel === LOBBY_LEVEL && !loadingMap && (
             <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 w-[min(92vw,26rem)] font-mono select-none">
               <div className="border border-[#a28e3b]/40 bg-[#0c0b05]/85 backdrop-blur-sm rounded p-4 space-y-3 text-center pointer-events-auto">
                 <div className="text-[10px] tracking-[0.3em] text-[#a28e3b] uppercase">{t("lobby.title")}</div>
@@ -1407,6 +1427,30 @@ export default function App() {
                 <div className="text-[10px] text-stone-400">{t("lobby.invite")}</div>
                 <div className="text-[10px] text-stone-300 uppercase tracking-wider">
                   {t("lobby.players", { n: connectedPlayers.length + 1 })}
+                </div>
+                <div className="border-t border-[#a28e3b]/20 pt-3 text-left space-y-2">
+                  <div className="text-[9px] tracking-[0.2em] text-[#a28e3b] uppercase">{t("roomConfig.title")}</div>
+                  <div className="text-[9px] text-stone-400 uppercase">{t("roomConfig.deathAction")}</div>
+                  <div className="grid grid-cols-3 gap-1">
+                    {(["current_level", "level_0", "lobby"] as DeathAction[]).map((action) => (
+                      <button
+                        key={action}
+                        disabled={!isHost}
+                        onClick={() => socketRef.current?.send(JSON.stringify({ type: "room_config_update", config: { deathAction: action } }))}
+                        className={`border px-2 py-2 text-[9px] uppercase transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${roomConfig.deathAction === action ? "border-[#deb81d] bg-[#deb81d]/15 text-[#deb81d]" : "border-[#a28e3b]/30 text-stone-400 hover:border-[#deb81d]/60"}`}
+                      >
+                        {action === "current_level" ? t("roomConfig.currentLevel") : action === "level_0" ? t("roomConfig.levelZero") : t("roomConfig.lobby")}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    disabled={!isHost}
+                    onClick={() => socketRef.current?.send(JSON.stringify({ type: "room_config_update", config: { secretRoutes: !roomConfig.secretRoutes } }))}
+                    className={`w-full border px-2 py-2 text-[9px] uppercase text-left transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${roomConfig.secretRoutes ? "border-cyan-800 text-cyan-300" : "border-red-900 text-red-400"}`}
+                  >
+                    {t("roomConfig.secretRoutes")}: {roomConfig.secretRoutes ? t("roomConfig.enabled") : t("roomConfig.disabled")}
+                  </button>
+                  {!isHost && <div className="text-[9px] text-amber-400/80 uppercase">{t("roomConfig.hostOnly")}</div>}
                 </div>
                 {isHost ? (
                   <button
@@ -1458,7 +1502,7 @@ export default function App() {
             }}
           />
 
-          {isTerminalOpen && currentLevel === 8 && (
+          {isTerminalOpen && currentLevel === LEVEL_G && (
             <TerminalModal
               digits={levelGProgress.digits}
               onSubmit={(code) => engineRef.current?.submitLevelGCode(code) ?? false}
@@ -1486,7 +1530,7 @@ export default function App() {
             </div>
           )}
 
-          {isCheatTerminalOpen && currentLevel === 5 && (
+          {isCheatTerminalOpen && currentLevel === LOBBY_LEVEL && (
             <CheatTerminalModal
                      onSubmit={(code) => engineRef.current?.submitCheatCode(code) ?? null}
                      onUnlockRoom={() => setIsLevelSelectorOpen(true)}
@@ -1503,7 +1547,7 @@ export default function App() {
             />
           )}
 
-          {isLevelSelectorOpen && currentLevel === 5 && (
+          {isLevelSelectorOpen && currentLevel === LOBBY_LEVEL && (
             <LevelSelectorModal
               isHost={clientIdRef.current === hostIdRef.current}
               onStart={(level) => {

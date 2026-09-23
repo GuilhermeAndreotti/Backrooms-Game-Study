@@ -9,6 +9,7 @@ import { ProceduralMap, CellType } from "./ProceduralMap";
 import { EntityType } from "../shared/entityTypes";
 import { MOB_DEFS } from "./mobs/registry";
 import { MobBuildCtx, MobSenseCtx } from "./mobs/types";
+import { ELECTRICAL_ROOM_LEVEL, LEVEL_2, LIGHTS_OUT_LEVEL } from "./levels/constants";
 
 // Re-exported for existing import sites (GameEngine.ts etc.) — the type now
 // lives in src/shared/entityTypes.ts so server.ts can share it too.
@@ -77,6 +78,15 @@ export class WanderingEntity {
   private chaseTargetX = 0;
   private chaseTargetZ = 0;
   private isChasing = false;
+  private decisionCounter = 0;
+
+  /** Stable decisions keep a world-authority handoff from changing a patrol. */
+  private decisionRandom(): number {
+    let x = (this.netId * 2654435761 + this.gridX * 374761393 + this.gridZ * 668265263 + this.decisionCounter++ * 2246822519) >>> 0;
+    x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+    x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+    return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+  }
 
   /** Seconds until this monster's next voice line (owned by GameEngine's audio pass). */
   public voiceTimer = 1 + Math.random() * 3;
@@ -196,7 +206,7 @@ export class WanderingEntity {
     const speechTex = this.getSpeechTexture();
     const speechMat = new THREE.SpriteMaterial({ map: speechTex, depthTest: false, transparent: true });
     const sprite = new THREE.Sprite(speechMat);
-    sprite.scale.set(1.1, 0.28, 1);
+    sprite.scale.set(1.45, 0.42, 1);
     sprite.position.set(0, this.speechBubbleLocalY(), 0);
     sprite.visible = false;
     group.add(sprite);
@@ -222,8 +232,8 @@ export class WanderingEntity {
   private getSpeechTexture(): THREE.CanvasTexture {
     if (!this.speechCanvas) {
       this.speechCanvas = document.createElement("canvas");
-      this.speechCanvas.width = 220;
-      this.speechCanvas.height = 56;
+      this.speechCanvas.width = 320;
+      this.speechCanvas.height = 90;
     }
     if (!this.speechTexture) this.speechTexture = new THREE.CanvasTexture(this.speechCanvas);
     return this.speechTexture;
@@ -244,9 +254,26 @@ export class WanderingEntity {
     ctx.font = "bold 15px Courier New, monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    const metrics = ctx.measureText(text);
-    const bgW = Math.min(canvas.width - 4, metrics.width + 18);
-    const bgH = 26;
+    const maxTextWidth = canvas.width - 26;
+    const words = text.split(/\s+/);
+    const lines: string[] = [];
+    let line = "";
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (ctx.measureText(candidate).width > maxTextWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = candidate;
+      }
+    }
+    if (line) lines.push(line);
+    const visibleLines = lines.slice(0, 3);
+    if (lines.length > 3) visibleLines[2] = `${visibleLines[2].replace(/[.!?]+$/, "")}...`;
+    const widest = Math.max(...visibleLines.map((value) => ctx.measureText(value).width), 0);
+    const lineHeight = 18;
+    const bgW = Math.min(canvas.width - 4, widest + 22);
+    const bgH = visibleLines.length * lineHeight + 16;
 
     ctx.fillStyle = "rgba(10, 8, 3, 0.85)";
     ctx.strokeStyle = this.isAgitated ? "#ef4444" : "#a28e3b";
@@ -259,7 +286,9 @@ export class WanderingEntity {
     ctx.shadowBlur = 5;
     ctx.shadowColor = this.isAgitated ? "#ef4444" : "#eab308";
     ctx.fillStyle = this.isAgitated ? "#fca5a5" : "#deb81d";
-    ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 1);
+    visibleLines.forEach((value, index) => {
+      ctx.fillText(value, canvas.width / 2, canvas.height / 2 + 1 + (index - (visibleLines.length - 1) / 2) * lineHeight);
+    });
 
     this.speechTexture!.needsUpdate = true;
     this.speechSprite.visible = true;
@@ -494,11 +523,12 @@ export class WanderingEntity {
   ): MobSenseCtx {
     return {
       delta, distanceMeters, playerState, cameraDir,
+      random: () => this.decisionRandom(),
       playerX, playerZ,
       entityPos: this.mesh.position,
       inSolidCell: this.map.grid[this.gridX]?.[this.gridZ] === CellType.SOLID,
       isFlashlightOn,
-      levelForcedChase: this.map.level === 2 || this.map.level === 3,
+      levelForcedChase: this.map.networkLevel === LEVEL_2 || this.map.networkLevel === LIGHTS_OUT_LEVEL,
       aggression: this.aggression,
       hunting: this.hunting,
       targetHidden: this.targetHidden,
@@ -565,16 +595,16 @@ export class WanderingEntity {
     // Level 3 ("Lights Out") stalkers are summoned specifically to hunt the
     // player, so they share Level 2's always-chasing behavior.
     const senseDef = MOB_DEFS[this.type];
-    if (this.map.level === 2) {
+    if (this.map.networkLevel === LEVEL_2 || this.map.networkLevel === LIGHTS_OUT_LEVEL) {
       this.isChasing = true;
-      // Boost movement speeds dramatically on Level 2/3 to make it a fast, heart-pounding sprint chase!
+      // Level 2 and secret Level 6 are fast, unavoidable sprint chases.
       this.moveSpeed = senseDef.forcedChaseSpeed;
       if (senseDef.forcedChaseAgitated) this.isAgitated = true;
     } else {
       this.isChasing = false;
     }
 
-    if (this.map.level !== 2) {
+    if (this.map.networkLevel !== LEVEL_2 && this.map.networkLevel !== LIGHTS_OUT_LEVEL) {
       const ctx = this.senseCtx(delta, distanceMeters, playerX, playerZ, playerState, cameraDir, isFlashlightOn);
       const result = senseDef.sense(ctx);
       this.isChasing = result.chasing;
@@ -584,7 +614,7 @@ export class WanderingEntity {
 
       // In Brick Offices the pack is aggressive until a beam lands on it. A lit,
       // aimed-at Hound flees by pathing toward the opposite side of the map.
-      if (this.map.level === 8 && this.type === EntityType.HOUND && isFlashlightOn && cameraDir) {
+      if (this.map.networkLevel === ELECTRICAL_ROOM_LEVEL && this.type === EntityType.HOUND && isFlashlightOn && cameraDir) {
         const fromPlayer = new THREE.Vector3(this.mesh.position.x - playerX, 0, this.mesh.position.z - playerZ).normalize();
         if (cameraDir.dot(fromPlayer) > 0.78 && distanceMeters < 18) {
           this.isChasing = true;
@@ -615,8 +645,8 @@ export class WanderingEntity {
         this.isMoving = false;
         this.pauseTimer = this.type === EntityType.FINGER_KING
           // Lurks between steps while searching; no pauses once it has you.
-          ? (this.isChasing ? 0.03 : 0.3 + Math.random() * 0.9)
-          : Math.random() * 0.4 + 0.2; // brief tension check
+          ? (this.isChasing ? 0.03 : 0.3 + this.decisionRandom() * 0.9)
+          : this.decisionRandom() * 0.4 + 0.2; // brief tension check
         this.syncWorldPosition();
       } else {
         // Linearly interpolate ThreeJS world coords
@@ -684,7 +714,7 @@ export class WanderingEntity {
       }
       const forward = options.filter(([x, z]) => x !== this.prevGridX || z !== this.prevGridZ);
       const pool = forward.length > 0 ? forward : options;
-      if (pool.length > 0) step = pool[Math.floor(Math.random() * pool.length)];
+      if (pool.length > 0) step = pool[Math.floor(this.decisionRandom() * pool.length)];
     }
 
     if (step) {
@@ -720,7 +750,7 @@ export class WanderingEntity {
    * off limits unless it's hunting or the one inside isn't hidden any more.
    */
   private chooseFingerKingStep(pXg: number, pZg: number) {
-    const seek = this.isChasing || (!this.targetHidden && Math.random() < 0.3 + 0.5 * this.aggression);
+    const seek = this.isChasing || (!this.targetHidden && this.decisionRandom() < 0.3 + 0.5 * this.aggression);
     const step = seek ? this.bfsFirstStep(pXg, pZg) : null;
     if (step) {
       [this.targetGridX, this.targetGridZ] = step;
@@ -735,7 +765,7 @@ export class WanderingEntity {
       if (this.fingerCanEnter(this.gridX, this.gridZ, nx, nz)) options.push([nx, nz]);
     }
     if (options.length > 0) {
-      [this.targetGridX, this.targetGridZ] = options[Math.floor(Math.random() * options.length)];
+      [this.targetGridX, this.targetGridZ] = options[Math.floor(this.decisionRandom() * options.length)];
       this.isMoving = true;
       this.transitionProgress = 0.0;
     } else {
@@ -822,7 +852,7 @@ export class WanderingEntity {
     }
 
     if (candidates.length > 0) {
-      const select = candidates[Math.floor(Math.random() * candidates.length)];
+      const select = candidates[Math.floor(this.decisionRandom() * candidates.length)];
       this.gridX = select[0];
       this.gridZ = select[1];
       this.targetGridX = select[0];

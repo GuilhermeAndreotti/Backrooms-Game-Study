@@ -71,7 +71,7 @@ export const ceifador: MobDefinition = {
   },
 
   speech(ctx) {
-    return { key: ctx.isChasing ? "sp.ceifador.chase" : "" };
+    return { key: "" };
   },
 
   // Deliberately unused by RadarHUD (kept off the radar entirely, same
