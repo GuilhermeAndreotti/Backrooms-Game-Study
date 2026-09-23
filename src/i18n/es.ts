@@ -8,7 +8,10 @@ import type { MessageKey } from "./pt-BR";
 export const es: Record<MessageKey, string> = {
   "menu.tagline": "Infiltración Cooperativa",
   "menu.title": "THE BACKROOMS",
-  "menu.networkStatus": "Estado de la red: estable",
+  "menu.networkChecking": "Estado de la red: verificando",
+  "menu.networkStable": "Estado de la red: estable ({ms} ms)",
+  "menu.networkSlow": "Estado de la red: latencia alta ({ms} ms)",
+  "menu.networkOffline": "Estado de la red: no disponible",
   "menu.explorerId": "Identificación del Explorador",
   "menu.namePlaceholder": "Nombre del jugador",
   "menu.roomCode": "Código de la Sala",

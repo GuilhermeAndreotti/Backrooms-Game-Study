@@ -21,6 +21,8 @@ interface MainMenuProps {
   onCloseApp?: () => void;
 }
 
+type NetworkStatus = "checking" | "stable" | "slow" | "offline";
+
 export const MainMenu: React.FC<MainMenuProps> = ({
   settings,
   onUpdateSettings,
@@ -37,11 +39,52 @@ export const MainMenu: React.FC<MainMenuProps> = ({
   const [language, setLanguage] = useLanguage();
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [pendingEntry, setPendingEntry] = useState<{ create: true } | { code: string } | null>(null);
+  const [networkStatus, setNetworkStatus] = useState<NetworkStatus>("checking");
+  const [networkLatency, setNetworkLatency] = useState<number | null>(null);
 
   // Sync state if parent settings shift
   useEffect(() => {
     setLocalSettings({ ...settings });
   }, [settings]);
+
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let controller: AbortController | null = null;
+
+    const checkNetwork = async () => {
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller?.abort(), 5000);
+      const startedAt = performance.now();
+
+      try {
+        const response = await fetch("/api/health", { cache: "no-store", signal: controller.signal });
+        const health = await response.json();
+        if (!response.ok || health.status !== "online") throw new Error("Relay unavailable");
+
+        const latency = Math.round(performance.now() - startedAt);
+        if (active) {
+          setNetworkLatency(latency);
+          setNetworkStatus(latency < 180 ? "stable" : "slow");
+        }
+      } catch {
+        if (active) {
+          setNetworkLatency(null);
+          setNetworkStatus("offline");
+        }
+      } finally {
+        clearTimeout(timeout);
+        if (active) timer = setTimeout(checkNetwork, 10_000);
+      }
+    };
+
+    checkNetwork();
+    return () => {
+      active = false;
+      if (timer) clearTimeout(timer);
+      controller?.abort();
+    };
+  }, []);
 
   const handleChange = (key: keyof GameSettings, value: any) => {
     setLocalSettings(prev => ({
@@ -140,9 +183,16 @@ export const MainMenu: React.FC<MainMenuProps> = ({
           </div>
           <div className="bg-black/50 border border-white/10 backdrop-blur-sm px-4 py-2 flex gap-4 md:gap-6 items-center rounded">
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+              <div className={`w-2 h-2 rounded-full ${
+                networkStatus === "stable" ? "bg-green-500 animate-pulse" :
+                networkStatus === "slow" || networkStatus === "checking" ? "bg-yellow-400 animate-pulse" :
+                "bg-red-500"
+              }`}></div>
               <span className="text-[#F2E8CF]/80 font-mono text-[10px] uppercase tracking-wide">
-                {t("menu.networkStatus")}
+                {networkStatus === "checking" ? t("menu.networkChecking") :
+                  networkStatus === "stable" ? t("menu.networkStable", { ms: networkLatency ?? 0 }) :
+                  networkStatus === "slow" ? t("menu.networkSlow", { ms: networkLatency ?? 0 }) :
+                  t("menu.networkOffline")}
               </span>
             </div>
             <span className="text-white/30 font-mono text-[10px]">v1.0.4-BETA</span>

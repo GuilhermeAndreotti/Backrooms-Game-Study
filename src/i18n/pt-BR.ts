@@ -6,7 +6,10 @@
 export const ptBR = {
   "menu.tagline": "Infiltração Cooperativa",
   "menu.title": "THE BACKROOMS",
-  "menu.networkStatus": "Status da rede: estável",
+  "menu.networkChecking": "Status da rede: verificando",
+  "menu.networkStable": "Status da rede: estável ({ms} ms)",
+  "menu.networkSlow": "Status da rede: latência alta ({ms} ms)",
+  "menu.networkOffline": "Status da rede: indisponível",
   "menu.explorerId": "Identificação do Explorador",
   "menu.namePlaceholder": "Nome do Jogador",
   "menu.roomCode": "Código da Sala",
