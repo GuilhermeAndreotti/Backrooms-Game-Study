@@ -37,6 +37,7 @@ export const observador: MobDefinition = {
   baseSpeed: WATCH_SPEED,
   baseHeight: 1.5, // unnaturally tall
   strideLength: 1.1,
+  stepWeight: 0.5,
   facesViewer: true,
   bobFreq: 1.4, bobAmp: 0.04, // mostly still, a slow watching sway
   speechBubbleLocalY: 1.0,

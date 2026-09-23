@@ -38,6 +38,7 @@ export const sombra: MobDefinition = {
   baseSpeed: IDLE_SPEED,
   baseHeight: 1.35,
   strideLength: 1.2,
+  stepWeight: 0.3,
   bobFreq: 1.2, bobAmp: 0.06,
   speechBubbleLocalY: 0.9,
   forcedChaseSpeed: 3.4,

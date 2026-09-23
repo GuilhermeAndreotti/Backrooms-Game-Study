@@ -39,6 +39,7 @@ export const eco: MobDefinition = {
   baseSpeed: BASE_SPEED,
   baseHeight: 1.35,
   strideLength: 1.2,
+  stepWeight: 0.4,
   bobFreq: 4.6, bobAmp: 0.05, // twitchy, irregular
   speechBubbleLocalY: 0.85,
   forcedChaseSpeed: 3.5,

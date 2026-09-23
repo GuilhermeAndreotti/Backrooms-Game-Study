@@ -27,6 +27,7 @@ export const fingerKing: MobDefinition = {
   baseSpeed: 1.0,
   baseHeight: 1.35,
   strideLength: 1.6,
+  stepWeight: 0.6,
   bobFreq: 3.8, bobAmp: 0.08,
   speechBubbleLocalY: 1.1,
   // Never actually reached (Finger King only ever appears on Level G, id 4,

@@ -7,6 +7,7 @@ import { Lobby, LOBBY, LOBBY_LEVEL, BallNetState } from "./Lobby";
 import { Voip } from "./Voip";
 import { t, type MessageKey } from "../i18n";
 import { OfficeWorker } from "./npc/OfficeWorker";
+import { WaterRipples, waterUniforms } from "./Water";
 import * as THREE from "three";
 import { ProceduralMap, LEVEL_G_DOOR_OPEN_ANGLE } from "./ProceduralMap";
 import { PlayerController, PLAYER_STANDING_HEIGHT, PLAYER_CROUCH_HEIGHT } from "./PlayerController";
@@ -655,11 +656,7 @@ export class GameEngine {
     this.map.performProximityCulling(this.scene, spawnX, spawnZ, true);
 
     // Local Footstep triggers
-    const triggerAudioFootstep = (speed: 'walk' | 'run' | 'crouch') => {
-      const isWet = this.map ? this.map.isCellWet(this.player.position.x, this.player.position.z) : false;
-      this.audio.playFootstep(speed, 0.0, isWet); // panning 0.0 for self
-      this.noiseBus.emit(this.player.position.x, this.player.position.z, footstepLoudness(speed), "footstep", this.totalPlayTime);
-    };
+    const triggerAudioFootstep = (speed: 'walk' | 'run' | 'crouch') => this.onLocalFootstep(speed);
 
     // Instantiate Player movement controller after map is pre-loaded
     this.player = new PlayerController(this.camera, this.renderer.domElement, this.map, triggerAudioFootstep);
@@ -702,6 +699,7 @@ export class GameEngine {
 
     // Dynamic global dust cloud centered on player
     this.initGlobalDust();
+    this.ripples = new WaterRipples(this.scene);
   }
 
   public async precreateMap(onProgress?: (p: number) => void): Promise<void> {
@@ -1347,6 +1345,7 @@ export class GameEngine {
 
       // Interpolate position/movement animations for Remote Hazmat Explorers
       this.animateRemotePlayers(delta);
+      this.updateFootfalls(delta);
 
       // Proximity VOIP: fade teammates in/out of hearing range, and poll the
       // local mic for the speaking indicator. No-ops entirely while disabled.
@@ -1591,6 +1590,87 @@ export class GameEngine {
     return eyeY - eyeHeight;
   }
 
+  /** Distance from the local player and stereo pan for a world position. */
+  private listenerPan(x: number, z: number): { dist: number; pan: number } {
+    this.camera.getWorldDirection(this.scratchCamDir);
+    const rx = -this.scratchCamDir.z, rz = this.scratchCamDir.x;
+    const rl = Math.hypot(rx, rz) || 1;
+    const dx = x - this.player.position.x, dz = z - this.player.position.z;
+    const dist = Math.hypot(dx, dz);
+    const pan = dist > 0.01 ? ((dx * rx + dz * rz) / (dist * rl)) * Math.min(1, dist / 3) : 0;
+    return { dist, pan };
+  }
+
+  /** The local player's footstep: splashing in the pool, carpet/concrete anywhere else. */
+  private onLocalFootstep(speed: 'walk' | 'run' | 'crouch') {
+    const { x, z } = this.player.position;
+    if (this.map?.isWaterAt(x, z)) {
+      this.audio.playWaterStep(speed);
+      this.ripples?.spawn(x, z, speed === 'run' ? 1.3 : speed === 'crouch' ? 0.6 : 1, speed === 'run');
+    } else {
+      const isWet = this.map ? this.map.isCellWet(x, z) : false;
+      this.audio.playFootstep(speed, 0.0, isWet); // panning 0.0 for self
+    }
+    this.noiseBus.emit(x, z, footstepLoudness(speed), "footstep", this.totalPlayTime);
+  }
+
+  /** A teammate's footstep (from their avatar's gait): heard nearby, rippling the water. */
+  private onRemoteFootstep(x: number, z: number, state: string) {
+    if (!this.map || !this.player) return;
+    const speed: 'walk' | 'run' | 'crouch' = state === "running" ? "run" : state === "crouching" ? "crouch" : "walk";
+    const inWater = this.map.isWaterAt(x, z);
+    if (inWater) this.ripples?.spawn(x, z, speed === 'run' ? 1.3 : 0.9, speed === 'run');
+    const { dist, pan } = this.listenerPan(x, z);
+    const HEARING = 22;
+    if (dist > HEARING) return;
+    const vol = Math.pow(1 - dist / HEARING, 1.5);
+    if (inWater) this.audio.playWaterStep(speed, pan, vol);
+    else this.audio.playFootstep(speed, pan, this.map.isCellWet(x, z), vol);
+  }
+
+  /**
+   * Monster footfalls (one per step of their walk cycle), the pool's water
+   * clock and ripples, and how much the local player's surroundings echo.
+   * Runs every frame on every client — the gait is animated locally.
+   */
+  private updateFootfalls(delta: number) {
+    waterUniforms.uTime.value += delta;
+    this.ripples?.update(delta);
+    if (!this.map || !this.player) return;
+
+    this.audio.setEcho(this.map.echoAt(this.player.position.x, this.player.position.z));
+
+    // Every stepping mob ripples the water; only the nearest few are heard,
+    // so a whole pack sprinting at you stays a clear, scary rhythm, not mush.
+    const HEARING = 26;
+    const MAX_AUDIBLE_STEPS = 3;
+    const audible: { dist: number; pan: number; weight: number; inWater: boolean }[] = [];
+    for (const e of this.entities) {
+      if (!e.consumeStep()) continue;
+      const weight = e.stepWeight;
+      if (weight <= 0) continue;
+      const { x, z } = e.mesh.position;
+      const inWater = this.map.isWaterAt(x, z);
+      if (inWater) this.ripples?.spawn(x, z, 0.8 + weight * 0.6, e.runningGait);
+      const { dist, pan } = this.listenerPan(x, z);
+      if (dist <= HEARING) audible.push({ dist, pan, weight, inWater });
+    }
+    audible.sort((a, b) => a.dist - b.dist);
+    for (const step of audible.slice(0, MAX_AUDIBLE_STEPS)) {
+      this.audio.playMobFootstep(step.weight, Math.pow(1 - step.dist / HEARING, 1.4) * (0.5 + step.weight * 0.5), step.pan, step.inWater);
+    }
+
+    // Standing in the pool still stirs the water a little.
+    const { x, z } = this.player.position;
+    if (this.map.isWaterAt(x, z)) {
+      this.wadeTimer -= delta;
+      if (this.wadeTimer <= 0) {
+        this.wadeTimer = 1.1 + Math.random() * 0.8;
+        this.ripples?.spawn(x, z, 0.35);
+      }
+    }
+  }
+
   /**
    * Positional monster voices: each monster within earshot speaks on its own
    * timer (faster and harsher while hunting), louder and more centred the
@@ -1644,6 +1724,10 @@ export class GameEngine {
 
   private lobby: Lobby | null = null;
   private lobbySendTimer = 0;
+  /** Rings and splashes on the Poolrooms' water (see Water.ts); created with the scene. */
+  private ripples: WaterRipples | null = null;
+  /** Seconds until the next faint ripple around the local player's legs while standing in water. */
+  private wadeTimer = 0;
   /** Abandoned Office: the animated MEG employees (see npc/OfficeWorker.ts). */
   private officeWorkers: OfficeWorker[] = [];
   /** Name of the MEG employee whose dialogue is open, so they gesture while talking. */
@@ -2049,7 +2133,7 @@ export class GameEngine {
     const anim = (group.userData.anim ??= {
       lastX: group.position.x, lastZ: group.position.z,
       speed: 0, phase: 0, time: Math.random() * 10, move: 0, run: 0, crouch: 0, watch: 0,
-    }) as { lastX: number; lastZ: number; speed: number; phase: number; time: number; move: number; run: number; crouch: number; watch: number };
+    }) as { lastX: number; lastZ: number; speed: number; phase: number; time: number; move: number; run: number; crouch: number; watch: number; stepDist?: number };
     const dt = Math.max(delta, 1e-4);
     const vx = (group.position.x - anim.lastX) / dt;
     const vz = (group.position.z - anim.lastZ) / dt;
@@ -2062,6 +2146,14 @@ export class GameEngine {
 
     const state = (group as any).animState || "idle";
     const running = state === "running";
+
+    // Footfalls: one every half stride of distance actually covered.
+    anim.stepDist = (anim.stepDist ?? 0) + anim.speed * delta;
+    const halfStride = running ? 1.1 : state === "crouching" ? 0.45 : 0.7;
+    if (anim.speed > 0.35 && anim.stepDist >= halfStride) {
+      anim.stepDist = 0;
+      this.onRemoteFootstep(group.position.x, group.position.z, state);
+    }
 
     const skinBody = group.getObjectByName("monsterSkinBody") as THREE.Group | undefined;
     if (skinBody) {
@@ -2340,11 +2432,7 @@ export class GameEngine {
     this.audio.setBackgroundAmbienceEnabled(level !== LOBBY_LEVEL);
     
     // 6. Spawn the player again safely at spawn coordinates (2,2) with preloaded map
-    this.player = new PlayerController(this.camera, this.renderer.domElement, this.map, (speed) => {
-      const isWet = this.map ? this.map.isCellWet(this.player.position.x, this.player.position.z) : false;
-      this.audio.playFootstep(speed, 0.0, isWet);
-      this.noiseBus.emit(this.player.position.x, this.player.position.z, footstepLoudness(speed), "footstep", this.totalPlayTime);
-    });
+    this.player = new PlayerController(this.camera, this.renderer.domElement, this.map, (speed) => this.onLocalFootstep(speed));
     this.player.setMouseSensitivity(settings.mouseSensitivity);
     this.player.spawnSafely();
     this.applyCheatsToPlayer();
@@ -3584,6 +3672,8 @@ export class GameEngine {
     if (this.lobby) { this.lobby.dispose(this.scene); this.lobby = null; }
     this.officeWorkers.forEach((w) => w.dispose(this.scene));
     this.officeWorkers = [];
+    this.ripples?.dispose();
+    this.ripples = null;
 
     window.removeEventListener("resize", this.handleResize);
     

@@ -19,6 +19,7 @@ export const duller: MobDefinition = {
   baseSpeed: 1.1,
   baseHeight: 1.48, // floating ghostly phantom
   strideLength: 1.6,
+  stepWeight: 0,
   bobFreq: 1.8, bobAmp: 0.15, // silent floating hover
   speechBubbleLocalY: 0.75,
   forcedChaseSpeed: 3.1,

@@ -32,6 +32,7 @@ export const imitador: MobDefinition = {
   baseSpeed: 0,
   baseHeight: 1.35,
   strideLength: 1.25,
+  stepWeight: 0.4,
   bobFreq: 2.2, bobAmp: 0.02, // barely-there — reads as "almost too still"
   speechBubbleLocalY: 0.85,
   forcedChaseSpeed: 3.3,

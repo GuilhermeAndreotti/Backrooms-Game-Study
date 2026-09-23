@@ -21,6 +21,7 @@ export const clump: MobDefinition = {
   baseSpeed: 1.4,
   baseHeight: 1.12, // ball of tumbling limbs
   strideLength: 2.2,
+  stepWeight: 0.8,
   bobFreq: 2.4, bobAmp: 0.12, // tumbling heavy rolling motion
   speechBubbleLocalY: 0.7,
   forcedChaseSpeed: 3.3,

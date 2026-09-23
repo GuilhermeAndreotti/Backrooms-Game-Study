@@ -17,6 +17,7 @@ export const hound: MobDefinition = {
   baseSpeed: 1.25,
   baseHeight: 0.75, // crawling dog: feet on the floor
   strideLength: 1.4,
+  stepWeight: 0.35,
   bobFreq: 5.5, bobAmp: 0.04, // fast canine shivering
   speechBubbleLocalY: 0.55,
   forcedChaseSpeed: 3.65,

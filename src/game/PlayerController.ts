@@ -263,6 +263,9 @@ export class PlayerController {
     // Cheat: MVJM — flat speed multiplier, on top of whichever state applies.
     if (this.speedCheat) currentSpeed *= 2.2;
 
+    // Wading through the Poolrooms' flooded cells drags at your legs.
+    if (this.map.isWaterAt(this.position.x, this.position.z)) currentSpeed *= 0.72;
+
     if (this.adrenalineTimer > 0) {
       this.adrenalineTimer = Math.max(0, this.adrenalineTimer - dt);
       if (this.state === "running") currentSpeed *= 1.15;

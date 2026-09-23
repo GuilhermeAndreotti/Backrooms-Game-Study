@@ -228,6 +228,8 @@ export interface MobDefinition {
   animate(ctx: MobAnimCtx): void;
   /** Meters covered per full stride cycle (two steps) — sets how fast `phase` turns. */
   strideLength: number;
+  /** Footfall loudness/heaviness 0..1 (0 = no footsteps: it floats); defaults to 0.5. */
+  stepWeight?: number;
   /** Always turns its whole body to face the player instead of its walking direction (watchers). */
   facesViewer?: boolean;
 

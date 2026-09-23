@@ -74,6 +74,8 @@ export class WanderingEntity {
   /** World yaw the body faces: its walking direction, or the player when it stops to look. */
   private heading = 0;
   private stridePhase = 0;
+  /** Footfall counter (two per stride cycle) — see consumeStep(). */
+  private lastStep = 0;
   // Smoothed 0..1 pose blends (see MobAnimCtx).
   private moveWeight = 0;
   private runWeight = 0;
@@ -518,12 +520,27 @@ export class WanderingEntity {
     }
   }
 
+  /** True once per footfall while it walks; GameEngine turns these into footstep sounds and ripples. */
+  public consumeStep(): boolean {
+    const step = Math.floor(this.stridePhase / Math.PI);
+    if (step === this.lastStep) return false;
+    this.lastStep = step;
+    return this.moveWeight > 0.3;
+  }
+
+  /** Running gait right now (heavier, splashier steps). */
+  public get runningGait(): boolean { return this.runWeight > 0.5; }
+
+  /** How heavy its footfalls sound, 0 (silent: it floats) .. 1. */
+  public get stepWeight(): number { return MOB_DEFS[this.type].stepWeight ?? 0.5; }
+
   private resetBodyAnimation() {
     this.bodyRoot?.position.set(0, 0, 0);
     this.bodyRoot?.rotation.set(0, 0, 0);
     this.bodyRoot?.scale.set(1, 1, 1);
     resetRig(this.joints);
     this.stridePhase = 0;
+    this.lastStep = 0;
     this.moveWeight = 0;
     this.runWeight = 0;
     this.observeWeight = 0;

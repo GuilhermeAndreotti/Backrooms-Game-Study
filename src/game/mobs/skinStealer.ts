@@ -23,6 +23,7 @@ export const skinStealer: MobDefinition = {
   baseSpeed: 1.1,
   baseHeight: 1.35,
   strideLength: 1.3,
+  stepWeight: 0.45,
   bobFreq: 3.8, bobAmp: 0.08,
   speechBubbleLocalY: 0.9,
   forcedChaseSpeed: 3.8,

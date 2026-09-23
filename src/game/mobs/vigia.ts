@@ -36,6 +36,7 @@ export const vigia: MobDefinition = {
   baseSpeed: STILL_SPEED,
   baseHeight: 1.4,
   strideLength: 0.9,
+  stepWeight: 1,
   facesViewer: true,
   bobFreq: 0.6, bobAmp: 0.03, // almost imperceptible — reads as "immobile"
   speechBubbleLocalY: 1.1,

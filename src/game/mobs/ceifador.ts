@@ -35,6 +35,7 @@ export const ceifador: MobDefinition = {
   baseSpeed: IDLE_SPEED,
   baseHeight: 1.45,
   strideLength: 1.8,
+  stepWeight: 0.6,
   bobFreq: 4.0, bobAmp: 0.07, // fast, purposeful stride
   speechBubbleLocalY: 1.05,
   forcedChaseSpeed: CHASE_SPEED,

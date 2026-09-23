@@ -17,6 +17,7 @@ export const wretch: MobDefinition = {
   baseSpeed: 1.45,
   baseHeight: 1.35,
   strideLength: 1.5,
+  stepWeight: 0.55,
   bobFreq: 3.8, bobAmp: 0.08,
   speechBubbleLocalY: 0.9,
   forcedChaseSpeed: 3.4,
