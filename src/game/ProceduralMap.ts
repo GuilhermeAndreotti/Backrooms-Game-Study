@@ -4593,7 +4593,7 @@ export class ProceduralMap {
     // On both Level 0 and Level 1, there is a sparse chance (e.g., 3.5%) to spawn a collectible item in a cell
     const itemRng = new SeededRandom(this.seed + gx * 83 + gz * 109);
     // Don't spawn collectibles at the exit or spawning point (0,0) or solid cells
-    if (this.level !== 4 && this.level !== LOBBY_LEVEL && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
+    if (this.level !== 4 && this.level !== 9 && this.level !== LOBBY_LEVEL && itemRng.next() < 0.035 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx === 0 && gz === 0)) {
       const itemTypeRoll = itemRng.next();
       // Keep it within the cell boundaries (so + hSize/2 is center, range is -hSize/2 + 0.5 to hSize/2 - 0.5)
       const maxOffset = hSize / 2 - 0.6;
@@ -4658,6 +4658,41 @@ export class ProceduralMap {
         gridX: gx,
         gridZ: gz,
       });
+    }
+
+    // Level 4 is a stable MEG outpost: almond water is intentionally common,
+    // but never placed inside a workstation, under an employee, or at the exit.
+    if (this.level === 9 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx < 5 && gz < 5)) {
+      const isWorkstation = this.level4DeskCells.some((desk) => desk.gx === gx && desk.gz === gz)
+        || this.level4Employees.some((employee) => employee.gx === gx && employee.gz === gz);
+      const waterRng = new SeededRandom(this.seed + gx * 149 + gz * 211);
+      if (!isWorkstation && waterRng.next() < 0.14) {
+        const maxOffset = hSize / 2 - 0.65;
+        const bottle = this.createAlmondWaterBottleMesh();
+        const ix = posX + waterRng.nextRange(-maxOffset, maxOffset);
+        const iz = posZ + waterRng.nextRange(-maxOffset, maxOffset);
+        const iy = 0.35;
+        bottle.position.set(ix, iy, iz);
+        group.add(bottle);
+        this.consumables.push({
+          mesh: bottle,
+          initialY: iy,
+          collected: false,
+          type: "almond_water",
+          x: ix,
+          z: iz,
+          gridX: gx,
+          gridZ: gz,
+        });
+        this.animatingMeshes.push({
+          mesh: bottle,
+          type: "spin",
+          initialY: iy,
+          phase: waterRng.nextRange(0, Math.PI * 2),
+          gridX: gx,
+          gridZ: gz,
+        });
+      }
     }
 
     // In Level 2, spawn Almond Water and Energy Bars on the ground to aid the sprint escape!
