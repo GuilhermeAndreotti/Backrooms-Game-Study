@@ -3,11 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * The MEG employees of the Abandoned Office (see ProceduralMap.level4Employees):
- * rigged office workers who pace beside their desk, stop and watch an explorer
- * who comes close, and gesture while they talk. Purely cosmetic and local —
- * nothing here is networked; interaction still keys off the employee's grid
- * cell (GameEngine.nearMegEmployee), and pacing stays inside that cell's
- * interaction radius.
+ * rigged office workers. Seated workers remain at their workstations; the
+ * occasional standing worker can pace beside a desk. Purely cosmetic and local
+ * — interaction still keys off the employee's grid cell.
  */
 
 import * as THREE from "three";
@@ -58,8 +56,9 @@ export class OfficeWorker {
   private observeW = 0;
   private lookW = 0;
   private talkW = 0;
+  private seated: boolean;
 
-  constructor(opts: { name: string; grade: EmployeeGrade; x: number; z: number; floorY: number; seed: number }) {
+  constructor(opts: { name: string; grade: EmployeeGrade; x: number; z: number; floorY: number; seed: number; seated: boolean }) {
     this.name = opts.name;
     this.homeX = opts.x;
     this.floorY = opts.floorY;
@@ -67,8 +66,10 @@ export class OfficeWorker {
     this.waitTimer = 2 + this.random() * 4;
     this.targetX = opts.x;
     this.time = this.random() * 20;
+    this.seated = opts.seated;
     this.build(LOOKS[opts.grade]);
     this.group.position.set(opts.x, opts.floorY, opts.z);
+    if (this.seated) this.heading = Math.PI;
   }
 
   // -------------------------------------------------------------------------
@@ -173,7 +174,7 @@ export class OfficeWorker {
 
     // Pace between two spots beside the desk; stop to watch a visitor.
     let moving = false;
-    if (!watching) {
+    if (!this.seated && !watching) {
       const toTarget = this.targetX - pos.x;
       if (Math.abs(toTarget) > 0.05) {
         moving = true;
@@ -196,7 +197,7 @@ export class OfficeWorker {
 
     // Facing: along the pacing line while walking, toward the visitor when watching.
     const toPlayer = Math.atan2(dx, dz);
-    const want = moving ? (this.targetX > pos.x ? Math.PI / 2 : -Math.PI / 2) : watching ? toPlayer : this.heading;
+    const want = this.seated ? Math.PI : moving ? (this.targetX > pos.x ? Math.PI / 2 : -Math.PI / 2) : watching ? toPlayer : this.heading;
     this.heading += wrap(want - this.heading) * Math.min(1, 3 * delta);
     this.group.rotation.y = this.heading;
 
@@ -215,8 +216,22 @@ export class OfficeWorker {
     };
     animateBiped(ctx, { stride: 0.35, armSwing: 0.3, knee: 0.6, elbow: 0.12, lean: 0, bounce: 0.03, breathe: 0.02 });
 
+    if (this.seated) {
+      // Keep hips on the chair and fold the legs under the desk instead of
+      // using the standing/pacing pose shared by roaming NPCs.
+      this.body.position.y = -0.35;
+      rot(j.legL, -1.45, 0, 0);
+      rot(j.legR, -1.45, 0, 0);
+      rx(j.shinL, 1.45);
+      rx(j.shinR, 1.45);
+      rot(j.armL, -0.58, 0, 0.08);
+      rot(j.armR, -0.58, 0, -0.08);
+      rx(j.foreL, -0.55);
+      rx(j.foreR, -0.55);
+    }
+
     const { time } = this;
-    const idle = (1 - this.moveW) * (1 - this.observeW);
+    const idle = !this.seated ? (1 - this.moveW) * (1 - this.observeW) : 0;
     // Idle: every so often, straightens the tie.
     const tieFix = idle * Math.max(0, Math.sin(time * 0.45) - 0.8) * 5; // 0..1 pulse
     if (tieFix > 0) {

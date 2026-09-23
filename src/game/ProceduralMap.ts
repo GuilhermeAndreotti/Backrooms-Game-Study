@@ -339,10 +339,31 @@ export class ProceduralMap {
     });
   }
 
+  /** Opens the Level 4 access door visually and releases its collision gate. */
+  public openLevel4Door() {
+    this.level4DoorOpen = true;
+    const group = this.cellGroupGrid[this.level4DoorX]?.[this.level4DoorZ];
+    const leaf = group?.getObjectByName("meg_exit_door_leaf");
+    if (leaf) leaf.rotation.y = Math.PI / 2;
+  }
+
   // --- Level 4 (MEG offices) -----------------------------------------------
-  public level4Employees: { name: string; grade: "junior" | "pleno" | "senior"; gx: number; gz: number; dialogue: string }[] = [];
+  public level4Employees: {
+    name: string;
+    grade: "junior" | "pleno" | "senior";
+    role: "programmer" | "staff";
+    accessId?: string;
+    gx: number;
+    gz: number;
+    dialogue: string;
+    seated: boolean;
+  }[] = [];
   public level4DoorX = -1;
   public level4DoorZ = -1;
+  /** Locked until the three programmer IDs are entered in seniority order. */
+  public level4DoorOpen = false;
+  /** Desk cells in the MEG operations room; used to keep furniture and NPCs aligned. */
+  public level4DeskCells: { gx: number; gz: number; rotation: number }[] = [];
   /** Hidden convergence door from Abandoned Office to Level G. */
   public abandonedSecretX = -1;
   public abandonedSecretZ = -1;
@@ -1580,8 +1601,11 @@ export class ProceduralMap {
       opacity: 0.7
     });
 
+    // Level G and the Abandoned Office share the white office wall / blue
+    // carpet family, despite using separate legacy content ids.
+    const isOfficeInterior = this.level === 4 || this.level === 9;
     // Wallpaper/Concrete: Dull yellowish wallpaper, raw concrete blocks or rusted metal
-    const wallTex = this.level === 4 ? this.createOfficeWallTexture()
+    const wallTex = isOfficeInterior ? this.createOfficeWallTexture()
       : this.level === 8 ? this.createBrickWallTexture()
       : this.level === 2 ? this.createRustedMetalWallTexture() : (this.level === 1 ? this.createConcreteWallTexture() : this.createWallTexture());
     this.wallMaterial = new THREE.MeshStandardMaterial({
@@ -1592,13 +1616,13 @@ export class ProceduralMap {
 
     // Dark wood baseboard/skirting molding
     this.skirtingBoardMaterial = new THREE.MeshStandardMaterial({
-      color: this.level === 4 ? 0x3a3d42 : this.level === 2 ? 0x24180f : (this.level === 1 ? 0x222222 : 0x5a4d33),
+      color: isOfficeInterior ? 0x3a3d42 : this.level === 2 ? 0x24180f : (this.level === 1 ? 0x222222 : 0x5a4d33),
       roughness: 0.9,
       metalness: 0.1,
     });
 
     // Carpet/Concrete Floor: Muddy textured yellowish-brown carpet, stained factory cement, or rusted steel plates
-    const carpetTex = this.level === 4 ? this.createOfficeCarpetTexture()
+    const carpetTex = isOfficeInterior ? this.createOfficeCarpetTexture()
       : this.level === 2 ? this.createRustedMetalFloorTexture() : (this.level === 1 ? this.createConcreteFloorTexture() : this.createCarpetTexture());
     this.carpetMaterial = new THREE.MeshStandardMaterial({
       map: carpetTex,
@@ -2140,28 +2164,53 @@ export class ProceduralMap {
   }
 
   private carveLevel4Office() {
-    this.exitGridX = 44; this.exitGridZ = 44;
+    // A fixed room graph keeps every required destination reachable. The seed
+    // changes credentials, while the reliable layout prevents impossible runs.
+    this.exitGridX = 44; this.exitGridZ = 40;
     const room = (x1: number, z1: number, x2: number, z2: number, type: CellType = CellType.ROOM_LARGE) => {
       for (let x = x1; x <= x2; x++) for (let z = z1; z <= z2; z++) this.grid[x][z] = type;
     };
     const corridor = (x1: number, z1: number, x2: number, z2: number) => {
       for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) for (let z = Math.min(z1, z2); z <= Math.max(z1, z2); z++) this.grid[x][z] = CellType.CORRIDOR;
     };
-    // Reception, meeting rooms, side departments and the open-plan central floor.
-    room(2, 2, 11, 10); room(14, 2, 23, 10); room(27, 2, 45, 11);
-    room(3, 16, 11, 25); room(14, 14, 35, 35, CellType.OPEN_AREA); room(38, 16, 45, 25);
-    room(3, 30, 12, 44); room(16, 39, 29, 45); room(34, 30, 45, 45);
+    // Reception leads into the clean MEG operations room, with quieter side
+    // offices and deliberately repetitive southern circulation beyond it.
+    room(2, 2, 11, 10); room(14, 2, 23, 10); room(27, 2, 44, 11);
+    room(3, 16, 11, 25); room(14, 14, 35, 35, CellType.OPEN_AREA); room(38, 16, 44, 25);
+    room(3, 30, 12, 44); room(16, 39, 29, 45); room(34, 30, 44, 44);
     corridor(11, 6, 14, 6); corridor(23, 6, 27, 6); corridor(8, 10, 8, 16);
     corridor(11, 20, 14, 20); corridor(35, 20, 38, 20); corridor(8, 25, 8, 30);
     corridor(29, 35, 34, 35); corridor(29, 42, 34, 42); corridor(42, 25, 42, 30);
-    corridor(2, 2, 2, 6); corridor(42, 42, 44, 44);
+    corridor(2, 2, 2, 6); corridor(42, 40, 44, 40);
     this.level4DoorX = this.exitGridX; this.level4DoorZ = this.exitGridZ;
     this.abandonedSecretX = 18; this.abandonedSecretZ = 35;
     corridor(18, 33, 18, 35);
+
+    this.level4DeskCells = [
+      { gx: 18, gz: 18, rotation: 0 }, { gx: 22, gz: 18, rotation: 0 }, { gx: 26, gz: 18, rotation: 0 }, { gx: 30, gz: 18, rotation: 0 },
+      { gx: 18, gz: 23, rotation: Math.PI }, { gx: 22, gz: 23, rotation: Math.PI }, { gx: 26, gz: 23, rotation: Math.PI }, { gx: 30, gz: 23, rotation: Math.PI },
+      { gx: 18, gz: 28, rotation: 0 }, { gx: 22, gz: 28, rotation: 0 }, { gx: 26, gz: 28, rotation: 0 }, { gx: 30, gz: 28, rotation: 0 },
+    ];
+    const credentialRng = new SeededRandom(this.seed ^ 0x4d4547);
+    const ids = new Set<string>();
+    const nextId = () => {
+      let id = "";
+      do id = String(1000 + Math.floor(credentialRng.next() * 9000)); while (ids.has(id));
+      ids.add(id);
+      return id;
+    };
+    const seniorId = nextId();
+    const plenoId = nextId();
+    const juniorId = nextId();
     this.level4Employees = [
-      { name: "Marina Alves", grade: "junior", gx: 6, gz: 6, dialogue: "Não toque nos terminais vermelhos. O inventário da MEG ainda está sendo conferido." },
-      { name: "Rafael Costa", grade: "pleno", gx: 20, gz: 24, dialogue: "A porta azul reconhece nomes, não crachás. Pergunte aos três e anote a hierarquia." },
-      { name: "Helena Duarte", grade: "senior", gx: 35, gz: 7, dialogue: "Se você chegou até aqui, mantenha a calma. Meu nome deve ser digitado por último? Não: primeiro, pela senioridade." },
+      { name: "Marina Alves", grade: "junior", role: "programmer", accessId: juniorId, gx: 6, gz: 6, seated: true, dialogue: `Se você precisa sair, anote meu ID de programadora junior: ${juniorId}. Ele vem por último.` },
+      { name: "Rafael Costa", grade: "pleno", role: "programmer", accessId: plenoId, gx: 7, gz: 20, seated: true, dialogue: `Meu ID de programador pleno é ${plenoId}. A porta verifica a senioridade, não a pressa.` },
+      { name: "Helena Duarte", grade: "senior", role: "programmer", accessId: seniorId, gx: 39, gz: 7, seated: true, dialogue: `Acesso de programador senior: ${seniorId}. Digite este primeiro, depois os IDs do pleno e do junior.` },
+      { name: "Diego Moura", grade: "junior", role: "staff", gx: 18, gz: 18, seated: true, dialogue: "A Base Omega ainda usa esta ala. Se precisar de água ou abrigo, a recepção ajuda." },
+      { name: "Lia Ramos", grade: "pleno", role: "staff", gx: 22, gz: 18, seated: true, dialogue: "Os corredores do sul parecem iguais, mas a porta de acesso fica longe daqui. Continue explorando." },
+      { name: "Caio Nunes", grade: "junior", role: "staff", gx: 26, gz: 23, seated: true, dialogue: "Estamos catalogando relatos de níveis instáveis. Não bloqueie as passagens entre as mesas." },
+      { name: "Bruna Reis", grade: "pleno", role: "staff", gx: 30, gz: 28, seated: true, dialogue: "A iluminação é estável na sala da MEG. Nos anexos, o silêncio costuma ser mais alto." },
+      { name: "Otavio Lima", grade: "senior", role: "staff", gx: 31, gz: 5, seated: false, dialogue: "A sala principal é segura, mas não é a saída. Procure a porta de controle no fim da ala." },
     ];
   }
 
@@ -2881,6 +2930,11 @@ export class ProceduralMap {
         if (this.level === 4 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) {
           return true;
         }
+        // The Level 4 exit is a real wall-mounted access door, not just a
+        // completion trigger. It stays physically closed until the IDs work.
+        if (this.level === 9 && !this.level4DoorOpen && gx === this.level4DoorX && gz === this.level4DoorZ) {
+          return true;
+        }
         if (this.level === 8 && !this.level3GateOpen && gx === this.level3GateX && gz >= 5 && gz <= 7) {
           const gateEdge = this.level3GateX * this.cellSize;
           if (Math.abs(x - gateEdge) < radius + 0.12) return true;
@@ -3337,23 +3391,37 @@ export class ProceduralMap {
     }
 
     if (this.level === 9) {
-      const deskMat = this.sharedMat("meg_desk", () => new THREE.MeshStandardMaterial({ color: 0x4a4038, roughness: 0.72 }));
-      const chairMat = this.sharedMat("meg_chair", () => new THREE.MeshStandardMaterial({ color: 0x30343a, roughness: 0.8 }));
+      const deskMat = this.sharedMat("meg_desk", () => new THREE.MeshStandardMaterial({ color: 0x5a626d, roughness: 0.62, metalness: 0.08 }));
+      const chairMat = this.sharedMat("meg_chair", () => new THREE.MeshStandardMaterial({ color: 0x25323d, roughness: 0.72 }));
       const screenMat = this.sharedMat("meg_screen", () => new THREE.MeshStandardMaterial({ color: 0x182c32, emissive: 0x164e63, emissiveIntensity: 0.8 }));
+      const paperMat = this.sharedMat("meg_paper", () => new THREE.MeshStandardMaterial({ color: 0xe8edf0, roughness: 0.95 }));
       const makeDesk = (x: number, z: number, rotation = 0) => {
         const desk = new THREE.Group();
         const top = new THREE.Mesh(this.sharedGeo("meg_desk_top", () => new THREE.BoxGeometry(1.65, 0.1, 0.78)), deskMat);
         top.position.y = 0.82; desk.add(top);
+        const legGeo = this.sharedGeo("meg_desk_leg", () => new THREE.BoxGeometry(0.09, 0.78, 0.09));
+        for (const lx of [-0.68, 0.68]) for (const lz of [-0.28, 0.28]) {
+          const leg = new THREE.Mesh(legGeo, deskMat);
+          leg.position.set(lx, 0.39, lz); desk.add(leg);
+        }
         const monitor = new THREE.Mesh(this.sharedGeo("meg_monitor", () => new THREE.BoxGeometry(0.48, 0.32, 0.06)), screenMat);
         monitor.position.set(0, 1.08, -0.16); desk.add(monitor);
+        const keyboard = new THREE.Mesh(this.sharedGeo("meg_keyboard", () => new THREE.BoxGeometry(0.48, 0.035, 0.18)), this.sharedMat("meg_keyboard_mat", () => new THREE.MeshStandardMaterial({ color: 0x18212a, roughness: 0.5 })));
+        keyboard.position.set(0, 0.89, 0.18); desk.add(keyboard);
+        const papers = new THREE.Mesh(this.sharedGeo("meg_papers", () => new THREE.BoxGeometry(0.34, 0.025, 0.26)), paperMat);
+        papers.position.set(-0.48, 0.89, 0.08); desk.add(papers);
         const chair = new THREE.Mesh(this.sharedGeo("meg_chair_seat", () => new THREE.BoxGeometry(0.52, 0.1, 0.52)), chairMat);
         chair.position.set(0, 0.48, 0.62); desk.add(chair);
         const back = new THREE.Mesh(this.sharedGeo("meg_chair_back", () => new THREE.BoxGeometry(0.52, 0.62, 0.1)), chairMat);
         back.position.set(0, 0.78, 0.84); desk.add(back);
+        const stem = new THREE.Mesh(this.sharedGeo("meg_chair_stem", () => new THREE.CylinderGeometry(0.05, 0.05, 0.38, 8)), chairMat);
+        stem.position.set(0, 0.24, 0.62); desk.add(stem);
         desk.position.set(x, 0, z); desk.rotation.y = rotation; group.add(desk);
-        this.addObstacle(gx, gz, x, z, 0.55);
+        this.addObstacle(gx, gz, x, z, 0.62);
       };
-      if (cellType === CellType.OPEN_AREA && gx >= 16 && gx <= 34 && gz >= 16 && gz <= 33 && (gx + gz) % 3 === 0) makeDesk(posX, posZ, (gx % 2) * Math.PI / 2);
+      const workstation = this.level4DeskCells.find((desk) => desk.gx === gx && desk.gz === gz);
+      const employeeDesk = this.level4Employees.find((employee) => employee.seated && employee.gx === gx && employee.gz === gz);
+      if (workstation || employeeDesk) makeDesk(posX, posZ, workstation?.rotation ?? 0);
       if ((gx === 5 && gz === 5) || (gx === 18 && gz === 5) || (gx === 31 && gz === 5)) {
         const table = new THREE.Mesh(this.sharedGeo("meg_meeting_table", () => new THREE.BoxGeometry(2.2, 0.12, 1.05)), deskMat);
         table.position.set(posX, 0.78, posZ); group.add(table);
@@ -3362,10 +3430,15 @@ export class ProceduralMap {
       // The employees themselves are animated NPCs (npc/OfficeWorker.ts), spawned by GameEngine.
       if (gx === this.level4DoorX && gz === this.level4DoorZ) {
         const blue = this.sharedMat("meg_blue_door", () => new THREE.MeshStandardMaterial({ color: 0x155e91, emissive: 0x0b3554, emissiveIntensity: 0.55, metalness: 0.55, roughness: 0.35 }));
-        const door = new THREE.Mesh(this.sharedGeo("meg_blue_door", () => new THREE.BoxGeometry(hSize - 0.35, 2.65, 0.16)), blue);
-        door.position.set(posX, 1.32, posZ - hSize / 2 + 0.08); group.add(door);
+        const door = new THREE.Group();
+        door.name = "meg_exit_door_leaf";
+        const leaf = new THREE.Mesh(this.sharedGeo("meg_blue_door", () => new THREE.BoxGeometry(0.16, 2.65, hSize - 0.35)), blue);
+        leaf.position.set(hSize / 2 - 0.08, 1.32, 0); door.add(leaf);
+        door.position.set(posX, 0, posZ);
+        if (this.level4DoorOpen) door.rotation.y = Math.PI / 2;
+        group.add(door);
         const sign = new THREE.Mesh(this.sharedGeo("meg_door_sign", () => new THREE.BoxGeometry(1.25, 0.22, 0.04)), this.sharedMat("meg_door_sign", () => new THREE.MeshBasicMaterial({ color: 0x8bd5ff })));
-        sign.position.set(posX, 2.42, posZ - hSize / 2 - 0.02); group.add(sign);
+        sign.position.set(posX + hSize / 2 + 0.02, 2.42, posZ); sign.rotation.y = Math.PI / 2; group.add(sign);
       }
     }
 
@@ -4023,7 +4096,7 @@ export class ProceduralMap {
       const lightRng = new SeededRandom(this.seed + gx * 41 + gz * 61);
       const burntRoll = lightRng.next();
       const isBurntOut = (this.level === 1 && burntRoll < 0.38) // 38% burnt out rate in warehouse Level 1!
-        || (this.level === 4 && burntRoll < 0.3); // Level G: a dead tube every few rooms
+        || ((this.level === 4 || this.level === 9) && burntRoll < 0.3); // office levels: a dead tube every few rooms
 
       const glassMaterial = isBurntOut ? this.fluorescentGlassOff : this.fluorescentGlassOn;
       const tubeMesh = new THREE.Mesh(this.tubeGeo, glassMaterial);
@@ -4031,8 +4104,8 @@ export class ProceduralMap {
       fixtureGroup.add(tubeMesh);
 
       // Point Light with soft, yellow-greenish tint for Level 0, or clean industrial white-grey for Level 1
-      let lightColor = this.level === 4 ? 0xe8f0ff : (this.level === 1 ? 0xe6e6e6 : 0xfefdb5);
-      let lightIntensity = isBurntOut ? 0.0 : (this.level === 4 ? 1.0 : this.level === 1 ? 1.05 : 1.4); // slightly dimmer on average for warehouse
+      let lightColor = (this.level === 4 || this.level === 9) ? 0xe8f0ff : (this.level === 1 ? 0xe6e6e6 : 0xfefdb5);
+      let lightIntensity = isBurntOut ? 0.0 : ((this.level === 4 || this.level === 9) ? 1.0 : this.level === 1 ? 1.05 : 1.4); // slightly dimmer office/warehouse lighting
 
       // Gild Sector gets gorgeous colorful lighting!
       const isGild = this.level === 1 && (gx >= 24 && gz < 24);
@@ -4071,7 +4144,7 @@ export class ProceduralMap {
     const isSpawnZone = (gx < 5 && gz < 5);
     const isExitZone = this.isKeepClearCell(gx, gz);
 
-    if (this.level !== 1 && this.level !== 4 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
+    if (this.level !== 1 && this.level !== 4 && this.level !== 9 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)) {
       const wallRng = new SeededRandom(this.seed + gx * 11 + gz * 23);
       if (wallRng.next() < 0.16) {
         let addedDivider = false;
@@ -4155,7 +4228,7 @@ export class ProceduralMap {
             gridZ: gz,
           });
         }
-      } else if (propRng.next() < (this.level === 1 && gx < 24 && gz >= 24 ? 0.62 : 0.22)) { // much higher 62% density in Crate Warehouse Sector!
+      } else if (this.level !== 9 && propRng.next() < (this.level === 1 && gx < 24 && gz >= 24 ? 0.62 : 0.22)) { // much higher 62% density in Crate Warehouse Sector!
         const propRoll = propRng.next();
         
         if (this.level === 1) {

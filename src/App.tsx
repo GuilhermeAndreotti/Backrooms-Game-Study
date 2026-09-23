@@ -1601,7 +1601,7 @@ export default function App() {
           )}
           {isMegDoorOpen && currentLevel === 4 && (
             <MegDoorModal
-              onSubmit={(names) => engineRef.current?.submitMegDoorNames(names) ?? false}
+              onSubmit={(ids) => engineRef.current?.submitMegDoorIds(ids) ?? false}
               onClose={() => {
                 setIsMegDoorOpen(false);
                 const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;

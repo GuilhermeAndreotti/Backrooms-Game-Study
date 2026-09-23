@@ -1750,6 +1750,7 @@ export class GameEngine {
         z,
         floorY: this.map.getFloorHeightAt(x, z),
         seed: (employee.gx * 73856093) ^ (employee.gz * 19349663) ^ (i * 83492791),
+        seated: employee.seated,
       });
       this.scene.add(worker.group);
       this.officeWorkers.push(worker);
@@ -2389,6 +2390,7 @@ export class GameEngine {
   public transitionToLevel(level: number, seed: number, settings: GameSettings) {
     console.log(`Transitioning to Level ${level} in backrooms...`);
     this.level = level;
+    this.level4DoorOpen = false;
     
     // 1. Terminate current map mesh references
     if (this.map) {
@@ -2904,7 +2906,9 @@ export class GameEngine {
     const cs = this.map.cellSize;
     const dx = this.player.position.x - (this.map.level4DoorX * cs + cs / 2);
     const dz = this.player.position.z - (this.map.level4DoorZ * cs + cs / 2);
-    return dx * dx + dz * dz < 3.2 * 3.2;
+    // The locked door's cell has collision, so allow interaction from the
+    // neighbouring corridor cell (one 4m grid cell away).
+    return dx * dx + dz * dz < 5.2 * 5.2;
   }
 
   public handleLevel3Switch(index: number) {
@@ -2960,15 +2964,17 @@ export class GameEngine {
     return dx * dx + dz * dz < 2.4 * 2.4 ? "terminal" : null;
   }
 
-  public submitMegDoorNames(raw: string): boolean {
+  public submitMegDoorIds(raw: string): boolean {
     if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map) return false;
-    const names = raw.split(",").map((name) => name.trim().toLocaleLowerCase()).filter(Boolean);
+    const ids = raw.split(/[\s,;>-]+/).map((id) => id.trim()).filter(Boolean);
     const expected = [...this.map.level4Employees]
+      .filter((employee) => employee.role === "programmer")
       .sort((a, b) => ({ senior: 0, pleno: 1, junior: 2 }[a.grade] - { senior: 0, pleno: 1, junior: 2 }[b.grade]))
-      .map((employee) => employee.name.toLocaleLowerCase());
-    const ok = names.length === expected.length && names.every((name, index) => name === expected[index]);
+      .map((employee) => employee.accessId);
+    const ok = ids.length === expected.length && ids.every((id, index) => id === expected[index]);
     if (ok) {
       this.level4DoorOpen = true;
+      this.map.openLevel4Door();
       this.onHUDNotification?.(t("eng.megDoorOpen"));
       this.audio.playTerminalBeep(true);
     } else {
