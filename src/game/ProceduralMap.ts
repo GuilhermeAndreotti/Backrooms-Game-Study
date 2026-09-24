@@ -3657,7 +3657,7 @@ export class ProceduralMap {
       if (this.level3Switches.some(([x, z]) => x === gx && z === gz)) return;
       if (this.level3Partitions.some((w) => w.gx === gx && w.gz === gz)) return;
       if (Math.abs(gx - this.level3GateX) + Math.abs(gz - this.level3GateZ) <= 1) return;
-      if (rng.next() > (corridor ? 0.3 : 0.4)) return;
+      if (rng.next() > (corridor ? 0.42 : 0.58)) return;
       const side = pickSide((dx, dz) => isSolid(gx + dx, gz + dz));
       if (side !== null) place(Decor.electricalStationDecor(kit, rng, half, corridor), side);
       return;
@@ -3679,7 +3679,7 @@ export class ProceduralMap {
       }
       return;
     }
-    if (rng.next() > (corridor ? 0.25 : 0.38)) return;
+    if (rng.next() > (corridor ? 0.34 : 0.54)) return;
     place(Decor.abandonedOfficeDecor(kit, rng, half, corridor), side);
   }
 
@@ -4058,7 +4058,7 @@ export class ProceduralMap {
           ctx.font = "18px monospace"; ctx.fillText("Encontre os 5 paineis", 28, 94); ctx.fillText("de luz para abrir a", 28, 124); ctx.fillText("porta de barras.", 28, 154);
         }
         const note = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 0.72), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), side: THREE.DoubleSide }));
-        note.position.set(posX, 1.35, posZ - hSize / 2 + 0.03); note.rotation.y = Math.PI; group.add(note);
+        note.position.set(posX, 1.35, posZ - hSize / 2 + 0.03); group.add(note);
       }
     }
 
@@ -4315,11 +4315,21 @@ export class ProceduralMap {
     // 4. OPEN AREA - Columns / Pillars
     if (cellType === CellType.OPEN_AREA) {
       const randomCol = new SeededRandom(this.seed + gx * 100 + gz);
+      if (this.level === 1 && !this.rampCells.has(`${gx},${gz}`) && (gx + gz) % 4 === 0) {
+        // Parking-bay paint establishes scale without adding collision.
+        const paint = this.sharedMat("parking_bay_paint", () => new THREE.MeshBasicMaterial({ color: 0xc7c4ad, transparent: true, opacity: 0.48 }));
+        const line = new THREE.Mesh(this.sharedGeo("parking_bay_line", () => new THREE.PlaneGeometry(0.07, this.cellSize * 0.9).rotateX(-Math.PI / 2)), paint);
+        line.position.set(posX + (randomCol.next() < 0.5 ? -1.35 : 1.35), 0.012, posZ);
+        group.add(line);
+      }
       if (randomCol.next() > 0.84 && !this.isKeepClearCell(gx, gz)) {
         if (this.level === 1) {
           // Identify sectors on Level 1
           const isConstructionSect = (gx >= 18 && gx <= 30 && gz >= 18 && gz <= 30);
-          const isAquilaSect = (gx < 24 && gz < 24);
+          // Level 1 is one coherent concrete parking structure. The old themed
+          // sector logic remains structurally compatible, but only its plain
+          // parking-column branch is selected.
+          const isAquilaSect = true;
           const isGildSect = (gx >= 24 && gz < 24);
           const isWarehouseSect = (gx < 24 && gz >= 24);
           const isGothicSect = !isConstructionSect && !isAquilaSect && !isGildSect && !isWarehouseSect;
@@ -4689,7 +4699,9 @@ export class ProceduralMap {
     // lobby has no ceiling to hang one from — sunlight (ambient) is its light.
     const isForcedDark = this.level === LOBBY_LEVEL || this.level === 7 || this.forcedDarkCells.has(`${gx},${gz}`);
     const lightRand = new SeededRandom(this.seed + gx * 7 + gz * 13);
-    const shouldSpawnLight = !isForcedDark && (this.level === 7
+    const shouldSpawnLight = !isForcedDark && (this.level === 2
+      ? lightRand.next() > 0.12
+      : this.level === 7
       ? lightRand.next() > 0.28
       : cellType === CellType.CORRIDOR ? lightRand.next() > 0.65 : lightRand.next() > 0.55);
 
@@ -4721,7 +4733,7 @@ export class ProceduralMap {
 
       // Point Light with soft, yellow-greenish tint for Level 0, or clean industrial white-grey for Level 1
       let lightColor = (this.level === 4 || this.level === 9) ? 0xe8f0ff : this.level === 7 ? 0xc9faff : (this.level === 1 ? 0xe6e6e6 : 0xfefdb5);
-      let lightIntensity = isBurntOut ? 0.0 : (this.level === 4 ? 1.0 : this.level === 9 ? 1.65 : this.level === 7 ? 1.8 : this.level === 1 ? 1.05 : 1.4); // bright office/pool lighting
+      let lightIntensity = isBurntOut ? 0.0 : (this.level === 2 ? 2.15 : this.level === 4 ? 1.0 : this.level === 9 ? 1.65 : this.level === 7 ? 1.8 : this.level === 1 ? 1.05 : 1.4); // bright office/pool lighting
 
       // Gild Sector gets gorgeous colorful lighting!
       const isGild = this.level === 1 && (gx >= 24 && gz < 24);
@@ -4849,11 +4861,11 @@ export class ProceduralMap {
             gridZ: gz,
           });
         }
-      } else if (this.level !== 8 && this.level !== 9 && propRng.next() < (this.level === 1 && gx < 24 && gz >= 24 ? 0.62 : 0.22)) { // much higher 62% density in Crate Warehouse Sector!
+      } else if (this.level !== 8 && this.level !== 9 && propRng.next() < (this.level === 1 ? 0.075 : 0.22)) {
         const propRoll = propRng.next();
         
         if (this.level === 1) {
-          const isWarehouseSect = (gx < 24 && gz >= 24);
+          const isWarehouseSect = false;
           
           if (isWarehouseSect) {
             // SPARK SPECTACULAR CUSTOM REINFORCED STOREROOM WAREHOUSE SHELVING WITH CARGO BOXES!
@@ -4943,7 +4955,22 @@ export class ProceduralMap {
           }
           else {
             // LEVEL 1 STANDARD PROP BRANCH (Aquila / Gild / Gothic / Construction)
-            if (propRoll < 0.40) {
+            if (propRoll < 0.48) {
+              // Sparse, irregularly parked abandoned cars preserve the scale
+              // of the garage instead of turning it into a crowded depot.
+              const car = new THREE.Group();
+              const bodyMat = this.sharedMat("parking_car_body", () => new THREE.MeshStandardMaterial({ color: 0x3d474a, roughness: 0.5, metalness: 0.45 }));
+              const glassMat = this.sharedMat("parking_car_glass", () => new THREE.MeshStandardMaterial({ color: 0x26353b, roughness: 0.18, metalness: 0.55 }));
+              const body = new THREE.Mesh(this.sharedGeo("parking_car_body", () => new THREE.BoxGeometry(1.35, 0.42, 2.25)), bodyMat);
+              body.position.y = 0.42; car.add(body);
+              const roof = new THREE.Mesh(this.sharedGeo("parking_car_roof", () => new THREE.BoxGeometry(1.08, 0.35, 1.05)), glassMat);
+              roof.position.set(0, 0.78, -0.08); car.add(roof);
+              const rx = propRng.nextRange(-0.8, 0.8), rz = propRng.nextRange(-0.65, 0.65);
+              car.position.set(posX + rx, 0, posZ + rz);
+              car.rotation.y = propRng.next() < 0.7 ? 0 : Math.PI / 2;
+              group.add(car);
+              this.addObstacle(gx, gz, posX + rx, posZ + rz, 0.95);
+            } else if (propRoll < 0.72) {
               // Spawn big metal barrel/oil drum (sometimes tipped over, upright, or floating spooky!)
               const isTipped = propRng.next() > 0.75;
               const isFloating = !isTipped && propRng.next() > 0.88; // 12% of barrels float

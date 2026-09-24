@@ -626,12 +626,27 @@ async function startServer() {
         const requested = Math.floor(requestedLevel);
         if (data.secret === true && room.config.secretRoutes === false) return;
 
-        // Lights Out is a private route that converges at Abandoned Office.
-        if ((conn.player.level === LIGHTS_OUT_LEVEL || conn.player.level === LEVEL_G) && requested === ABANDONED_OFFICE_LEVEL && data.secret === true) {
+        // Escaping Lights Out takes the whole room to Electrical Room. Unlike
+        // Level G, this is a shared route rather than a private convergence.
+        if (conn.player.level === LIGHTS_OUT_LEVEL && requested === ELECTRICAL_ROOM_LEVEL && data.secret === true) {
+          room.level = ELECTRICAL_ROOM_LEVEL;
+          reviveAll(room);
+          room.players.forEach((p) => {
+            p.level = ELECTRICAL_ROOM_LEVEL;
+            p.exitReady = false;
+            room.dirty.add(p.id);
+          });
+          refreshAuthority(room);
+          broadcastToRoom(room, { type: "level_transition", level: ELECTRICAL_ROOM_LEVEL, seed: room.seed, secret: true });
+          return;
+        }
+
+        // Level G remains a private route that converges at Abandoned Office.
+        if (conn.player.level === LEVEL_G && requested === ABANDONED_OFFICE_LEVEL && data.secret === true) {
           conn.player.level = ABANDONED_OFFICE_LEVEL;
           conn.player.exitReady = false;
           room.dirty.add(conn.player.id);
-          send(conn.ws, { type: "level_transition", level: 4, seed: room.seed, secret: true });
+          send(conn.ws, { type: "level_transition", level: ABANDONED_OFFICE_LEVEL, seed: room.seed, secret: true });
           refreshAuthority(room);
           return;
         }

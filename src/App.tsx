@@ -615,7 +615,9 @@ export default function App() {
                          }
                       } else if (engine.level === POOLROOMS_LEVEL) {
                         socketRef.current?.send(JSON.stringify({ type: "level_transition_request", level: LOBBY_LEVEL }));
-                      } else if ((engine.level === LIGHTS_OUT_LEVEL || engine.level === LEVEL_G) && socketRef.current?.readyState === WebSocket.OPEN) {
+                      } else if (engine.level === LIGHTS_OUT_LEVEL && socketRef.current?.readyState === WebSocket.OPEN) {
+                        socketRef.current.send(JSON.stringify({ type: "level_transition_request", level: ELECTRICAL_ROOM_LEVEL, secret: true }));
+                      } else if (engine.level === LEVEL_G && socketRef.current?.readyState === WebSocket.OPEN) {
                         socketRef.current.send(JSON.stringify({ type: "level_transition_request", level: ABANDONED_OFFICE_LEVEL, secret: true }));
                       } else {
                         console.log("Explorer successfully escaped the Backrooms!");

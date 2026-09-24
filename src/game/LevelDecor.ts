@@ -205,15 +205,61 @@ function cableSpool(kit: DecorKit, rng: Rng, wz: number): DecorPiece {
   return { object: g, footprint: [[x, z, 0.6]] };
 }
 
+/** A family of larger electrical fittings. The selected kit changes per cell,
+ * letting the same room read as distribution, generation or battery space. */
+function electricalModule(kit: DecorKit, rng: Rng, wz: number, kind: "generator" | "battery" | "control" | "distribution" | "maintenance" | "high_voltage"): DecorPiece {
+  const g = new THREE.Group();
+  const steel = std(kit, "l3_module_steel", { color: 0x46504d, roughness: 0.52, metalness: 0.72 });
+  const dark = std(kit, "l3_module_dark", { color: 0x151a19, roughness: 0.75, metalness: 0.45 });
+  const warning = std(kit, "l3_module_warning", { color: 0xd6a91e, roughness: 0.62 });
+  const live = std(kit, "l3_module_live", { color: 0x56d880, emissive: 0x23874e, emissiveIntensity: 1.8 });
+  const footprint: [number, number, number][] = [];
+  const z = wz + 0.55;
+  if (kind === "generator") {
+    g.add(box(kit, 2.25, 1.25, 0.9, steel, 0, 0.7, z));
+    g.add(cyl(kit, 0.38, 2.3, dark, 0, 1.35, z + 0.48, 12).rotateZ(Math.PI / 2));
+    for (const x of [-0.72, 0, 0.72]) g.add(box(kit, 0.1, 0.1, 0.04, live, x, 1.05, wz + 1.02));
+    footprint.push([0, z, 1.15]);
+  } else if (kind === "battery") {
+    for (const x of [-0.72, 0, 0.72]) {
+      g.add(box(kit, 0.52, 1.35, 0.72, dark, x, 0.68, z));
+      g.add(box(kit, 0.38, 0.05, 0.03, live, x, 1.08, wz + 0.94));
+      footprint.push([x, z, 0.38]);
+    }
+  } else if (kind === "control" || kind === "distribution") {
+    const count = kind === "distribution" ? 3 : 2;
+    for (let i = 0; i < count; i++) {
+      const x = (i - (count - 1) / 2) * 0.72;
+      g.add(box(kit, 0.62, 1.55, 0.24, steel, x, 1.05, wz + 0.15));
+      g.add(box(kit, 0.42, 0.26, 0.03, kind === "control" ? dark : warning, x, 1.38, wz + 0.29));
+      g.add(cyl(kit, 0.035, 0.9, dark, x, 2.25, wz + 0.1, 8));
+    }
+  } else if (kind === "maintenance") {
+    g.add(box(kit, 2.0, 0.12, 0.65, steel, 0, 0.88, z));
+    for (const x of [-0.82, 0.82]) g.add(box(kit, 0.09, 0.85, 0.09, dark, x, 0.43, z));
+    g.add(box(kit, 0.4, 0.25, 0.32, warning, -0.45, 1.1, z));
+    g.add(box(kit, 0.25, 0.12, 0.45, dark, 0.38, 1.02, z));
+    footprint.push([0, z, 0.95]);
+  } else {
+    g.add(box(kit, 2.25, 1.5, 0.08, warning, 0, 0.75, wz + 0.12));
+    for (const x of [-0.9, -0.3, 0.3, 0.9]) g.add(box(kit, 0.05, 1.7, 0.1, steel, x, 0.85, wz + 0.25));
+  }
+  return { object: g, footprint };
+}
+
 export function electricalStationDecor(kit: DecorKit, rng: Rng, half: number, corridor: boolean): DecorPiece {
   const wz = -half;
   const roll = rng.next();
   // Corridors keep to wall-mounted fittings so they never get pinched.
   if (corridor) return roll < 0.55 ? hotPipes(kit, rng, wz, half * 2) : breakerWall(kit, rng, wz);
-  if (roll < 0.3) return transformer(kit, rng, wz);
-  if (roll < 0.5) return industrialFan(kit, rng, wz);
-  if (roll < 0.68) return breakerWall(kit, rng, wz);
-  if (roll < 0.84) return hotPipes(kit, rng, wz, half * 2);
+  if (roll < 0.18) return transformer(kit, rng, wz);
+  if (roll < 0.31) return electricalModule(kit, rng, wz, "generator");
+  if (roll < 0.43) return electricalModule(kit, rng, wz, "battery");
+  if (roll < 0.55) return electricalModule(kit, rng, wz, rng.next() < 0.5 ? "control" : "distribution");
+  if (roll < 0.66) return electricalModule(kit, rng, wz, "maintenance");
+  if (roll < 0.75) return electricalModule(kit, rng, wz, "high_voltage");
+  if (roll < 0.87) return industrialFan(kit, rng, wz);
+  if (roll < 0.94) return breakerWall(kit, rng, wz);
   return cableSpool(kit, rng, wz);
 }
 
@@ -369,17 +415,79 @@ function stackedChairs(kit: DecorKit, rng: Rng, wz: number): DecorPiece {
   return { object: g, footprint: [[x, z, 0.4]] };
 }
 
+/** Modular office clusters used as recognizable room anchors, with the details
+ * selected by the seeded room dressing pass rather than a fixed floor plan. */
+function officeModule(kit: DecorKit, rng: Rng, wz: number, kind: "meeting" | "workstations" | "servers" | "break" | "lab" | "security"): DecorPiece {
+  const g = new THREE.Group();
+  const wood = std(kit, "l4_module_wood", { color: 0x5d5043, roughness: 0.78 });
+  const metal = std(kit, "l4_module_metal", { color: 0x59636a, roughness: 0.42, metalness: 0.72 });
+  const screen = std(kit, "l4_module_screen", { color: 0x7da5a8, emissive: 0x294c52, emissiveIntensity: 1.25 });
+  const paper = std(kit, "l4_module_paper", { color: 0xd6d1bd, roughness: 0.95 });
+  const footprint: [number, number, number][] = [];
+  const z = wz + 0.65;
+  const desk = (x: number, depth = 0.62) => {
+    g.add(box(kit, 0.9, 0.08, depth, wood, x, 0.78, z));
+    for (const sx of [-0.35, 0.35]) g.add(box(kit, 0.05, 0.74, 0.05, metal, x + sx, 0.37, z));
+  };
+  if (kind === "meeting") {
+    g.add(box(kit, 2.35, 0.1, 0.9, wood, 0, 0.78, z));
+    for (const x of [-0.85, 0.85]) for (const dz of [-0.28, 0.28]) g.add(box(kit, 0.06, 0.74, 0.06, metal, x, 0.37, z + dz));
+    for (const x of [-0.78, 0, 0.78]) {
+      g.add(box(kit, 0.38, 0.42, 0.38, metal, x, 0.25, z - 0.82));
+      if (rng.next() < 0.72) g.add(box(kit, 0.38, 0.42, 0.38, metal, x, 0.25, z + 0.82));
+    }
+    g.add(box(kit, 0.38, 0.025, 0.28, paper, rng.nextRange(-0.5, 0.5), 0.85, z));
+    footprint.push([0, z, 1.25]);
+  } else if (kind === "workstations" || kind === "security") {
+    const count = kind === "security" ? 2 : 3;
+    for (let i = 0; i < count; i++) {
+      const x = (i - (count - 1) / 2) * 0.72;
+      desk(x, 0.55);
+      const monitors = kind === "security" ? 2 : 1 + (rng.next() < 0.45 ? 1 : 0);
+      for (let m = 0; m < monitors; m++) g.add(box(kit, 0.25, 0.2, 0.035, screen, x + (m - (monitors - 1) / 2) * 0.27, 1.02, z - 0.19));
+      g.add(box(kit, 0.38, 0.42, 0.38, metal, x, 0.25, z + 0.62));
+      footprint.push([x, z, 0.42]);
+    }
+  } else if (kind === "servers") {
+    for (const x of [-0.62, 0, 0.62]) {
+      g.add(box(kit, 0.46, 1.8, 0.6, darkServerMat(kit), x, 0.9, z));
+      for (let y = 0.45; y < 1.55; y += 0.26) g.add(box(kit, 0.3, 0.025, 0.03, screen, x, y, wz + 0.97));
+      footprint.push([x, z, 0.35]);
+    }
+  } else if (kind === "break") {
+    g.add(box(kit, 1.45, 0.72, 0.55, metal, 0, 0.36, z));
+    g.add(box(kit, 0.42, 0.36, 0.42, darkServerMat(kit), -0.42, 1.04, z));
+    g.add(cyl(kit, 0.16, 0.42, metal, 0.45, 1.04, z, 12));
+    g.add(box(kit, 0.72, 0.06, 0.72, wood, 0, 0.55, wz + 1.4));
+    footprint.push([0, z, 0.8]);
+  } else {
+    desk(0, 0.72);
+    g.add(box(kit, 0.5, 0.3, 0.4, metal, -0.35, 1.0, z));
+    g.add(box(kit, 0.32, 0.22, 0.03, screen, 0.3, 1.05, z - 0.28));
+    g.add(box(kit, 0.45, 0.025, 0.3, paper, 0.12, 0.85, z + 0.15));
+    footprint.push([0, z, 0.65]);
+  }
+  return { object: g, footprint };
+}
+
+function darkServerMat(kit: DecorKit): THREE.Material {
+  return std(kit, "l4_module_server", { color: 0x20292d, roughness: 0.48, metalness: 0.8 });
+}
+
 export function abandonedOfficeDecor(kit: DecorKit, rng: Rng, half: number, corridor: boolean): DecorPiece {
   const wz = -half;
   const roll = rng.next();
   if (corridor) return roll < 0.45 ? rainWindow(kit, rng, wz) : roll < 0.7 ? waterCooler(kit, rng, wz) : roll < 0.85 ? deadPlant(kit, rng, wz) : whiteboard(kit, rng, wz);
-  if (roll < 0.14) return vendingMachine(kit, rng, wz);
-  if (roll < 0.34) return rainWindow(kit, rng, wz);
-  if (roll < 0.5) return filingCabinets(kit, rng, wz);
-  if (roll < 0.6) return photocopier(kit, rng, wz);
-  if (roll < 0.7) return waterCooler(kit, rng, wz);
-  if (roll < 0.8) return deadPlant(kit, rng, wz);
-  if (roll < 0.9) return whiteboard(kit, rng, wz);
+  if (roll < 0.13) return officeModule(kit, rng, wz, "meeting");
+  if (roll < 0.27) return officeModule(kit, rng, wz, "workstations");
+  if (roll < 0.37) return officeModule(kit, rng, wz, "servers");
+  if (roll < 0.46) return officeModule(kit, rng, wz, "break");
+  if (roll < 0.55) return officeModule(kit, rng, wz, rng.next() < 0.5 ? "lab" : "security");
+  if (roll < 0.66) return rainWindow(kit, rng, wz);
+  if (roll < 0.76) return filingCabinets(kit, rng, wz);
+  if (roll < 0.84) return photocopier(kit, rng, wz);
+  if (roll < 0.91) return waterCooler(kit, rng, wz);
+  if (roll < 0.96) return whiteboard(kit, rng, wz);
   return stackedChairs(kit, rng, wz);
 }
 
