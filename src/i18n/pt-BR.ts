@@ -5,7 +5,7 @@
 
 export const ptBR = {
   "menu.tagline": "Infiltração Cooperativa",
-  "menu.title": "THE BACKROOMS",
+  "menu.title": "BACKROOMS TOGETHER",
   "menu.networkChecking": "Status da rede: verificando",
   "menu.networkStable": "Status da rede: estável ({ms} ms)",
   "menu.networkSlow": "Status da rede: latência alta ({ms} ms)",

@@ -1,5 +1,5 @@
 {
-  "name": "Backrooms Level 0 - Online",
+  "name": "BACKROOMS TOGETHER",
   "description": "Jogo 3D multiplayer online cooperativo de exploração psicológica do Level 0 das Backrooms com geração procedural.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

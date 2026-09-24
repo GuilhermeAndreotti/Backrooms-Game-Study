@@ -7,7 +7,7 @@ import type { MessageKey } from "./pt-BR";
 
 export const es: Record<MessageKey, string> = {
   "menu.tagline": "Infiltración Cooperativa",
-  "menu.title": "THE BACKROOMS",
+  "menu.title": "BACKROOMS TOGETHER",
   "menu.networkChecking": "Estado de la red: verificando",
   "menu.networkStable": "Estado de la red: estable ({ms} ms)",
   "menu.networkSlow": "Estado de la red: latencia alta ({ms} ms)",

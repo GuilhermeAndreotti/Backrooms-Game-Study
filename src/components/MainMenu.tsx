@@ -212,7 +212,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                 {/* Header title inside box */}
                 <div className="border-b border-white/10 pb-4">
                   <span className="text-[#F2E8CF]/40 text-xs uppercase tracking-widest font-bold">{t("menu.tagline")}</span>
-                  <h2 className="text-xl font-bold text-[#F2E8CF] tracking-wide mt-1">THE BACKROOMS</h2>
+                  <h2 className="text-xl font-bold text-[#F2E8CF] tracking-wide mt-1">{t("menu.title")}</h2>
                 </div>
 
                 {/* Explorer settings Form */}
