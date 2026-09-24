@@ -6,7 +6,7 @@ interface LevelSelectorModalProps {
 
 const LEVELS = [
   [LEVEL_0, "Level 0"], [LEVEL_1, "Level 1"], [LEVEL_2, "Level 2"],
-  [ELECTRICAL_ROOM_LEVEL, "Electrical Room"], [ABANDONED_OFFICE_LEVEL, "Abandoned Office"], [POOLROOMS_LEVEL, "Poolrooms"],
+  [ELECTRICAL_ROOM_LEVEL, "Level 3 · Electrical Room"], [ABANDONED_OFFICE_LEVEL, "Level 4 · Abandoned Office"], [POOLROOMS_LEVEL, "Poolrooms"],
   [LIGHTS_OUT_LEVEL, "Level 6 · secreto"], [LEVEL_G, "Level G · secreto"], [MOTION_LEVEL, "Motion"],
 ] as const;
 

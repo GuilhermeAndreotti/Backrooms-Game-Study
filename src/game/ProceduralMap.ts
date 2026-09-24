@@ -308,8 +308,8 @@ export class ProceduralMap {
   public readonly poolValveSymbols = ["○", "△", "□"] as const;
   /** Per valve room: the order (local valve indices 0..2) it must be turned in. Seeded in carveLevel7. */
   public poolValveOrder: number[][] = [];
-  /** Cell -> valve room whose sequence is printed on the pool floor there. */
-  private poolClueCells = new Map<string, number>();
+  /** Cell -> one numbered valve symbol hidden in that Poolrooms sector. */
+  private poolClueCells = new Map<string, { valve: number; order: number }>();
   /** Global valve indices currently turned (mirrors GameEngine's state). */
   private poolTurned: ReadonlySet<number> = new Set();
   public get poolRoomCount(): number { return Math.floor(this.valvePositions.length / this.poolValvesPerRoom); }
@@ -499,6 +499,8 @@ export class ProceduralMap {
   private sharedGeometries = new Map<string, THREE.BufferGeometry>();
   private sharedMaterials = new Map<string, THREE.Material>();
   private sharedTextures: THREE.Texture[] = [];
+  /** Continuous Poolrooms haze, kept outside streamed cell groups to avoid a hard edge. */
+  private poolCeilingFog: THREE.Group | null = null;
 
   // Culling optimization tracking positions to avoid repetitive 60fps culling recalculations
   private lastCulledX = -9999;
@@ -2587,8 +2589,8 @@ export class ProceduralMap {
     // Four valve rooms of three valves each, each in its own closed little room set into a perimeter
     // wall (north, east...). A tiled staircase climbs out of the water into it;
     // the room is walled on every other side. Each room has its own seeded
-    // sequence (poolValveOrder), printed on the pool floor outside it; solving
-    // a room lowers the water enough to open the next hall.
+    // sequence (poolValveOrder), encoded by three numbered symbols spread through
+    // its sector; solving a room lowers the water enough to open the next hall.
     // Local frame: u runs along the wall, v is the depth away from it.
     const valveRooms: { side: "N" | "S" | "W" | "E"; along: number }[] = [
       { side: "N", along: 34 }, { side: "E", along: 10 }, { side: "N", along: 18 }, { side: "N", along: 9 },
@@ -2622,15 +2624,32 @@ export class ProceduralMap {
       this.poolStairCells.set(`${sx},${sz}`, towardWall[side]);
       for (let u = -1; u <= 1; u++) this.valvePositions.push(cellAt(side, along, u, 0));
     }
-    // Sequence clue: the nearest open water cell in front of each room's staircase.
+    // Hide all three parts of each sequence around its own sector. The marks are
+    // far enough apart that players must explore, but never leave the sector they
+    // are currently trying to drain.
     for (let room = 0; room < valveRooms.length; room++) {
       const { side, along } = valveRooms[room];
-      for (let v = 3; v <= 6; v++) {
-        const [cx, cz] = cellAt(side, along, 0, v);
-        if (this.grid[cx]?.[cz] === CellType.WATER_ROOM && !this.poolClueCells.has(`${cx},${cz}`)) {
-          this.poolClueCells.set(`${cx},${cz}`, room);
-          break;
+      const [valveX, valveZ] = cellAt(side, along, 0, 0);
+      const sector = this.poolZoneOf(valveX, valveZ);
+      const candidates: [number, number][] = [];
+      for (let x = lo; x <= hi; x++) {
+        for (let z = lo; z <= hi; z++) {
+          if (this.grid[x][z] === CellType.WATER_ROOM && this.poolZoneOf(x, z) === sector) candidates.push([x, z]);
         }
+      }
+      const chosen: [number, number][] = [];
+      for (let order = 0; order < this.poolValvesPerRoom; order++) {
+        let best: [number, number] | null = null;
+        let bestDistance = -1;
+        for (const candidate of candidates) {
+          if (chosen.some(([x, z]) => x === candidate[0] && z === candidate[1])) continue;
+          let nearest = (candidate[0] - valveX) ** 2 + (candidate[1] - valveZ) ** 2;
+          for (const [x, z] of chosen) nearest = Math.min(nearest, (candidate[0] - x) ** 2 + (candidate[1] - z) ** 2);
+          if (nearest > bestDistance) { best = candidate; bestDistance = nearest; }
+        }
+        if (!best) break;
+        chosen.push(best);
+        this.poolClueCells.set(`${best[0]},${best[1]}`, { valve: this.poolValveOrder[room][order], order: order + 1 });
       }
     }
     this.poolZoneSurface = this.poolZoneBaseDepth.map((_, zone) => this.poolZoneTargetSurface(zone, 0));
@@ -3418,22 +3437,28 @@ export class ProceduralMap {
       this.poolExitDoor = door;
     }
 
-    // Each valve room's answer is deliberately legible through the clear water:
-    // it is embedded in the pool tiles rather than exposed as a UI instruction.
-    const clueRoom = this.poolClueCells.get(`${gx},${gz}`);
-    if (clueRoom !== undefined) {
-      const canvas = document.createElement("canvas"); canvas.width = 512; canvas.height = 128;
+    // The answer is split across three faded tile marks in the sector, so players
+    // must find the matching symbol and its sequence number before turning valves.
+    const clue = this.poolClueCells.get(`${gx},${gz}`);
+    if (clue) {
+      const canvas = document.createElement("canvas"); canvas.width = canvas.height = 256;
       const ctx = canvas.getContext("2d");
       if (ctx) {
-        ctx.fillStyle = "#d7f3f5"; ctx.fillRect(0, 0, 512, 128);
-        ctx.fillStyle = "#0b6072"; ctx.font = "bold 62px sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText(this.poolValveOrder[clueRoom].map((k) => this.poolValveSymbols[k]).join("   "), 256, 83);
+        ctx.fillStyle = "#b9d9d8"; ctx.fillRect(0, 0, 256, 256);
+        ctx.strokeStyle = "rgba(12, 76, 87, 0.25)"; ctx.lineWidth = 3;
+        ctx.strokeRect(10, 10, 236, 236);
+        ctx.fillStyle = "rgba(11, 96, 114, 0.78)"; ctx.font = "bold 118px sans-serif";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText(this.poolValveSymbols[clue.valve], 128, 108);
+        ctx.fillStyle = "rgba(9, 62, 73, 0.82)"; ctx.font = "bold 64px sans-serif";
+        ctx.fillText(String(clue.order), 128, 190);
+        ctx.fillStyle = "rgba(42, 96, 96, 0.18)";
+        for (let i = 0; i < 18; i++) ctx.fillRect((i * 73) % 256, (i * 131) % 256, 14, 3);
       }
-      const clue = new THREE.Mesh(new THREE.PlaneGeometry(3.15, 0.8), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, opacity: 0.88 }));
-      clue.rotation.x = -Math.PI / 2;
-      clue.position.set(posX, POOL_FLOOR_Y + 0.012, posZ);
-      group.add(clue);
+      const clueMark = new THREE.Mesh(new THREE.PlaneGeometry(1.25, 1.25), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, opacity: 0.68 }));
+      clueMark.rotation.x = -Math.PI / 2;
+      clueMark.position.set(posX, POOL_FLOOR_Y + 0.012, posZ);
+      group.add(clueMark);
     }
   }
 
@@ -3651,6 +3676,9 @@ export class ProceduralMap {
     // x/y/z are absolute world coordinates handed straight to the LightPool,
     // so those calls add fY explicitly.
     const fY = this.floorHeight[gx]?.[gz] ?? 0;
+    const secretDoorWall = this.level === 9 && gx === this.abandonedSecretX && gz === this.abandonedSecretZ
+      ? [[0, 1, 0], [0, -1, Math.PI], [1, 0, Math.PI / 2], [-1, 0, -Math.PI / 2]].find(([dx, dz]) => this.grid[gx + dx]?.[gz + dz] === CellType.SOLID)
+      : undefined;
 
     // 1. CARPET (Floor pane) - Use shared floorGeo, or custom pit layouts
     if (cellType === CellType.PIT_ROOM) {
@@ -3866,17 +3894,51 @@ export class ProceduralMap {
     // Level 4's hidden way down to Level G: a worn service door at the end of a
     // short blind corridor. Walking up to it triggers the transition (GameEngine).
     if (this.level === 9 && gx === this.abandonedSecretX && gz === this.abandonedSecretZ) {
-      const wallDir = [[0, 1, 0], [0, -1, Math.PI], [1, 0, Math.PI / 2], [-1, 0, -Math.PI / 2]].find(([dx, dz]) => this.grid[gx + dx]?.[gz + dz] === CellType.SOLID);
+      const wallDir = secretDoorWall;
       const door = new THREE.Group();
-      const steel = this.sharedMat("levelg_door_steel", () => new THREE.MeshStandardMaterial({ color: 0x4a5560, roughness: 0.45, metalness: 0.7 }));
+      const steel = this.sharedMat("levelg_door_steel", () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 128;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.fillStyle = "#4a5560";
+          ctx.fillRect(0, 0, 128, 128);
+          ctx.fillStyle = "rgba(14, 20, 24, 0.28)";
+          for (let y = 4; y < 128; y += 12) ctx.fillRect(0, y, 128, 2);
+          ctx.fillStyle = "rgba(190, 205, 210, 0.16)";
+          for (let x = 8; x < 128; x += 19) ctx.fillRect(x, 0, 1, 128);
+        }
+        const map = new THREE.CanvasTexture(canvas);
+        this.sharedTextures.push(map);
+        return new THREE.MeshStandardMaterial({ map, roughness: 0.45, metalness: 0.7 });
+      });
       const frameMat = this.sharedMat("levelg_door_frame", () => new THREE.MeshStandardMaterial({ color: 0x1d2226, roughness: 0.6, metalness: 0.6 }));
       const glow = this.sharedMat("levelg_door_glow", () => new THREE.MeshBasicMaterial({ color: 0x4dff8a }));
       const z = hSize / 2 - 0.12; // against the wall behind, facing into the cell (local -z)
-      door.add(Object.assign(new THREE.Mesh(this.sharedGeo("levelg_door_leaf", () => new THREE.BoxGeometry(1.5, 2.3, 0.1)), steel), { position: new THREE.Vector3(0, 1.15, z) }));
-      door.add(Object.assign(new THREE.Mesh(this.sharedGeo("levelg_door_post", () => new THREE.BoxGeometry(0.16, 2.5, 0.18)), frameMat), { position: new THREE.Vector3(-0.83, 1.25, z) }));
-      door.add(Object.assign(new THREE.Mesh(this.sharedGeo("levelg_door_post", () => new THREE.BoxGeometry(0.16, 2.5, 0.18)), frameMat), { position: new THREE.Vector3(0.83, 1.25, z) }));
-      door.add(Object.assign(new THREE.Mesh(this.sharedGeo("levelg_door_lintel", () => new THREE.BoxGeometry(1.82, 0.16, 0.18)), frameMat), { position: new THREE.Vector3(0, 2.42, z) }));
-      door.add(Object.assign(new THREE.Mesh(this.sharedGeo("levelg_door_bar", () => new THREE.BoxGeometry(0.6, 0.06, 0.06)), frameMat), { position: new THREE.Vector3(0.45, 1.05, z - 0.09) }));
+      const put = (mesh: THREE.Mesh, x: number, y: number, pz: number) => { mesh.position.set(x, y, pz); return mesh; };
+      // Replace the generic wall with a real doorway, avoiding a full wall
+      // being rendered behind the door leaf.
+      const openingWidth = 1.5;
+      const sideWidth = (hSize - openingWidth) / 2;
+      for (const side of [-1, 1]) {
+        const panel = new THREE.Mesh(this.sharedGeo("levelg_door_wall_panel", () => new THREE.BoxGeometry(sideWidth, height, 0.12)), this.wallMaterial);
+        panel.position.set(side * (openingWidth / 2 + sideWidth / 2), height / 2, hSize / 2);
+        door.add(panel);
+      }
+      const header = new THREE.Mesh(this.sharedGeo("levelg_door_wall_header", () => new THREE.BoxGeometry(openingWidth, height - 2.5, 0.12)), this.wallMaterial);
+      header.position.set(0, 2.5 + (height - 2.5) / 2, hSize / 2);
+      door.add(header);
+      // The secret transition is triggered at the door; there is no traversable
+      // room behind it. Seal the opening so the exterior void can never show
+      // through gaps around the decorative leaf.
+      const backing = new THREE.Mesh(this.sharedGeo("levelg_door_backing", () => new THREE.BoxGeometry(openingWidth, 2.5, 0.08)), steel);
+      backing.position.set(0, 1.25, hSize / 2 - 0.02);
+      door.add(backing);
+      door.add(put(new THREE.Mesh(this.sharedGeo("levelg_door_leaf", () => new THREE.BoxGeometry(1.5, 2.3, 0.1)), steel), 0, 1.15, z));
+      door.add(put(new THREE.Mesh(this.sharedGeo("levelg_door_post", () => new THREE.BoxGeometry(0.16, 2.5, 0.18)), frameMat), -0.83, 1.25, z));
+      door.add(put(new THREE.Mesh(this.sharedGeo("levelg_door_post", () => new THREE.BoxGeometry(0.16, 2.5, 0.18)), frameMat), 0.83, 1.25, z));
+      door.add(put(new THREE.Mesh(this.sharedGeo("levelg_door_lintel", () => new THREE.BoxGeometry(1.82, 0.16, 0.18)), frameMat), 0, 2.42, z));
+      door.add(put(new THREE.Mesh(this.sharedGeo("levelg_door_bar", () => new THREE.BoxGeometry(0.6, 0.06, 0.06)), frameMat), 0.45, 1.05, z - 0.09));
       const symbolMat = this.sharedMat("levelg_door_g", () => {
         const canvas = document.createElement("canvas"); canvas.width = canvas.height = 128;
         const ctx = canvas.getContext("2d");
@@ -3968,20 +4030,8 @@ export class ProceduralMap {
 
     // 2. CEILING (Acoustic ceiling panels) - Use shared ceilGeo.
     // The room lobby is open-air: sky overhead instead of a ceiling.
-    // The Poolrooms have no ceiling mesh: a fog bank (below) hides the open top; the hall is lit by ambient light.
-    if (this.level === 7) {
-      // Fog bank hiding the open top: a few haze layers thickening upward into an opaque cap.
-      const fogLayers: [number, number][] = [[height - 6, 0.25], [height - 3, 0.4], [height - 0.5, 1]];
-      for (const [fy, opacity] of fogLayers) {
-        const layer = new THREE.Mesh(
-          this.ceilGeo,
-          this.sharedMat(`pool_ceiling_fog_${opacity}`, () => new THREE.MeshBasicMaterial({ color: 0xd9e8d2, transparent: opacity < 1, opacity, side: THREE.DoubleSide, depthWrite: opacity >= 1 })),
-        );
-        layer.rotation.x = Math.PI / 2;
-        layer.position.set(posX, fy, posZ);
-        group.add(layer);
-      }
-    }
+    // Poolrooms haze is added once for the whole map in
+    // ensurePoolCeilingFog(), rather than per streamed cell.
     if (this.level !== LOBBY_LEVEL && this.level !== 7) {
       const ceilMesh = new THREE.Mesh(this.ceilGeo, this.ceilingMaterial);
       ceilMesh.position.set(posX, height, posZ);
@@ -4146,7 +4196,7 @@ export class ProceduralMap {
     };
 
     // NORTH WALL (Z-direction offset -1)
-    if (gz === 0 || this.grid[gx][gz - 1] === CellType.SOLID) {
+    if ((gz === 0 || this.grid[gx][gz - 1] === CellType.SOLID) && !(secretDoorWall?.[0] === 0 && secretDoorWall[1] === -1)) {
       const panel = new THREE.Group();
 
       const wall = new THREE.Mesh(this.wallGeo, this.wallMaterial);
@@ -4165,7 +4215,7 @@ export class ProceduralMap {
     }
 
     // SOUTH WALL (Z-direction offset +1)
-    if (gz === this.gridSize - 1 || this.grid[gx][gz + 1] === CellType.SOLID) {
+    if ((gz === this.gridSize - 1 || this.grid[gx][gz + 1] === CellType.SOLID) && !(secretDoorWall?.[0] === 0 && secretDoorWall[1] === 1)) {
       const panel = new THREE.Group();
 
       const wall = new THREE.Mesh(this.wallGeo, this.wallMaterial);
@@ -4186,7 +4236,7 @@ export class ProceduralMap {
     }
 
     // WEST WALL (X-direction offset -1)
-    if (gx === 0 || this.grid[gx - 1][gz] === CellType.SOLID) {
+    if ((gx === 0 || this.grid[gx - 1][gz] === CellType.SOLID) && !(secretDoorWall?.[0] === -1 && secretDoorWall[1] === 0)) {
       const panel = new THREE.Group();
 
       const wall = new THREE.Mesh(this.wallGeo, this.wallMaterial);
@@ -4207,7 +4257,7 @@ export class ProceduralMap {
     }
 
     // EAST WALL (X-direction offset +1)
-    if (gx === this.gridSize - 1 || this.grid[gx + 1][gz] === CellType.SOLID) {
+    if ((gx === this.gridSize - 1 || this.grid[gx + 1][gz] === CellType.SOLID) && !(secretDoorWall?.[0] === 1 && secretDoorWall[1] === 0)) {
       const panel = new THREE.Group();
 
       const wall = new THREE.Mesh(this.wallGeo, this.wallMaterial);
@@ -6440,6 +6490,7 @@ export class ProceduralMap {
    * Compares each grid coordinate, adding blocks within visible radius and removing ones beyond.
    */
   public performProximityCulling(scene: THREE.Scene, playerX: number, playerZ: number, force = false) {
+    this.ensurePoolCeilingFog(scene);
     // Optimization check: If player has moved less than 2.5 meters (half cell width), don't run heavy loops
     const distMovedSq = (playerX - this.lastCulledX) * (playerX - this.lastCulledX) + (playerZ - this.lastCulledZ) * (playerZ - this.lastCulledZ);
     if (!force && distMovedSq < 6.25) { // 2.5 meters threshold squared is 6.25
@@ -6520,6 +6571,36 @@ export class ProceduralMap {
 
     this.activeCellsForCulling = culling;
     this.rebuildActiveWorkLists(minX, maxX, minZ, maxZ);
+  }
+
+  /**
+   * A single, continuous fog bank prevents the old per-cell layers from
+   * revealing the streaming radius as a vertical cut through the haze.
+   */
+  private ensurePoolCeilingFog(scene: THREE.Scene) {
+    if (this.level !== 7 || this.poolCeilingFog) return;
+
+    const fog = new THREE.Group();
+    const span = this.gridSize * this.cellSize + this.cellSize * 2;
+    const plane = this.sharedGeo("pool_ceiling_fog_plane", () => new THREE.PlaneGeometry(1, 1));
+    for (const [y, opacity] of [[POOLROOMS_WALL_HEIGHT - 6, 0.18], [POOLROOMS_WALL_HEIGHT - 2, 0.5], [POOLROOMS_WALL_HEIGHT - 0.4, 0.94]]) {
+      const layer = new THREE.Mesh(
+        plane,
+        this.sharedMat(`pool_ceiling_fog_${opacity}`, () => new THREE.MeshBasicMaterial({
+          color: 0xd9e8d2,
+          transparent: true,
+          opacity,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        })),
+      );
+      layer.rotation.x = Math.PI / 2;
+      layer.position.set(span / 2, y, span / 2);
+      layer.scale.set(span, span, 1);
+      fog.add(layer);
+    }
+    this.poolCeilingFog = fog;
+    scene.add(fog);
   }
 
   /**
@@ -6630,6 +6711,10 @@ export class ProceduralMap {
       scene.remove(cellGroup);
     });
     this.cellGroups.clear();
+    if (this.poolCeilingFog) {
+      scene.remove(this.poolCeilingFog);
+      this.poolCeilingFog = null;
+    }
     // Pushed boxes were re-parented to the scene, so they aren't removed with their cell group.
     this.movables.forEach((m) => {
       if (m.pushed) { scene.remove(m.mesh); if (m.extra) scene.remove(m.extra); }

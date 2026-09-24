@@ -30,8 +30,8 @@ import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, FileText, Compass,
  * such special case in one place instead of scattered ternaries.
  */
 function displayLabelForLevel(level: number): string {
-  if (level === ELECTRICAL_ROOM_LEVEL) return "ELECTRICAL ROOM";
-  if (level === ABANDONED_OFFICE_LEVEL) return "ABANDONED OFFICE";
+  if (level === ELECTRICAL_ROOM_LEVEL) return "LEVEL 3 · ELECTRICAL ROOM";
+  if (level === ABANDONED_OFFICE_LEVEL) return "LEVEL 4 · ABANDONED OFFICE";
   if (level === POOLROOMS_LEVEL) return "POOLROOMS";
   if (level === LOBBY_LEVEL) return "LOBBY";
   if (level === LIGHTS_OUT_LEVEL) return "6 · SECRET";

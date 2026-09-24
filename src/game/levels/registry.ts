@@ -119,7 +119,7 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
   // Brick Offices: a pack of Hounds patrols the five-switch route.
   [ELECTRICAL_ROOM_LEVEL]: {
     id: ELECTRICAL_ROOM_LEVEL,
-    displayLabel: "ELECTRICAL ROOM",
+    displayLabel: "LEVEL 3 · ELECTRICAL ROOM",
     spawn: {
       kind: "static",
       roster: [
@@ -137,7 +137,7 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
 
   [ABANDONED_OFFICE_LEVEL]: {
     id: ABANDONED_OFFICE_LEVEL,
-    displayLabel: "ABANDONED OFFICE",
+    displayLabel: "LEVEL 4 · ABANDONED OFFICE",
     spawn: { kind: "bespoke" },
   },
 };
