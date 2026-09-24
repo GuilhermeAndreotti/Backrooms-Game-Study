@@ -1964,20 +1964,31 @@ export class ProceduralMap {
       room(4, 37, 18, 45); room(24, 37, 36, 45); room(40, 37, 45, 45);
       corridor(10, 5, 14, 7); corridor(24, 5, 28, 7); corridor(8, 10, 8, 18);
       corridor(15, 15, 15, 18); corridor(30, 12, 30, 18); corridor(35, 24, 40, 24);
-      corridor(12, 31, 12, 37); corridor(28, 31, 28, 37); corridor(36, 42, 40, 42);
-      corridor(2, 2, 8, 2); corridor(8, 2, 8, 5);
-      // Seal the final room into a one-cell-wide approach. This prevents a
+       corridor(12, 31, 12, 37); corridor(28, 31, 28, 37); corridor(36, 42, 40, 42);
+       corridor(2, 2, 8, 2); corridor(8, 2, 8, 5);
+      // Break the broad service halls into enclosed maintenance bays. Each wall
+      // keeps a single doorway, preserving the switch route while making the
+      // level read more like Level 0's cramped office maze.
+      const roomWall = (x1: number, z1: number, x2: number, z2: number, doorX: number, doorZ: number) => {
+        for (let x = x1; x <= x2; x++) for (let z = z1; z <= z2; z++) {
+          if ((x !== doorX || z !== doorZ) && this.grid[x][z] === CellType.ROOM_LARGE) this.grid[x][z] = CellType.SOLID;
+        }
+      };
+      roomWall(18, 3, 18, 11, 18, 6);
+      roomWall(36, 3, 36, 11, 36, 7);
+      roomWall(12, 19, 12, 30, 12, 24);
+      roomWall(27, 19, 27, 30, 27, 24);
+      roomWall(10, 38, 10, 44, 10, 41);
+      roomWall(33, 38, 33, 44, 33, 41);
+       // Seal the final room into a one-cell-wide approach. This prevents a
       // player from walking around the final gate through the open room.
       for (let x = 40; x <= 45; x++) for (let z = 41; z <= 45; z++) this.grid[x][z] = CellType.SOLID;
       corridor(40, 42, 43, 42); corridor(44, 42, 44, 44);
-      this.level3Switches = [[6, 6], [19, 8], [9, 25], [29, 25], [30, 41]];
+      // The panels mount beside the new structural walls instead of sharing a
+      // cell with a free-standing black divider.
+      this.level3Switches = [[17, 8], [35, 8], [11, 25], [26, 25], [32, 41]];
       for (const [x, z] of this.level3Switches) this.grid[x][z] = CellType.CORRIDOR;
       this.level3Partitions = [
-        { gx: 6, gz: 6, axis: "x", length: 2.35 },
-        { gx: 19, gz: 8, axis: "z", length: 2.65 },
-        { gx: 9, gz: 25, axis: "x", length: 2.9 },
-        { gx: 29, gz: 25, axis: "z", length: 2.35 },
-        { gx: 30, gz: 41, axis: "x", length: 2.6 },
         { gx: 16, gz: 5, axis: "z", length: 2.4 },
         { gx: 24, gz: 21, axis: "x", length: 2.7 },
         { gx: 10, gz: 40, axis: "z", length: 2.3 },
@@ -2254,6 +2265,20 @@ export class ProceduralMap {
     corridor(11, 20, 14, 20); corridor(35, 20, 38, 20); corridor(8, 25, 8, 30);
     corridor(29, 35, 34, 35); corridor(29, 42, 34, 42); corridor(42, 25, 42, 30);
     corridor(2, 2, 2, 6); corridor(42, 40, 44, 40);
+    // The surrounding offices are intentionally more compartmentalized, while
+    // the central OPEN_AREA remains a recognizable open operations floor.
+    const officeWall = (x1: number, z1: number, x2: number, z2: number, doorX: number, doorZ: number) => {
+      for (let x = x1; x <= x2; x++) for (let z = z1; z <= z2; z++) {
+        if ((x !== doorX || z !== doorZ) && this.grid[x][z] === CellType.ROOM_LARGE) this.grid[x][z] = CellType.SOLID;
+      }
+    };
+    officeWall(7, 3, 7, 9, 7, 6);
+    officeWall(19, 3, 19, 9, 19, 6);
+    officeWall(35, 3, 35, 10, 35, 7);
+    officeWall(4, 21, 10, 21, 7, 21);
+    officeWall(39, 21, 43, 21, 42, 21);
+    officeWall(7, 31, 7, 43, 7, 35);
+    officeWall(39, 31, 39, 43, 39, 36);
     this.level4DoorX = this.exitGridX; this.level4DoorZ = this.exitGridZ;
     this.abandonedSecretX = 18; this.abandonedSecretZ = 35;
     corridor(18, 33, 18, 35);
@@ -3809,8 +3834,11 @@ export class ProceduralMap {
         const isOn = this.level3SwitchesOn.has(switchIndex);
         const lightMat = this.sharedMat(`level3_switch_light_${switchIndex}`, () => new THREE.MeshStandardMaterial({ color: isOn ? 0x39ff88 : 0xff3b18, emissive: isOn ? 0x16a34a : 0xff2200, emissiveIntensity: 3.5 }));
         const terminalGroup = new THREE.Group();
-        terminalGroup.position.set(posX, 0, posZ);
-        if (partition?.axis === "z") terminalGroup.rotation.y = Math.PI / 2;
+        const wallSide = [[0, -1], [0, 1], [-1, 0], [1, 0]].find(([dx, dz]) => this.grid[gx + dx]?.[gz + dz] === CellType.SOLID);
+        const [wallDx, wallDz] = wallSide ?? [0, -1];
+        terminalGroup.position.set(posX + wallDx * (hSize - 0.22), 0, posZ + wallDz * (hSize - 0.22));
+        // The back of the panel rests on the adjacent structural wall.
+        terminalGroup.rotation.y = Math.atan2(wallDx, wallDz);
         const terminal = new THREE.Mesh(this.sharedGeo("level3_switch_terminal", () => new THREE.BoxGeometry(0.72, 1.15, 0.46)), plateMat);
         terminal.position.set(0, 0.58, 0);
         terminalGroup.add(terminal);
@@ -3823,8 +3851,8 @@ export class ProceduralMap {
         handle.rotation.x = -0.35;
         terminalGroup.add(handle);
         group.add(terminalGroup);
-        const lightX = posX + (partition?.axis === "z" ? -0.35 : 0);
-        const lightZ = posZ + (partition?.axis === "z" ? 0 : -0.35);
+        const lightX = posX + wallDx * (hSize - 0.45);
+        const lightZ = posZ + wallDz * (hSize - 0.45);
         this.registerLight(gx, gz, lightX, 1.1, lightZ, 0xff3b18, 4.5, 7.0, 1.0);
       }
       if (gx === this.level3GateX && gz === this.level3GateZ && !this.level3GateOpen) {
