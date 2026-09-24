@@ -7,6 +7,7 @@ import { t, useLanguage, LANGUAGES } from "../i18n";
 import React, { useState, useEffect } from "react";
 import { GameSettings, SUIT_COLORS } from "../types/game";
 import { FaceEditor } from "./FaceEditor";
+import { AdSlot } from "./AdSlot";
 import { Settings, Play, Users, LogOut, Check, Sliders, Volume2, MonitorCog, Shirt, AlertTriangle } from "lucide-react";
 
 interface MainMenuProps {
@@ -551,6 +552,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
               </form>
             )}
           </div>
+          <AdSlot placement="menu" className="shrink-0" />
           
         </div>
 

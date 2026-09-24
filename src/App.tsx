@@ -15,6 +15,7 @@ import { CheatTerminalModal, SkinChoice } from "./components/CheatTerminalModal"
 import { PauseSettings } from "./components/PauseSettings";
 import { LevelSelectorModal } from "./components/LevelSelectorModal";
 import { MegDoorModal } from "./components/MegDoorModal";
+import { AdSlot } from "./components/AdSlot";
 import { LOBBY_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, MOTION_LEVEL, nextMainLevel } from "./game/levels/constants";
 import { addAchievementListener, removeAchievementListener, unlockAchievement } from "./utils/achievements";
 import { isTypingInField, lockGameInput } from "./utils/input";
@@ -1366,6 +1367,8 @@ export default function App() {
                     </div>
                   )}
                 </div>
+
+                <AdSlot placement="pause" className="mx-auto border-t border-[#a28e3b]/15 bg-black/20 px-3 py-1" />
 
                 {/* Footer close info */}
                 <div className="border-t border-[#a28e3b]/20 bg-[#0c0b05]/95 px-6 py-3.5 flex justify-between items-center">
