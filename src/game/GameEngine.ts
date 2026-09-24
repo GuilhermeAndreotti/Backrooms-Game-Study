@@ -2800,23 +2800,38 @@ export class GameEngine {
 
   private turnValve(index: number) {
     if (!this.map || this.valvesTurned.has(index)) return;
-    const total = this.map.valvePositions.length;
-    const expected = this.map.poolValveOrder[this.valvesTurned.size];
-    if (index !== expected) {
-      this.valvesTurned.clear();
-      this.map.setPoolroomsValveState(this.valvesTurned, 0);
+    const per = this.map.poolValvesPerRoom;
+    const rooms = this.map.poolRoomCount;
+    const room = Math.floor(index / per);
+    const roomBase = room * per;
+    let doneInRoom = 0;
+    for (let k = 0; k < per; k++) if (this.valvesTurned.has(roomBase + k)) doneInRoom++;
+    const solvedRooms = () => {
+      let n = 0;
+      for (let r = 0; r < rooms; r++) {
+        let all = true;
+        for (let k = 0; k < per; k++) if (!this.valvesTurned.has(r * per + k)) all = false;
+        if (all) n++;
+      }
+      return n;
+    };
+    if (index !== roomBase + this.map.poolValveOrder[room][doneInRoom]) {
+      // Wrong valve: only this room's valves spring back.
+      for (let k = 0; k < per; k++) this.valvesTurned.delete(roomBase + k);
+      this.map.setPoolroomsValveState(this.valvesTurned, solvedRooms());
       this.audio.playTerminalBeep(false);
       this.onHUDNotification?.(t("eng.denied"));
       return;
     }
     this.valvesTurned.add(index);
-    this.map.setPoolroomsValveState(this.valvesTurned, this.valvesTurned.size);
+    const solved = solvedRooms();
+    this.map.setPoolroomsValveState(this.valvesTurned, solved);
     this.audio.playTerminalBeep(true);
-    if (this.valvesTurned.size >= total) {
+    if (solved >= rooms) {
       this.onHUDNotification?.(t("eng.valveAllTurned"));
       unlockAchievement("valves_drained");
     } else {
-      this.onHUDNotification?.(t("eng.valveTurn", { n: this.valvesTurned.size, total }));
+      this.onHUDNotification?.(t("eng.valveTurn", { n: this.valvesTurned.size, total: this.map.valvePositions.length }));
     }
   }
 

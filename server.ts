@@ -576,7 +576,7 @@ async function startServer() {
       if (type === "valve_turn") {
         const level = conn.player.level;
         const index = data.index;
-        if (level !== POOLROOMS_LEVEL || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 5) return;
+        if (level !== POOLROOMS_LEVEL || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 11) return;
         broadcastToLevel(room, level, { type: "valve_turn", level, index }, conn);
         return;
       }

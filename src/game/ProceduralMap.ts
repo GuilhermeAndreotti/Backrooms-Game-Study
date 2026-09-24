@@ -302,10 +302,17 @@ export class ProceduralMap {
   public toxicWaterCells = new Set<string>();
   /** Level 7's hydraulic valve interaction points. */
   public valvePositions: [number, number][] = [];
-  /** Symbols appear in this physical order on the valves. */
-  public readonly poolValveSymbols = ["○", "△", "□", "◇"] as const;
-  /** The sequence is printed visibly on the submerged pool floor. */
-  public readonly poolValveOrder = [3, 2, 1, 0] as const;
+  /** Each valve room holds this many valves; valve i belongs to room floor(i / poolValvesPerRoom). */
+  public readonly poolValvesPerRoom = 3;
+  /** Symbols appear in this physical order on each room's valves. */
+  public readonly poolValveSymbols = ["○", "△", "□"] as const;
+  /** Per valve room: the order (local valve indices 0..2) it must be turned in. Seeded in carveLevel7. */
+  public poolValveOrder: number[][] = [];
+  /** Cell -> valve room whose sequence is printed on the pool floor there. */
+  private poolClueCells = new Map<string, number>();
+  /** Global valve indices currently turned (mirrors GameEngine's state). */
+  private poolTurned: ReadonlySet<number> = new Set();
+  public get poolRoomCount(): number { return Math.floor(this.valvePositions.length / this.poolValvesPerRoom); }
   public poolroomsDrainStage = 0;
   public poolroomsSolved = false;
   private poolWaterMeshes: THREE.Mesh[] = [];
@@ -2577,10 +2584,11 @@ export class ProceduralMap {
     stub(26, 16, 28, 16); stub(28, 18, 28, 19);
     stub(26, 25, 28, 25); stub(35, 29, 37, 29); stub(33, 35, 33, 37);
 
-    // Four valves, each in its own closed little room set into a perimeter
+    // Four valve rooms of three valves each, each in its own closed little room set into a perimeter
     // wall (north, east...). A tiled staircase climbs out of the water into it;
-    // the room is walled on every other side. Order of use is poolValveOrder:
-    // A, B, C, C — each stage lowers the water enough to open the next hall.
+    // the room is walled on every other side. Each room has its own seeded
+    // sequence (poolValveOrder), printed on the pool floor outside it; solving
+    // a room lowers the water enough to open the next hall.
     // Local frame: u runs along the wall, v is the depth away from it.
     const valveRooms: { side: "N" | "S" | "W" | "E"; along: number }[] = [
       { side: "N", along: 34 }, { side: "E", along: 10 }, { side: "N", along: 18 }, { side: "N", along: 9 },
@@ -2590,7 +2598,17 @@ export class ProceduralMap {
     const towardWall: Record<string, [number, number]> = { N: [0, -1], S: [0, 1], W: [-1, 0], E: [1, 0] };
     this.valvePositions = [];
     this.poolStairCells.clear();
-    for (const { side, along } of valveRooms) {
+    this.poolClueCells.clear();
+    this.poolValveOrder = [];
+    const orderRng = new SeededRandom(this.seed + 0x7a11);
+    for (let room = 0; room < valveRooms.length; room++) {
+      const { side, along } = valveRooms[room];
+      const order = [0, 1, 2];
+      for (let i = 2; i > 0; i--) {
+        const j = orderRng.nextInt(0, i + 1);
+        const tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+      }
+      this.poolValveOrder.push(order);
       for (let u = -2; u <= 2; u++) for (let v = 0; v <= 2; v++) {
         const [x, z] = cellAt(side, along, u, v);
         this.grid[x][z] = CellType.SOLID;
@@ -2602,7 +2620,18 @@ export class ProceduralMap {
       const [sx, sz] = cellAt(side, along, 0, 2);
       this.grid[sx][sz] = CellType.WATER_ROOM;
       this.poolStairCells.set(`${sx},${sz}`, towardWall[side]);
-      this.valvePositions.push(cellAt(side, along, 0, 0));
+      for (let u = -1; u <= 1; u++) this.valvePositions.push(cellAt(side, along, u, 0));
+    }
+    // Sequence clue: the nearest open water cell in front of each room's staircase.
+    for (let room = 0; room < valveRooms.length; room++) {
+      const { side, along } = valveRooms[room];
+      for (let v = 3; v <= 6; v++) {
+        const [cx, cz] = cellAt(side, along, 0, v);
+        if (this.grid[cx]?.[cz] === CellType.WATER_ROOM && !this.poolClueCells.has(`${cx},${cz}`)) {
+          this.poolClueCells.set(`${cx},${cz}`, room);
+          break;
+        }
+      }
     }
     this.poolZoneSurface = this.poolZoneBaseDepth.map((_, zone) => this.poolZoneTargetSurface(zone, 0));
 
@@ -2620,7 +2649,7 @@ export class ProceduralMap {
   }
 
   private poolZoneTargetSurface(zone: number, stage: number): number {
-    const solved = stage >= this.valvePositions.length && this.valvePositions.length > 0;
+    const solved = stage >= this.poolRoomCount && this.poolRoomCount > 0;
     const depth = solved ? 0.04 : Math.max(this.poolMinDepth, this.poolZoneBaseDepth[zone] - this.poolDrainPerStage * stage);
     return POOL_FLOOR_Y + depth;
   }
@@ -3389,15 +3418,17 @@ export class ProceduralMap {
       this.poolExitDoor = door;
     }
 
-    // The answer is deliberately legible through the clear water: it is
-    // embedded in the pool tiles rather than exposed as a UI instruction.
-    if (gx === 8 && gz === 10) {
+    // Each valve room's answer is deliberately legible through the clear water:
+    // it is embedded in the pool tiles rather than exposed as a UI instruction.
+    const clueRoom = this.poolClueCells.get(`${gx},${gz}`);
+    if (clueRoom !== undefined) {
       const canvas = document.createElement("canvas"); canvas.width = 512; canvas.height = 128;
       const ctx = canvas.getContext("2d");
       if (ctx) {
         ctx.fillStyle = "#d7f3f5"; ctx.fillRect(0, 0, 512, 128);
         ctx.fillStyle = "#0b6072"; ctx.font = "bold 62px sans-serif";
-        ctx.textAlign = "center"; ctx.fillText("◇   □   △   ○", 256, 83);
+        ctx.textAlign = "center";
+        ctx.fillText(this.poolValveOrder[clueRoom].map((k) => this.poolValveSymbols[k]).join("   "), 256, 83);
       }
       const clue = new THREE.Mesh(new THREE.PlaneGeometry(3.15, 0.8), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, opacity: 0.88 }));
       clue.rotation.x = -Math.PI / 2;
@@ -3408,8 +3439,9 @@ export class ProceduralMap {
 
   /** Applies a synchronized valve state and starts the corresponding drain stage. */
   public setPoolroomsValveState(turned: ReadonlySet<number>, stage: number) {
-    this.poolroomsDrainStage = Math.max(0, Math.min(this.valvePositions.length, stage));
-    this.poolroomsSolved = this.poolroomsDrainStage >= this.valvePositions.length;
+    this.poolTurned = new Set(turned);
+    this.poolroomsDrainStage = Math.max(0, Math.min(this.poolRoomCount, stage));
+    this.poolroomsSolved = this.poolroomsDrainStage >= this.poolRoomCount;
     this.poolValveMeshes.forEach((valve, index) => {
       valve.traverse((child) => {
         if (child.name !== "pool_valve_indicator") return;
@@ -3814,10 +3846,10 @@ export class ProceduralMap {
         plaque.position.set(0, 1.62, wz + 0.05); valve.add(plaque);
         const symbolCanvas = document.createElement("canvas"); symbolCanvas.width = symbolCanvas.height = 128;
         const symbolCtx = symbolCanvas.getContext("2d");
-        if (symbolCtx) { symbolCtx.fillStyle = "#d8f2f2"; symbolCtx.fillRect(0, 0, 128, 128); symbolCtx.fillStyle = "#0d6073"; symbolCtx.font = "bold 84px sans-serif"; symbolCtx.textAlign = "center"; symbolCtx.fillText(this.poolValveSymbols[valveIndex], 64, 92); }
+        if (symbolCtx) { symbolCtx.fillStyle = "#d8f2f2"; symbolCtx.fillRect(0, 0, 128, 128); symbolCtx.fillStyle = "#0d6073"; symbolCtx.font = "bold 84px sans-serif"; symbolCtx.textAlign = "center"; symbolCtx.fillText(this.poolValveSymbols[valveIndex % this.poolValvesPerRoom], 64, 92); }
         const symbol = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.3), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(symbolCanvas) }));
         symbol.position.set(0, 1.62, wz + 0.08); valve.add(symbol);
-        if (this.poolValveOrder.indexOf(valveIndex as 0 | 1 | 2 | 3) < this.poolroomsDrainStage) {
+        if (this.poolTurned.has(valveIndex)) {
           wheelMat.color.setHex(0x54f4d0); wheelMat.emissive.setHex(0x167c6e);
         }
         // Turn the north-wall model to face away from whichever neighbour is the wall.
@@ -3936,7 +3968,20 @@ export class ProceduralMap {
 
     // 2. CEILING (Acoustic ceiling panels) - Use shared ceilGeo.
     // The room lobby is open-air: sky overhead instead of a ceiling.
-    // The Poolrooms' ceiling is invisible: no mesh, the hall is lit from above by ambient light.
+    // The Poolrooms have no ceiling mesh: a fog bank (below) hides the open top; the hall is lit by ambient light.
+    if (this.level === 7) {
+      // Fog bank hiding the open top: a few haze layers thickening upward into an opaque cap.
+      const fogLayers: [number, number][] = [[height - 6, 0.25], [height - 3, 0.4], [height - 0.5, 1]];
+      for (const [fy, opacity] of fogLayers) {
+        const layer = new THREE.Mesh(
+          this.ceilGeo,
+          this.sharedMat(`pool_ceiling_fog_${opacity}`, () => new THREE.MeshBasicMaterial({ color: 0xd9e8d2, transparent: opacity < 1, opacity, side: THREE.DoubleSide, depthWrite: opacity >= 1 })),
+        );
+        layer.rotation.x = Math.PI / 2;
+        layer.position.set(posX, fy, posZ);
+        group.add(layer);
+      }
+    }
     if (this.level !== LOBBY_LEVEL && this.level !== 7) {
       const ceilMesh = new THREE.Mesh(this.ceilGeo, this.ceilingMaterial);
       ceilMesh.position.set(posX, height, posZ);
@@ -4569,8 +4614,13 @@ export class ProceduralMap {
       const fixtureGroup = new THREE.Group();
 
       // Black metal industrial bracket
+      // Poolrooms: huge ceiling panels hung just under the fog bank, so they read from far away.
+      const isPool = this.level === 7;
+      const lampDrop = isPool ? 1.2 : 0;
+      const lampScale = isPool ? 5 : 1;
       const caseMesh = new THREE.Mesh(this.caseGeo, this.fluorescentCaseMaterial);
-      caseMesh.position.set(0, height - 0.05, 0);
+      caseMesh.position.set(0, height - 0.05 - lampDrop, 0);
+      caseMesh.scale.setScalar(lampScale);
       fixtureGroup.add(caseMesh);
 
       // Glowing tube glass tube cylinder
@@ -4581,7 +4631,8 @@ export class ProceduralMap {
 
       const glassMaterial = isBurntOut ? this.fluorescentGlassOff : this.fluorescentGlassOn;
       const tubeMesh = new THREE.Mesh(this.tubeGeo, glassMaterial);
-      tubeMesh.position.set(0, height - 0.08, 0);
+      tubeMesh.position.set(0, height - 0.08 - lampDrop - (isPool ? 0.2 : 0), 0);
+      tubeMesh.scale.setScalar(lampScale);
       fixtureGroup.add(tubeMesh);
 
       // Point Light with soft, yellow-greenish tint for Level 0, or clean industrial white-grey for Level 1
@@ -4599,7 +4650,7 @@ export class ProceduralMap {
 
       // The lamp is only *declared* here; the LightPool decides which lamps get
       // a real GPU light, keeping the visible light count small and constant.
-      const light = this.registerLight(gx, gz, posX, fY + height - 0.15, posZ, lightColor, lightIntensity, 7.5, 1.0);
+      const light = this.registerLight(gx, gz, posX, fY + height - 0.15 - lampDrop, posZ, lightColor, lightIntensity, isPool ? 30 : 7.5, 1.0);
 
       // Local floating dust cloud directly under the fluorescent light fixture
       const dustCloud = this.quality.fixtureDustParticles > 0 ? this.createLocalDustCloud() : undefined;
@@ -4978,7 +5029,7 @@ export class ProceduralMap {
     }
 
     // 8. DAMP LEVEL 0 CARPET MOISTURE & CEILING LEAKS (Ripples, puddles, and dripping drops)
-    if (this.wetSpills.has(`${gx},${gz}`)) {
+    if (this.level !== 7 && this.wetSpills.has(`${gx},${gz}`)) {
       const isExitPathCell = this.exitPathSet.has(`${gx},${gz}`);
 
       // Floor damp puddle
