@@ -1980,6 +1980,12 @@ export class ProceduralMap {
       roomWall(27, 19, 27, 30, 27, 24);
       roomWall(10, 38, 10, 44, 10, 41);
       roomWall(33, 38, 33, 44, 33, 41);
+      roomWall(14, 10, 17, 10, 16, 10);
+      roomWall(37, 9, 43, 9, 40, 9);
+      roomWall(5, 22, 11, 22, 8, 22);
+      roomWall(28, 28, 34, 28, 31, 28);
+      roomWall(4, 40, 9, 40, 6, 40);
+      roomWall(25, 42, 32, 42, 29, 42);
        // Seal the final room into a one-cell-wide approach. This prevents a
       // player from walking around the final gate through the open room.
       for (let x = 40; x <= 45; x++) for (let z = 41; z <= 45; z++) this.grid[x][z] = CellType.SOLID;
@@ -3836,7 +3842,7 @@ export class ProceduralMap {
         const terminalGroup = new THREE.Group();
         const wallSide = [[0, -1], [0, 1], [-1, 0], [1, 0]].find(([dx, dz]) => this.grid[gx + dx]?.[gz + dz] === CellType.SOLID);
         const [wallDx, wallDz] = wallSide ?? [0, -1];
-        terminalGroup.position.set(posX + wallDx * (hSize - 0.22), 0, posZ + wallDz * (hSize - 0.22));
+        terminalGroup.position.set(posX + wallDx * (hSize / 2 - 0.3), 0, posZ + wallDz * (hSize / 2 - 0.3));
         // The back of the panel rests on the adjacent structural wall.
         terminalGroup.rotation.y = Math.atan2(wallDx, wallDz);
         const terminal = new THREE.Mesh(this.sharedGeo("level3_switch_terminal", () => new THREE.BoxGeometry(0.72, 1.15, 0.46)), plateMat);
@@ -3851,8 +3857,8 @@ export class ProceduralMap {
         handle.rotation.x = -0.35;
         terminalGroup.add(handle);
         group.add(terminalGroup);
-        const lightX = posX + wallDx * (hSize - 0.45);
-        const lightZ = posZ + wallDz * (hSize - 0.45);
+        const lightX = posX + wallDx * (hSize / 2 - 0.45);
+        const lightZ = posZ + wallDz * (hSize / 2 - 0.45);
         this.registerLight(gx, gz, lightX, 1.1, lightZ, 0xff3b18, 4.5, 7.0, 1.0);
       }
       if (gx === this.level3GateX && gz === this.level3GateZ && !this.level3GateOpen) {
