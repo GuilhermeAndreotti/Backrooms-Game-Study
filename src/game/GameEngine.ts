@@ -234,7 +234,8 @@ export class GameEngine {
   private networkSendInterval = 0.04; // 25 times per second (40ms) update rate
 
   // Gameplay Loop Control
-  private clock = new THREE.Clock();
+  /** Frame timer (THREE.Clock is deprecated). Connected to the page so a hidden tab doesn't come back with a minutes-long delta. */
+  private timer = new THREE.Timer();
   private totalPlayTime = 0;
   private animationFrameId: number | null = null;
   private isRunning = false;
@@ -834,12 +835,13 @@ export class GameEngine {
 
   private startLoop() {
     this.isRunning = true;
-    this.clock.getDelta(); // reset clock differential delta timer
+    this.timer.connect(document);
+    this.timer.reset(); // the first frame measures from here, not from construction
     const animate = () => {
       if (!this.isRunning) return;
       this.animationFrameId = requestAnimationFrame(animate);
 
-      const delta = this.clock.getDelta();
+      const delta = this.timer.update().getDelta();
       this.totalPlayTime += delta;
       this.noiseBus.prune(this.totalPlayTime);
       this.frameCounter++;
@@ -4027,6 +4029,7 @@ export class GameEngine {
    */
   public destroy() {
     this.isRunning = false;
+    this.timer.dispose();
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
     }
