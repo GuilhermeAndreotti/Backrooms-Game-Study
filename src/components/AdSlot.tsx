@@ -10,10 +10,16 @@ const slots: Record<AdPlacement, string | undefined> = {
 interface AdSlotProps {
   placement: AdPlacement;
   className?: string;
+  /**
+   * Exact ad size (Tailwind width/height classes, may vary per breakpoint).
+   * When set, the unit is fixed-size instead of `data-ad-format="auto"`, so a
+   * filled ad can never grow past the space the layout reserved for it.
+   */
+  sizeClassName?: string;
 }
 
 /** Renders an AdSense slot only when its publisher and placement IDs are configured. */
-export function AdSlot({ placement, className = "" }: AdSlotProps) {
+export function AdSlot({ placement, className = "", sizeClassName }: AdSlotProps) {
   const initialized = useRef(false);
   const client = import.meta.env.VITE_ADSENSE_CLIENT?.trim();
   const slot = slots[placement]?.trim();
@@ -39,6 +45,18 @@ export function AdSlot({ placement, className = "" }: AdSlotProps) {
   }, [client, slot]);
 
   if (!client || !slot) return null;
+
+  if (sizeClassName) {
+    return (
+      <aside className={`max-w-full overflow-hidden ${className}`} aria-label="Publicidade">
+        <ins
+          className={`adsbygoogle inline-block align-top ${sizeClassName}`}
+          data-ad-client={client}
+          data-ad-slot={slot}
+        />
+      </aside>
+    );
+  }
 
   return (
     <aside className={`w-full max-w-[728px] ${className}`} aria-label="Publicidade">

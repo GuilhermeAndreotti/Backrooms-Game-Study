@@ -170,7 +170,9 @@ export const MainMenu: React.FC<MainMenuProps> = ({
       </div>
 
       {/* 2. REAL-TIME MENU LAYER */}
-      <div className="relative z-30 w-full h-full flex flex-col justify-between">
+      {/* Scrolls on short screens (laptops at 720p, phones) instead of clipping
+          the bottom of the card; the backdrop layers above stay put. */}
+      <div className="relative z-30 w-full h-full flex flex-col justify-between overflow-y-auto overflow-x-hidden [scrollbar-width:thin] [scrollbar-color:rgba(162,142,59,0.45)_transparent]">
         
         {/* Top Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
@@ -201,7 +203,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
         </div>
 
         {/* Central Card with options, beautiful translucent box */}
-        <div className="my-auto py-8 flex flex-col md:flex-row justify-center items-center gap-8 w-full max-w-5xl mx-auto">
+        <div className="my-auto py-8 flex flex-col lg:flex-row justify-center items-center gap-6 lg:gap-8 w-full max-w-5xl mx-auto">
           
           <div className="w-full max-w-md bg-black/45 hover:bg-black/50 transition-colors border border-white/10 backdrop-blur-md rounded-lg p-6 md:p-8 shadow-[0_0_50px_rgba(0,0,0,0.85)] relative">
             {/* Subtle glow header */}
@@ -552,7 +554,14 @@ export const MainMenu: React.FC<MainMenuProps> = ({
               </form>
             )}
           </div>
-          <AdSlot placement="menu" className="shrink-0" />
+          {/* Fixed-size slot so a filled ad never squeezes the card or pushes the
+              page: a 300x250 rectangle beside the card on wide screens, a
+              300x100 banner under it on tablets/phones. */}
+          <AdSlot
+            placement="menu"
+            className="shrink-0 rounded border border-white/10 bg-black/30"
+            sizeClassName="w-[300px] h-[100px] lg:h-[250px]"
+          />
           
         </div>
 
