@@ -10,6 +10,15 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
+# Client build-time config (see .env.example): Vite inlines VITE_* into the
+# bundle and index.html, so these must be set here, not at runtime. Empty
+# means no ads (the AdSense tags are dropped from index.html).
+ARG VITE_ADSENSE_CLIENT=""
+ARG VITE_ADSENSE_MENU_SLOT=""
+ARG VITE_ADSENSE_PAUSE_SLOT=""
+ENV VITE_ADSENSE_CLIENT=$VITE_ADSENSE_CLIENT \
+    VITE_ADSENSE_MENU_SLOT=$VITE_ADSENSE_MENU_SLOT \
+    VITE_ADSENSE_PAUSE_SLOT=$VITE_ADSENSE_PAUSE_SLOT
 RUN npm run build
 
 # Reinstall with production dependencies only; this is what ships in the

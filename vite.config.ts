@@ -1,11 +1,35 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig} from 'vite';
+import {defineConfig, loadEnv, type Plugin} from 'vite';
 
-export default defineConfig(() => {
+/**
+ * index.html carries the AdSense account meta tag and loader script (Google's
+ * site verification reads them from the raw HTML) with a %VITE_ADSENSE_CLIENT%
+ * placeholder. Vite leaves an undefined placeholder as literal text, and
+ * adsbygoogle.js then throws "URIError: URI malformed" decoding "%VI...". So
+ * without a configured client, both tags are dropped instead — no ads, as
+ * .env.example promises. Runs before Vite's own %ENV% substitution.
+ */
+function adsenseHtml(client: string | undefined): Plugin {
   return {
-    plugins: [react(), tailwindcss()],
+    name: 'adsense-html',
+    transformIndexHtml: {
+      order: 'pre',
+      handler(html) {
+        if (client) return html;
+        return html
+          .replace(/[ \t]*<meta\s+name="google-adsense-account"[^>]*>\n?/, '')
+          .replace(/[ \t]*<script\b[^>]*adsbygoogle\.js[^>]*>\s*<\/script>\n?/, '');
+      },
+    },
+  };
+}
+
+export default defineConfig(({mode}) => {
+  const env = loadEnv(mode, process.cwd(), 'VITE_');
+  return {
+    plugins: [react(), tailwindcss(), adsenseHtml(env.VITE_ADSENSE_CLIENT?.trim())],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

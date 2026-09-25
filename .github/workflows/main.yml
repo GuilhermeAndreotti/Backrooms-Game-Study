@@ -59,3 +59,6 @@ jobs:
             TICK_HZ=${{ vars.TICK_HZ }}
             MAX_ROOMS=${{ vars.MAX_ROOMS }}
             MAX_CONNECTIONS=${{ vars.MAX_CONNECTIONS }}
+            VITE_ADSENSE_CLIENT=${{ vars.VITE_ADSENSE_CLIENT }}
+            VITE_ADSENSE_MENU_SLOT=${{ vars.VITE_ADSENSE_MENU_SLOT }}
+            VITE_ADSENSE_PAUSE_SLOT=${{ vars.VITE_ADSENSE_PAUSE_SLOT }}
