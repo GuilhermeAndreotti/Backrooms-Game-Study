@@ -190,7 +190,7 @@ export class WanderingEntity {
     const geo = this.sgeo(`limb_${radius}_${taper}`, () => new THREE.CylinderGeometry(radius * taper, radius, 1, 5));
     const m = new THREE.Mesh(geo, mat);
     m.scale.set(1, len, 1);
-    m.position.copy(a).addScaledVector(dir, 0.5 / len);
+    m.position.copy(a).addScaledVector(dir, 0.5); // centred between a and b
     m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
     m.castShadow = true;
     return m;

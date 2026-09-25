@@ -327,6 +327,9 @@ export class GameEngine {
   private kingWhisperTimer = 4;
   private kingFalseTapTimer = 25;
   private kingKnockCooldown = 0;
+  /** When this explorer's recent footsteps landed (totalPlayTime), for the King's mimicry. */
+  private localStepTimes: number[] = [];
+  private kingMimicCooldown = 30;
   /** Keeps the hunt stinger/HUD line rare: chase flickers at the sense-radius edge must not re-fire it. */
   private kingStingerCooldown = 0;
   private kingLastPos = new THREE.Vector3();
@@ -1675,6 +1678,8 @@ export class GameEngine {
       this.audio.playFootstep(speed, 0.0, isWet); // panning 0.0 for self
     }
     this.noiseBus.emit(x, z, footstepLoudness(speed), "footstep", this.totalPlayTime);
+    this.localStepTimes.push(this.totalPlayTime);
+    if (this.localStepTimes.length > 8) this.localStepTimes.shift();
   }
 
   /** A teammate's footstep (from their avatar's gait): heard nearby, rippling the water. */
@@ -2660,6 +2665,8 @@ export class GameEngine {
     this.kingFalseTapTimer = 25;
     this.kingKnockCooldown = 0;
     this.kingStingerCooldown = 0;
+    this.kingMimicCooldown = 30;
+    this.localStepTimes = [];
     this.kingHasLastPos = false;
     this.kingDread = 0;
     this.kingSightingDone = false;
@@ -2835,6 +2842,17 @@ export class GameEngine {
       }
     }
 
+    // Mimicry: stop walking, and it taps your own footsteps back at you.
+    this.kingMimicCooldown = Math.max(0, this.kingMimicCooldown - delta);
+    if (this.kingMimicCooldown <= 0 && !chasing && !staring && !hushed && dist > 6 && dist < 22) {
+      const pattern = this.recentStepRhythm();
+      if (pattern) {
+        this.kingMimicCooldown = 35 + Math.random() * 25;
+        this.fingerTapTimer = Math.max(this.fingerTapTimer, pattern[pattern.length - 1] + 2.5); // let the echo stand alone
+        this.audio.playFingerTapPattern(pattern.map((o) => o + 0.7), Math.max(0.35, Math.pow(1 - dist / 22, 1.2)), pan, "wood");
+      }
+    }
+
     // Closet: it stops outside your door and knocks.
     if (this.localHideState === "hidden" && dist < 3.5 && this.kingKnockCooldown <= 0) {
       this.audio.playClosetKnock();
@@ -2850,6 +2868,25 @@ export class GameEngine {
         this.audio.playFingerTap(0.2 + Math.random() * 0.25, Math.random() * 2 - 1, Math.random() < 0.3 ? "metal" : "wood");
       }
     }
+  }
+
+  /**
+   * The rhythm of this explorer's last walk, as offsets from its first step,
+   * once they've just stopped: 4-6 steps with no gap over 1 s, the last one
+   * 1.2-4 s ago. Null when there's nothing worth echoing.
+   */
+  private recentStepRhythm(): number[] | null {
+    const steps = this.localStepTimes;
+    if (steps.length < 4) return null;
+    const sinceLast = this.totalPlayTime - steps[steps.length - 1];
+    if (sinceLast < 1.2 || sinceLast > 4) return null;
+    const run: number[] = [steps[steps.length - 1]];
+    for (let i = steps.length - 2; i >= 0 && run.length < 6; i--) {
+      if (run[0] - steps[i] > 1) break;
+      run.unshift(steps[i]);
+    }
+    if (run.length < 4) return null;
+    return run.map((t) => t - run[0]);
   }
 
   /** A short local blackout of the office tubes (never over the alarm or a real event). */

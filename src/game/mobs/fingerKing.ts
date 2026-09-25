@@ -51,18 +51,9 @@ function crack(t: number, at: number): number {
   return t < at ? 0 : Math.exp(-(t - at) * 9);
 }
 
-/**
- * ctx.limbIn, but centred between `a` and `b` for any length. The shared
- * limbBetween puts a limb's centre 0.5 m from `a` (exact only for 1 m limbs,
- * close enough for the other mobs' long limbs), which scatters the King's
- * short finger segments, teeth and neck, so this nudges the result back.
- */
+/** ctx.limbIn, minus the shadow on the ~80 thin finger/teeth/crown segments (invisible, but a draw each). */
 function limb(ctx: MobBuildCtx, joint: THREE.Object3D, mat: THREE.Material, a: THREE.Vector3, b: THREE.Vector3, radius: number, taper?: number) {
   const m = ctx.limbIn(joint, mat, a, b, radius, taper);
-  const dir = new THREE.Vector3().subVectors(b, a);
-  const len = dir.length();
-  if (len > 1e-4) m.position.addScaledVector(dir.divideScalar(len), len / 2 - 0.5);
-  // ~80 thin finger/teeth/crown segments: their shadows are invisible but cost a draw each.
   if (radius < 0.02) m.castShadow = false;
   return m;
 }

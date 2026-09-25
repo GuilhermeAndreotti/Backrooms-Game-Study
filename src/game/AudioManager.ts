@@ -1043,11 +1043,12 @@ export class AudioManager {
   /**
    * The Finger King's warning: a few quick knuckle/nail taps, like fingers
    * drumming on a desk, a metal locker or a window. `volume` 0..1 rises as
-   * it gets closer; `count` is how many taps (it "counts" up as it nears).
+   * it gets closer; `count` is how many taps (it "counts" up as it nears);
+   * `delay` schedules the whole burst that many seconds from now.
    */
-  public playFingerTap(volume: number, pan = 0, surface: "wood" | "metal" | "glass" = "wood", count?: number) {
+  public playFingerTap(volume: number, pan = 0, surface: "wood" | "metal" | "glass" = "wood", count?: number, delay = 0) {
     if (!this.ctx || !this.masterGain || volume <= 0.01) return;
-    const t0 = this.ctx.currentTime;
+    const t0 = this.ctx.currentTime + delay;
     const taps = count ?? 2 + Math.floor(Math.random() * 3);
     const out = this.kingOut(volume, pan, 0.9);
 
@@ -1077,7 +1078,15 @@ export class AudioManager {
       // The nail itself: a tiny click on top
       if (surface !== "wood") this.kingOsc("sine", freq * 1.9, freq * 1.7, 0.05, 0.12, out, t);
     }
-    this.kingRelease(out, 1.2);
+    this.kingRelease(out, delay + 1.2);
+  }
+
+  /**
+   * One tap at each of `offsets` (seconds from now): the Finger King playing
+   * back a rhythm it heard — the explorer's own footsteps.
+   */
+  public playFingerTapPattern(offsets: number[], volume: number, pan: number, surface: "wood" | "metal" | "glass" = "wood") {
+    for (const o of offsets) this.playFingerTap(volume, pan, surface, 1, o);
   }
 
   /** A positional gain → panner chain into the master (and some reverb). Callers must kingRelease() it. */
