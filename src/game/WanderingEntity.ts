@@ -10,7 +10,7 @@ import { EntityType } from "../shared/entityTypes";
 import { MOB_DEFS } from "./mobs/registry";
 import { MobBuildCtx, MobJoints, MobSenseCtx, NO_SCRIPTED_POSE } from "./mobs/types";
 import { resetRig } from "./mobs/anim";
-import { ELECTRICAL_ROOM_LEVEL, LEVEL_2, LIGHTS_OUT_LEVEL } from "./levels/constants";
+import { ELECTRICAL_ROOM_LEVEL, LEVEL_2, LIGHTS_OUT_LEVEL, POOLROOMS_LEVEL } from "./levels/constants";
 
 // Re-exported for existing import sites (GameEngine.ts etc.) — the type now
 // lives in src/shared/entityTypes.ts so server.ts can share it too.
@@ -897,8 +897,11 @@ export class WanderingEntity {
     const cx = x * cs + cs / 2, cz = z * cs + cs / 2;
     const ox = fx * cs + cs / 2, oz = fz * cs + cs / 2;
     // Props (crates, pillars, boilers) block the cell centre or the edge crossing.
-    if (this.map.checkCollision(cx, cz, 0.35)) return false;
-    if (this.map.checkCollision((cx + ox) / 2, (cz + oz) / 2, 0.35)) return false;
+    // The Vigia is not constrained by the water-depth gates between Poolrooms
+    // sectors. It still collides with solid walls, the locked exit and props.
+    const crossesPoolGate = this.type === EntityType.VIGIA && this.map.networkLevel === POOLROOMS_LEVEL;
+    if (this.map.checkCollision(cx, cz, 0.35, crossesPoolGate)) return false;
+    if (this.map.checkCollision((cx + ox) / 2, (cz + oz) / 2, 0.35, crossesPoolGate)) return false;
     if (!this.hunting && this.targetHidden && this.map.hideCells.has(`${x},${z}`)) return false;
     return true;
   }

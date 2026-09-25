@@ -3100,7 +3100,7 @@ export class ProceduralMap {
    * Player position (world space) is checked against the 2D grid matrix.
    * Returns true if there's a collision.
    */
-  public checkCollision(x: number, z: number, radius = 0.5): boolean {
+  public checkCollision(x: number, z: number, radius = 0.5, ignorePoolGate = false): boolean {
     const minGridX = Math.floor((x - radius) / this.cellSize);
     const maxGridX = Math.floor((x + radius) / this.cellSize);
     const minGridZ = Math.floor((z - radius) / this.cellSize);
@@ -3130,7 +3130,7 @@ export class ProceduralMap {
         if (this.level === 7 && !this.poolroomsSolved && gx === this.exitGridX && gz === this.exitGridZ) {
           return true;
         }
-        if (this.isPoolCellBlocked(gx, gz)) return true;
+        if (!ignorePoolGate && this.isPoolCellBlocked(gx, gz)) return true;
         if (this.level === 8 && !this.level3GateOpen && gx === this.level3GateX && gz === this.level3GateZ) {
           const gateEdge = this.level3GateX * this.cellSize;
           if (Math.abs(x - gateEdge) < radius + 0.12) return true;
