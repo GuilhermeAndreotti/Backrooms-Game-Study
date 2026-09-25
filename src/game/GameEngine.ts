@@ -3367,6 +3367,7 @@ export class GameEngine {
         const [lookX, lookZ] = this.lookDirectionXZ();
         return { x: this.player.position.x, z: this.player.position.z, lookX, lookZ };
       },
+      handAnchor: () => this.camera,
       globalEvent: (state, seconds) => this.map?.startGlobalEvent(state, seconds),
       send: (kind, index) => this.sendToServer({ type: "fun_event", level: FUN_LEVEL, kind, index }),
       stageChanged: () => { /* atmosphere is re-read from the stage every frame */ },

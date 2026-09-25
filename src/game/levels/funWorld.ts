@@ -26,7 +26,7 @@ import type { LightFixture } from "../ProceduralMap";
 import * as M from "../LevelFunModels";
 import { t } from "../../i18n";
 import {
-  FUN_EXIT, FUN_GATES, FUN_GRID, FUN_SPAWN, FUN_THEMES, FunCode, FunGate, FunRandom, FunTheme, P1_ORDER,
+  FUN_EXIT, FUN_GATES, FUN_GRID, FUN_SPAWN, FUN_THEMES, FunCode, FunGate, FunRandom, FunTheme,
   THEME_SYMBOL, PANEL_BUTTONS, funCellCenter, funCodeForSeed, funGateAt, funRegionAt,
 } from "./funLayout";
 
@@ -261,6 +261,49 @@ export class FunWorld {
 
   makeEnv(seedSalt: number): PropEnv {
     return { kit: this.kit, rng: new FunRandom(this.env.seed + seedSalt * 977), code: this.code };
+  }
+
+  /** A local-only copy used by the first-person carry view. */
+  makeHeldItem(id: string): M.FunPiece {
+    const env = this.makeEnv(700 + id.length);
+    switch (id) {
+      case "tablecloth": return M.funTableclothFolded(env.kit, "red");
+      case "plates": {
+        const g = new THREE.Group();
+        for (let i = 0; i < 3; i++) {
+          const plate = M.funPlate(env.kit, i % 2 ? "white" : "blue").object;
+          plate.position.y = i * 0.035;
+          g.add(plate);
+        }
+        return { object: g, footprint: [] };
+      }
+      case "cups": {
+        const g = new THREE.Group();
+        for (const [i, color] of (["red", "yellow", "blue"] as M.PartyColor[]).entries()) {
+          const cup = M.funCup(env.kit, color).object;
+          cup.position.set((i - 1) * 0.16, 0, 0);
+          g.add(cup);
+        }
+        return { object: g, footprint: [] };
+      }
+      case "gift": return M.funGift(env.kit, "pink", "yellow", 0.32);
+      case "candles": return M.funCandleBox(env.kit);
+      case "balloons": return M.funBalloonCluster(env.kit, env.rng, 3);
+      case "cake": return M.funCake(env.kit, { candles: 5, lit: true });
+      case "balloon": return M.funSpecialBalloon(env.kit, 0.85);
+      default: return M.funGift(env.kit, "purple", "yellow", 0.3);
+    }
+  }
+
+  /** A cosmetic apparition in the player's current cell. It never has collision. */
+  spawnPartygoer(x: number, z: number, yaw: number): THREE.Object3D | null {
+    const group = this.groups.get(`${Math.floor(x / CELL)},${Math.floor(z / CELL)}`);
+    if (!group) return null;
+    const piece = M.funPartygoer(this.kit, { scale: 1.16 });
+    piece.object.position.set(x, 0, z);
+    piece.object.rotation.y = yaw;
+    group.add(piece.object);
+    return piece.object;
   }
 
   /** The stage's look. Texture swaps are in place, so every built cell changes with no rebuild. */
@@ -582,8 +625,8 @@ export class FunWorld {
       }
     }
 
-    // Clues: the first two steps by the spawn, the poster over the table.
-    this.onWall(specs, 2, 5, "W", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "sequence", steps: P1_ORDER.slice(0, 2) as M.PartyItem[], start: 1 }, 1));
+    // Clues imply the table-setting order without listing the solution outright.
+    this.onWall(specs, 2, 5, "W", 0, 1.5, (e) => M.funNote(e.kit, lines("fun.hint.table"), 1));
     this.onWall(specs, 2, 7, "W", 0.3, 1.45, (e) => M.funDrawing(e.kit, { kind: "house" }, 4));
     this.onWall(specs, 9, 2, "N", 0, 1.5, (e) => { const l = lines("fun.poster.rules"); return M.funPoster(e.kit, l[0], l.slice(1), "pink"); });
     this.onWall(specs, 4, 2, "N", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 4 }, 2), { to: 0 });
@@ -626,7 +669,7 @@ export class FunWorld {
     const [cx] = cc(5, 19);
     specs.push({ x: cx, z: 20 * CELL - 0.55, cell: [5, 19], make: (e) => M.funPartyTable(e.kit, "yellow", { length: 1.0, depth: 0.6, places: 1, stage: 1 }) });
     specs.push({ x: cx, z: 20 * CELL - 0.55, y: TABLE_TOP, cell: [5, 19], solid: false, tag: "pickup:candles", glow: { color: 0xffe08a, size: 0.7 }, make: (e) => M.funCandleBox(e.kit) });
-    this.onWall(specs, 2, 16, "W", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "sequence", steps: P1_ORDER.slice(2, 4) as M.PartyItem[], start: 3 }, 5));
+    this.onWall(specs, 2, 16, "W", 0, 1.5, (e) => M.funNote(e.kit, lines("fun.hint.service"), 5));
     this.onWall(specs, 6, 16, "E", 0.4, 1.45, (e) => M.funNote(e.kit, lines("fun.note.b"), 2));
     this.onWall(specs, 4, 14, "N", 1.3, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 3 }, 6), { to: 0 });
     this.onWall(specs, 4, 14, "N", 1.3, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 3, wrong: true }, 6), { from: 1 });
@@ -646,7 +689,7 @@ export class FunWorld {
         return { object: g, footprint: [] };
       },
     });
-    this.onWall(specs, 13, 16, "E", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "sequence", steps: P1_ORDER.slice(4) as M.PartyItem[], start: 5 }, 7));
+    this.onWall(specs, 13, 16, "E", 0, 1.5, (e) => M.funNote(e.kit, lines("fun.hint.last"), 7));
     this.onWall(specs, 9, 17, "W", 0, 1.5, (e) => { const l = lines("fun.poster.order"); return M.funPoster(e.kit, l[0], l.slice(1), "purple"); });
     this.onWall(specs, 11, 19, "S", -0.9, 1.4, (e) => M.funNote(e.kit, lines("fun.note.c"), 3));
     const [kx, kz] = cc(10, 18);

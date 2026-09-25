@@ -34,6 +34,8 @@ export interface FunHost {
   notify(text: string): void;
   /** Player position and horizontal look direction (unit vector). */
   player(): { x: number; z: number; lookX: number; lookZ: number };
+  /** Local camera parent for a cosmetic first-person carried item. */
+  handAnchor(): THREE.Object3D;
   globalEvent(state: "blackout" | "flicker_storm", seconds: number): void;
   send(kind: "p1_slot" | "p2_solved" | "p3_placed", index: number): void;
   /** The stage changed: refresh anything the engine keeps per stage (fog, ambient). */
@@ -104,9 +106,12 @@ export class FunDirector {
   exitOpen = false;
 
   private carry: Carry | null = null;
+  private heldVisual: THREE.Group | null = null;
+  private closeScare: { obj: THREE.Object3D; until: number } | null = null;
   private nextAmbient = 20;
   private nextGlimpse = 26;
   private nextFlicker = 3;
+  private nextCloseScare = 42;
   private glimpse: Glimpse | null = null;
 
   constructor(world: FunWorld, host: FunHost) {
@@ -120,6 +125,8 @@ export class FunDirector {
   }
 
   dispose() {
+    this.clearHeldVisual();
+    this.clearCloseScare();
     this.host.audio.stopFunMusic(true);
   }
 
@@ -230,6 +237,7 @@ export class FunDirector {
     const p = this.world.tag(`pickup:${item}`);
     if (p) p.obj.visible = false;
     this.carry = { group: "p1", id: item };
+    this.showHeldVisual(this.carry);
     this.host.notify(t("fun.n.carry", { item: t(key(`fun.item.${item}`)) }));
     this.host.audio.playFunSound("pop", 0, 0.25);
   }
@@ -243,7 +251,28 @@ export class FunDirector {
     if (p) p.obj.visible = true;
     if (c.group === "p3") this.containers[c.id as FunFinalItem] = "revealed";
     this.carry = null;
+    this.clearHeldVisual();
     if (notify) this.host.notify(t("fun.n.returned", { item: t(key(`fun.item.${c.id}`)) }));
+  }
+
+  private showHeldVisual(carry: Carry) {
+    this.clearHeldVisual();
+    const held = new THREE.Group();
+    const piece = this.world.makeHeldItem(carry.id);
+    const scale = carry.id === "balloons" || carry.id === "balloon" ? 0.3 : carry.id === "cake" ? 0.44 : 0.62;
+    piece.object.scale.setScalar(scale);
+    piece.object.rotation.set(-0.18, -0.45, 0.08);
+    held.add(piece.object);
+    held.position.set(0.38, -0.38, -0.76);
+    held.rotation.set(-0.12, -0.28, -0.08);
+    this.host.handAnchor().add(held);
+    this.heldVisual = held;
+  }
+
+  private clearHeldVisual() {
+    if (!this.heldVisual) return;
+    this.heldVisual.removeFromParent();
+    this.heldVisual = null;
   }
 
   private tryPlaceP1(slot: number) {
@@ -252,17 +281,14 @@ export class FunDirector {
     const item = c.id as M.PartyItem;
     if (item === P1_DECOY) {
       this.host.notify(t("fun.n.decoy"));
-      this.returnCarry();
       return;
     }
     if (P1_ORDER[slot] === item) {
-      this.carry = null;
       this.placeP1(slot, true);
       return;
     }
     this.host.notify(t("fun.n.slotWrong"));
     this.host.audio.playTerminalBeep(false);
-    this.returnCarry();
     this.p1Mistakes++;
     if (this.p1Mistakes % 3 === 0) this.miniScare();
   }
@@ -274,7 +300,10 @@ export class FunDirector {
     this.p1Placed.add(item);
     const pick = this.world.tag(`pickup:${item}`);
     if (pick) pick.obj.visible = false;
-    if (this.carry?.group === "p1" && this.carry.id === item) this.carry = null;
+    if (this.carry?.group === "p1" && this.carry.id === item) {
+      this.carry = null;
+      this.clearHeldVisual();
+    }
     const s = this.world.tag(`slot:${slot}`);
     if (s) {
       const model = placedModel(this.world.makeEnv(slot).kit, item);
@@ -367,6 +396,7 @@ export class FunDirector {
       }
     }
     this.host.notify(t("fun.n.found", { item: t(key(`fun.item.${item}`)) }));
+    this.after(0.7, () => this.startCloseScare(this.host.player()));
   }
 
   private takeP3(item: FunFinalItem) {
@@ -376,12 +406,16 @@ export class FunDirector {
     if (it) it.obj.visible = false;
     this.containers[item] = "taken";
     this.carry = { group: "p3", id: item };
+    this.showHeldVisual(this.carry);
     this.host.notify(t("fun.n.carry", { item: t(key(`fun.item.${item}`)) }));
   }
 
   private placeP3(item: FunFinalItem, local: boolean) {
     if (this.containers[item] === "placed") return;
-    if (this.carry?.group === "p3" && this.carry.id === item) this.carry = null;
+    if (this.carry?.group === "p3" && this.carry.id === item) {
+      this.carry = null;
+      this.clearHeldVisual();
+    }
     this.containers[item] = "placed";
     const src = this.world.tag(`item:${item}`);
     if (src) src.obj.visible = false;
@@ -472,6 +506,7 @@ export class FunDirector {
 
   update(delta: number) {
     this.clock += delta;
+    if (this.closeScare && this.clock >= this.closeScare.until) this.clearCloseScare();
     if (this.timers.length) {
       const due = this.timers.filter((tm) => tm.at <= this.clock);
       if (due.length) {
@@ -505,6 +540,25 @@ export class FunDirector {
   private miniScare() {
     this.host.globalEvent("flicker_storm", 2.4);
     this.host.audio.playFunSound("giggle", (Math.random() - 0.5) * 1.6, 0.4);
+    this.startCloseScare(this.host.player());
+  }
+
+  private clearCloseScare() {
+    if (!this.closeScare) return;
+    this.closeScare.obj.removeFromParent();
+    this.closeScare = null;
+  }
+
+  /** A short, non-blocking Partygoer appearance just ahead of the explorer. */
+  private startCloseScare(p: { x: number; z: number; lookX: number; lookZ: number }) {
+    if (this.closeScare) return;
+    const x = p.x + p.lookX * 1.65, z = p.z + p.lookZ * 1.65;
+    const yaw = Math.atan2(p.x - x, p.z - z);
+    const obj = this.world.spawnPartygoer(x, z, yaw);
+    if (!obj) return;
+    this.closeScare = { obj, until: this.clock + 0.65 };
+    this.host.globalEvent("flicker_storm", 0.9);
+    this.host.audio.playFunSound("sting", 0, 0.72);
   }
 
   private updateScares(delta: number, p: { x: number; z: number; lookX: number; lookZ: number }, region: string | null) {
@@ -524,6 +578,12 @@ export class FunDirector {
     const tense = this.p1Done && !this.p3Done;
     this.updateGlimpse(delta, p);
     if (!tense || this.stage === 0) return;
+
+    // The Partygoer never hunts, but increasingly invades the player's space.
+    if (this.clock >= this.nextCloseScare && !this.closeScare) {
+      this.nextCloseScare = this.clock + (this.p2Solved ? 18 : 25) + Math.random() * 12;
+      this.startCloseScare(p);
+    }
 
     // Noises from rooms that should be empty.
     if (this.clock >= this.nextAmbient) {
