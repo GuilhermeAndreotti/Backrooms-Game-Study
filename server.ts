@@ -16,7 +16,7 @@ import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { ALL_ENTITY_TYPES } from "./src/shared/entityTypes";
 import { ROOM_CHEATS, SUDO_CHEAT, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
-import { LOBBY_LEVEL, MAIN_LEVELS, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
+import { LOBBY_LEVEL, MAIN_LEVELS, FUN_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
 import { POOL_ROOM_COUNT, POOL_VALVE_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./src/game/poolroomsPuzzle";
 
 // ---------------------------------------------------------------------------
@@ -326,6 +326,8 @@ const MAX_SMILERS = 8;
 const MAX_SPEECH_LENGTH = 64;
 /** Level-wide events the authority may broadcast ("levelg_alarm": Level G's final alarm). */
 const GLOBAL_EVENTS = new Set(["flicker_storm", "blackout", "levelg_alarm"]);
+/** Level FUN puzzle facts a client may announce (see funDirector.ts). */
+const FUN_EVENT_KINDS = new Set(["p1_slot", "p2_solved", "p3_placed"]);
 
 function gridInt(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < 256 ? value : null;
@@ -658,7 +660,7 @@ async function startServer() {
         p.flashlight = typeof data.flashlight === "boolean" ? data.flashlight : p.flashlight;
         p.state = typeof data.state === "string" ? data.state.slice(0, 16) : p.state;
         const requestedPlayerLevel = finiteNumber(data.level, p.level);
-        const isPrivateLevel = requestedPlayerLevel === LIGHTS_OUT_LEVEL || requestedPlayerLevel === LEVEL_G || requestedPlayerLevel === MOTION_LEVEL;
+        const isPrivateLevel = requestedPlayerLevel === LIGHTS_OUT_LEVEL || requestedPlayerLevel === LEVEL_G || requestedPlayerLevel === MOTION_LEVEL || requestedPlayerLevel === FUN_LEVEL;
         const isAllowedMainLevel = (MAIN_LEVELS as readonly number[]).includes(requestedPlayerLevel) || requestedPlayerLevel === LOBBY_LEVEL;
         if (Number.isInteger(requestedPlayerLevel) && (isPrivateLevel || (isAllowedMainLevel && requestedPlayerLevel === room.level))) {
           p.level = requestedPlayerLevel;
@@ -719,6 +721,19 @@ async function startServer() {
         const index = data.index;
         if (level !== ELECTRICAL_ROOM_LEVEL || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 4) return;
         broadcastToLevel(room, level, { type: "brick_office_switch", level, index }, conn);
+        return;
+      }
+
+      // Level FUN: puzzle progress is a handful of idempotent facts. Every
+      // client derives the rest (stage, doors, lights) from them, so the relay
+      // only checks the kind is known and the index is a small integer.
+      if (type === "fun_event") {
+        const level = conn.player.level;
+        const kind = data.kind;
+        const index = data.index;
+        if (level !== FUN_LEVEL || data.level !== level || typeof kind !== "string" || !FUN_EVENT_KINDS.has(kind)) return;
+        if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 7) return;
+        broadcastToLevel(room, level, { type: "fun_event", level, kind, index }, conn);
         return;
       }
 
@@ -835,7 +850,7 @@ async function startServer() {
       if (type === "start_game") {
         if (room.level !== LOBBY_LEVEL || room.hostId !== conn.player.id) return;
         const requestedLevel = data.level === undefined ? 0 : data.level;
-        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || requestedLevel > MOTION_LEVEL || requestedLevel === LOBBY_LEVEL) return;
+        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || (requestedLevel > MOTION_LEVEL && requestedLevel !== FUN_LEVEL) || requestedLevel === LOBBY_LEVEL) return;
         room.level = requestedLevel;
         resetPoolroomsState(room);
         reviveAll(room);

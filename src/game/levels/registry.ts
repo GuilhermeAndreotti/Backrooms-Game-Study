@@ -13,6 +13,7 @@ import { LevelDefinition } from "./types";
 import {
   ABANDONED_OFFICE_LEVEL,
   ELECTRICAL_ROOM_LEVEL,
+  FUN_LEVEL,
   LEVEL_1,
   LEVEL_2,
   LEVEL_G,
@@ -138,6 +139,15 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
   [ABANDONED_OFFICE_LEVEL]: {
     id: ABANDONED_OFFICE_LEVEL,
     displayLabel: "LEVEL 4 · ABANDONED OFFICE",
+    spawn: { kind: "bespoke" },
+  },
+
+  // Level FUN: no roster on purpose. Partygoers are scripted glimpses and set
+  // pieces (see levels/funDirector.ts), never hunters, so nothing here can
+  // start chasing the group.
+  [FUN_LEVEL]: {
+    id: FUN_LEVEL,
+    displayLabel: "LEVEL FUN",
     spawn: { kind: "bespoke" },
   },
 };

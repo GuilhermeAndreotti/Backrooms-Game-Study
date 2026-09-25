@@ -1658,11 +1658,181 @@ export class AudioManager {
     this.alarmOscillators = [];
   }
 
+  // ---------------------------------------------------------------------
+  // Level FUN — a music box that never quite plays in tune, and the small
+  // noises of a party venue with nobody in it.
+  // ---------------------------------------------------------------------
+  private funMusic: { gain: GainNode; timer: ReturnType<typeof setTimeout> | null; nodes: OscillatorNode[]; stopped: boolean } | null = null;
+
+  /** Notes are [MIDI, beats]; a MIDI of 0 is a rest. */
+  private static readonly FUN_TUNES: Record<"party" | "birthday", [number, number][]> = {
+    birthday: [
+      [67, 0.75], [67, 0.25], [69, 1], [67, 1], [72, 1], [71, 2],
+      [67, 0.75], [67, 0.25], [69, 1], [67, 1], [74, 1], [72, 2],
+      [67, 0.75], [67, 0.25], [79, 1], [76, 1], [72, 1], [71, 1], [69, 1],
+      [77, 0.75], [77, 0.25], [76, 1], [72, 1], [74, 1], [72, 2],
+    ],
+    party: [
+      [72, 0.5], [76, 0.5], [79, 0.5], [76, 0.5], [72, 0.5], [76, 0.5], [79, 1],
+      [77, 0.5], [74, 0.5], [77, 0.5], [81, 0.5], [79, 0.5], [76, 0.5], [72, 1],
+      [74, 0.5], [77, 0.5], [79, 0.5], [77, 0.5], [74, 0.5], [71, 0.5], [67, 1],
+      [72, 0.5], [76, 0.5], [79, 0.5], [84, 0.5], [79, 1], [72, 1],
+    ],
+  };
+
+  /**
+   * Starts a music-box tune (looping by default). `distortion` (0..1) slows the
+   * tempo, drags notes out of tune and adds a second, wrong voice.
+   */
+  public startFunMusic(tune: "party" | "birthday", opts: { volume?: number; distortion?: number; loop?: boolean } = {}) {
+    if (!this.ctx || !this.masterGain) return;
+    this.stopFunMusic(true);
+    const ctx = this.ctx;
+    const volume = (opts.volume ?? 0.6) * this.settings.volumeSfx * 0.22;
+    const distortion = Math.min(1, Math.max(0, opts.distortion ?? 0));
+    const loop = opts.loop ?? true;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(volume, ctx.currentTime + 0.3);
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 3800 - distortion * 2200;
+    gain.connect(lp);
+    lp.connect(this.masterGain);
+    if (this.reverbIn) {
+      const send = ctx.createGain();
+      send.gain.value = 0.35;
+      lp.connect(send);
+      send.connect(this.reverbIn);
+    }
+    const state = { gain, timer: null as ReturnType<typeof setTimeout> | null, nodes: [] as OscillatorNode[], stopped: false };
+    this.funMusic = state;
+    const notes = AudioManager.FUN_TUNES[tune];
+
+    const bell = (freq: number, at: number, dur: number, amp: number) => {
+      for (const [mult, a, type] of [[1, 1, "sine"], [2, 0.32, "sine"], [3.01, 0.12, "triangle"]] as const) {
+        const osc = ctx.createOscillator();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq * mult, at);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.0001, at);
+        g.gain.linearRampToValueAtTime(amp * a, at + 0.006);
+        g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+        osc.connect(g);
+        g.connect(gain);
+        osc.start(at);
+        osc.stop(at + dur + 0.05);
+        state.nodes.push(osc);
+        osc.onended = () => { const i = state.nodes.indexOf(osc); if (i >= 0) state.nodes.splice(i, 1); };
+      }
+    };
+
+    const round = (start: number) => {
+      if (state.stopped) return;
+      let at = start;
+      const beat = 0.4 + distortion * 0.12;
+      notes.forEach(([midi, beats], i) => {
+        const dur = beats * beat * (1 + distortion * (i / notes.length) * 0.5);
+        if (midi > 0) {
+          const drift = (Math.random() - 0.5) * distortion * 90 + distortion * (i / notes.length) * -60;
+          const freq = 440 * Math.pow(2, (midi - 69 + drift / 100) / 12);
+          bell(freq, at, Math.max(0.5, dur * 1.8), 0.5);
+          if (distortion > 0.45) bell(freq * Math.pow(2, 1 / 12), at + 0.02, Math.max(0.4, dur * 1.4), 0.18 * distortion);
+        }
+        at += dur;
+      });
+      if (loop) {
+        state.timer = setTimeout(() => round(ctx.currentTime + 0.6 + distortion * 1.2), (at - ctx.currentTime) * 1000);
+      }
+    };
+    round(ctx.currentTime + 0.1);
+  }
+
+  /** Fades the music box out, or cuts it dead in the middle of a note. */
+  public stopFunMusic(abrupt = false) {
+    const m = this.funMusic;
+    if (!m || !this.ctx) { this.funMusic = null; return; }
+    m.stopped = true;
+    if (m.timer) clearTimeout(m.timer);
+    const t = this.ctx.currentTime;
+    m.gain.gain.cancelScheduledValues(t);
+    m.gain.gain.setValueAtTime(m.gain.gain.value, t);
+    m.gain.gain.linearRampToValueAtTime(0.0001, t + (abrupt ? 0.02 : 1.8));
+    const nodes = [...m.nodes];
+    setTimeout(() => nodes.forEach((n) => { try { n.stop(); } catch { /* already stopped */ } }), abrupt ? 60 : 2000);
+    this.funMusic = null;
+  }
+
+  public get funMusicPlaying(): boolean { return this.funMusic !== null; }
+
+  /** Short procedural sounds for the party level. `pan` is -1..1, `volume` 0..1 (already attenuated by distance). */
+  public playFunSound(kind: "slam" | "giggle" | "steps" | "pop" | "creak" | "sting", pan = 0, volume = 1) {
+    if (!this.ctx || !this.masterGain) return;
+    if (kind === "sting") { this.playKingStinger(); return; }
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.value = Math.max(0, Math.min(1, volume)) * this.settings.volumeSfx;
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, pan));
+    out.connect(panner);
+    panner.connect(this.masterGain);
+    if (this.reverbIn) { const send = ctx.createGain(); send.gain.value = 0.45; out.connect(send); send.connect(this.reverbIn); }
+    const noise = (dur: number, type: BiquadFilterType, freq: number, q: number, amp: number, at: number) => {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise();
+      const f = ctx.createBiquadFilter();
+      f.type = type; f.frequency.value = freq; f.Q.value = q;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(amp, at);
+      g.gain.exponentialRampToValueAtTime(0.0005, at + dur);
+      src.connect(f); f.connect(g); g.connect(out);
+      src.start(at, Math.random());
+      src.stop(at + dur + 0.02);
+    };
+    const tone = (type: OscillatorType, f0: number, f1: number, dur: number, amp: number, at: number) => {
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(f0, at);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(20, f1), at + dur);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(amp, at + Math.min(0.03, dur / 3));
+      g.gain.exponentialRampToValueAtTime(0.0005, at + dur);
+      osc.connect(g); g.connect(out);
+      osc.start(at); osc.stop(at + dur + 0.02);
+    };
+    switch (kind) {
+      case "slam":
+        noise(0.35, "lowpass", 500, 0.8, 1.0, t);
+        tone("sine", 95, 38, 0.5, 0.9, t);
+        noise(0.9, "bandpass", 300, 1.5, 0.25, t + 0.05);
+        break;
+      case "giggle":
+        for (let i = 0; i < 4; i++) tone("sine", 700 + Math.random() * 300, 900 + Math.random() * 400, 0.11, 0.35, t + i * 0.15);
+        tone("triangle", 1300, 1700, 0.5, 0.05, t);
+        break;
+      case "steps":
+        for (let i = 0; i < 5; i++) noise(0.09, "bandpass", 520 + (i % 2) * 90, 2, 0.6, t + i * (0.3 + Math.random() * 0.06));
+        break;
+      case "pop":
+        noise(0.12, "highpass", 1800, 0.7, 1.0, t);
+        tone("sine", 220, 90, 0.08, 0.5, t);
+        break;
+      case "creak":
+        tone("sawtooth", 84, 138, 0.9, 0.16, t);
+        noise(0.9, "bandpass", 900, 6, 0.06, t);
+        break;
+    }
+    setTimeout(() => { try { out.disconnect(); panner.disconnect(); } catch { /* gone */ } }, 3500);
+  }
+
   /**
    * Destroys the audio engine.
    */
   public destroy() {
     try {
+      this.stopFunMusic(true);
       this.stopAlarm();
       this.stopDistantAmbianceScheduler();
       this.stopBackgroundMusic();

@@ -15,8 +15,9 @@ import { CheatTerminalModal, SkinChoice } from "./components/CheatTerminalModal"
 import { PauseSettings } from "./components/PauseSettings";
 import { LevelSelectorModal } from "./components/LevelSelectorModal";
 import { MegDoorModal } from "./components/MegDoorModal";
+import { FunPanelModal } from "./components/FunPanelModal";
 import { AdSlot } from "./components/AdSlot";
-import { LOBBY_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, MOTION_LEVEL, nextMainLevel } from "./game/levels/constants";
+import { LOBBY_LEVEL, FUN_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, MOTION_LEVEL, nextMainLevel } from "./game/levels/constants";
 import { addAchievementListener, removeAchievementListener, unlockAchievement } from "./utils/achievements";
 import { isTypingInField, lockGameInput } from "./utils/input";
 import { EMPTY_FACE } from "./utils/face";
@@ -38,6 +39,7 @@ function displayLabelForLevel(level: number): string {
   if (level === LIGHTS_OUT_LEVEL) return "6 · SECRET";
   if (level === LEVEL_G) return "LEVEL G · SECRET";
   if (level === MOTION_LEVEL) return "MOTION";
+  if (level === FUN_LEVEL) return "LEVEL FUN";
   return String(level);
 }
 
@@ -138,6 +140,10 @@ export default function App() {
   const [levelGProgress, setLevelGProgress] = useState<LevelGProgress>({ digits: [null, null, null], alarm: false });
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [isMegDoorOpen, setIsMegDoorOpen] = useState(false);
+  const [isFunPanelOpen, setIsFunPanelOpen] = useState(false);
+  const [funObjective, setFunObjective] = useState<string | null>(null);
+  /** Level the explorer last escaped from, so the report can tell FUN's ending apart. */
+  const [escapedFrom, setEscapedFrom] = useState<number | null>(null);
   const [megDialogue, setMegDialogue] = useState<{ name: string; grade: string; dialogue: string } | null>(null);
   // Lobby cheat terminal: MVJM/UHUM/CLIP/SKIN. cheatSkin only mirrors the
   // engine's own state for the picker's checkmark — GameEngine.cheatSkin
@@ -316,6 +322,13 @@ export default function App() {
         return true;
       case "meg_door":
         setIsMegDoorOpen(true);
+        document.exitPointerLock?.();
+        return true;
+      case "fun":
+        // Something on Level FUN was picked up, placed or opened.
+        return true;
+      case "fun_panel":
+        setIsFunPanelOpen(true);
         document.exitPointerLock?.();
         return true;
       case "terminal":
@@ -646,6 +659,7 @@ export default function App() {
                         if (socketRef.current?.readyState === WebSocket.OPEN) {
                           // Still in the room: show the report over the game and
                           // go back to the room's lobby underneath it.
+                          setEscapedFrom(engine.level);
                           setEscapeReport(engine.level === 1 ? "l2" : "done");
                           socketRef.current.send(JSON.stringify({ type: "return_to_lobby_request" }));
                         } else {
@@ -659,6 +673,7 @@ export default function App() {
                       }
                     },
                     onInteractPrompt: (text) => setInteractPrompt(text),
+                    onObjectiveChange: (text) => setFunObjective(text),
                     onMegDialogue: (employee) => setMegDialogue({ name: employee.name, grade: employee.grade, dialogue: employee.dialogue }),
                     onReadingEnd: () => {
                       setMegDialogue(null);
@@ -846,6 +861,7 @@ export default function App() {
               if (engine.level === LOBBY_LEVEL) return;
               unlockAchievement("absolute_survivor");
               document.exitPointerLock?.();
+              setEscapedFrom(null);
               setEscapeReport("done");
             }
 
@@ -1039,6 +1055,10 @@ export default function App() {
 
           else if (type === "brick_office_switch") {
             engineRef.current?.handleLevel3Switch(data.index);
+          }
+
+          else if (type === "fun_event") {
+            engineRef.current?.applyFunEvent(data);
           }
 
           else if (type === "chat_message") {
@@ -1677,6 +1697,7 @@ export default function App() {
             inventoryCount={inventory.length}
             onOpenAchievements={() => setIsAchievementsOpen(true)}
             levelGProgress={levelGProgress}
+            objective={funObjective}
             voipEnabled={voipEnabled}
             voipSpeaking={voipSpeaking}
             onToggleVoip={() => {
@@ -1693,6 +1714,17 @@ export default function App() {
               onSubmit={(code) => engineRef.current?.submitLevelGCode(code) ?? false}
               onClose={() => {
                 setIsTerminalOpen(false);
+                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+                if (canvasEl) lockGameInput(canvasEl);
+              }}
+            />
+          )}
+          {isFunPanelOpen && currentLevel === FUN_LEVEL && (
+            <FunPanelModal
+              initialProgress={engineRef.current?.funPanelProgress() ?? 0}
+              onPress={(index) => engineRef.current?.funPressButton(index) ?? { result: "wrong", progress: 0 }}
+              onClose={() => {
+                setIsFunPanelOpen(false);
                 const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
                 if (canvasEl) lockGameInput(canvasEl);
               }}
@@ -1983,7 +2015,7 @@ export default function App() {
               <div className="space-y-4">
                 <h2 className="text-2xl font-black tracking-widest text-green-400 uppercase">{t("esc.doneTitle")}</h2>
                 <p className="text-sm text-green-300 uppercase leading-relaxed font-sans">
-                  {t("esc.doneText2")}
+                  {escapedFrom === FUN_LEVEL ? t("esc.funText") : t("esc.doneText2")}
                 </p>
                 
                 <div className="p-4 bg-black/60 border border-green-950/60 rounded text-left space-y-1.5 text-xs text-[#a28e3b]/80">

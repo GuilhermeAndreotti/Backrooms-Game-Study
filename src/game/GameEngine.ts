@@ -25,12 +25,15 @@ import { LEVEL_DEFS } from "./levels/registry";
 import {
   ABANDONED_OFFICE_LEVEL,
   ELECTRICAL_ROOM_LEVEL,
+  FUN_LEVEL,
   LEVEL_G,
   LIGHTS_OUT_LEVEL,
   MOTION_LEVEL,
   POOLROOMS_LEVEL,
 } from "./levels/constants";
 import { POOL_VALVE_COUNT } from "./poolroomsPuzzle";
+import { FunDirector } from "./levels/funDirector";
+import type { FunStage } from "./LevelFunModels";
 import {
   AdaptiveResolution,
   QualityLevel,
@@ -53,6 +56,8 @@ export interface GameEngineCallbacks {
   onSecretLevelFound?: (level: number) => void;
   /** Context hint for the crosshair area, e.g. t("act.pushBox"); null clears it. */
   onInteractPrompt?: (text: string | null) => void;
+  /** Level FUN: the current goal, shown on the HUD; null when the level has none. */
+  onObjectiveChange?: (text: string | null) => void;
   onMegDialogue?: (employee: { name: string; grade: string; dialogue: string }) => void;
   onMegDoorRequest?: () => void;
   /** A diary page was picked up — it goes into the journal, not the inventory. */
@@ -103,8 +108,14 @@ const INVENTORY_PICKUPS: Partial<Record<string, { notification: MessageKey; achi
 };
 
 /** Ambient light and fog per level, shared by level setup and the per-frame event code. */
-function levelAtmosphere(level: number) {
+function levelAtmosphere(level: number, funStage: FunStage = 0) {
   switch (level) {
+    case FUN_LEVEL: // Level FUN: a cheerful, cheap party that sours as the puzzles are solved
+      return [
+        { ambientColor: 0xfff0c8, ambientIntensity: 1.55, fogColor: 0xe9d68a, dimmedFogColor: 0x6a5a2a },
+        { ambientColor: 0xe6d29c, ambientIntensity: 1.2, fogColor: 0xb8a25a, dimmedFogColor: 0x463a1c },
+        { ambientColor: 0xd0ae8a, ambientIntensity: 0.95, fogColor: 0x76603c, dimmedFogColor: 0x2a2010 },
+      ][funStage];
     case LOBBY_LEVEL: // room lobby: open-air field under a clear blue sky
       return { ambientColor: 0xfff6e0, ambientIntensity: 2.6, fogColor: 0x8fc7f0, dimmedFogColor: 0x4a6a8a };
     case LEVEL_G: // Level G: dim, cold office under failing tubes
@@ -380,6 +391,10 @@ export class GameEngine {
   private onRedRoomExposureChange?: (val: number) => void;
   private onToxicWaterExposureChange?: (val: number) => void;
   public onHUDNotification?: (msg: string) => void;
+  private onObjectiveChange?: (text: string | null) => void;
+  /** Level FUN's puzzles and scares; null on every other level. */
+  private funDirector: FunDirector | null = null;
+  private lastFunObjective: string | null = null;
   public onSectorChange?: (sector: string) => void;
   public onInventoryChange?: (items: string[]) => void;
   private onSanityChange?: (val: number) => void;
@@ -446,6 +461,7 @@ export class GameEngine {
     this.onRedRoomExposureChange = callbacks.onRedRoomExposureChange;
     this.onToxicWaterExposureChange = callbacks.onToxicWaterExposureChange;
     this.onHUDNotification = callbacks.onHUDNotification;
+    this.onObjectiveChange = callbacks.onObjectiveChange;
     this.onSectorChange = callbacks.onSectorChange;
     this.onInventoryChange = callbacks.onInventoryChange;
     this.onSanityChange = callbacks.onSanityChange;
@@ -680,14 +696,14 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === LOBBY_LEVEL ? 0.008 : level === LEVEL_G ? 0.06 : level === ABANDONED_OFFICE_LEVEL ? 0.016 : level === ELECTRICAL_ROOM_LEVEL ? 0.035 : level === POOLROOMS_LEVEL ? 0.006 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
+    const authored = level === LOBBY_LEVEL ? 0.008 : level === LEVEL_G ? 0.06 : level === ABANDONED_OFFICE_LEVEL ? 0.016 : level === ELECTRICAL_ROOM_LEVEL ? 0.035 : level === POOLROOMS_LEVEL ? 0.006 : level === FUN_LEVEL ? 0.018 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
   }
 
   private initWorld(seed: number, settings: GameSettings) {
-    const atmosphere = levelAtmosphere(this.level);
+    const atmosphere = levelAtmosphere(this.level, this.funDirector?.stage ?? 0);
     this.scene.background = new THREE.Color(atmosphere.fogColor);
     this.scene.fog = new THREE.FogExp2(atmosphere.fogColor, this.fogDensityFor(this.level));
 
@@ -721,6 +737,7 @@ export class GameEngine {
     this.applyCheatsToPlayer();
     this.setupLobby();
     this.setupOfficeWorkers();
+    this.setupFun();
 
     // Spotlight representing local F key Flashlight
     this.flashlight = new THREE.SpotLight(0xfffaec, 2.8, 16, Math.PI / 5, 0.45, 1.0);
@@ -885,6 +902,7 @@ export class GameEngine {
       }
       this.updateLobby(delta);
       this.updateOfficeWorkers(delta);
+      this.updateFun(delta);
       this.updateInteractPrompt(delta);
       this.updateReadingRange();
       if (this.radarBoostTimer > 0) this.radarBoostTimer = Math.max(0, this.radarBoostTimer - delta);
@@ -1259,7 +1277,7 @@ export class GameEngine {
       if (this.level !== 0 && this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
-        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== ELECTRICAL_ROOM_LEVEL || this.map.level3GateOpen) && (this.level !== ABANDONED_OFFICE_LEVEL || this.level4DoorOpen) && (this.level !== POOLROOMS_LEVEL || this.map.poolroomsSolved)) {
+        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== ELECTRICAL_ROOM_LEVEL || this.map.level3GateOpen) && (this.level !== ABANDONED_OFFICE_LEVEL || this.level4DoorOpen) && (this.level !== POOLROOMS_LEVEL || this.map.poolroomsSolved) && (this.level !== FUN_LEVEL || this.funDirector?.exitOpen)) {
           this.audio.playGlitchNoclipSound();
           this.onEscapeTrigger?.();
         }
@@ -1274,7 +1292,8 @@ export class GameEngine {
 
       // Flickering fluorescent tubes ticks. Only the level's authority rolls
       // blackouts/flicker storms; it broadcasts each one as it starts.
-      this.map.rollGlobalEvents = this.isWorldAuthority && this.level !== LOBBY_LEVEL;
+      // Level FUN scripts its own blackouts; random ones would step on them.
+      this.map.rollGlobalEvents = this.isWorldAuthority && this.level !== LOBBY_LEVEL && this.level !== FUN_LEVEL;
       const eventBefore = this.map.globalEventState;
       this.map.updateLights(
         delta,
@@ -1293,7 +1312,7 @@ export class GameEngine {
       if (this.ambientLight) {
         // Per-level values: this runs every frame, so hardcoding Level 0/1
         // here used to override Level 2/3's darker setup from transitionToLevel.
-        const atmosphere = levelAtmosphere(this.level);
+        const atmosphere = levelAtmosphere(this.level, this.funDirector?.stage ?? 0);
         // Level 6's day/night cycle overrides its own base (daylight) atmosphere
         // live, rather than going through levelAtmosphere (which only knows the
         // level id, not this runtime cycle state).
@@ -2467,6 +2486,7 @@ export class GameEngine {
 
   public transitionToLevel(level: number, seed: number, settings: GameSettings) {
     console.log(`Transitioning to Level ${level} in backrooms...`);
+    this.teardownFun();
     this.level = level;
     this.level4DoorOpen = false;
     
@@ -2486,7 +2506,7 @@ export class GameEngine {
       this.scene.remove(this.ambientLight);
     }
     
-    const atmosphere = levelAtmosphere(level);
+    const atmosphere = levelAtmosphere(level, 0);
     this.ambientLight = new THREE.AmbientLight(atmosphere.ambientColor, atmosphere.ambientIntensity);
     this.scene.add(this.ambientLight);
 
@@ -2520,6 +2540,7 @@ export class GameEngine {
     this.revive();
     this.setupLobby();
     this.setupOfficeWorkers();
+    this.setupFun();
 
     // Reset total play time for the new layout
     this.totalPlayTime = 0;
@@ -3189,7 +3210,10 @@ export class GameEngine {
     let text: string | null = null;
     if (this.map && this.player && this.player.mapFullyLoaded && (this.player.isLocked || this.player.isOverrideActive)) {
       const [fx, fz] = this.lookDirectionXZ();
-      if (this.nearExitDesk()) {
+      const funPrompt = this.funDirector ? this.funDirector.interactionPrompt() : null;
+      if (funPrompt) {
+        text = funPrompt;
+      } else if (this.nearExitDesk()) {
         text = t("act.readPaper");
       } else if (this.nearCheatTerminal()) {
         text = t("act.cheatTerminal");
@@ -3269,6 +3293,65 @@ export class GameEngine {
     return dx * dx + dz * dz < 5.2 * 5.2;
   }
 
+  // ---------------------------------------------------------------------
+  // Level FUN
+  // ---------------------------------------------------------------------
+
+  private teardownFun() {
+    this.funDirector?.dispose();
+    this.funDirector = null;
+    if (this.lastFunObjective !== null) {
+      this.lastFunObjective = null;
+      this.onObjectiveChange?.(null);
+    }
+  }
+
+  private setupFun() {
+    this.teardownFun();
+    const world = this.level === FUN_LEVEL ? this.map?.fun : null;
+    if (!world) return;
+    this.funDirector = new FunDirector(world, {
+      audio: this.audio,
+      notify: (text) => this.onHUDNotification?.(text),
+      player: () => {
+        const [lookX, lookZ] = this.lookDirectionXZ();
+        return { x: this.player.position.x, z: this.player.position.z, lookX, lookZ };
+      },
+      globalEvent: (state, seconds) => this.map?.startGlobalEvent(state, seconds),
+      send: (kind, index) => this.sendToServer({ type: "fun_event", level: FUN_LEVEL, kind, index }),
+      stageChanged: () => { /* atmosphere is re-read from the stage every frame */ },
+    });
+  }
+
+  private updateFun(delta: number) {
+    const director = this.funDirector;
+    const world = this.map?.fun;
+    if (!director || !world || !this.player) return;
+    world.update(delta, this.totalPlayTime);
+    director.update(delta);
+    const objective = director.objective();
+    if (objective !== this.lastFunObjective) {
+      this.lastFunObjective = objective;
+      this.onObjectiveChange?.(objective);
+    }
+  }
+
+  /** A teammate's puzzle progress (relayed by the server). */
+  public applyFunEvent(msg: { level?: unknown; kind?: unknown; index?: unknown }) {
+    if (this.level !== FUN_LEVEL || msg.level !== FUN_LEVEL || !this.funDirector) return;
+    if (typeof msg.kind !== "string" || typeof msg.index !== "number") return;
+    this.funDirector.applyRemote(msg.kind, msg.index);
+  }
+
+  /** The door panel's buttons, in the order the modal shows them. */
+  public funPressButton(index: number): { result: "ok" | "wrong" | "solved"; progress: number } {
+    return this.funDirector?.pressButton(index) ?? { result: "wrong", progress: 0 };
+  }
+
+  public funPanelProgress(): number {
+    return this.funDirector?.panelProgressCount() ?? 0;
+  }
+
   public handleLevel3Switch(index: number) {
     if (this.level !== ELECTRICAL_ROOM_LEVEL || !this.map || index < 0 || index >= this.map.level3Switches.length) return;
     this.map.level3SwitchesOn.add(index);
@@ -3289,8 +3372,13 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "paper" | "cheat" | "meg_employee" | "meg_door" | null {
+  public tryInteract(): "terminal" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | null {
     if (this.isDead) return null;
+    if (this.funDirector) {
+      const used = this.funDirector.interact();
+      if (used === "panel") return "fun_panel";
+      if (used === "done") return "fun";
+    }
     const switchIndex = this.nearUntouchedLevel3Switch();
     if (switchIndex >= 0) {
       this.handleLevel3Switch(switchIndex);
@@ -4038,6 +4126,7 @@ export class GameEngine {
     }
 
     this.voip.dispose();
+    this.teardownFun();
 
     this.clearAllSmilers();
     if (this.smilerTexture) {

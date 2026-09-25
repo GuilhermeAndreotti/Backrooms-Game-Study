@@ -4,7 +4,7 @@
  */
 
 import { t, useLanguage } from "../i18n";
-import { LEVEL_G } from "../game/levels/constants";
+import { FUN_LEVEL, LEVEL_G } from "../game/levels/constants";
 import React, { useState, useEffect, useRef } from "react";
 import { Flashlight, ShieldAlert, Send, MessageSquare, Terminal, Backpack, Trophy, Mic, MicOff } from "lucide-react";
 import { ChatMessage, RemotePlayer } from "../types/game";
@@ -37,6 +37,8 @@ interface GameHUDProps {
   onOpenAchievements?: () => void;
   /** Level G: code digits found so far and whether the final alarm is on. */
   levelGProgress?: LevelGProgress;
+  /** Level FUN: the current goal. */
+  objective?: string | null;
   /** Proximity VOIP: whether the mic/call is on, whether the local player is currently speaking, and the toggle. */
   voipEnabled?: boolean;
   voipSpeaking?: boolean;
@@ -66,6 +68,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
   inventoryCount = 0,
   onOpenAchievements,
   levelGProgress,
+  objective,
   voipEnabled = false,
   voipSpeaking = false,
   onToggleVoip
@@ -213,6 +216,11 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
               </>
             )}
           </div>
+          {level === FUN_LEVEL && objective && (
+            <div className="mt-1 ml-1 max-w-md rounded border border-[#f2cc2e]/50 bg-black/65 px-2 py-1 text-[10px] font-bold uppercase leading-snug tracking-widest text-[#ffe08a]">
+              <span className="text-[#f07ab8]">{t("fun.hud.objective")}:</span> {objective}
+            </div>
+          )}
           {level === LEVEL_G && levelGProgress && (
             <div className={`mt-1 ml-1 inline-flex items-center gap-2 px-2 py-1 rounded border text-[10px] font-bold uppercase tracking-widest ${
               levelGProgress.alarm

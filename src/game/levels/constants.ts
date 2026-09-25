@@ -11,6 +11,8 @@ export const POOLROOMS_LEVEL = 5;
 export const LIGHTS_OUT_LEVEL = 6;
 export const LEVEL_G = 7;
 export const MOTION_LEVEL = 8;
+/** Level FUN: the abandoned children's party venue (secret, picked from the lobby). */
+export const FUN_LEVEL = 9;
 export const LOBBY_LEVEL = 10;
 
 /** Main route after the lobby. */
@@ -23,6 +25,9 @@ export const MAIN_LEVELS = [
   POOLROOMS_LEVEL,
 ] as const;
 
+/** Content id ProceduralMap uses for Level FUN (9 is already the Abandoned Office's). */
+export const FUN_CONTENT_LEVEL = 11;
+
 /** IDs used by the old procedural content while it is being re-themed. */
 export function contentLevelFor(level: number): number {
   switch (level) {
@@ -32,6 +37,7 @@ export function contentLevelFor(level: number): number {
     case LIGHTS_OUT_LEVEL: return 3;
     case LEVEL_G: return 4;
     case MOTION_LEVEL: return 6;
+    case FUN_LEVEL: return FUN_CONTENT_LEVEL;
     default: return level;
   }
 }

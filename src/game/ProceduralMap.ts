@@ -10,7 +10,9 @@ import { DynamicLightSource } from "./LightPool";
 import { QualityProfile, getQualityProfile } from "./Quality";
 import { NoiseBus } from "./systems/noiseBus";
 import { VisitTracker } from "./systems/visitTracker";
-import { contentLevelFor } from "./levels/constants";
+import { contentLevelFor, FUN_CONTENT_LEVEL } from "./levels/constants";
+import { FunWorld } from "./levels/funWorld";
+import { FUN_EXIT, FUN_RECTS, FUN_SPAWN } from "./levels/funLayout";
 import * as Decor from "./LevelDecor";
 import { POOL_FLOOR_Y, WATER_SURFACE_Y, createPoolTileMaterial, createWallTileMaterial, createWaterMaterial } from "./Water";
 import { POOL_ROOM_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./poolroomsPuzzle";
@@ -530,6 +532,7 @@ export class ProceduralMap {
 
     this.prng = new SeededRandom(seed);
     this.initMaterials();
+    if (this.level === FUN_CONTENT_LEVEL) this.fun = this.createFunWorld();
     this.generateGrid();
     this.findExitPath();
   }
@@ -679,7 +682,7 @@ export class ProceduralMap {
 
     // Level G: no breadcrumbs, drafts or wet trails to the exit — finding the
     // emergency door (and earning it) is the level.
-    if (this.level === 4 || this.level === LOBBY_LEVEL) foundPath = [];
+    if (this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL) foundPath = [];
 
     this.exitPath = foundPath;
     this.exitPathSet.clear();
@@ -1939,6 +1942,8 @@ export class ProceduralMap {
       this.carveLevelG();
     } else if (this.level === 9) {
       this.carveLevel4Office();
+    } else if (this.level === FUN_CONTENT_LEVEL) {
+      this.carveFun();
     } else if (this.level === LOBBY_LEVEL) {
       this.carveLobby();
     } else if (this.level === 3) {
@@ -2235,7 +2240,7 @@ export class ProceduralMap {
 
     // Level G is hand-laid; the generic spawn clearing below would punch
     // through its reception walls.
-    if (this.level === 4 || this.level === LOBBY_LEVEL) return;
+    if (this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL) return;
 
     // Ensure spawn around (2,2) is safe, walkable, and fully cleared
     for (let dx = -1; dx <= 2; dx++) {
@@ -2868,6 +2873,37 @@ export class ProceduralMap {
     }
   }
 
+  /** Level FUN: the hand-authored floor plan of funLayout.ts (walls come from where the plan has no cell). */
+  private carveFun() {
+    for (const r of FUN_RECTS) {
+      const type = r.kind === "corridor" ? CellType.CORRIDOR : r.kind === "hall" ? CellType.OPEN_AREA : CellType.ROOM_LARGE;
+      for (let x = r.x1; x <= r.x2; x++) for (let z = r.z1; z <= r.z2; z++) this.grid[x][z] = type;
+    }
+    this.spawnGridX = FUN_SPAWN.gx;
+    this.spawnGridZ = FUN_SPAWN.gz;
+    this.exitGridX = FUN_EXIT.gx;
+    this.exitGridZ = FUN_EXIT.gz;
+  }
+
+  private createFunWorld(): FunWorld {
+    this.decorKit ??= {
+      geo: (key, build) => this.sharedGeo(key, build),
+      mat: (key, build) => this.sharedMat(key, build),
+      wallTile: this.wallMaterial,
+      track: (texture) => { this.sharedTextures.push(texture); },
+    };
+    return new FunWorld({
+      kit: this.decorKit,
+      seed: this.seed,
+      registerLight: (gx, gz, x, y, z, color, intensity, distance, decay) => this.registerLight(gx, gz, x, y, z, color, intensity, distance, decay),
+      addObstacle: (gx, gz, x, z, radius) => { this.addObstacle(gx, gz, x, z, radius); },
+      pushFixture: (fixture) => { this.lightFixtures.push(fixture); },
+      glassOn: this.fluorescentGlassOn,
+      glassOff: this.fluorescentGlassOff,
+      glow: (color, size, opacity) => this.createItemGlow(color, size, opacity),
+    });
+  }
+
   /** The room lobby: a small open-air plot, no exit; props are added by Lobby. */
   private carveLobby() {
     const h = LOBBY.hall;
@@ -3145,6 +3181,8 @@ export class ProceduralMap {
         if (this.level === 7 && !this.poolroomsSolved && gx === this.exitGridX && gz === this.exitGridZ) {
           return true;
         }
+        // Level FUN's doors: a shut one fills its whole cell.
+        if (this.fun && this.fun.isGateClosed(gx, gz)) return true;
         if (!ignorePoolGate && this.isPoolCellBlocked(gx, gz)) return true;
         if (this.level === 8 && !this.level3GateOpen && gx === this.level3GateX && gz === this.level3GateZ) {
           const gateEdge = this.level3GateX * this.cellSize;
@@ -3555,6 +3593,9 @@ export class ProceduralMap {
 
   private decorKit: Decor.DecorKit | null = null;
 
+  /** Level FUN's world (geometry, props, gates); null on every other level. */
+  public fun: FunWorld | null = null;
+
   /** Whether a Level 3/4 cell may take a thin wall divider without crowding anything. */
   private dividerAllowed(gx: number, gz: number, cellType: CellType): boolean {
     if (cellType === CellType.CORRIDOR || this.decoredCells.has(`${gx},${gz}`)) return false;
@@ -3701,6 +3742,9 @@ export class ProceduralMap {
   public createCell3D(gx: number, gz: number): THREE.Group {
     const group = new THREE.Group();
     const cellType = this.grid[gx][gz];
+
+    // Level FUN builds every cell itself (see levels/funWorld.ts).
+    if (this.fun && cellType !== CellType.SOLID) return this.fun.createCell(gx, gz);
 
     if (cellType === CellType.SOLID) {
       // Solid cells are wall blocks. We construct walls outward towards neighbors
@@ -6776,6 +6820,7 @@ export class ProceduralMap {
    * Clean up all instantiated level cell groups from Three Scene.
    */
   public clearAll(scene: THREE.Scene) {
+    this.fun = null;
     this.lastCulledX = -9999;
     this.lastCulledZ = -9999;
     this.visibleCellKeys.clear();
