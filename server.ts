@@ -337,12 +337,65 @@ function resetRoom(room: Room, action: DeathAction) {
   broadcastToRoom(room, { type: "respawn", level: room.level, seed: room.seed, scratch, toLobby });
 }
 
+/**
+ * The players actually on the expedition: once it has started, explorers who
+ * went back to the lobby on their own (return_to_lobby_request) are waiting
+ * there, not playing, so they neither keep a wiped group "alive" nor hold up
+ * the exit.
+ */
+function expeditionPlayers(room: Room): PlayerState[] {
+  const all = Array.from(room.players.values());
+  return room.level === LOBBY_LEVEL ? all : all.filter((p) => p.level !== LOBBY_LEVEL);
+}
+
 /** Tells the room every player is dead and applies its configured reset once. */
 function checkAllDead(room: Room, autoReset = true) {
-  if (room.players.size === 0) return;
-  for (const p of room.players.values()) if (!p.dead) return;
+  const players = expeditionPlayers(room);
+  if (players.length === 0) return;
+  for (const p of players) if (!p.dead) return;
   broadcastToRoom(room, { type: "all_dead" });
   if (autoReset) resetRoom(room, room.config.deathAction);
+}
+
+/**
+ * Moves the room on once every living explorer on its level is waiting at
+ * the exit. Re-checked whenever someone stops counting towards that — they
+ * reach the exit, leave the room, or go back to the lobby — so nobody is left
+ * stuck at the door waiting for a player who is gone.
+ */
+function tryAdvanceRoom(room: Room) {
+  if (room.level === LOBBY_LEVEL) return;
+  const onLevel = Array.from(room.players.values()).filter((p) => p.level === room.level);
+  if (!onLevel.some((p) => p.exitReady)) return;
+  if (onLevel.some((p) => !p.dead && !p.exitReady)) return;
+
+  if (room.level === POOLROOMS_LEVEL) {
+    room.level = LOBBY_LEVEL;
+    reviveAll(room);
+    room.players.forEach((p) => { p.level = LOBBY_LEVEL; p.exitReady = false; room.dirty.add(p.id); });
+    refreshAuthority(room);
+    broadcastToRoom(room, { type: "return_to_lobby", level: LOBBY_LEVEL, seed: room.seed, completed: true });
+    return;
+  }
+
+  const expected = nextMainLevel(room.level);
+  if (expected === null) return;
+  room.level = expected;
+  reviveAll(room);
+  room.players.forEach((p) => {
+    // Secret players may finish their detour independently. They join
+    // the main room once it reaches their convergence point. Players who
+    // went back to the lobby rejoin the group here.
+    if (p.level === LIGHTS_OUT_LEVEL || p.level === LEVEL_G) {
+      if (room.level >= 4) p.level = room.level;
+    } else {
+      p.level = room.level;
+    }
+    p.exitReady = false;
+    room.dirty.add(p.id);
+  });
+  refreshAuthority(room);
+  broadcastToRoom(room, { type: "level_transition", level: room.level, seed: room.seed, convergence: room.level >= 4 });
 }
 
 function reviveAll(room: Room) {
@@ -367,6 +420,7 @@ function removeConnection(conn: Connection) {
   broadcastToRoom(room, { type: "player_left", id: conn.player.id });
   refreshAuthority(room);
   checkAllDead(room, false); // the last living player leaving strands the dead ones
+  tryAdvanceRoom(room); // ...or the last one the others were waiting for at the exit
 
   if (room.players.size === 0) {
     rooms.delete(conn.player.room);
@@ -670,32 +724,32 @@ async function startServer() {
           ready: Array.from(room.players.values()).filter((p) => p.level === room.level && p.exitReady).length,
           required: participants.length + 1,
         });
-        if (participants.length > 0) return;
+        tryAdvanceRoom(room);
+        return;
+      }
 
-        if (completingPoolrooms) {
+      // "Abort infiltration": this explorer alone goes back to the room's lobby
+      // (still in the room). The rest carry on; the next level transition or
+      // group reset pulls them back in (see tryAdvanceRoom/resetRoom). If
+      // nobody is left out there, the expedition is over and the room is a
+      // lobby again.
+      if (type === "return_to_lobby_request") {
+        const p = conn.player;
+        if (room.level === LOBBY_LEVEL || p.level === LOBBY_LEVEL) return;
+        p.level = LOBBY_LEVEL;
+        p.dead = false;
+        p.exitReady = false;
+        room.dirty.add(p.id);
+        send(conn.ws, { type: "return_to_lobby", level: LOBBY_LEVEL, seed: room.seed, solo: true });
+        room.connections.forEach((c) => { if (c !== conn) send(c.ws, { type: "player_to_lobby", id: p.id }); });
+        if (!Array.from(room.players.values()).some((q) => q.level !== LOBBY_LEVEL)) {
           room.level = LOBBY_LEVEL;
           reviveAll(room);
-          room.players.forEach((p) => { p.level = LOBBY_LEVEL; p.exitReady = false; room.dirty.add(p.id); });
-          refreshAuthority(room);
-          broadcastToRoom(room, { type: "return_to_lobby", level: LOBBY_LEVEL, seed: room.seed, completed: true });
-          return;
+        } else {
+          checkAllDead(room);
+          tryAdvanceRoom(room);
         }
-
-        room.level = expected!;
-        reviveAll(room);
-        room.players.forEach((p) => {
-          // Secret players may finish their detour independently. They join
-          // the main room once it reaches their convergence point.
-          if (p.level === LIGHTS_OUT_LEVEL || p.level === LEVEL_G) {
-            if (room.level >= 4) p.level = room.level;
-          } else {
-            p.level = room.level;
-          }
-          p.exitReady = false;
-          room.dirty.add(p.id);
-        });
         refreshAuthority(room);
-        broadcastToRoom(room, { type: "level_transition", level: room.level, seed: room.seed, convergence: room.level >= 4 });
         return;
       }
 
@@ -793,7 +847,9 @@ async function startServer() {
       // Compatibility fallback for clients that still send a reset request.
       // The host's locked room policy remains authoritative.
       if (type === "room_reset") {
-        for (const p of room.players.values()) if (!p.dead) return;
+        const players = expeditionPlayers(room);
+        if (players.length === 0) return;
+        for (const p of players) if (!p.dead) return;
         resetRoom(room, room.config.deathAction);
         return;
       }

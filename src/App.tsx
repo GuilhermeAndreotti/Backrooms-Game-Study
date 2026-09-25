@@ -150,6 +150,12 @@ export default function App() {
   const [voipSpeaking, setVoipSpeaking] = useState(false);
   const [interactPrompt, setInteractPrompt] = useState<string | null>(null);
   const [levelGEnding, setLevelGEnding] = useState<"none" | "message" | "done">("none");
+  /**
+   * The extraction report shown over the game when an expedition ends while
+   * still connected: the room's lobby loads underneath, and closing it keeps
+   * the explorer in the room (only "leave room" ever disconnects).
+   */
+  const [escapeReport, setEscapeReport] = useState<null | "l2" | "done">(null);
   const [achievementToast, setAchievementToast] = useState<{ id: string; title: string; description: string } | null>(null);
 
   useEffect(() => {
@@ -629,13 +635,17 @@ export default function App() {
                         }
                         setIsTerminalOpen(false);
                         document.exitPointerLock?.();
-                        setPhase(ConnectionPhase.ESCAPED);
-                        if (engineRef.current) {
-                          engineRef.current.destroy();
-                          engineRef.current = null;
-                        }
-                        if (socketRef.current) {
-                          socketRef.current.close();
+                        if (socketRef.current?.readyState === WebSocket.OPEN) {
+                          // Still in the room: show the report over the game and
+                          // go back to the room's lobby underneath it.
+                          setEscapeReport(engine.level === 1 ? "l2" : "done");
+                          socketRef.current.send(JSON.stringify({ type: "return_to_lobby_request" }));
+                        } else {
+                          setPhase(ConnectionPhase.ESCAPED);
+                          if (engineRef.current) {
+                            engineRef.current.destroy();
+                            engineRef.current = null;
+                          }
                           socketRef.current = null;
                         }
                       }
@@ -799,10 +809,17 @@ export default function App() {
             // A respawn (whole room died, group chose a reset) may repeat or
             // go back to an earlier level; a plain transition only moves forward.
             const forced = type === "respawn" || type === "return_to_lobby";
-            if (!engine || typeof nextLevel !== "number" || (!forced && !data.secret && !data.convergence && !data.start && nextLevel <= engine.level)) return;
+            // An explorer waiting alone in the lobby (they aborted) rejoins the
+            // group on its next transition, whatever the level number.
+            if (!engine || typeof nextLevel !== "number" || (!forced && !data.secret && !data.convergence && !data.start && engine.level !== LOBBY_LEVEL && nextLevel <= engine.level)) return;
 
             if (forced) {
-              logSystemMessage(data.toLobby ? t("sys.resetLobby") : data.scratch ? t("sys.resetScratch") : t("sys.resetLevel", { n: nextLevel }));
+              logSystemMessage(
+                data.solo ? t("sys.toLobbySelf")
+                  : data.toLobby || data.completed ? t("sys.resetLobby")
+                  : data.scratch ? t("sys.resetScratch")
+                  : t("sys.resetLevel", { n: nextLevel })
+              );
             } else {
               console.log(`Group noclipped into Level ${nextLevel}!`);
               if (nextLevel === 1) unlockAchievement("noclip_master");
@@ -811,18 +828,14 @@ export default function App() {
             // Poolrooms completion is the main-route ending. The server resets
             // the room to its lobby, but this client should see the existing
             // extraction screen instead of silently rebuilding the lobby.
+            // The report goes over the game; the lobby loads underneath (below)
+            // and the explorer stays in the room.
             if (type === "return_to_lobby" && data.completed === true) {
+              // Already waiting in the lobby (they aborted earlier): nothing to rebuild.
+              if (engine.level === LOBBY_LEVEL) return;
               unlockAchievement("absolute_survivor");
-              setLoadingMap(false);
-              setWaitingForExit(false);
-              setExitProgress(null);
               document.exitPointerLock?.();
-              engine.destroy();
-              engineRef.current = null;
-              socketRef.current?.close();
-              socketRef.current = null;
-              setPhase(ConnectionPhase.ESCAPED);
-              return;
+              setEscapeReport("done");
             }
 
             // Everyone who died is back (server-side too).
@@ -831,7 +844,7 @@ export default function App() {
             setWaitingForExit(false);
             setExitProgress(null);
             setSpectateName(null);
-            if (forced && (data.scratch || data.toLobby)) {
+            if (forced && (data.scratch || data.toLobby || data.completed)) {
               setInventory([]);
               engine.inventory = [];
             }
@@ -907,6 +920,8 @@ export default function App() {
           }
 
           else if (type === "all_dead") {
+            // Waiting alone in the lobby: the expedition's wipe isn't ours to see.
+            if (engineRef.current?.level === LOBBY_LEVEL) return;
             setAllDead(true);
             document.exitPointerLock?.();
           }
@@ -952,6 +967,11 @@ export default function App() {
             }
 
             if (added || incoming.length > 0) touchRoster();
+          }
+
+          else if (type === "player_to_lobby") {
+            const who = playersRef.current.find((p) => p.id === data.id);
+            if (who) logSystemMessage(t("sys.toLobby", { name: who.name.toUpperCase() }));
           }
 
           else if (type === "player_left") {
@@ -1075,7 +1095,25 @@ export default function App() {
   };
 
   /**
-   * Safe disconnect/wipe callback returning to main menu.
+   * "Abort infiltration": back to this room's lobby, alone — never out of the
+   * room. The group carries on and pulls this explorer back in at its next
+   * level transition. Falls back to leaving only if the link is already gone.
+   */
+  const abortToLobby = () => {
+    const ws = socketRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "return_to_lobby_request" }));
+    else disconnect(false);
+  };
+
+  /** Closes the extraction report; the explorer is already in the room's lobby. */
+  const closeEscapeReport = () => {
+    setEscapeReport(null);
+    setLevelGEnding("none");
+  };
+
+  /**
+   * Safe disconnect/wipe callback returning to main menu. The only way out of
+   * a room: the explicit "leave room" button (or a lost link).
    */
   const disconnect = (hasError = false, errorMsg = "") => {
     // Purge engine
@@ -1099,6 +1137,7 @@ export default function App() {
     setPointerLockedOverride(false);
     setVoipEnabled(false);
     setVoipSpeaking(false);
+    setEscapeReport(null);
 
     if (hasError) {
       setErrorMessage(errorMsg || t("err.disconnected"));
@@ -1399,12 +1438,21 @@ export default function App() {
                   >
                     {t("pause.resume")}
                   </button>
+                  {currentLevel !== LOBBY_LEVEL && (
+                    <button
+                      id="btn-pause-abort"
+                      onClick={abortToLobby}
+                      className="ml-3 bg-[#1c0808]/75 hover:bg-red-950/90 text-red-400 hover:text-red-300 border border-red-950 font-bold uppercase tracking-wider px-4 py-2 rounded cursor-pointer transition-all text-xs"
+                    >
+                      {t("pause.abort")}
+                    </button>
+                  )}
                   <button
-                    id="btn-pause-abort"
+                    id="btn-pause-leave-room"
                     onClick={() => disconnect(false)}
-                    className="ml-3 bg-[#1c0808]/75 hover:bg-red-950/90 text-red-400 hover:text-red-300 border border-red-950 font-bold uppercase tracking-wider px-4 py-2 rounded cursor-pointer transition-all text-xs"
+                    className="ml-3 bg-transparent hover:bg-red-950/60 text-stone-400 hover:text-red-300 border border-stone-700 hover:border-red-900 font-bold uppercase tracking-wider px-4 py-2 rounded cursor-pointer transition-all text-xs"
                   >
-                    {t("pause.abort")}
+                    {t("pause.leaveRoom")}
                   </button>
                   </div>
                 </div>
@@ -1835,8 +1883,8 @@ export default function App() {
       )}
 
       {/* PHASE 5: SUCCESSFUL ESCAPE / VICTORY SCREEN */}
-      {phase === ConnectionPhase.ESCAPED && (
-        <div className="w-full h-screen flex flex-col items-center justify-center bg-[#050604] text-[#deb81d] px-6 select-none relative animate-fade-in font-mono">
+      {(phase === ConnectionPhase.ESCAPED || escapeReport !== null) && (
+        <div className={`${escapeReport !== null ? "fixed inset-0 z-[300]" : "w-full h-screen relative"} flex flex-col items-center justify-center bg-[#050604] text-[#deb81d] px-6 select-none animate-fade-in font-mono`}>
           {/* Subtle emergency scanline overlay */}
           <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(10,35,10,0.15)_0%,rgba(0,0,0,0.95)_100%)] pointer-events-none" />
           <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[size:100%_4px,6px_100%] pointer-events-none opacity-45" />
@@ -1860,7 +1908,7 @@ export default function App() {
                 {t("esc.continue")}
               </button>
             </div>
-          ) : currentLevel === 1 ? (
+          ) : (escapeReport ?? (currentLevel === 1 ? "l2" : "done")) === "l2" ? (
             <div className="max-w-xl w-full border border-orange-600/30 bg-[#140b05]/92 p-8 rounded text-center relative space-y-6 shadow-[0_0_25px_rgba(234,88,12,0.15)] animate-fade-in">
               <div className="w-16 h-16 bg-orange-950/60 border border-orange-500/50 rounded-full flex items-center justify-center mx-auto relative animate-pulse">
                 <span className="w-12 h-12 bg-orange-500 rounded-full animate-ping absolute opacity-20" />
@@ -1893,11 +1941,20 @@ export default function App() {
               <div className="pt-2">
                 <button
                   id="btn-escaped-return-l2"
-                  onClick={() => setPhase(ConnectionPhase.MENU)}
+                  onClick={escapeReport !== null ? closeEscapeReport : () => setPhase(ConnectionPhase.MENU)}
                   className="w-full bg-orange-600 hover:bg-orange-500 text-black font-extrabold uppercase tracking-widest py-3 rounded text-xs transition-colors cursor-pointer shadow-lg hover:shadow-orange-600/10"
                 >
-                  {t("esc.backMenu")}
+                  {escapeReport !== null ? t("esc.backLobby") : t("esc.backMenu")}
                 </button>
+                {escapeReport !== null && (
+                  <button
+                    id="btn-escaped-leave-room"
+                    onClick={() => disconnect(false)}
+                    className="w-full mt-3 bg-transparent border border-stone-700 hover:border-red-900 text-stone-400 hover:text-red-300 font-bold uppercase tracking-widest py-2.5 rounded text-xs transition-colors cursor-pointer"
+                  >
+                    {t("pause.leaveRoom")}
+                  </button>
+                )}
               </div>
             </div>
           ) : (
@@ -1927,11 +1984,20 @@ export default function App() {
               <div className="pt-2">
                 <button
                   id="btn-escaped-return"
-                  onClick={() => setPhase(ConnectionPhase.MENU)}
+                  onClick={escapeReport !== null ? closeEscapeReport : () => setPhase(ConnectionPhase.MENU)}
                   className="w-full bg-green-600 hover:bg-green-500 text-black font-extrabold uppercase tracking-widest py-3 rounded text-xs transition-colors cursor-pointer shadow-lg hover:shadow-green-600/10"
                 >
-                  {t("esc.backMenu")}
+                  {escapeReport !== null ? t("esc.backLobby") : t("esc.backMenu")}
                 </button>
+                {escapeReport !== null && (
+                  <button
+                    id="btn-escaped-leave-room"
+                    onClick={() => disconnect(false)}
+                    className="w-full mt-3 bg-transparent border border-stone-700 hover:border-red-900 text-stone-400 hover:text-red-300 font-bold uppercase tracking-widest py-2.5 rounded text-xs transition-colors cursor-pointer"
+                  >
+                    {t("pause.leaveRoom")}
+                  </button>
+                )}
               </div>
             </div>
           )}
