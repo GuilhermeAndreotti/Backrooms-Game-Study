@@ -154,6 +154,7 @@ interface Room {
   /** Authoritative Poolrooms puzzle state; clients only render snapshots of it. */
   poolValvesTurned: Set<number>;
   poolValveRevision: number;
+  poolVigiaIntellect: number;
 }
 
 const rooms = new Map<string, Room>();
@@ -286,12 +287,14 @@ function poolroomsSnapshot(room: Room) {
     turned: [...room.poolValvesTurned].sort((a, b) => a - b),
     stage,
     solved: stage === POOL_ROOM_COUNT,
+    vigiaIntellect: room.poolVigiaIntellect,
   };
 }
 
 function resetPoolroomsState(room: Room) {
   room.poolValvesTurned.clear();
   room.poolValveRevision++;
+  room.poolVigiaIntellect = 0;
 }
 
 /** Applies one serialized valve attempt and returns the resulting full state. */
@@ -308,8 +311,10 @@ function applyPoolValveTurn(room: Room, index: number) {
 
   if (index !== base + order[sector][done]) {
     for (let valve = 0; valve < POOL_VALVES_PER_ROOM; valve++) room.poolValvesTurned.delete(base + valve);
+    room.poolVigiaIntellect = Math.min(1, room.poolVigiaIntellect + 0.32);
   } else {
     room.poolValvesTurned.add(index);
+    room.poolVigiaIntellect = Math.min(1, room.poolVigiaIntellect + 0.08);
   }
   room.poolValveRevision++;
   return poolroomsSnapshot(room);
@@ -561,6 +566,7 @@ async function startServer() {
             authorityKey: "",
             poolValvesTurned: new Set(),
             poolValveRevision: 0,
+            poolVigiaIntellect: 0,
           };
           rooms.set(roomKey, room);
           console.log(`Created new room "${roomKey}" with seed ${seed}`);

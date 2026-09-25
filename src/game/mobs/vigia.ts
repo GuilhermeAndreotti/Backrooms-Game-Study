@@ -2,11 +2,10 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * O VIGIA: an enormous, near-stationary creature with extremely long limbs,
- * that treats a region of the map as its territory. Answers "qual rota devo
- * usar?" — it barely moves and is trivially outrun; the threat is
- * positional (its reach spans whatever corridor it's planted in), not
- * speed.
+ * O VIGIA: an enormous creature with extremely long limbs that locks onto the
+ * explorers from the beginning of Poolrooms. It sees across the flooded halls,
+ * follows at walking pace and becomes more dangerous as the valve puzzle feeds
+ * it information.
  *
  * Scope note: the design doc's real attack — closing/blocking corridors,
  * pulling the player off their route — needs the existing MovableProp/
@@ -17,7 +16,7 @@
  * messages). Deliberately left for the level that actually gives it a
  * corridor worth blocking. For now, proximity behaves like every other
  * mob (the engine's catch check is a flat per-frame distance test with no
- * per-type override yet) — a slow-advancing, always-avoidable landmark.
+ * per-type override yet), while its wide sight range supplies the pressure.
  */
 
 import * as THREE from "three";
@@ -25,11 +24,15 @@ import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
 import { animateBiped, rot } from "./anim";
 
-const TERRITORY_RADIUS = 14;
-/** Barely creeps outside its territory — mostly a stationary landmark. */
+/** The initial sight range covers the spawn-to-Vigia route across Poolrooms. */
+const INITIAL_VISION_RANGE = 180;
+/** Each disturbed valve expands the range, up to the full level width. */
+const INTELLECT_VISION_GAIN = 14;
+/** Fast enough to follow a walking explorer, but sprinting can still create space. */
+const INITIAL_CHASE_SPEED = 2.25;
+const INTELLECT_SPEED_GAIN = 0.75;
+/** Idle movement is still slow when the player leaves its vision range. */
 const STILL_SPEED = 0.15;
-/** Still very slow once "advancing" — overwhelmingly avoidable; the threat is where it stands, not how fast it moves. */
-const ADVANCE_SPEED = 0.9;
 
 export const vigia: MobDefinition = {
   type: EntityType.VIGIA,
@@ -164,17 +167,17 @@ export const vigia: MobDefinition = {
 
   sense(ctx) {
     // Every wheel teaches it a little; a botched sequence exposes the whole
-    // route. At higher intellect it patrols beyond its original basin and
-    // stops being a stationary landmark.
+    // route. It starts with enough vision to acquire the explorer immediately,
+    // then becomes harder to shake as the puzzle progresses.
     const intellect = ctx.map.poolVigiaIntellect;
     // Mistakes can awaken it early; draining the final sector guarantees the
     // transformation even for a flawless team.
     const transformed = intellect >= 0.64 || ctx.map.poolroomsSolved;
-    const awareness = TERRITORY_RADIUS + intellect * 14 + (transformed ? 6 : 0);
+    const awareness = INITIAL_VISION_RANGE + intellect * INTELLECT_VISION_GAIN + (transformed ? 6 : 0);
     if (ctx.distanceMeters < awareness) {
       return {
         chasing: true,
-        speed: transformed ? 3.35 : ADVANCE_SPEED + intellect * 1.15,
+        speed: transformed ? 3.35 : INITIAL_CHASE_SPEED + intellect * INTELLECT_SPEED_GAIN,
         agitated: intellect > 0.28,
         pose: transformed ? 3 : intellect > 0.72 ? 2 : intellect > 0.35 ? 1 : 0,
       };

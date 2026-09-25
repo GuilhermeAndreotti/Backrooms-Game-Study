@@ -3149,8 +3149,56 @@ export class GameEngine {
     if (this.isDead) return false;
     const i = this.nearestUntouchedValveIndex();
     if (i < 0) return false;
+    // Give the local player immediate feedback. The next server snapshot is
+    // authoritative and replaces this prediction if another player wins the
+    // race or the sequence rejects the attempt.
+    this.predictValveTurn(i);
     this.sendToServer({ type: "valve_turn", level: this.level, index: i });
     return true;
+  }
+
+  private predictValveTurn(index: number) {
+    if (!this.map || this.valvesTurned.has(index)) return;
+    const per = this.map.poolValvesPerRoom;
+    const rooms = this.map.poolRoomCount;
+    const room = Math.floor(index / per);
+    const roomBase = room * per;
+    let doneInRoom = 0;
+    for (let k = 0; k < per; k++) if (this.valvesTurned.has(roomBase + k)) doneInRoom++;
+
+    if (index !== roomBase + this.map.poolValveOrder[room][doneInRoom]) {
+      for (let k = 0; k < per; k++) this.valvesTurned.delete(roomBase + k);
+      this.map.poolVigiaIntellect = Math.min(1, this.map.poolVigiaIntellect + 0.32);
+      this.map.setPoolroomsValveState(this.valvesTurned, this.countSolvedPoolrooms());
+      this.audio.playTerminalBeep(false);
+      this.onHUDNotification?.(t("eng.denied"));
+      return;
+    }
+
+    this.valvesTurned.add(index);
+    this.map.poolVigiaIntellect = Math.min(1, this.map.poolVigiaIntellect + 0.08);
+    const solved = this.countSolvedPoolrooms();
+    this.map.setPoolroomsValveState(this.valvesTurned, solved);
+    this.audio.playTerminalBeep(true);
+    if (solved >= rooms) {
+      this.onHUDNotification?.(t("eng.valveAllTurned"));
+      unlockAchievement("valves_drained");
+    } else {
+      this.onHUDNotification?.(t("eng.valveTurn", { n: this.valvesTurned.size, total: this.map.valvePositions.length }));
+    }
+  }
+
+  private countSolvedPoolrooms(): number {
+    if (!this.map) return 0;
+    let solved = 0;
+    for (let room = 0; room < this.map.poolRoomCount; room++) {
+      let complete = true;
+      for (let valve = 0; valve < this.map.poolValvesPerRoom; valve++) {
+        if (!this.valvesTurned.has(room * this.map.poolValvesPerRoom + valve)) complete = false;
+      }
+      if (complete) solved++;
+    }
+    return solved;
   }
 
   /** Applies the server's complete Poolrooms state, ignoring stale revisions. */
@@ -3160,6 +3208,7 @@ export class GameEngine {
     turned?: unknown;
     stage?: number;
     solved?: boolean;
+    vigiaIntellect?: unknown;
   }) {
     if (!this.map || this.level !== POOLROOMS_LEVEL || data.level !== undefined && data.level !== this.level) return;
     if (typeof data.revision !== "number" || !Number.isInteger(data.revision) || data.revision < this.poolValveRevision) return;
@@ -3176,14 +3225,15 @@ export class GameEngine {
     this.poolValveRevision = data.revision;
     this.valvesTurned = turned;
     this.map.setPoolroomsValveState(turned, data.stage);
+    if (typeof data.vigiaIntellect === "number" && Number.isFinite(data.vigiaIntellect)) {
+      this.map.poolVigiaIntellect = Math.max(0, Math.min(1, data.vigiaIntellect));
+    }
     if (!hadState) return;
 
     if (turned.size < previousCount) {
-      this.map.poolVigiaIntellect = Math.min(1, this.map.poolVigiaIntellect + 0.32);
       this.audio.playTerminalBeep(false);
       this.onHUDNotification?.(t("eng.denied"));
     } else if (turned.size > previousCount) {
-      this.map.poolVigiaIntellect = Math.min(1, this.map.poolVigiaIntellect + 0.08);
       this.audio.playTerminalBeep(true);
       if (!wasSolved && this.map.poolroomsSolved) {
         this.onHUDNotification?.(t("eng.valveAllTurned"));
