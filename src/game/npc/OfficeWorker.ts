@@ -10,7 +10,7 @@
 
 import * as THREE from "three";
 import { animateBiped, rot, rx } from "../mobs/anim";
-import { MobAnimCtx, MobJoints } from "../mobs/types";
+import { MobAnimCtx, MobJoints, NO_SCRIPTED_POSE } from "../mobs/types";
 
 export type EmployeeGrade = "junior" | "pleno" | "senior";
 
@@ -212,7 +212,7 @@ export class OfficeWorker {
       joints: j, body: this.body, time: this.time, delta, phase: this.phase,
       move: this.moveW, run: 0, observe: this.observeW * 0.4, look: this.lookW,
       lookYaw: THREE.MathUtils.clamp(lookYaw, -1.1, 1.1), lookPitch: THREE.MathUtils.clamp(lookPitch, -0.5, 0.5),
-      agitated: false, chasing: false,
+      agitated: false, chasing: false, ...NO_SCRIPTED_POSE,
     };
     animateBiped(ctx, { stride: 0.35, armSwing: 0.3, knee: 0.6, elbow: 0.12, lean: 0, bounce: 0.03, breathe: 0.02 });
 

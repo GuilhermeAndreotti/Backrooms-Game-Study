@@ -309,6 +309,8 @@ function sanitizeEntities(data: Record<string, unknown>) {
       a: e.a === true,
       c: e.c === true,
       s: sanitizeText(e.s, MAX_SPEECH_LENGTH),
+      // Scripted pose (e.g. the Finger King's stare): a small enum, 0 = none.
+      k: typeof e.k === "number" && Number.isInteger(e.k) && e.k >= 0 && e.k < 8 ? e.k : 0,
     });
   }
 

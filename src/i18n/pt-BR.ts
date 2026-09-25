@@ -273,6 +273,7 @@ export const ptBR = {
   "eng.levelG": "LEVEL G. Um escritório pequeno demais. Encontre os 3 documentos... e ouça os dedos.",
   "eng.hidden": "ESCONDIDO. Fique abaixado e em silêncio...",
   "eng.found": "ELE SABE ONDE VOCÊ ESTÁ. SAIA DAÍ.",
+  "eng.kingKnock": "Algo bate na porta do armário. Três vezes. Não respire.",
   "eng.computer": "Um computador antigo ainda ligado. Pressione [E] para usar.",
   "eng.noRoom": "Não há espaço para empurrar a caixa.",
   "eng.level6Night": "A noite cai de repente. Entre numa casa, apague a luz, se esconda.",

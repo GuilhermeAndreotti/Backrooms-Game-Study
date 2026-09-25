@@ -104,7 +104,22 @@ export interface MobAnimCtx {
   lookPitch: number;
   agitated: boolean;
   chasing: boolean;
+  /** Replicated scripted pose (see MobSenseResult.pose); 0 = none. */
+  pose: number;
+  /** Seconds since `pose` last changed (local). */
+  poseTime: number;
+  /** Seconds since it last switched from calm to chasing (local; large when it never has). */
+  alertTime: number;
+  /** Seconds since it last stopped walking (0 while it walks). */
+  stillTime: number;
+  /** 0 .. 1: local-only "it has you" lunge, driven by GameEngine's catch sequence. */
+  grab: number;
+  /** Stable per-entity number for de-synchronising idle tics between instances. */
+  seed: number;
 }
+
+/** MobAnimCtx's scripted-pose inputs for rigs driven outside WanderingEntity (skins, NPCs). */
+export const NO_SCRIPTED_POSE = { pose: 0, poseTime: 0, alertTime: 99, stillTime: 0, grab: 0, seed: 0 } as const;
 
 // ---------------------------------------------------------------------------
 // sense() / speech()
@@ -174,6 +189,12 @@ export interface MobSenseResult {
   agitated?: boolean;
   /** New value for ctx.scratch on the next frame; omit to leave unchanged. */
   scratch?: number;
+  /**
+   * Scripted pose streamed to every client (EntityNetState.k) so a moment
+   * like the Finger King's stare reads the same for everyone. 0..7, 0 = none;
+   * omitted means 0.
+   */
+  pose?: number;
 }
 
 export interface MobSpeechResult {

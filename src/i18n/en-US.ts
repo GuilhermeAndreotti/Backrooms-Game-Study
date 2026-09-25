@@ -275,6 +275,7 @@ export const enUS: Record<MessageKey, string> = {
   "eng.levelG": "LEVEL G. An office far too small. Find the 3 documents... and listen for the fingers.",
   "eng.hidden": "HIDDEN. Stay crouched and quiet...",
   "eng.found": "HE KNOWS WHERE YOU ARE. GET OUT OF THERE.",
+  "eng.kingKnock": "Something knocks on the closet door. Three times. Don't breathe.",
   "eng.computer": "An old computer still running. Press [E] to use it.",
   "eng.noRoom": "There's no room to push the box.",
   "eng.level6Night": "Night falls without warning. Get into a house, kill the lights, hide.",

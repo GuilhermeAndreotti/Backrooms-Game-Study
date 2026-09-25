@@ -9,11 +9,13 @@ import { t, type MessageKey } from "../i18n";
 import { OfficeWorker } from "./npc/OfficeWorker";
 import { WaterRipples, waterUniforms } from "./Water";
 import * as THREE from "three";
-import { ProceduralMap, LEVEL_G_DOOR_OPEN_ANGLE } from "./ProceduralMap";
+import { ProceduralMap, LEVEL_G_DOOR_OPEN_ANGLE, CellType } from "./ProceduralMap";
 import { PlayerController, PLAYER_STANDING_HEIGHT, PLAYER_CROUCH_HEIGHT } from "./PlayerController";
 import { FACE_SIZE, drawFace, hasFace } from "../utils/face";
 import { AudioManager } from "./AudioManager";
 import { WanderingEntity, EntityType, EntityNetState } from "./WanderingEntity";
+import { KingScratches } from "./KingScratches";
+import { KING_POSE_STARE } from "./mobs/fingerKing";
 import { GameSettings, RemotePlayer, RoomCheat } from "../types/game";
 import { unlockAchievement } from "../utils/achievements";
 import { LightPool } from "./LightPool";
@@ -317,6 +319,31 @@ export class GameEngine {
   /** A wrong code sends the Finger King straight at you for a while. */
   private levelGAlertTimer = 0;
   private fingerTapTimer = 0;
+
+  // --- Finger King presentation: all local (audio, lights, camera, decals);
+  // nothing here feeds back into the replicated AI.
+  private kingBreathTimer = 0;
+  private kingBreathInhale = true;
+  private kingWhisperTimer = 4;
+  private kingFalseTapTimer = 25;
+  private kingKnockCooldown = 0;
+  /** Keeps the hunt stinger/HUD line rare: chase flickers at the sense-radius edge must not re-fire it. */
+  private kingStingerCooldown = 0;
+  private kingLastPos = new THREE.Vector3();
+  private kingHasLastPos = false;
+  /** 0..1 how close/visible the King is: drives the dread post-process. */
+  private kingDread = 0;
+  /** The one-time scripted first sighting down a corridor (see updateKingSighting). */
+  private kingSightingDone = false;
+  private kingSightingSearch = 0;
+  private kingPhantom: { entity: WanderingEntity; t: number; awayX: number; awayZ: number; whispered: boolean } | null = null;
+  /** The catch: a ~1.3 s locked-camera lunge before the kill (see updateKingGrab). */
+  private kingGrab: { entity: WanderingEntity; t: number; screamed: boolean; baseFov: number } | null = null;
+  private kingFaceScratch = new THREE.Vector3();
+  /** Post-process: red glitch during the grab, then a cut to black after it. */
+  private kingFlash = 0;
+  private deathBlack = 0;
+  private kingScratches: KingScratches | null = null;
   private nearTerminal = false;
   private level4DoorOpen = false;
   private scratchRight = new THREE.Vector3();
@@ -537,6 +564,9 @@ export class GameEngine {
       uniform float uTime;
       uniform vec2 uResolution;
       uniform float uSanity;
+      uniform float uDread;
+      uniform float uFlash;
+      uniform float uBlack;
       varying vec2 vUv;
 
       float random(vec2 p) {
@@ -559,12 +589,19 @@ export class GameEngine {
           float glitch = step(0.97 - 0.05 * insanity, random(vec2(floor(uTime * 18.0), 12.3))) * 0.012 * insanity;
           uv.x += waveX + waveX2 + glitch;
         }
+
+        // The Finger King is close: the picture shivers; during its grab it tears apart.
+        if (uDread > 0.01 || uFlash > 0.01) {
+          float tear = step(0.9 - 0.25 * uFlash, random(vec2(floor(uTime * 30.0), floor(uv.y * 40.0))));
+          uv.x += (tear * 0.03 * uFlash) + sin(uv.y * 180.0 + uTime * 50.0) * 0.0015 * uDread;
+          uv.y += (random(vec2(uTime, 3.1)) - 0.5) * 0.02 * uFlash;
+        }
         
         uv.x += trackingBar + rollDistortion;
 
         // B. CHROMATIC ABERRATION (Scales dynamically with insanity!)
         float distFromCenter = length(uv - 0.5);
-        float shiftAmt = 0.0012 + distFromCenter * 0.0018 + (0.016 * insanity);
+        float shiftAmt = 0.0012 + distFromCenter * 0.0018 + (0.016 * insanity) + 0.009 * uDread + 0.035 * uFlash;
         vec2 rgbShift = vec2(shiftAmt, 0.0);
         
         float r = texture2D(tDiffuse, uv - rgbShift).r;
@@ -590,6 +627,12 @@ export class GameEngine {
         float vignette = 1.0 - (distFromCenter * distFromCenter * baseVignetteSize);
         color *= vignette;
 
+        // Dread: the edges close in and the grain thickens as it nears.
+        color *= 1.0 - uDread * 0.55 * smoothstep(0.15, 0.75, distFromCenter);
+        color += vec3(random(uv * 1.7 + uTime) - 0.5) * 0.14 * uDread;
+        // Grab: blood-red, blown-out
+        color = mix(color, vec3(color.r * 1.6 + 0.12, color.g * 0.25, color.b * 0.2), 0.75 * uFlash);
+
         // Dark red pulsing vignette warning overlay on critical insanity
         if (insanity > 0.4) {
           float pulse = (sin(uTime * 3.8) * 0.5 + 0.5) * insanity;
@@ -597,6 +640,7 @@ export class GameEngine {
           color = mix(color, pulseRed, 0.32 * insanity);
         }
 
+        color *= 1.0 - uBlack;
         gl_FragColor = vec4(color, 1.0);
       }
     `;
@@ -607,7 +651,10 @@ export class GameEngine {
         tDiffuse: { value: null },
         uTime: { value: 0 },
         uResolution: { value: new THREE.Vector2(targetW, targetH) },
-        uSanity: { value: 1.0 }
+        uSanity: { value: 1.0 },
+        uDread: { value: 0 },
+        uFlash: { value: 0 },
+        uBlack: { value: 0 }
       },
       vertexShader: vertexShader,
       fragmentShader: fragmentShader,
@@ -817,6 +864,7 @@ export class GameEngine {
 
       // Tick player controllers
       if (this.isDead || this.isWaitingForTransition) this.updateSpectator(delta);
+      else if (this.kingGrab) this.updateKingGrab(delta);
       else {
         this.player.update(delta);
         if (this.level === ELECTRICAL_ROOM_LEVEL && this.map) {
@@ -1038,7 +1086,8 @@ export class GameEngine {
         const px = this.player.position.x;
         const pz = this.player.position.z;
         let caught = false;
-        const canBeCaught = !this.isDead;
+        let caughtBy: WanderingEntity | null = null;
+        const canBeCaught = !this.isDead && !this.kingGrab;
 
         this.entities.forEach(entity => {
           if (aiTargets) {
@@ -1068,6 +1117,7 @@ export class GameEngine {
           const dz = entity.mesh.position.z - pz;
           if (canBeCaught && !caught && !this.cheatLife && dx * dx + dz * dz < 2.1) {
             caught = true;
+            caughtBy = entity;
             console.warn(`[GameEngine] Explorer CAUGHT by ${entity.type}! Reseting state...`);
           }
         });
@@ -1076,7 +1126,12 @@ export class GameEngine {
 
         // Being caught is fatal: the monster got you. You spectate until the
         // group advances a level (or, if everyone is dead, resets).
-        if (caught && !this.cheatLife) this.die("caught");
+        // The Finger King doesn't just touch you: it takes its time (see updateKingGrab).
+        if (caught && !this.cheatLife) {
+          const by = caughtBy as WanderingEntity | null;
+          if (by?.type === EntityType.FINGER_KING) this.startKingGrab(by);
+          else this.die("caught");
+        }
       }
 
       // Update psychological Smilers
@@ -1388,6 +1443,11 @@ export class GameEngine {
       if (this.vhsRenderTarget && this.vhsMaterial) {
         // Feed time to the VHS shader
         this.vhsMaterial.uniforms.uTime.value = this.totalPlayTime;
+        if (!this.kingGrab) this.kingFlash = Math.max(0, this.kingFlash - delta * 3);
+        this.deathBlack = Math.max(0, this.deathBlack - delta * 0.7);
+        this.vhsMaterial.uniforms.uDread.value = this.level === LEVEL_G ? this.kingDread : 0;
+        this.vhsMaterial.uniforms.uFlash.value = this.kingFlash;
+        this.vhsMaterial.uniforms.uBlack.value = Math.min(1, this.deathBlack * 1.6);
         this.vhsMaterial.uniforms.tDiffuse.value = this.vhsRenderTarget.texture;
 
         // Render standard scene to our custom render target
@@ -1656,6 +1716,10 @@ export class GameEngine {
       const inWater = this.map.isWaterAt(x, z);
       if (inWater) this.ripples?.spawn(x, z, 0.8 + weight * 0.6, e.runningGait);
       const { dist, pan } = this.listenerPan(x, z);
+      // The Finger King's knees pop on every step.
+      if (e.type === EntityType.FINGER_KING && dist < 18) {
+        this.audio.playKingJointCrack(Math.pow(1 - dist / 18, 1.5) * 0.85, pan);
+      }
       if (dist <= HEARING) audible.push({ dist, pan, weight, inWater });
     }
     audible.sort((a, b) => a.dist - b.dist);
@@ -1857,14 +1921,15 @@ export class GameEngine {
   private spectateId: string | null = null;
   private remoteDead = new Set<string>();
 
-  private die(cause: "sanity" | "caught") {
+  private die(cause: "sanity" | "caught", silent = false) {
     if (this.isDead || this.cheatLife) return;
+    if (this.kingGrab) this.endKingGrab(false);
     this.isDead = true;
     this.player.isFlashlightOn = false;
     this.player.state = "idle";
     this.camera.position.set(0, 0, 0);
     this.camera.rotation.set(0, 0, 0);
-    this.audio.playEntityCatchSound();
+    if (!silent) this.audio.playEntityCatchSound();
     this.spectateId = null;
     this.cycleSpectate(1);
     this.refreshRemoteVisibility();
@@ -2590,6 +2655,18 @@ export class GameEngine {
     this.levelGAmbushTimer = 25;
     this.levelGAlertTimer = 0;
     this.fingerTapTimer = 0;
+    this.kingBreathTimer = 0;
+    this.kingWhisperTimer = 4;
+    this.kingFalseTapTimer = 25;
+    this.kingKnockCooldown = 0;
+    this.kingStingerCooldown = 0;
+    this.kingHasLastPos = false;
+    this.kingDread = 0;
+    this.kingSightingDone = false;
+    this.kingSightingSearch = 0;
+    if (this.kingPhantom) { this.kingPhantom.entity.returnToPool(this.scene); this.kingPhantom = null; }
+    if (this.kingGrab) this.endKingGrab(false);
+    this.kingScratches?.clear();
     this.nearTerminal = false;
     this.audio.stopAlarm();
     this.emitLevelGProgress();
@@ -2659,29 +2736,12 @@ export class GameEngine {
       }
     }
 
-    // --- Taps: the Finger King announces itself as it gets closer (everyone)
+    // --- The Finger King's presence: taps, breathing, whispers, scares (everyone, local)
     const finger = this.entities.find((e) => e.type === EntityType.FINGER_KING);
-    if (finger) {
-      const dx = finger.mesh.position.x - this.player.position.x;
-      const dz = finger.mesh.position.z - this.player.position.z;
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      const HEAR = 24;
-      if (dist < HEAR) {
-        this.fingerTapTimer -= delta;
-        if (this.fingerTapTimer <= 0) {
-          const closeness = 1 - dist / HEAR;
-          const chasing = this.levelGAlarm || finger.toNetState().c;
-          this.fingerTapTimer = (0.25 + 1.9 * (dist / HEAR)) * (chasing ? 0.6 : 1) * (0.8 + Math.random() * 0.4);
-          // Pan from where it is relative to where we're looking
-          this.camera.getWorldDirection(this.scratchCamDir);
-          this.scratchRight.set(-this.scratchCamDir.z, 0, this.scratchCamDir.x).normalize();
-          const pan = dist > 0.01 ? (this.scratchRight.x * dx + this.scratchRight.z * dz) / dist : 0;
-          this.audio.playFingerTap(Math.pow(closeness, 1.6), pan);
-        }
-      } else {
-        this.fingerTapTimer = 0;
-      }
-    }
+    this.updateKingPresence(delta, finger ?? null);
+    this.updateKingSighting(delta, finger ?? null);
+    this.kingScratches ??= new KingScratches(this.scene);
+    this.kingScratches.update(delta, this.map, finger ? finger.mesh.position.x : null, finger ? finger.mesh.position.z : null);
 
     // --- Prompt when walking up to the terminal
     const atTerminal = this.tryInteract() === "terminal";
@@ -2694,6 +2754,236 @@ export class GameEngine {
     const leaf = this.map.emergencyDoorLeaf;
     if (this.map.emergencyDoorOpen && leaf) {
       leaf.rotation.y += (LEVEL_G_DOOR_OPEN_ANGLE - leaf.rotation.y) * Math.min(1, 3 * delta);
+    }
+  }
+
+  /**
+   * Everything that makes the Finger King felt before it's seen. Runs on
+   * every client from the replicated King, all local:
+   * - taps that count up (1, 2, 3...) as it nears, on wood, locker metal or glass;
+   * - slow wet breathing and near-words whispering when it's close;
+   * - a stinger (and the hum cut dead) the moment it starts hunting;
+   * - silence when it passes the closet you're in — then three knocks;
+   * - a flicker and a thud where it just appeared (ambush teleports);
+   * - later on, taps from where it ISN'T, so the sound is never 100% trustworthy;
+   * - the dread post-process, stronger the closer it is.
+   */
+  private updateKingPresence(delta: number, finger: WanderingEntity | null) {
+    if (!this.map || !this.player) return;
+    this.kingKnockCooldown = Math.max(0, this.kingKnockCooldown - delta);
+    this.kingStingerCooldown = Math.max(0, this.kingStingerCooldown - delta);
+    if (!finger) { this.kingDread = 0; return; }
+
+    const kp = finger.mesh.position;
+    const { dist, pan } = this.listenerPan(kp.x, kp.z);
+    const staring = finger.scriptedPose === KING_POSE_STARE;
+    const chasing = this.levelGAlarm || finger.chasingNow;
+    // Crouched in a closet with it right outside: every sound it makes stops.
+    const hushed = this.localHideState === "hidden" && dist < 6;
+
+    // Dread post-process
+    const dreadTarget = (dist < 7 ? 1 - dist / 7 : 0) + (staring && dist < 12 ? 0.35 : 0);
+    this.kingDread = THREE.MathUtils.damp(this.kingDread, Math.min(1, dreadTarget), 3, delta);
+
+    // Ambush: it moved further than it can walk in a frame → it's somewhere new.
+    if (this.kingHasLastPos && Math.hypot(kp.x - this.kingLastPos.x, kp.z - this.kingLastPos.z) > 6 && dist < 22) {
+      this.kingDarken(0.45);
+      this.audio.playKingThud(Math.pow(1 - dist / 22, 1.2), pan);
+    }
+    this.kingLastPos.copy(kp);
+    this.kingHasLastPos = true;
+
+    // Hunt stinger
+    if (finger.consumeAlertEdge() && finger.chasingNow && dist < 26 && this.kingStingerCooldown <= 0) {
+      this.kingStingerCooldown = 25;
+      this.audio.playKingStinger();
+      this.onHUDNotification?.(t("sp.king.hunt"));
+    }
+
+    // Taps: more of them, faster, the closer it gets
+    const HEAR = 24;
+    if (dist < HEAR && !hushed) {
+      this.fingerTapTimer -= delta;
+      if (this.fingerTapTimer <= 0) {
+        const closeness = 1 - dist / HEAR;
+        this.fingerTapTimer = (0.25 + 1.9 * (dist / HEAR)) * (chasing ? 0.6 : 1) * (0.8 + Math.random() * 0.4);
+        const cs = this.map.cellSize;
+        const gx = Math.floor(kp.x / cs), gz = Math.floor(kp.z / cs);
+        const surface = this.map.hideCells.has(`${gx},${gz}`) ? "metal" : ((gx * 31 + gz * 17) % 5 === 0 ? "glass" : "wood");
+        this.audio.playFingerTap(Math.pow(closeness, 1.6), pan, surface, Math.min(4, 1 + Math.floor(closeness * 3.6)));
+      }
+    } else if (dist >= HEAR) {
+      this.fingerTapTimer = 0;
+    }
+
+    // Breathing, close by
+    if (dist < 7 && !hushed) {
+      this.kingBreathTimer -= delta;
+      if (this.kingBreathTimer <= 0) {
+        this.audio.playKingBreath(Math.pow(1 - dist / 7, 1.3) * 0.9, pan, this.kingBreathInhale);
+        this.kingBreathTimer = (this.kingBreathInhale ? 1.4 : 2.0) * (chasing ? 0.55 : 1);
+        this.kingBreathInhale = !this.kingBreathInhale;
+      }
+    }
+
+    // Whispers: while it watches you, and deep and constant while it stares
+    if ((staring && dist < 14) || (dist < 9 && !chasing && !hushed)) {
+      this.kingWhisperTimer -= delta;
+      if (this.kingWhisperTimer <= 0) {
+        this.audio.playKingWhisper(Math.pow(1 - dist / 14, 1.1) * (staring ? 1.1 : 0.7), pan, staring);
+        this.kingWhisperTimer = staring ? 1.1 + Math.random() * 0.5 : 3.5 + Math.random() * 4;
+      }
+    }
+
+    // Closet: it stops outside your door and knocks.
+    if (this.localHideState === "hidden" && dist < 3.5 && this.kingKnockCooldown <= 0) {
+      this.audio.playClosetKnock();
+      this.onHUDNotification?.(t("eng.kingKnock"));
+      this.kingKnockCooldown = 14;
+    }
+
+    // False taps: once it's angry enough, not every tap is really it.
+    if (this.levelGAggression > 0.5 && !this.levelGAlarm && dist > 10) {
+      this.kingFalseTapTimer -= delta;
+      if (this.kingFalseTapTimer <= 0) {
+        this.kingFalseTapTimer = 18 + Math.random() * 22;
+        this.audio.playFingerTap(0.2 + Math.random() * 0.25, Math.random() * 2 - 1, Math.random() < 0.3 ? "metal" : "wood");
+      }
+    }
+  }
+
+  /** A short local blackout of the office tubes (never over the alarm or a real event). */
+  private kingDarken(seconds: number) {
+    if (!this.map || this.levelGAlarm || this.map.globalEventState !== "normal") return;
+    this.map.startGlobalEvent("blackout", seconds);
+    this.audio.triggerHumFlicker(Math.floor(seconds * 1000));
+  }
+
+  /**
+   * The first sighting, once per run and only for this explorer: a few
+   * seconds in, when you look straight down a corridor, the lights stutter
+   * and the Finger King is standing at the far end with its back to you. It
+   * turns its head... and the next flicker takes it away. Nothing chases you;
+   * it just lets you know. It is a local phantom, not the real (replicated) King.
+   */
+  private updateKingSighting(delta: number, finger: WanderingEntity | null) {
+    if (!this.map || !this.player) return;
+    const p = this.player.position;
+
+    if (this.kingPhantom) {
+      const ph = this.kingPhantom;
+      ph.t += delta;
+      const e = ph.entity;
+      const ex = e.mesh.position.x, ez = e.mesh.position.z;
+      // Back turned, then it notices you (faces the real viewer).
+      const turned = ph.t > 2.0;
+      e.updateReplica(delta, turned ? p.x : ex + ph.awayX * 60, turned ? p.z : ez + ph.awayZ * 60);
+      if (turned) {
+        // Slowly, the whole body comes round to face you.
+        const yaw = e.mesh.rotation.y;
+        const d = Math.atan2(p.x - ex, p.z - ez) - yaw;
+        e.setHeading(yaw + Math.atan2(Math.sin(d), Math.cos(d)) * Math.min(1, 2.5 * delta));
+      }
+      if (turned && !ph.whispered) {
+        ph.whispered = true;
+        const { dist, pan } = this.listenerPan(ex, ez);
+        this.audio.playKingWhisper(Math.max(0.3, 1 - dist / 24), pan, true);
+      }
+      const close = Math.hypot(ex - p.x, ez - p.z) < 5;
+      if (ph.t > 3.0 || close || this.levelGAlarm) {
+        this.kingDarken(0.8);
+        e.returnToPool(this.scene);
+        this.kingPhantom = null;
+        this.kingSightingDone = true;
+      }
+      return;
+    }
+
+    if (this.kingSightingDone || this.levelGTime < 7 || this.levelGAlarm || this.isDead || this.localHideState !== "out") return;
+    this.kingSightingSearch -= delta;
+    if (this.kingSightingSearch > 0) return;
+    this.kingSightingSearch = 0.3;
+
+    // Only when looking squarely down a grid axis
+    const [lx, lz] = this.lookDirectionXZ();
+    if (Math.max(Math.abs(lx), Math.abs(lz)) < 0.92) return;
+    const sx = Math.abs(lx) > Math.abs(lz) ? Math.sign(lx) : 0;
+    const sz = sx === 0 ? Math.sign(lz) : 0;
+    const cs = this.map.cellSize;
+    let gx = Math.floor(p.x / cs), gz = Math.floor(p.z / cs);
+    let spot: [number, number] | null = null;
+    for (let i = 1; i <= 5; i++) {
+      gx += sx; gz += sz;
+      const cell = this.map.grid[gx]?.[gz];
+      if (cell === undefined || cell === CellType.SOLID || this.map.hideCells.has(`${gx},${gz}`)) break;
+      if (i >= 3) spot = [gx, gz];
+    }
+    if (!spot) return;
+    const wx = spot[0] * cs + cs / 2, wz = spot[1] * cs + cs / 2;
+    // Not while the real one is anywhere near: that would be two Kings.
+    if (finger && (Math.hypot(finger.mesh.position.x - wx, finger.mesh.position.z - wz) < 12 || Math.hypot(finger.mesh.position.x - p.x, finger.mesh.position.z - p.z) < 14)) return;
+
+    const phantom = WanderingEntity.getOrCreate(this.map, spot[0], spot[1], EntityType.FINGER_KING, this.scene);
+    phantom.setHeading(Math.atan2(sx, sz));
+    this.kingPhantom = { entity: phantom, t: 0, awayX: sx, awayZ: sz, whispered: false };
+    this.kingDarken(0.3);
+    this.audio.playFingerTap(0.35, 0, "wood", 1);
+  }
+
+  /** It has you: camera locked onto its face, the lunge, the scream, then the cut. */
+  private startKingGrab(entity: WanderingEntity) {
+    if (this.kingGrab) return;
+    this.kingGrab = { entity, t: 0, screamed: false, baseFov: this.camera.fov };
+    this.player.state = "idle";
+    this.player.isFlashlightOn = true; // you see its face
+  }
+
+  private updateKingGrab(delta: number) {
+    const g = this.kingGrab;
+    if (!g) return;
+    g.t += delta;
+    g.entity.grab = Math.min(1, g.t * 4);
+
+    // Wrench the view onto its face
+    const face = g.entity.faceWorldPosition(this.kingFaceScratch);
+    const pos = this.player.position;
+    const dx = face.x - pos.x, dy = face.y - pos.y, dz = face.z - pos.z;
+    const yaw = Math.atan2(-dx, -dz);
+    const pitch = Math.atan2(dy, Math.hypot(dx, dz));
+    const k = Math.min(1, 14 * delta);
+    let dYaw = yaw - this.player.rotation.y;
+    dYaw = Math.atan2(Math.sin(dYaw), Math.cos(dYaw));
+    this.player.rotation.y += dYaw * k;
+    this.player.rotation.x += (pitch - this.player.rotation.x) * k;
+    const shake = 0.02 + 0.05 * Math.min(1, g.t);
+    this.camera.position.set((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, 0);
+    this.camera.rotation.set(0, 0, (Math.random() - 0.5) * shake * 2);
+    this.camera.parent?.position.copy(pos);
+    this.camera.parent?.rotation.copy(this.player.rotation);
+
+    const punch = 1 - Math.pow(1 - Math.min(1, g.t / 0.45), 3);
+    this.camera.fov = g.baseFov - 30 * punch;
+    this.camera.updateProjectionMatrix();
+
+    if (!g.screamed && g.t > 0.08) {
+      g.screamed = true;
+      this.audio.playFingerKingScream();
+    }
+    this.kingFlash = Math.min(1, g.t * 1.8);
+    if (g.t > 1.3) this.endKingGrab(true);
+  }
+
+  private endKingGrab(kill: boolean) {
+    const g = this.kingGrab;
+    if (!g) return;
+    this.kingGrab = null;
+    g.entity.grab = 0;
+    this.camera.fov = g.baseFov;
+    this.camera.updateProjectionMatrix();
+    this.kingFlash = 0;
+    if (kill) {
+      this.deathBlack = 1;
+      this.die("caught", true);
     }
   }
 
@@ -3719,6 +4009,9 @@ export class GameEngine {
     this.officeWorkers = [];
     this.ripples?.dispose();
     this.ripples = null;
+    if (this.kingPhantom) { this.kingPhantom.entity.returnToPool(this.scene); this.kingPhantom = null; }
+    this.kingScratches?.dispose();
+    this.kingScratches = null;
 
     window.removeEventListener("resize", this.handleResize);
     

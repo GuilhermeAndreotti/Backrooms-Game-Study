@@ -1042,16 +1042,14 @@ export class AudioManager {
 
   /**
    * The Finger King's warning: a few quick knuckle/nail taps, like fingers
-   * drumming on a desk or a wall. `volume` 0..1 rises as it gets closer.
+   * drumming on a desk, a metal locker or a window. `volume` 0..1 rises as
+   * it gets closer; `count` is how many taps (it "counts" up as it nears).
    */
-  public playFingerTap(volume: number, pan = 0) {
+  public playFingerTap(volume: number, pan = 0, surface: "wood" | "metal" | "glass" = "wood", count?: number) {
     if (!this.ctx || !this.masterGain || volume <= 0.01) return;
     const t0 = this.ctx.currentTime;
-    const taps = 2 + Math.floor(Math.random() * 3);
-
-    const panner = this.ctx.createStereoPanner();
-    panner.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), t0);
-    panner.connect(this.masterGain);
+    const taps = count ?? 2 + Math.floor(Math.random() * 3);
+    const out = this.kingOut(volume, pan, 0.9);
 
     // One short noise burst shared by every tap
     const len = Math.floor(this.ctx.sampleRate * 0.03);
@@ -1059,23 +1057,279 @@ export class AudioManager {
     const data = buffer.getChannelData(0);
     for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
 
+    const [freq, q, ring] = surface === "metal" ? [3200, 14, 0.18] : surface === "glass" ? [4600, 20, 0.12] : [1800, 6, 0.06];
     for (let k = 0; k < taps; k++) {
       const t = t0 + k * (0.07 + Math.random() * 0.05);
       const src = this.ctx.createBufferSource();
       src.buffer = buffer;
       const band = this.ctx.createBiquadFilter();
       band.type = "bandpass";
-      band.frequency.setValueAtTime(1800 + Math.random() * 900, t);
-      band.Q.setValueAtTime(6, t);
+      band.frequency.setValueAtTime(freq + Math.random() * 900, t);
+      band.Q.setValueAtTime(q, t);
       const gain = this.ctx.createGain();
-      gain.gain.setValueAtTime(0.55 * volume * this.settings.volumeSfx, t);
-      gain.gain.exponentialRampToValueAtTime(0.0005, t + 0.06);
+      gain.gain.setValueAtTime(0.55, t);
+      gain.gain.exponentialRampToValueAtTime(0.0005, t + ring);
       src.connect(band);
       band.connect(gain);
-      gain.connect(panner);
+      gain.connect(out);
       src.start(t);
-      src.stop(t + 0.07);
+      src.stop(t + ring + 0.02);
+      // The nail itself: a tiny click on top
+      if (surface !== "wood") this.kingOsc("sine", freq * 1.9, freq * 1.7, 0.05, 0.12, out, t);
     }
+    this.kingRelease(out, 1.2);
+  }
+
+  /** A positional gain → panner chain into the master (and some reverb). Callers must kingRelease() it. */
+  private kingOut(volume: number, pan: number, reverb = 1): GainNode {
+    const ctx = this.ctx!;
+    const out = ctx.createGain();
+    out.gain.value = Math.min(1.5, volume) * this.settings.volumeSfx;
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, pan));
+    out.connect(panner);
+    panner.connect(this.masterGain!);
+    if (reverb > 0) this.toReverb(panner, reverb);
+    (out as GainNode & { __panner?: StereoPannerNode }).__panner = panner;
+    return out;
+  }
+
+  private kingRelease(out: GainNode, afterSeconds: number) {
+    setTimeout(() => {
+      try {
+        out.disconnect();
+        (out as GainNode & { __panner?: StereoPannerNode }).__panner?.disconnect();
+      } catch { /* already gone */ }
+    }, afterSeconds * 1000);
+  }
+
+  private kingOsc(kind: OscillatorType, f0: number, f1: number, dur: number, peak: number, dest: AudioNode, at: number) {
+    const ctx = this.ctx!;
+    const o = ctx.createOscillator();
+    o.type = kind;
+    o.frequency.setValueAtTime(f0, at);
+    o.frequency.exponentialRampToValueAtTime(Math.max(1, f1), at + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(peak, at + Math.min(0.02, dur / 4));
+    g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    o.connect(g);
+    g.connect(dest);
+    o.start(at);
+    o.stop(at + dur + 0.05);
+    return o;
+  }
+
+  private kingNoise(dur: number, type: BiquadFilterType, freq: number, q: number, peak: number, dest: AudioNode, at: number, attack = 0.005) {
+    const ctx = this.ctx!;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise();
+    src.loop = true;
+    const f = ctx.createBiquadFilter();
+    f.type = type;
+    f.frequency.value = freq;
+    f.Q.value = q;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(peak, at + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    src.connect(f);
+    f.connect(g);
+    g.connect(dest);
+    src.start(at, Math.random());
+    src.stop(at + dur + 0.05);
+    return f;
+  }
+
+  /** A dry joint crack on each of its steps: a knuckle popping, far too loud. */
+  public playKingJointCrack(volume: number, pan: number) {
+    if (!this.ctx || !this.masterGain || volume < 0.02) return;
+    const t = this.ctx.currentTime;
+    const out = this.kingOut(volume, pan, 0.6);
+    const pops = 1 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < pops; i++) {
+      const at = t + i * (0.018 + Math.random() * 0.03);
+      this.kingNoise(0.035, "bandpass", 900 + Math.random() * 1400, 3, 0.8, out, at, 0.001);
+      this.kingOsc("triangle", 180 + Math.random() * 80, 60, 0.05, 0.35, out, at);
+    }
+    this.kingRelease(out, 0.6);
+  }
+
+  /** Slow wet nasal breathing, close by. `inhale` rises, the exhale sinks and rattles. */
+  public playKingBreath(volume: number, pan: number, inhale: boolean) {
+    if (!this.ctx || !this.masterGain || volume < 0.02) return;
+    const t = this.ctx.currentTime;
+    const dur = inhale ? 1.3 : 1.7;
+    const out = this.kingOut(volume, pan, 0.4);
+    const f = this.kingNoise(dur, "bandpass", inhale ? 700 : 500, 1.4, 0.5, out, t, dur * 0.45);
+    f.frequency.setValueAtTime(inhale ? 500 : 800, t);
+    f.frequency.linearRampToValueAtTime(inhale ? 1300 : 350, t + dur);
+    if (!inhale) {
+      // A rattle in the throat
+      const rattle = this.kingOsc("sawtooth", 38, 30, dur * 0.8, 0.12, out, t + 0.2);
+      const lfo = this.ctx.createOscillator();
+      lfo.frequency.value = 17;
+      const lg = this.ctx.createGain();
+      lg.gain.value = 12;
+      lfo.connect(lg);
+      lg.connect(rattle.frequency);
+      lfo.start(t);
+      lfo.stop(t + dur);
+    }
+    this.kingRelease(out, dur + 0.5);
+  }
+
+  /**
+   * Whispering that is almost words: formant-filtered noise hopping between
+   * vowel shapes. `deep` (while it stares at you) adds a pitched-down voice
+   * under it.
+   */
+  public playKingWhisper(volume: number, pan: number, deep: boolean) {
+    if (!this.ctx || !this.masterGain || volume < 0.02) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const syllables = 3 + Math.floor(Math.random() * 4);
+    const out = this.kingOut(volume, pan, 1.4);
+    // [F1, F2] of a few vowels
+    const vowels: [number, number][] = [[800, 1200], [400, 2000], [300, 870], [500, 1000], [350, 2300]];
+    let at = t;
+    for (let i = 0; i < syllables; i++) {
+      const [f1, f2] = vowels[Math.floor(Math.random() * vowels.length)];
+      const dur = 0.12 + Math.random() * 0.18;
+      this.kingNoise(dur, "bandpass", f1, 7, 0.55, out, at, 0.03);
+      this.kingNoise(dur, "bandpass", f2, 9, 0.35, out, at, 0.03);
+      this.kingNoise(0.05, "highpass", 5000, 1, 0.25, out, at, 0.005); // sibilant
+      if (deep) {
+        const v = this.kingOsc("sawtooth", 62 + Math.random() * 8, 48, dur * 1.3, 0.2, out, at);
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.frequency.value = 420;
+        v.disconnect();
+        v.connect(lp);
+        const vg = ctx.createGain();
+        vg.gain.setValueAtTime(0.0001, at);
+        vg.gain.exponentialRampToValueAtTime(0.45, at + 0.04);
+        vg.gain.exponentialRampToValueAtTime(0.0001, at + dur * 1.3);
+        lp.connect(vg);
+        vg.connect(out);
+      }
+      at += dur + 0.03 + Math.random() * 0.12;
+    }
+    this.kingRelease(out, at - t + 1);
+  }
+
+  /**
+   * The hunt begins: a dissonant cluster of synthetic strings swelling over
+   * a falling sub-drop, with the office hum cut dead underneath it.
+   */
+  public playKingStinger() {
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const out = this.kingOut(0.9, 0, 1.6);
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(600, t);
+    lp.frequency.exponentialRampToValueAtTime(4200, t + 0.35);
+    lp.frequency.exponentialRampToValueAtTime(900, t + 2.2);
+    lp.connect(out);
+    for (const f of [233, 247, 262, 349, 370, 494, 523]) {
+      const o = this.kingOsc("sawtooth", f, f * 0.94, 2.4, 0.07, lp, t);
+      const vib = ctx.createOscillator();
+      vib.frequency.value = 5 + Math.random() * 3;
+      const vg = ctx.createGain();
+      vg.gain.value = f * 0.012;
+      vib.connect(vg);
+      vg.connect(o.frequency);
+      vib.start(t);
+      vib.stop(t + 2.5);
+    }
+    this.kingOsc("sine", 90, 28, 1.8, 0.9, out, t);
+    this.kingNoise(0.4, "lowpass", 300, 1, 0.6, out, t, 0.002);
+    this.kingRelease(out, 3.5);
+    this.cutHum(2.6);
+  }
+
+  /** Something heavy lands, far off — where it just appeared. */
+  public playKingThud(volume: number, pan: number) {
+    if (!this.ctx || !this.masterGain || volume < 0.02) return;
+    const t = this.ctx.currentTime;
+    const out = this.kingOut(volume, pan, 1.2);
+    this.kingOsc("sine", 70, 32, 0.6, 0.9, out, t);
+    this.kingNoise(0.25, "lowpass", 260, 1, 0.5, out, t, 0.002);
+    this.playFingerTap(volume * 0.6, pan, "wood", 1);
+    this.kingRelease(out, 1.2);
+  }
+
+  /** Three slow knocks on the closet door you're hiding behind, right by your ear. */
+  public playClosetKnock() {
+    if (!this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    const out = this.kingOut(1.1, (Math.random() - 0.5) * 0.4, 0.5);
+    for (let i = 0; i < 3; i++) {
+      const at = t + i * 0.62 + (i === 2 ? 0.25 : 0);
+      this.kingNoise(0.12, "bandpass", 420, 2.5, 0.9, out, at, 0.002);
+      this.kingOsc("sine", 140, 70, 0.18, 0.6, out, at);
+      this.kingNoise(0.4, "bandpass", 2400, 12, 0.08, out, at + 0.01, 0.003); // locker sheet-metal ring
+    }
+    this.kingRelease(out, 3);
+  }
+
+  /**
+   * The Finger King's kill: grinding teeth and a scream built from a
+   * detuned cluster run through distortion, finger-snaps in a burst, and a
+   * 40 Hz drop that you feel more than hear.
+   */
+  public playFingerKingScream() {
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const out = this.kingOut(1.4, 0, 0.8);
+    const shaper = ctx.createWaveShaper();
+    const curve = new Float32Array(1024);
+    for (let i = 0; i < curve.length; i++) {
+      const x = (i / (curve.length - 1)) * 2 - 1;
+      curve[i] = Math.tanh(x * 6);
+    }
+    shaper.curve = curve;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.setValueAtTime(1400, t);
+    bp.frequency.exponentialRampToValueAtTime(500, t + 1.4);
+    bp.Q.value = 1.2;
+    shaper.connect(bp);
+    bp.connect(out);
+    for (const f of [610, 647, 689, 913]) {
+      const o = this.kingOsc("sawtooth", f, f * 0.55, 1.5, 0.25, shaper, t);
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = 23 + Math.random() * 9;
+      const lg = ctx.createGain();
+      lg.gain.value = f * 0.06;
+      lfo.connect(lg);
+      lg.connect(o.frequency);
+      lfo.start(t);
+      lfo.stop(t + 1.6);
+    }
+    // Teeth grinding: gritty pink-ish noise
+    this.kingNoise(1.3, "bandpass", 2600, 0.7, 0.5, out, t, 0.01);
+    // Snapping fingers
+    for (let i = 0; i < 12; i++) {
+      this.kingNoise(0.03, "bandpass", 2000 + Math.random() * 2000, 5, 0.9, out, t + 0.05 + i * 0.06 + Math.random() * 0.03, 0.001);
+    }
+    this.kingOsc("sine", 42, 25, 1.6, 1.2, out, t);
+    this.kingRelease(out, 2.5);
+    this.cutHum(1.8);
+  }
+
+  /** Cuts the ambient hum dead for `seconds`, then lets it creep back. */
+  public cutHum(seconds: number) {
+    if (!this.ctx || !this.humGain) return;
+    const t = this.ctx.currentTime;
+    const baseHum = this.settings.volumeHum * 0.12;
+    this.humGain.gain.cancelScheduledValues(t);
+    this.humGain.gain.setValueAtTime(0, t + 0.01);
+    this.humGain.gain.setValueAtTime(0, t + seconds);
+    this.humGain.gain.linearRampToValueAtTime(baseHum, t + seconds + 1.5);
   }
 
   // ---------------------------------------------------------------------

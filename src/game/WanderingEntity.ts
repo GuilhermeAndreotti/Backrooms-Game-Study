@@ -8,7 +8,7 @@ import * as THREE from "three";
 import { ProceduralMap, CellType } from "./ProceduralMap";
 import { EntityType } from "../shared/entityTypes";
 import { MOB_DEFS } from "./mobs/registry";
-import { MobBuildCtx, MobJoints, MobSenseCtx } from "./mobs/types";
+import { MobBuildCtx, MobJoints, MobSenseCtx, NO_SCRIPTED_POSE } from "./mobs/types";
 import { resetRig } from "./mobs/anim";
 import { ELECTRICAL_ROOM_LEVEL, LEVEL_2, LIGHTS_OUT_LEVEL } from "./levels/constants";
 
@@ -31,6 +31,7 @@ export interface EntityNetState {
   a: boolean; // agitated
   c: boolean; // chasing
   s: string;  // speech bubble text
+  k: number;  // scripted pose (MobSenseResult.pose), 0 = none
 }
 
 export class WanderingEntity {
@@ -81,6 +82,14 @@ export class WanderingEntity {
   private runWeight = 0;
   private observeWeight = 0;
   private lookWeight = 0;
+  /** Scripted pose from sense() (replicated as `k`) and local timers feeding MobAnimCtx. */
+  private pose = 0;
+  private poseTime = 0;
+  private alertTime = 99;
+  private stillTime = 0;
+  private wasChasingAnim = false;
+  /** 0..1, local only: the catch lunge GameEngine plays before a Finger King kill. */
+  public grab = 0;
 
   // AI-Specific states
   private isAgitated = false; // Used for Skin-Stealer reveal, Wretch spotting, Clump alarm
@@ -104,6 +113,11 @@ export class WanderingEntity {
   /** Seconds until this monster's next voice line (owned by GameEngine's audio pass). */
   public voiceTimer = 1 + Math.random() * 3;
   private wasAlert = false;
+
+  /** Chasing right now (authority's AI, or the last replicated frame). */
+  public get chasingNow(): boolean { return this.isChasing; }
+  /** The replicated scripted pose (MobSenseResult.pose), 0 = none. */
+  public get scriptedPose(): number { return this.pose; }
 
   /** Hunting/agitated: picks the aggressive voice. */
   public get alert(): boolean { return this.isChasing || this.isAgitated || this.hunting; }
@@ -383,6 +397,7 @@ export class WanderingEntity {
       a: this.isAgitated,
       c: this.isChasing,
       s: this.currentSpeechText,
+      k: this.pose,
     };
   }
 
@@ -405,6 +420,7 @@ export class WanderingEntity {
     this.isAgitated = s.a;
     this.isChasing = s.c;
     this.currentSpeechText = s.s;
+    this.pose = s.k ?? 0;
 
     if (cellChanged) this.updateWallClipLook();
     if (looksChanged) this.updateVisualState(); // forced: a coalesced skip would never be retried
@@ -464,6 +480,23 @@ export class WanderingEntity {
     this.observeWeight = damp(this.observeWeight, !this.isMoving && !this.isChasing && dist < 12 ? 1 : 0, 3, delta);
     this.lookWeight = damp(this.lookWeight, near ? 1 : 0, 4, delta);
     if (this.isMoving) this.stridePhase += (this.moveSpeed / def.strideLength) * Math.PI * 2 * delta;
+    if (this.pose !== this.lastAnimPose) {
+      // A scripted pose that just ended already played its own lead-in to the chase.
+      if (this.pose === 0) this.poseEndedAgo = 0;
+      this.lastAnimPose = this.pose;
+      this.poseTime = 0;
+    }
+    this.poseTime += delta;
+    this.poseEndedAgo += delta;
+    // Chase start: play the alert lead-in, unless a scripted pose just did, or
+    // one played recently (chases flicker on and off at the edge of its senses).
+    if (this.isChasing && !this.wasChasingAnim) {
+      if (this.poseEndedAgo < 1.5) this.alertTime = 99;
+      else if (this.alertTime >= 20) this.alertTime = 0;
+    }
+    this.wasChasingAnim = this.isChasing;
+    this.alertTime = Math.min(99, this.alertTime + delta);
+    this.stillTime = this.isMoving ? 0 : this.stillTime + delta;
 
     // --- Facing: where it walks, or the player once it stops near them.
     const toViewer = Math.atan2(dx, dz);
@@ -502,6 +535,12 @@ export class WanderingEntity {
         lookPitch: THREE.MathUtils.clamp(Math.atan2(eyeY - (pos.y + 0.4), Math.max(dist, 0.5)), -0.7, 0.7),
         agitated: this.isAgitated,
         chasing: this.isChasing,
+        pose: this.pose,
+        poseTime: this.poseTime,
+        alertTime: this.alertTime,
+        stillTime: this.stillTime,
+        grab: this.grab,
+        seed: Math.max(0, this.netId) * 1.618 + 0.37,
       });
     }
 
@@ -545,6 +584,29 @@ export class WanderingEntity {
     this.runWeight = 0;
     this.observeWeight = 0;
     this.lookWeight = 0;
+    this.pose = 0;
+    this.lastAnimPose = 0;
+    this.poseTime = 0;
+    this.alertTime = 99;
+    this.stillTime = 0;
+    this.wasChasingAnim = false;
+    this.grab = 0;
+  }
+
+  private lastAnimPose = 0;
+  private poseEndedAgo = 99;
+
+  /** World position of the face (the `face` joint when the rig has one, else the head). */
+  public faceWorldPosition(out: THREE.Vector3): THREE.Vector3 {
+    const j = this.joints.face ?? this.joints.head;
+    if (!j) return out.copy(this.mesh.position);
+    return j.getWorldPosition(out);
+  }
+
+  /** Points the body at world yaw `yaw` right away (scripted appearances). */
+  public setHeading(yaw: number) {
+    this.heading = yaw;
+    this.mesh.rotation.set(0, yaw, 0);
   }
 
   /**
@@ -650,6 +712,7 @@ export class WanderingEntity {
       this.isChasing = true;
       // Level 2 and secret Level 6 are fast, unavoidable sprint chases.
       this.moveSpeed = senseDef.forcedChaseSpeed;
+      this.pose = 0;
       if (senseDef.forcedChaseAgitated) this.isAgitated = true;
     } else {
       this.isChasing = false;
@@ -660,6 +723,7 @@ export class WanderingEntity {
       const result = senseDef.sense(ctx);
       this.isChasing = result.chasing;
       this.moveSpeed = result.speed;
+      this.pose = result.pose ?? 0;
       if (result.agitated !== undefined) this.isAgitated = result.agitated;
       if (result.scratch !== undefined) this.intimidatedTimer = result.scratch;
 
@@ -987,7 +1051,7 @@ export class WanderingEntity {
     def.animate({
       joints: rig.joints, body, time: rig.time, delta, phase: rig.phase,
       move: rig.move, run: rig.run, observe: 0, look: 0, lookYaw: 0, lookPitch: 0,
-      agitated: false, chasing: running,
+      agitated: false, chasing: running, ...NO_SCRIPTED_POSE,
     });
     body.position.y += rig.anchorY;
   }

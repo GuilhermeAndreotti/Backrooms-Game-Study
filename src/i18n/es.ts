@@ -275,6 +275,7 @@ export const es: Record<MessageKey, string> = {
   "eng.levelG": "LEVEL G. Una oficina demasiado pequeña. Encuentra los 3 documentos... y escucha los dedos.",
   "eng.hidden": "ESCONDIDO. Quédate agachado y en silencio...",
   "eng.found": "ÉL SABE DÓNDE ESTÁS. SAL DE AHÍ.",
+  "eng.kingKnock": "Algo golpea la puerta del armario. Tres veces. No respires.",
   "eng.computer": "Un ordenador antiguo todavía encendido. Pulsa [E] para usarlo.",
   "eng.noRoom": "No hay espacio para empujar la caja.",
   "eng.level6Night": "La noche cae sin aviso. Entra en una casa, apaga la luz, escóndete.",
