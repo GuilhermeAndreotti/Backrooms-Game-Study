@@ -30,6 +30,7 @@ import {
   MOTION_LEVEL,
   POOLROOMS_LEVEL,
 } from "./levels/constants";
+import { POOL_VALVE_COUNT } from "./poolroomsPuzzle";
 import {
   AdaptiveResolution,
   QualityLevel,
@@ -308,6 +309,8 @@ export class GameEngine {
   // --- Level 7 ("LEVEL 5" display): valve puzzle -----------------------------
   /** Indices into map.valvePositions that have been turned; each sector sequence drains its stage. */
   private valvesTurned = new Set<number>();
+  /** Monotonic server revision; stale snapshots must never roll the puzzle back. */
+  private poolValveRevision = -1;
   public levelGDigits: (number | null)[] = [null, null, null];
   /** Right code entered: alarm, flickering lights, open emergency door, final chase. */
   public levelGAlarm = false;
@@ -2549,9 +2552,11 @@ export class GameEngine {
     this.level6IsNight = false;
     this.ceifadorEntity = null; // already pooled by the blanket entities.forEach(returnToPool) above
 
-    // Level 7: fresh valve state (the new map's own toxicWaterCells already
+    // Poolrooms: fresh local view; the authoritative state arrives in a snapshot.
+    // The new map's own toxicWaterCells already
     // starts populated from its own carve — see ProceduralMap.carveLevel7).
     this.valvesTurned.clear();
+    this.poolValveRevision = -1;
 
     // Spawn multiple chasing entities on Level 2 (Pipe Dreams), placed at
     // the same S-shaped key joints/corridor points the level's always used.
@@ -3123,56 +3128,49 @@ export class GameEngine {
     if (this.isDead) return false;
     const i = this.nearestUntouchedValveIndex();
     if (i < 0) return false;
-    this.turnValve(i);
     this.sendToServer({ type: "valve_turn", level: this.level, index: i });
     return true;
   }
 
-  private turnValve(index: number) {
-    if (!this.map || this.valvesTurned.has(index)) return;
-    const per = this.map.poolValvesPerRoom;
-    const rooms = this.map.poolRoomCount;
-    const room = Math.floor(index / per);
-    const roomBase = room * per;
-    let doneInRoom = 0;
-    for (let k = 0; k < per; k++) if (this.valvesTurned.has(roomBase + k)) doneInRoom++;
-    const solvedRooms = () => {
-      let n = 0;
-      for (let r = 0; r < rooms; r++) {
-        let all = true;
-        for (let k = 0; k < per; k++) if (!this.valvesTurned.has(r * per + k)) all = false;
-        if (all) n++;
-      }
-      return n;
-    };
-    if (index !== roomBase + this.map.poolValveOrder[room][doneInRoom]) {
-      // Wrong valve: only this room's valves spring back.
-      for (let k = 0; k < per; k++) this.valvesTurned.delete(roomBase + k);
-      // The Vigia learns routes much faster from a failed attempt than a
-      // routine turn. State is reproduced on every client from valve relays.
+  /** Applies the server's complete Poolrooms state, ignoring stale revisions. */
+  public applyPoolroomsState(data: {
+    level?: number;
+    revision?: number;
+    turned?: unknown;
+    stage?: number;
+    solved?: boolean;
+  }) {
+    if (!this.map || this.level !== POOLROOMS_LEVEL || data.level !== undefined && data.level !== this.level) return;
+    if (typeof data.revision !== "number" || !Number.isInteger(data.revision) || data.revision < this.poolValveRevision) return;
+    if (!Array.isArray(data.turned) || typeof data.stage !== "number" || !Number.isInteger(data.stage)) return;
+
+    const turned = new Set<number>();
+    for (const index of data.turned) {
+      if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= POOL_VALVE_COUNT) return;
+      turned.add(index);
+    }
+    const hadState = this.poolValveRevision >= 0;
+    const previousCount = this.valvesTurned.size;
+    const wasSolved = this.map.poolroomsSolved;
+    this.poolValveRevision = data.revision;
+    this.valvesTurned = turned;
+    this.map.setPoolroomsValveState(turned, data.stage);
+    if (!hadState) return;
+
+    if (turned.size < previousCount) {
       this.map.poolVigiaIntellect = Math.min(1, this.map.poolVigiaIntellect + 0.32);
-      this.map.setPoolroomsValveState(this.valvesTurned, solvedRooms());
       this.audio.playTerminalBeep(false);
       this.onHUDNotification?.(t("eng.denied"));
-      return;
+    } else if (turned.size > previousCount) {
+      this.map.poolVigiaIntellect = Math.min(1, this.map.poolVigiaIntellect + 0.08);
+      this.audio.playTerminalBeep(true);
+      if (!wasSolved && this.map.poolroomsSolved) {
+        this.onHUDNotification?.(t("eng.valveAllTurned"));
+        unlockAchievement("valves_drained");
+      } else {
+        this.onHUDNotification?.(t("eng.valveTurn", { n: turned.size, total: this.map.valvePositions.length }));
+      }
     }
-    this.valvesTurned.add(index);
-    this.map.poolVigiaIntellect = Math.min(1, this.map.poolVigiaIntellect + 0.08);
-    const solved = solvedRooms();
-    this.map.setPoolroomsValveState(this.valvesTurned, solved);
-    this.audio.playTerminalBeep(true);
-    if (solved >= rooms) {
-      this.onHUDNotification?.(t("eng.valveAllTurned"));
-      unlockAchievement("valves_drained");
-    } else {
-      this.onHUDNotification?.(t("eng.valveTurn", { n: this.valvesTurned.size, total: this.map.valvePositions.length }));
-    }
-  }
-
-  /** A teammate turned a valve (relayed by the server — see server.ts's "valve_turn" handler). */
-  public handleValveTurn(index: number) {
-    if (this.level !== POOLROOMS_LEVEL) return;
-    this.turnValve(index);
   }
 
   /** A teammate shoved a box on this level: replay the slide. */

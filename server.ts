@@ -17,6 +17,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { ALL_ENTITY_TYPES } from "./src/shared/entityTypes";
 import { ROOM_CHEATS, SUDO_CHEAT, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
 import { LOBBY_LEVEL, MAIN_LEVELS, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
+import { POOL_ROOM_COUNT, POOL_VALVE_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./src/game/poolroomsPuzzle";
 
 // ---------------------------------------------------------------------------
 // Configuration (everything overridable from the environment / .env)
@@ -150,6 +151,9 @@ interface Room {
   dirty: Set<string>;
   /** Last "authority" map broadcast (serialized), to only re-send on change. */
   authorityKey: string;
+  /** Authoritative Poolrooms puzzle state; clients only render snapshots of it. */
+  poolValvesTurned: Set<number>;
+  poolValveRevision: number;
 }
 
 const rooms = new Map<string, Room>();
@@ -268,6 +272,49 @@ function broadcastToLevel(room: Room, level: number, payload: unknown, exclude?:
   });
 }
 
+function poolroomsSnapshot(room: Room) {
+  let stage = 0;
+  for (let sector = 0; sector < POOL_ROOM_COUNT; sector++) {
+    let solved = true;
+    for (let valve = 0; valve < POOL_VALVES_PER_ROOM; valve++) {
+      if (!room.poolValvesTurned.has(sector * POOL_VALVES_PER_ROOM + valve)) solved = false;
+    }
+    if (solved) stage++;
+  }
+  return {
+    revision: room.poolValveRevision,
+    turned: [...room.poolValvesTurned].sort((a, b) => a - b),
+    stage,
+    solved: stage === POOL_ROOM_COUNT,
+  };
+}
+
+function resetPoolroomsState(room: Room) {
+  room.poolValvesTurned.clear();
+  room.poolValveRevision++;
+}
+
+/** Applies one serialized valve attempt and returns the resulting full state. */
+function applyPoolValveTurn(room: Room, index: number) {
+  if (room.poolValvesTurned.has(index)) return poolroomsSnapshot(room);
+
+  const order = poolValveOrderForSeed(room.seed);
+  const sector = Math.floor(index / POOL_VALVES_PER_ROOM);
+  const base = sector * POOL_VALVES_PER_ROOM;
+  let done = 0;
+  for (let valve = 0; valve < POOL_VALVES_PER_ROOM; valve++) {
+    if (room.poolValvesTurned.has(base + valve)) done++;
+  }
+
+  if (index !== base + order[sector][done]) {
+    for (let valve = 0; valve < POOL_VALVES_PER_ROOM; valve++) room.poolValvesTurned.delete(base + valve);
+  } else {
+    room.poolValvesTurned.add(index);
+  }
+  room.poolValveRevision++;
+  return poolroomsSnapshot(room);
+}
+
 // Derived from the shared enum (not hand-maintained) so a type the client can
 // actually send is never silently rejected here — this used to omit
 // FINGER_KING, which meant Level G's authority's "entities" frame (always
@@ -331,10 +378,18 @@ function resetRoom(room: Room, action: DeathAction) {
   const toLobby = action === "lobby";
   if (scratch) room.level = 0;
   if (toLobby) room.level = LOBBY_LEVEL;
+  resetPoolroomsState(room);
   reviveAll(room);
   room.players.forEach((p) => { p.level = room.level; });
   refreshAuthority(room);
-  broadcastToRoom(room, { type: "respawn", level: room.level, seed: room.seed, scratch, toLobby });
+  broadcastToRoom(room, {
+    type: "respawn",
+    level: room.level,
+    seed: room.seed,
+    scratch,
+    toLobby,
+    poolroomsState: room.level === POOLROOMS_LEVEL ? poolroomsSnapshot(room) : null,
+  });
 }
 
 /**
@@ -381,6 +436,7 @@ function tryAdvanceRoom(room: Room) {
   const expected = nextMainLevel(room.level);
   if (expected === null) return;
   room.level = expected;
+  if (room.level === POOLROOMS_LEVEL) resetPoolroomsState(room);
   reviveAll(room);
   room.players.forEach((p) => {
     // Secret players may finish their detour independently. They join
@@ -395,7 +451,13 @@ function tryAdvanceRoom(room: Room) {
     room.dirty.add(p.id);
   });
   refreshAuthority(room);
-  broadcastToRoom(room, { type: "level_transition", level: room.level, seed: room.seed, convergence: room.level >= 4 });
+  broadcastToRoom(room, {
+    type: "level_transition",
+    level: room.level,
+    seed: room.seed,
+    convergence: room.level >= 4,
+    poolroomsState: room.level === POOLROOMS_LEVEL ? poolroomsSnapshot(room) : null,
+  });
 }
 
 function reviveAll(room: Room) {
@@ -495,6 +557,8 @@ async function startServer() {
             connections: new Set(),
             dirty: new Set(),
             authorityKey: "",
+            poolValvesTurned: new Set(),
+            poolValveRevision: 0,
           };
           rooms.set(roomKey, room);
           console.log(`Created new room "${roomKey}" with seed ${seed}`);
@@ -556,6 +620,7 @@ async function startServer() {
           hostId: room.hostId,
           roomConfig: room.config,
           cheats: [...room.cheats],
+          poolroomsState: room.level === POOLROOMS_LEVEL ? poolroomsSnapshot(room) : null,
           players: Array.from(room.players.values()).filter((p) => p.id !== playerId),
           authority: computeAuthority(room),
         });
@@ -636,14 +701,15 @@ async function startServer() {
         return;
       }
 
-      // Level 7: a player turned one of the twelve sector valves. Idempotent state (no
-      // authority gate needed, unlike levelg_code's AI-driving decision) —
-      // just relay it to the rest of the level, same shape as box_push.
+      // Poolrooms valve attempts are serialized here. The server owns the sequence
+      // and broadcasts the complete state so late joiners and simultaneous inputs
+      // cannot leave clients with different water/door states.
       if (type === "valve_turn") {
         const level = conn.player.level;
         const index = data.index;
-        if (level !== POOLROOMS_LEVEL || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 11) return;
-        broadcastToLevel(room, level, { type: "valve_turn", level, index }, conn);
+        if (level !== POOLROOMS_LEVEL || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= POOL_VALVE_COUNT) return;
+        const state = applyPoolValveTurn(room, index);
+        broadcastToLevel(room, level, { type: "poolrooms_state", level, ...state });
         return;
       }
 
@@ -721,6 +787,7 @@ async function startServer() {
         const completingPoolrooms = room.level === POOLROOMS_LEVEL && requested === LOBBY_LEVEL;
         if ((!expected || requested !== expected) && !completingPoolrooms) return;
         if (conn.player.level !== room.level) return;
+        if (requested === POOLROOMS_LEVEL) resetPoolroomsState(room);
 
         conn.player.exitReady = true;
         room.dirty.add(conn.player.id);
@@ -770,10 +837,17 @@ async function startServer() {
         const requestedLevel = data.level === undefined ? 0 : data.level;
         if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || requestedLevel > MOTION_LEVEL || requestedLevel === LOBBY_LEVEL) return;
         room.level = requestedLevel;
+        resetPoolroomsState(room);
         reviveAll(room);
         room.players.forEach((p) => { p.level = requestedLevel; });
         refreshAuthority(room);
-        broadcastToRoom(room, { type: "level_transition", level: requestedLevel, seed: room.seed, start: true });
+        broadcastToRoom(room, {
+          type: "level_transition",
+          level: requestedLevel,
+          seed: room.seed,
+          start: true,
+          poolroomsState: requestedLevel === POOLROOMS_LEVEL ? poolroomsSnapshot(room) : null,
+        });
         return;
       }
 

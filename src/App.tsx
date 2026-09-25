@@ -552,7 +552,7 @@ export default function App() {
           }
 
           else if (type === "joined") {
-            const { id: myId, seed, players: currentOn, level: roomLevel = 0, authority = {}, code: joinedCode = "", hostId: joinedHost = "", roomConfig: joinedConfig, cheats: joinedCheats } = data;
+            const { id: myId, seed, players: currentOn, level: roomLevel = 0, authority = {}, code: joinedCode = "", hostId: joinedHost = "", roomConfig: joinedConfig, cheats: joinedCheats, poolroomsState } = data;
             // A server from before rooms/lobbies answers without an invite code
             // (and drops you straight into Level 0): say so instead of playing on.
             if (!joinedCode) {
@@ -759,6 +759,9 @@ export default function App() {
                   engineRef.current.transitionToLevel(roomLevel, seed, settings);
                   setCurrentLevel(roomLevel);
                 }
+                if (roomLevel === POOLROOMS_LEVEL && poolroomsState) {
+                  engineRef.current.applyPoolroomsState(poolroomsState);
+                }
 
                 // Set player lock state during generation to guarantee no movement
                 if (engineRef.current && engineRef.current.player) {
@@ -861,6 +864,9 @@ export default function App() {
             setLoadingProgress(0);
             setCurrentLevel(nextLevel);
             engine.transitionToLevel(nextLevel, roomSeed, settings);
+            if (nextLevel === POOLROOMS_LEVEL && data.poolroomsState) {
+              engine.applyPoolroomsState(data.poolroomsState);
+            }
 
             if (engine.player) {
               engine.player.mapFullyLoaded = false;
@@ -1027,8 +1033,8 @@ export default function App() {
             engineRef.current?.handleLevelGCodeRequest(data);
           }
 
-          else if (type === "valve_turn") {
-            engineRef.current?.handleValveTurn(data.index);
+          else if (type === "poolrooms_state") {
+            engineRef.current?.applyPoolroomsState(data);
           }
 
           else if (type === "brick_office_switch") {

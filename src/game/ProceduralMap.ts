@@ -13,6 +13,7 @@ import { VisitTracker } from "./systems/visitTracker";
 import { contentLevelFor } from "./levels/constants";
 import * as Decor from "./LevelDecor";
 import { POOL_FLOOR_Y, WATER_SURFACE_Y, createPoolTileMaterial, createWallTileMaterial, createWaterMaterial } from "./Water";
+import { POOL_ROOM_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./poolroomsPuzzle";
 
 // Deterministic Mulbery32 Random Number Generator
 export class SeededRandom {
@@ -303,7 +304,7 @@ export class ProceduralMap {
   /** Level 7's hydraulic valve interaction points. */
   public valvePositions: [number, number][] = [];
   /** Each flooded sector holds this many valves; valve i belongs to sector floor(i / poolValvesPerRoom). */
-  public readonly poolValvesPerRoom = 3;
+  public readonly poolValvesPerRoom = POOL_VALVES_PER_ROOM;
   /** Symbols appear in this physical order on each room's valves. */
   public readonly poolValveSymbols = ["○", "△", "□"] as const;
   /** Per valve room: the order (local valve indices 0..2) it must be turned in. Seeded in carveLevel7. */
@@ -323,7 +324,8 @@ export class ProceduralMap {
   /** Resting water depth (m above the pool floor) of each room before any valve is turned. */
   private readonly poolZoneBaseDepth = [0.45, 1.4, 2.3, 3.6];
   /** Each valve lowers every room's water by this much, down to a wadeable minimum. */
-  private readonly poolDrainPerStage = 0.85;
+  /** Three completed sectors must make the final sector wadeable. */
+  private readonly poolDrainPerStage = 0.9;
   private readonly poolMinDepth = 0.45;
   /** Deeper than this and a room can't be entered on foot. */
   private readonly poolWadeMaxDepth = 1.0;
@@ -2579,8 +2581,9 @@ export class ProceduralMap {
 
   /**
    * LEVEL 7 ("LEVEL 5" display — classic Poolrooms). A windowed start room
-   * leads into a snaking flooded corridor and a broad central basin. Four
-   * hydraulic valves lower the water in stages and reveal its submerged exit.
+   * leads into a snaking flooded corridor and a broad central basin. Twelve
+   * hydraulic valves, arranged as three sequences across four sectors, lower
+   * the water in stages and reveal its submerged exit.
    * CLUMP is this level's native hazard — see mobs/clump.ts's sense() for
    * its level-7-only "loses you if you're submerged in WATER_ROOM" weakness.
    */
@@ -2626,13 +2629,13 @@ export class ProceduralMap {
     this.poolStairCells.clear();
     this.poolClueCells.clear();
     this.poolValveOrder = [];
+    const valveOrder = poolValveOrderForSeed(this.seed);
+    // Keep this stream aligned with the old combined order/selection stream so
+    // existing seeds retain their valve positions.
     const orderRng = new SeededRandom(this.seed + 0x7a11);
-    for (let room = 0; room < 4; room++) {
-      const order = [0, 1, 2];
-      for (let i = 2; i > 0; i--) {
-        const j = orderRng.nextInt(0, i + 1);
-        const tmp = order[i]; order[i] = order[j]; order[j] = tmp;
-      }
+    for (let room = 0; room < POOL_ROOM_COUNT; room++) {
+      const order = valveOrder[room];
+      for (let i = 2; i > 0; i--) orderRng.nextInt(0, i + 1);
       this.poolValveOrder.push(order);
       const candidates: [number, number][] = [];
       for (let x = lo; x <= hi; x++) for (let z = lo; z <= hi; z++) {
@@ -2651,7 +2654,19 @@ export class ProceduralMap {
         }
         selected.push(candidates.splice(bestIndex, 1)[0]);
       }
+      if (selected.length !== this.poolValvesPerRoom) {
+        throw new Error(`Poolrooms sector ${room} generated ${selected.length} valves; expected ${this.poolValvesPerRoom}`);
+      }
       this.valvePositions.push(...selected);
+    }
+    if (this.valvePositions.length !== POOL_ROOM_COUNT * POOL_VALVES_PER_ROOM) {
+      throw new Error(`Poolrooms generated ${this.valvePositions.length} valves; expected ${POOL_ROOM_COUNT * POOL_VALVES_PER_ROOM}`);
+    }
+    for (let zone = 0; zone < POOL_ROOM_COUNT; zone++) {
+      const depth = Math.max(this.poolMinDepth, this.poolZoneBaseDepth[zone] - this.poolDrainPerStage * zone);
+      if (depth > this.poolWadeMaxDepth + 1e-6) {
+        throw new Error(`Poolrooms sector ${zone} remains blocked after ${zone} drain stages (${depth.toFixed(3)}m)`);
+      }
     }
     // Hide all three parts of each sequence around its own sector. The marks are
     // far enough apart that players must explore, but never leave the sector they
