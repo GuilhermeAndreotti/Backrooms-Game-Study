@@ -463,6 +463,7 @@ export const enUS: Record<MessageKey, string> = {
   "lobby.start": "Start expedition",
   "lobby.startKey": "[ENTER] Start expedition",
   "lobby.waitHost": "Waiting for the host to start the expedition...",
+  "lobby.expeditionRunning": "Expedition in progress: your group is still inside. You rejoin them on the next level.",
   "lobby.host": "host",
   "lobby.players": "In the lobby: {n}/4",
   "lobby.tips": "Kick the ball by running into it • ESC frees the cursor",

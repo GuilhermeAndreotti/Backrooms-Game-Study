@@ -381,7 +381,8 @@ export default function App() {
         return;
       }
       // Lobby: the host starts the expedition.
-      if (e.key === "Enter" && !e.repeat && engineRef.current?.level === LOBBY_LEVEL && clientIdRef.current && clientIdRef.current === hostIdRef.current) {
+      if (e.key === "Enter" && !e.repeat && engineRef.current?.level === LOBBY_LEVEL && clientIdRef.current && clientIdRef.current === hostIdRef.current
+        && !playersRef.current.some((p) => p.id !== clientIdRef.current && p.level !== undefined && p.level !== LOBBY_LEVEL)) {
         e.preventDefault();
         socketRef.current?.send(JSON.stringify({ type: "start_game", level: 0 }));
         return;
@@ -471,6 +472,13 @@ export default function App() {
 
   hostIdRef.current = hostId;
   const isHost = !!clientId && clientId === hostId;
+  /**
+   * Back in the lobby on our own (we aborted) while teammates are still out on
+   * the expedition: nothing can start until they come back too; we rejoin
+   * them at their next level instead.
+   */
+  const expeditionRunning = currentLevel === LOBBY_LEVEL
+    && connectedPlayers.some((p) => p.id !== clientId && p.level !== undefined && p.level !== LOBBY_LEVEL);
 
   // 2. Network connection setup
   const connectToLobby = (req: JoinRequest = { create: true }, forceSeed?: number) => {
@@ -1621,7 +1629,9 @@ export default function App() {
                   </button>
                   {!isHost && <div className="text-[9px] text-amber-400/80 uppercase">{t("roomConfig.hostOnly")}</div>}
                 </div>
-                {isHost ? (
+                {expeditionRunning ? (
+                  <div id="lobby-expedition-running" className="text-[10px] text-cyan-300/90 uppercase tracking-wider leading-relaxed">{t("lobby.expeditionRunning")}</div>
+                ) : isHost ? (
                   <button
                     id="btn-lobby-start"
                     onClick={() => socketRef.current?.send(JSON.stringify({ type: "start_game" }))}

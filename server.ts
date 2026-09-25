@@ -575,6 +575,16 @@ async function startServer() {
       if (type === "update") {
         const p = conn.player;
         if (p.dead || p.exitReady) return;
+        // Frames already in flight when the server moved this player between
+        // the expedition and the lobby (return_to_lobby_request, start_game,
+        // a transition pulling them back in) still carry the level they left.
+        // Applying one would drag the player back there server-side: the room
+        // then never becomes a lobby again (start_game refused) and teammates
+        // in the lobby stop seeing them. Drop them whole (stale position too).
+        const frameLevel = finiteNumber(data.level, p.level);
+        if (room.level === LOBBY_LEVEL
+          ? frameLevel !== LOBBY_LEVEL // the whole room is in the lobby: any other level is a leftover (even a private one)
+          : (p.level === LOBBY_LEVEL) !== (frameLevel === LOBBY_LEVEL)) return;
         p.x = finiteNumber(data.x, p.x);
         p.y = finiteNumber(data.y, p.y);
         p.z = finiteNumber(data.z, p.z);

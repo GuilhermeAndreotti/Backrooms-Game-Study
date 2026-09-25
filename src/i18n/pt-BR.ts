@@ -461,6 +461,7 @@ export const ptBR = {
   "lobby.start": "Iniciar expedição",
   "lobby.startKey": "[ENTER] Iniciar expedição",
   "lobby.waitHost": "Aguardando o anfitrião iniciar a expedição...",
+  "lobby.expeditionRunning": "Expedição em andamento: seu grupo ainda está lá dentro. Você volta com eles na próxima fase.",
   "lobby.host": "anfitrião",
   "lobby.players": "No lobby: {n}/4",
   "lobby.tips": "Chute a bola correndo contra ela • ESC libera o cursor",
