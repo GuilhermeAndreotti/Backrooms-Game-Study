@@ -307,6 +307,15 @@ export default function App() {
     engineRef.current?.endReading();
   };
 
+  /** Releases either pointer-lock input mode so the pause menu can reliably open. */
+  const pauseGameInput = () => {
+    const player = engineRef.current?.player;
+    if (player) player.isOverrideActive = false;
+    setPointerLocked(false);
+    setPointerLockedOverride(false);
+    document.exitPointerLock?.();
+  };
+
   /**
    * E on an interactable. tryInteract() has side effects (it opens the MEG
    * dialogue, flips switches), so it runs exactly once per key press.
@@ -381,6 +390,14 @@ export default function App() {
   useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
         if (phase !== ConnectionPhase.PLAYING) return;
+        if (e.key === "Escape" && !e.repeat) {
+          const inputActive = document.pointerLockElement !== null || pointerLocked || pointerLockedOverride || engineRef.current?.player?.isOverrideActive;
+          if (inputActive) {
+            e.preventDefault();
+            pauseGameInput();
+          }
+          return;
+        }
         // Ctrl+W is the browser's close-tab shortcut, but Ctrl is also crouch.
         if (e.ctrlKey && e.key.toLowerCase() === "w") e.preventDefault();
       // Typing a chat message: "i"/"k" should land in the message, not pop
@@ -440,7 +457,7 @@ export default function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [phase]);
+  }, [phase, pointerLocked, pointerLockedOverride]);
 
   // Measure pointer lock states continuously during active gameplay
   useEffect(() => {
@@ -459,6 +476,9 @@ export default function App() {
       }
     };
 
+    // The listener can be installed while the canvas is already locked (for
+    // example after a level transition), so do not wait for another event.
+    handleLock();
     document.addEventListener("pointerlockchange", handleLock);
     return () => document.removeEventListener("pointerlockchange", handleLock);
   }, [phase]);

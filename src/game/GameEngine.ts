@@ -1364,7 +1364,7 @@ export class GameEngine {
       }
 
       // Local spotlight updating with probability-based flickering when sanity is below 40%
-      if (this.player.isFlashlightOn) {
+      if (!this.player.isSpectating && this.player.isFlashlightOn) {
         if (this.sanity < 0.40) {
           if (this.flickerRemaining > 0) {
             this.flickerRemaining -= delta;
@@ -1956,6 +1956,7 @@ export class GameEngine {
     if (this.isDead || this.cheatLife) return;
     if (this.kingGrab) this.endKingGrab(false);
     this.isDead = true;
+    this.player.setSpectating(true);
     this.player.isFlashlightOn = false;
     this.player.state = "idle";
     this.camera.position.set(0, 0, 0);
@@ -1975,6 +1976,7 @@ export class GameEngine {
     const wasDead = this.isDead;
     this.isDead = false;
     this.isWaitingForTransition = false;
+    this.player.setSpectating(false);
     this.spectateId = null;
     if (wasDead) {
       this.sanity = Math.max(this.sanity, 0.5); // died of sanity: half a mind back; caught: unchanged
@@ -2024,6 +2026,7 @@ export class GameEngine {
 
   public setWaitingForTransition(waiting: boolean) {
     this.isWaitingForTransition = waiting;
+    this.player.setSpectating(waiting);
     if (waiting && !this.spectateId) this.cycleSpectate(1);
     this.refreshRemoteVisibility();
   }
@@ -2046,6 +2049,12 @@ export class GameEngine {
     const st = this.spectateId ? this.remoteStates.get(this.spectateId) : null;
     const rig = this.camera.parent;
     if (!st || !rig) return;
+    // The spectator receives only the observed explorer's pose, with no local
+    // head bob, breathing sway, camera shake, or flashlight beam carried over.
+    this.camera.position.set(0, 0, 0);
+    this.camera.rotation.set(0, 0, 0);
+    this.flashlight.visible = false;
+    this.flashlight.intensity = 0;
     const k = Math.min(1, 12 * delta);
     this.player.position.x += (st.x - this.player.position.x) * k;
     this.player.position.y += (st.y - this.player.position.y) * k;
@@ -2489,6 +2498,7 @@ export class GameEngine {
   public transitionToLevel(level: number, seed: number, settings: GameSettings) {
     console.log(`Transitioning to Level ${level} in backrooms...`);
     this.teardownFun();
+    this.teardownLevelG();
     this.level = level;
     this.level4DoorOpen = false;
     
@@ -2701,12 +2711,23 @@ export class GameEngine {
     this.kingDread = 0;
     this.kingSightingDone = false;
     this.kingSightingSearch = 0;
-    if (this.kingPhantom) { this.kingPhantom.entity.returnToPool(this.scene); this.kingPhantom = null; }
-    if (this.kingGrab) this.endKingGrab(false);
-    this.kingScratches?.clear();
     this.nearTerminal = false;
     this.audio.stopAlarm();
     this.emitLevelGProgress();
+  }
+
+  /** Releases Level G-only scene objects before the old map is discarded. */
+  private teardownLevelG() {
+    if (this.kingPhantom) {
+      this.kingPhantom.entity.returnToPool(this.scene);
+      this.kingPhantom = null;
+    }
+    if (this.kingGrab) this.endKingGrab(false);
+    this.kingScratches?.dispose();
+    this.kingScratches = null;
+    this.kingDread = 0;
+    this.kingFlash = 0;
+    this.audio.stopAlarm();
   }
 
   private emitLevelGProgress() {
@@ -4194,9 +4215,7 @@ export class GameEngine {
     this.officeWorkers = [];
     this.ripples?.dispose();
     this.ripples = null;
-    if (this.kingPhantom) { this.kingPhantom.entity.returnToPool(this.scene); this.kingPhantom = null; }
-    this.kingScratches?.dispose();
-    this.kingScratches = null;
+    this.teardownLevelG();
 
     window.removeEventListener("resize", this.handleResize);
     

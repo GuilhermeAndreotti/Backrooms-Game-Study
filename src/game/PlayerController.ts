@@ -12,8 +12,10 @@ import { GAME_KEYS, isTypingInField, lockGameInput } from "../utils/input";
  * so remote player visuals can convert the eye-height Y broadcast over the
  * network back into a floor-level Y for the hazmat model.
  */
-export const PLAYER_STANDING_HEIGHT = 1.6;
-export const PLAYER_CROUCH_HEIGHT = 0.95;
+// The hazmat visor center is at 1.33m above the floor. Keep the first-person
+// viewpoint and replicated player positions aligned with that actual eye line.
+export const PLAYER_STANDING_HEIGHT = 1.33;
+export const PLAYER_CROUCH_HEIGHT = 1.13;
 
 export class PlayerController {
   private camera: THREE.Camera;
@@ -36,10 +38,11 @@ export class PlayerController {
   // Controller states
   public isLocked = false;
   public isOverrideActive = false;
+  public isSpectating = false;
   private isDragging = false;
   private prevMouseX = 0;
   private prevMouseY = 0;
-  public position = new THREE.Vector3(10, 1.6, 10); // Start spawn point
+  public position = new THREE.Vector3(10, PLAYER_STANDING_HEIGHT, 10); // Start spawn point
   public rotation = new THREE.Euler(0, 0, 0, "YXZ"); // pitch, yaw, roll
   public isFlashlightOn = false;
   public state: 'idle' | 'walking' | 'running' | 'crouching' = 'idle';
@@ -134,7 +137,7 @@ export class PlayerController {
   }
 
   private requestLock = () => {
-    if (!this.isLocked && !this.isOverrideActive) {
+    if (!this.isSpectating && !this.isLocked && !this.isOverrideActive) {
       lockGameInput(this.domElement);
     }
   };
@@ -147,7 +150,7 @@ export class PlayerController {
   };
 
   private onMouseDown = (e: MouseEvent) => {
-    if (this.isLocked) return;
+    if (this.isSpectating || this.isLocked) return;
     this.isDragging = true;
     this.prevMouseX = e.clientX;
     this.prevMouseY = e.clientY;
@@ -158,6 +161,7 @@ export class PlayerController {
   };
 
   private onMouseMove = (e: MouseEvent) => {
+    if (this.isSpectating) return;
     if (this.isLocked) {
       // Pitch (Y rotation look up/down) and Yaw (X rotation look left/right)
       this.rotation.y -= e.movementX * this.mouseSensitivity;
@@ -182,6 +186,7 @@ export class PlayerController {
     if (isTypingInField()) return;
 
     const key = e.key.toLowerCase();
+    if (this.isSpectating) return;
     this.keys[key] = true;
 
     // While playing, keep game keys from triggering browser shortcuts
@@ -208,6 +213,16 @@ export class PlayerController {
     this.mouseSensitivity = sens * 0.0022; // Scale based on config
   }
 
+  /** Disable local controls while the camera is following a teammate. */
+  public setSpectating(spectating: boolean) {
+    this.isSpectating = spectating;
+    if (spectating) {
+      this.keys = {};
+      this.isDragging = false;
+      if (document.pointerLockElement === this.domElement) document.exitPointerLock?.();
+    }
+  }
+
   public getMoveDirection(): THREE.Vector3 {
     return this.moveDirection;
   }
@@ -222,7 +237,7 @@ export class PlayerController {
     
     // Position center of that start tile
     this.floorY = this.map.getFloorHeightAt(startX * cSize + cSize / 2, startZ * cSize + cSize / 2);
-    this.position.set(startX * cSize + cSize / 2, this.floorY + 1.6, startZ * cSize + cSize / 2);
+    this.position.set(startX * cSize + cSize / 2, this.floorY + PLAYER_STANDING_HEIGHT, startZ * cSize + cSize / 2);
     this.rotation.set(0, -Math.PI / 4, 0); // diagonal spawn perspective look
     this.stamina = 1.0;
   }

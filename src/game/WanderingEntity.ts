@@ -1104,6 +1104,9 @@ export class WanderingEntity {
     this.chaseTargetZ = 0;
     this.isChasing = false;
     this.resetBodyAnimation();
+    // A pooled entity is dormant until resetForReuse() assigns its next map.
+    // Keeping this link retains an entire cleared level after a transition.
+    this.map = undefined!;
 
     if (!WanderingEntity.entityPool.has(this.type)) {
       WanderingEntity.entityPool.set(this.type, []);
