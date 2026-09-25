@@ -636,7 +636,7 @@ async function startServer() {
         return;
       }
 
-      // Level 7: a player turned one of the 3 valves. Idempotent state (no
+      // Level 7: a player turned one of the twelve sector valves. Idempotent state (no
       // authority gate needed, unlike levelg_code's AI-driving decision) —
       // just relay it to the rest of the level, same shape as box_push.
       if (type === "valve_turn") {

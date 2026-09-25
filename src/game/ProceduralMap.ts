@@ -302,7 +302,7 @@ export class ProceduralMap {
   public toxicWaterCells = new Set<string>();
   /** Level 7's hydraulic valve interaction points. */
   public valvePositions: [number, number][] = [];
-  /** Each valve room holds this many valves; valve i belongs to room floor(i / poolValvesPerRoom). */
+  /** Each flooded sector holds this many valves; valve i belongs to sector floor(i / poolValvesPerRoom). */
   public readonly poolValvesPerRoom = 3;
   /** Symbols appear in this physical order on each room's valves. */
   public readonly poolValveSymbols = ["○", "△", "□"] as const;
@@ -315,6 +315,8 @@ export class ProceduralMap {
   public get poolRoomCount(): number { return Math.floor(this.valvePositions.length / this.poolValvesPerRoom); }
   public poolroomsDrainStage = 0;
   public poolroomsSolved = false;
+  /** Escalates the Vigia's awareness as the hydraulic puzzle is disturbed. */
+  public poolVigiaIntellect = 0;
   private poolWaterMeshes: THREE.Mesh[] = [];
   /** Tiled walls holding back a higher room's water; sized every frame by updatePoolroomsWater. */
   private poolEdgeWalls: { mesh: THREE.Mesh; zone: number; neighbourZone: number }[] = [];
@@ -2617,51 +2619,46 @@ export class ProceduralMap {
     stub(26, 16, 28, 16); stub(28, 18, 28, 19);
     stub(26, 25, 28, 25); stub(35, 29, 37, 29); stub(33, 35, 33, 37);
 
-    // Four valve rooms of three valves each, each in its own closed little room set into a perimeter
-    // wall (north, east...). A tiled staircase climbs out of the water into it;
-    // the room is walled on every other side. Each room has its own seeded
-    // sequence (poolValveOrder), encoded by three numbered symbols spread through
-    // its sector; solving a room lowers the water enough to open the next hall.
-    // Local frame: u runs along the wall, v is the depth away from it.
-    const valveRooms: { side: "N" | "S" | "W" | "E"; along: number }[] = [
-      { side: "N", along: 34 }, { side: "E", along: 10 }, { side: "N", along: 18 }, { side: "N", along: 9 },
-    ];
-    const cellAt = (side: "N" | "S" | "W" | "E", along: number, u: number, v: number): [number, number] =>
-      side === "N" ? [along + u, lo + v] : side === "S" ? [along + u, hi - v] : side === "W" ? [lo + v, along + u] : [hi - v, along + u];
-    const towardWall: Record<string, [number, number]> = { N: [0, -1], S: [0, 1], W: [-1, 0], E: [1, 0] };
+    // Each flooded sector has three valves, deliberately spread over its usable
+    // walls. This keeps every wheel visible and in arm's reach without forcing
+    // explorers through the old, identical valve closets.
     this.valvePositions = [];
     this.poolStairCells.clear();
     this.poolClueCells.clear();
     this.poolValveOrder = [];
     const orderRng = new SeededRandom(this.seed + 0x7a11);
-    for (let room = 0; room < valveRooms.length; room++) {
-      const { side, along } = valveRooms[room];
+    for (let room = 0; room < 4; room++) {
       const order = [0, 1, 2];
       for (let i = 2; i > 0; i--) {
         const j = orderRng.nextInt(0, i + 1);
         const tmp = order[i]; order[i] = order[j]; order[j] = tmp;
       }
       this.poolValveOrder.push(order);
-      for (let u = -2; u <= 2; u++) for (let v = 0; v <= 2; v++) {
-        const [x, z] = cellAt(side, along, u, v);
-        this.grid[x][z] = CellType.SOLID;
+      const candidates: [number, number][] = [];
+      for (let x = lo; x <= hi; x++) for (let z = lo; z <= hi; z++) {
+        if (this.grid[x][z] !== CellType.WATER_ROOM || this.poolZoneOf(x, z) !== room) continue;
+        // A wall-mounted wheel has a clear approach and cannot disappear into open water.
+        if ([[0, -1], [0, 1], [-1, 0], [1, 0]].some(([dx, dz]) => this.grid[x + dx]?.[z + dz] === CellType.SOLID)) candidates.push([x, z]);
       }
-      for (let u = -1; u <= 1; u++) for (let v = 0; v <= 1; v++) {
-        const [x, z] = cellAt(side, along, u, v);
-        this.grid[x][z] = CellType.ROOM_SMALL;
+      const selected: [number, number][] = [];
+      while (selected.length < this.poolValvesPerRoom && candidates.length > 0) {
+        let bestIndex = 0, bestScore = -Infinity;
+        for (let i = 0; i < candidates.length; i++) {
+          const [x, z] = candidates[i];
+          let score = selected.length === 0 ? (x * 31 + z * 17 + orderRng.next() * 0.01) : Infinity;
+          for (const [sx, sz] of selected) score = Math.min(score, (x - sx) ** 2 + (z - sz) ** 2);
+          if (score > bestScore) { bestScore = score; bestIndex = i; }
+        }
+        selected.push(candidates.splice(bestIndex, 1)[0]);
       }
-      const [sx, sz] = cellAt(side, along, 0, 2);
-      this.grid[sx][sz] = CellType.WATER_ROOM;
-      this.poolStairCells.set(`${sx},${sz}`, towardWall[side]);
-      for (let u = -1; u <= 1; u++) this.valvePositions.push(cellAt(side, along, u, 0));
+      this.valvePositions.push(...selected);
     }
     // Hide all three parts of each sequence around its own sector. The marks are
     // far enough apart that players must explore, but never leave the sector they
     // are currently trying to drain.
-    for (let room = 0; room < valveRooms.length; room++) {
-      const { side, along } = valveRooms[room];
-      const [valveX, valveZ] = cellAt(side, along, 0, 0);
-      const sector = this.poolZoneOf(valveX, valveZ);
+    for (let room = 0; room < this.poolRoomCount; room++) {
+      const [valveX, valveZ] = this.valvePositions[room * this.poolValvesPerRoom];
+      const sector = room;
       const candidates: [number, number][] = [];
       for (let x = lo; x <= hi; x++) {
         for (let z = lo; z <= hi; z++) {

@@ -306,7 +306,7 @@ export class GameEngine {
   /** The night hunter — spawned/despawned with the day/night cycle, not pooled like the rest of this.entities since there's only ever at most one. */
   private ceifadorEntity: WanderingEntity | null = null;
   // --- Level 7 ("LEVEL 5" display): valve puzzle -----------------------------
-  /** Indices into map.valvePositions that have been turned; all 3 drains toxicWaterCells. */
+  /** Indices into map.valvePositions that have been turned; each sector sequence drains its stage. */
   private valvesTurned = new Set<number>();
   public levelGDigits: (number | null)[] = [null, null, null];
   /** Right code entered: alarm, flickering lights, open emergency door, final chase. */
@@ -3111,7 +3111,8 @@ export class GameEngine {
   }
 
   /**
-   * E, near one of Level 7's 3 valves: turns it. Once all 3 are turned, the
+   * E, near a Poolrooms valve: turns it. Each sector has its own three-wheel
+   * sequence; completing all sectors drains the level.
    * level's toxic ("Hydrolitis Plague") water cells drain — a re-reading of
    * the source level's "fill the tank" puzzle as "drain the contamination"
    * instead, which needed no wall-regeneration machinery to gate progress
@@ -3147,12 +3148,16 @@ export class GameEngine {
     if (index !== roomBase + this.map.poolValveOrder[room][doneInRoom]) {
       // Wrong valve: only this room's valves spring back.
       for (let k = 0; k < per; k++) this.valvesTurned.delete(roomBase + k);
+      // The Vigia learns routes much faster from a failed attempt than a
+      // routine turn. State is reproduced on every client from valve relays.
+      this.map.poolVigiaIntellect = Math.min(1, this.map.poolVigiaIntellect + 0.32);
       this.map.setPoolroomsValveState(this.valvesTurned, solvedRooms());
       this.audio.playTerminalBeep(false);
       this.onHUDNotification?.(t("eng.denied"));
       return;
     }
     this.valvesTurned.add(index);
+    this.map.poolVigiaIntellect = Math.min(1, this.map.poolVigiaIntellect + 0.08);
     const solved = solvedRooms();
     this.map.setPoolroomsValveState(this.valvesTurned, solved);
     this.audio.playTerminalBeep(true);
