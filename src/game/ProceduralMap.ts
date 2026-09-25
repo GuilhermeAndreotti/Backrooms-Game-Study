@@ -13,6 +13,7 @@ import { VisitTracker } from "./systems/visitTracker";
 import { contentLevelFor, FUN_CONTENT_LEVEL } from "./levels/constants";
 import { FunWorld } from "./levels/funWorld";
 import { FUN_EXIT, FUN_RECTS, FUN_SPAWN } from "./levels/funLayout";
+import * as FunModels from "./LevelFunModels";
 import * as Decor from "./LevelDecor";
 import { POOL_FLOOR_Y, WATER_SURFACE_Y, createPoolTileMaterial, createWallTileMaterial, createWaterMaterial } from "./Water";
 import { POOL_ROOM_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./poolroomsPuzzle";
@@ -420,6 +421,9 @@ export class ProceduralMap {
   /** Hidden convergence door from Abandoned Office to Level G. */
   public abandonedSecretX = -1;
   public abandonedSecretZ = -1;
+  /** Party door near the office exit; leads to the private Level FUN route. */
+  public abandonedFunX = -1;
+  public abandonedFunZ = -1;
 
   /** Level G sector of a cell: 1 reception, 2 archive, 3 main room, 0 corridors. */
   public levelGSectorOf(gx: number, gz: number): 0 | 1 | 2 | 3 {
@@ -2297,6 +2301,7 @@ export class ProceduralMap {
     this.level4DoorX = this.exitGridX; this.level4DoorZ = this.exitGridZ;
     this.abandonedSecretX = 18; this.abandonedSecretZ = 35;
     corridor(18, 33, 18, 35);
+    this.abandonedFunX = 42; this.abandonedFunZ = 40;
 
     this.level4DeskCells = [
       { gx: 18, gz: 18, rotation: 0 }, { gx: 22, gz: 18, rotation: 0 }, { gx: 26, gz: 18, rotation: 0 }, { gx: 30, gz: 18, rotation: 0 },
@@ -3252,6 +3257,7 @@ export class ProceduralMap {
   private isKeepClearCell(gx: number, gz: number): boolean {
     if (Math.abs(gx - this.exitGridX) + Math.abs(gz - this.exitGridZ) <= 1) return true;
     if (this.officeDoorX >= 0 && gx === this.officeDoorX + this.officeDoorDir[0] && gz === this.officeDoorZ + this.officeDoorDir[1]) return true;
+    if (gx === this.abandonedFunX && gz === this.abandonedFunZ) return true;
     return this.forcedDarkCells.has(`${gx},${gz}`);
   }
 
@@ -3593,6 +3599,15 @@ export class ProceduralMap {
 
   private decorKit: Decor.DecorKit | null = null;
 
+  private levelDecorKit(): Decor.DecorKit {
+    return this.decorKit ??= {
+      geo: (key, build) => this.sharedGeo(key, build),
+      mat: (key, build) => this.sharedMat(key, build),
+      wallTile: this.wallMaterial,
+      track: (texture) => { this.sharedTextures.push(texture); },
+    };
+  }
+
   /** Level FUN's world (geometry, props, gates); null on every other level. */
   public fun: FunWorld | null = null;
 
@@ -3625,13 +3640,7 @@ export class ProceduralMap {
   private placeLevelDecor(group: THREE.Group, gx: number, gz: number, posX: number, posZ: number, cellType: CellType, height: number) {
     if (this.level !== 7 && this.level !== 8 && this.level !== 9) return;
     if (this.isKeepClearCell(gx, gz)) return;
-    this.decorKit ??= {
-      geo: (key, build) => this.sharedGeo(key, build),
-      mat: (key, build) => this.sharedMat(key, build),
-      wallTile: this.wallMaterial,
-      track: (texture) => { this.sharedTextures.push(texture); },
-    };
-    const kit = this.decorKit;
+    const kit = this.levelDecorKit();
     const half = this.cellSize / 2;
     const rng = new SeededRandom(this.seed + gx * 389 + gz * 733 + 0xdec0);
     const at = (x: number, z: number) => this.grid[x]?.[z];
@@ -4536,6 +4545,9 @@ export class ProceduralMap {
     // Level G builds its own furniture, terminal and emergency door; Level 0
     // has the secret office door in one nook.
     if (this.level === 4) this.buildLevelGCell(group, gx, gz, posX, posZ, height);
+    if (this.level === 9 && gx === this.abandonedFunX && gz === this.abandonedFunZ) {
+      this.buildAbandonedFunEntrance(group, gx, gz, posX, posZ);
+    }
     if (this.level === 0 && gx === this.officeDoorX && gz === this.officeDoorZ) {
       this.buildOfficeDoor(group, posX, posZ, height);
     }
@@ -5761,6 +5773,52 @@ export class ProceduralMap {
       group.add(box);
       this.addObstacle(gx, gz, box.position.x, box.position.z, 0.45);
     }
+  }
+
+  /** A cheerful, impossible party door placed in the exit approach of Level 4. */
+  private buildAbandonedFunEntrance(group: THREE.Group, gx: number, gz: number, posX: number, posZ: number) {
+    const kit = this.levelDecorKit();
+    const rng = new SeededRandom(this.seed ^ 0xf00f004 ^ gx * 17 ^ gz * 31);
+    const party = new THREE.Group();
+    const door = FunModels.funDoor(kit, "pink").object;
+    door.position.set(0, 0, -this.cellSize / 2 + 0.08);
+    party.add(door);
+
+    const banner = FunModels.funBirthdayBanner(kit, 2.7).object;
+    banner.position.set(0, 2.72, -this.cellSize / 2 + 0.12);
+    party.add(banner);
+
+    const balloonsLeft = FunModels.funBalloonCluster(kit, rng, 5, ["pink", "yellow", "blue"]).object;
+    balloonsLeft.position.set(-1.35, 0, -1.05);
+    party.add(balloonsLeft);
+    const balloonsRight = FunModels.funBalloonCluster(kit, rng, 4, ["red", "green", "purple"]).object;
+    balloonsRight.position.set(1.35, 0, -1.05);
+    party.add(balloonsRight);
+
+    const table = FunModels.funPartyTable(kit, "white", { length: 1.0, depth: 0.55, places: 1 }).object;
+    table.position.set(1.12, 0, -0.85);
+    party.add(table);
+    const cake = FunModels.funCake(kit, { candles: 6, lit: true }).object;
+    cake.position.set(1.12, 0.74, -0.85);
+    party.add(cake);
+
+    const guests: [number, number, number, number][] = [
+      [-1.35, -0.62, 0.2, 1.0], [-0.7, -1.08, 0.45, 0.94], [0.32, -1.28, -0.25, 0.9],
+    ];
+    for (const [x, z, yaw, scale] of guests) {
+      const guest = FunModels.funPartygoer(kit, { scale }).object;
+      guest.position.set(x, 0, z);
+      guest.rotation.y = yaw;
+      const armL = guest.getObjectByName("armL");
+      const armR = guest.getObjectByName("armR");
+      if (armL) armL.rotation.z = -1.15;
+      if (armR) armR.rotation.z = 1.15;
+      party.add(guest);
+    }
+
+    party.position.set(posX, 0, posZ);
+    group.add(party);
+    this.registerLight(gx, gz, posX, 2.1, posZ - 1.15, 0xff78cb, 1.15, 6.0, 1.5);
   }
 
   /**

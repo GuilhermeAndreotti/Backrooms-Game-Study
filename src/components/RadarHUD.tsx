@@ -253,7 +253,7 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
         }
       }
 
-      // 4b. SETA cheat: an arrow toward this level's secret entrance (Level 6 / Level G).
+      // 4b. SETA cheat: an arrow toward this level's secret entrance (Level 6 / Level FUN).
       const secret = engine.cheatArrow ? engine.secretEntranceTarget() : null;
       if (secret) {
         const rx = secret.x - px;

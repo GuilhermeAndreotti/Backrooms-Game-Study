@@ -52,7 +52,7 @@ export interface GameEngineCallbacks {
   onFlashlightChange: (state: boolean) => void;
   onEscapeTrigger?: () => void;
   /** Fired once, when the player reaches the end of Level 1's secret dark corridor. */
-  /** A secret entrance was reached: 3 = Lights Out, 4 = Level G. */
+  /** A secret entrance was reached: Lights Out, Level G, or Level FUN. */
   onSecretLevelFound?: (level: number) => void;
   /** Context hint for the crosshair area, e.g. t("act.pushBox"); null clears it. */
   onInteractPrompt?: (text: string | null) => void;
@@ -1246,12 +1246,14 @@ export class GameEngine {
         }
       }
 
-      // The abandoned office contains a hidden route into Level G. The old
-      // office-door marker is reused as a deterministic convergence point.
-      if (this.level === ABANDONED_OFFICE_LEVEL && this.map && this.map.abandonedSecretX >= 0 && this.onSecretLevelFound) {
+      // The abandoned office contains both the hidden Level G route and a
+      // party door near its exit that leads into Level FUN.
+      if (this.level === ABANDONED_OFFICE_LEVEL && this.map && this.map.abandonedFunX >= 0 && this.onSecretLevelFound) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
-        if (pgX === this.map.abandonedSecretX && pgZ === this.map.abandonedSecretZ) {
+        if (pgX === this.map.abandonedFunX && pgZ === this.map.abandonedFunZ) {
+          this.onSecretLevelFound(FUN_LEVEL);
+        } else if (pgX === this.map.abandonedSecretX && pgZ === this.map.abandonedSecretZ) {
           this.onSecretLevelFound(LEVEL_G);
         }
       }
@@ -3558,13 +3560,13 @@ export class GameEngine {
     if (this.player) this.applyCheatsToPlayer();
   }
 
-  /** World position of this level's secret entrance (Level 1 → Lights Out, Abandoned Office → Level G), if any. */
+  /** World position of this level's secret entrance (Level 1 → Lights Out, Abandoned Office → Level FUN), if any. */
   public secretEntranceTarget(): { x: number; z: number; label: string } | null {
     const map = this.map;
     if (!map) return null;
     const cs = map.cellSize;
     if (this.level === 1 && map.secretGridX >= 0) return { x: (map.secretGridX + 0.5) * cs, z: (map.secretGridZ + 0.5) * cs, label: "6" };
-    if (this.level === ABANDONED_OFFICE_LEVEL && map.abandonedSecretX >= 0) return { x: (map.abandonedSecretX + 0.5) * cs, z: (map.abandonedSecretZ + 0.5) * cs, label: "G" };
+    if (this.level === ABANDONED_OFFICE_LEVEL && map.abandonedFunX >= 0) return { x: (map.abandonedFunX + 0.5) * cs, z: (map.abandonedFunZ + 0.5) * cs, label: "FUN" };
     return null;
   }
 

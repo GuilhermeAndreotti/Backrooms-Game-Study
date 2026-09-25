@@ -686,12 +686,14 @@ export default function App() {
                        // is sent to the server so the convergence at Level 4
                        // remains synchronized.
                       const engine = engineRef.current;
-                        const from = targetLevel === LEVEL_G ? 4 : 1;
+                        const from = targetLevel === LEVEL_G || targetLevel === FUN_LEVEL ? ABANDONED_OFFICE_LEVEL : 1;
                       if (!engine || engine.level !== from) return;
 
                         if (targetLevel === LEVEL_G) {
                         console.log("Found the office door that shouldn't exist... entering LEVEL G.");
                         unlockAchievement("level_g_found");
+                      } else if (targetLevel === FUN_LEVEL) {
+                        console.log("Found the party at the office exit... entering LEVEL FUN.");
                       } else {
                          console.log("Found the dark corridor... entering Level 6: Lights Out.");
                         unlockAchievement("secret_level_found");
