@@ -13,7 +13,8 @@ import { ProceduralMap, LEVEL_G_DOOR_OPEN_ANGLE, CellType } from "./ProceduralMa
 import { PlayerController, PLAYER_STANDING_HEIGHT, PLAYER_CROUCH_HEIGHT } from "./PlayerController";
 import { FACE_SIZE, drawFace, hasFace } from "../utils/face";
 import { AudioManager } from "./AudioManager";
-import { WanderingEntity, EntityType, EntityNetState } from "./WanderingEntity";
+import { WanderingEntity, EntityType, EntityNetState, type SkinBodyChoice } from "./WanderingEntity";
+import { ALL_ENTITY_TYPES } from "../shared/entityTypes";
 import { KingScratches } from "./KingScratches";
 import { KING_POSE_STARE } from "./mobs/fingerKing";
 import { GameSettings, RemotePlayer, RoomCheat } from "../types/game";
@@ -198,14 +199,12 @@ function nearestHuntable(targets: AiTarget[], x: number, z: number): { target: A
 
 const ENTITY_TYPES = new Set<string>(Object.values(EntityType));
 
-/** Monster bodies offered by the lobby's SKIN cheat — every type except the Level G exclusive. */
-const MONSTER_SKIN_TYPES: EntityType[] = [
-  EntityType.DULLER, EntityType.HOUND, EntityType.CLUMP, EntityType.SKIN_STEALER, EntityType.WRETCH,
-];
+/** Bodies offered by the lobby's SKIN cheat: every monster type, plus the NPC looks (see SkinBodyChoice). */
+const MONSTER_SKIN_TYPES: SkinBodyChoice[] = [...ALL_ENTITY_TYPES, "OFFICE_WORKER", "PARTYGOER"];
 
 /** Validates a `monsterSkin` string (network field or cheat-picker choice) against the offered set. */
-function monsterSkinType(value?: string | null): EntityType | null {
-  return value && (MONSTER_SKIN_TYPES as string[]).includes(value) ? (value as EntityType) : null;
+function monsterSkinType(value?: string | null): SkinBodyChoice | null {
+  return value && (MONSTER_SKIN_TYPES as string[]).includes(value) ? (value as SkinBodyChoice) : null;
 }
 
 export class GameEngine {
@@ -364,6 +363,8 @@ export class GameEngine {
   private kingScratches: KingScratches | null = null;
   private nearTerminal = false;
   private level4DoorOpen = false;
+  /** Guards the hidden office cake against firing its transition more than once. */
+  private funCakeEaten = false;
   private scratchRight = new THREE.Vector3();
 
   // UI callbacks
@@ -392,6 +393,11 @@ export class GameEngine {
   private onToxicWaterExposureChange?: (val: number) => void;
   public onHUDNotification?: (msg: string) => void;
   private onObjectiveChange?: (text: string | null) => void;
+  /** How this explorer looks to others (name, suit, face) — for the lobby mirror's copy of them. */
+  private selfLook: { name: string; suitColor: string; face: string };
+  /** The lobby mirror's copy of the local explorer; only the reflection pass ever renders it. */
+  private selfAvatar: THREE.Group | null = null;
+  private selfAvatarKey = "";
   /** Level FUN's puzzles and scares; null on every other level. */
   private funDirector: FunDirector | null = null;
   private lastFunObjective: string | null = null;
@@ -427,8 +433,8 @@ export class GameEngine {
   private cheatLife = false;
   /** SETA: the radar points toward this level's secret entrance. */
   public cheatArrow = false;
-  /** SKIN cheat: the monster body worn instead of the hazmat suit, replicated to teammates; "" for none. */
-  public cheatSkin: EntityType | null = null;
+  /** SKIN cheat: the monster/NPC body worn instead of the hazmat suit, replicated to teammates; "" for none. */
+  public cheatSkin: SkinBodyChoice | null = null;
 
   private lastReportedStamina = 1.0;
   private lastReportedState = "idle";
@@ -462,6 +468,7 @@ export class GameEngine {
     this.onToxicWaterExposureChange = callbacks.onToxicWaterExposureChange;
     this.onHUDNotification = callbacks.onHUDNotification;
     this.onObjectiveChange = callbacks.onObjectiveChange;
+    this.selfLook = { name: settings.name, suitColor: settings.suitColor, face: settings.face };
     this.onSectorChange = callbacks.onSectorChange;
     this.onInventoryChange = callbacks.onInventoryChange;
     this.onSanityChange = callbacks.onSanityChange;
@@ -846,6 +853,7 @@ export class GameEngine {
 
   public updateConfig(settings: GameSettings) {
     this.audio.setSettings(settings);
+    this.selfLook = { name: settings.name, suitColor: settings.suitColor, face: settings.face };
     if (this.player) {
       this.player.setMouseSensitivity(settings.mouseSensitivity);
       this.camera.fov = settings.fov;
@@ -1246,14 +1254,14 @@ export class GameEngine {
         }
       }
 
-      // The abandoned office contains both the hidden Level G route and a
-      // party door near its exit that leads into Level FUN.
-      if (this.level === ABANDONED_OFFICE_LEVEL && this.map && this.map.abandonedFunX >= 0 && this.onSecretLevelFound) {
+      // The abandoned office contains a hidden route into Level G. The old
+      // office-door marker is reused as a deterministic convergence point.
+      // (Level FUN's own entrance is the hidden cake — see nearFunCake/tryInteract,
+      // an E-press rather than a walk-in trigger.)
+      if (this.level === ABANDONED_OFFICE_LEVEL && this.map && this.map.abandonedSecretX >= 0 && this.onSecretLevelFound) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
-        if (pgX === this.map.abandonedFunX && pgZ === this.map.abandonedFunZ) {
-          this.onSecretLevelFound(FUN_LEVEL);
-        } else if (pgX === this.map.abandonedSecretX && pgZ === this.map.abandonedSecretZ) {
+        if (pgX === this.map.abandonedSecretX && pgZ === this.map.abandonedSecretZ) {
           this.onSecretLevelFound(LEVEL_G);
         }
       }
@@ -1864,13 +1872,61 @@ export class GameEngine {
   /** (Re)builds the lobby props when the current level is the lobby; tears them down otherwise. */
   private setupLobby() {
     if (this.lobby) { this.lobby.dispose(this.scene); this.lobby = null; }
+    if (this.selfAvatar) { this.disposeExplorerGroup(this.selfAvatar); this.selfAvatar = null; this.selfAvatarKey = ""; }
     if (this.level === LOBBY_LEVEL) {
       this.lobby = new Lobby(this.scene);
+      this.setupMirror();
     }
+  }
+
+  /**
+   * The lobby mirror (Lobby.buildMirror). Its reflection pass is the only
+   * render that shows our own avatar, and — since the main pass frustum-culls
+   * cells behind us — it briefly re-shows every lobby cell so what's behind
+   * you is actually in the glass.
+   */
+  private setupMirror() {
+    const mirror = this.lobby?.mirror;
+    if (!mirror || !this.map) return;
+    const { x, z, width } = LOBBY.mirror;
+    const cs = this.map.cellSize;
+    for (const dz of [-width / 2, 0, width / 2]) this.map.addObstacle(Math.floor(x / cs), Math.floor((z + dz) / cs), x, z + dz, 0.35);
+    const reflect = mirror.onBeforeRender;
+    mirror.onBeforeRender = (renderer, scene, camera, geometry, material, group) => {
+      const culled: THREE.Object3D[] = [];
+      this.map?.cellGroups.forEach((g) => { if (!g.visible) { g.visible = true; culled.push(g); } });
+      if (this.selfAvatar) this.selfAvatar.visible = !this.isDead;
+      reflect.call(mirror, renderer, scene, camera, geometry, material, group);
+      if (this.selfAvatar) this.selfAvatar.visible = false;
+      for (const g of culled) g.visible = false;
+    };
+  }
+
+  /** Keeps the mirror's copy of us on our feet, facing our way, walking our walk. */
+  private updateMirrorSelf(delta: number) {
+    if (!this.lobby?.mirror || !this.player) return;
+    const look = this.selfLook;
+    const key = `${look.name}|${look.suitColor}|${look.face}|${this.cheatSkin ?? ""}`;
+    if (!this.selfAvatar || this.selfAvatarKey !== key) {
+      if (this.selfAvatar) this.disposeExplorerGroup(this.selfAvatar);
+      const avatar = this.createHazmatExplorer(look.name, look.suitColor, look.face, this.cheatSkin ?? undefined);
+      avatar.userData.silentFeet = true;
+      avatar.visible = false;
+      this.scene.add(avatar);
+      this.selfAvatar = avatar;
+      this.selfAvatarKey = key;
+    }
+    const avatar = this.selfAvatar;
+    const p = this.player.position;
+    avatar.position.set(p.x, this.remoteFloorY(p.y, this.player.state), p.z);
+    avatar.rotation.y = this.player.rotation.y + Math.PI;
+    (avatar as unknown as { animState: string }).animState = this.player.state;
+    this.poseRemotePlayer(avatar, this.player.rotation.x, delta, this.player.isFlashlightOn);
   }
 
   private updateLobby(delta: number) {
     if (!this.lobby || !this.player) return;
+    this.updateMirrorSelf(delta);
     const authority = this.isWorldAuthority;
     this.lobby.update(delta, {
       authority,
@@ -2103,10 +2159,9 @@ export class GameEngine {
   /**
    * Despawns and deletes a player group visual node.
    */
-  public removeRemotePlayer(id: string) {
-    const group = this.remotePlayerGroups.get(id);
-    if (group) {
-      this.scene.remove(group);
+  /** Removes an explorer avatar (see createHazmatExplorer) from the scene and frees what it owns. */
+  private disposeExplorerGroup(group: THREE.Group) {
+    this.scene.remove(group);
 
       // A SKIN-cheat body (see createHazmatExplorer) shares WanderingEntity's
       // class-wide geometry/material caches with every live AI monster of
@@ -2136,6 +2191,12 @@ export class GameEngine {
           m.dispose();
         });
       });
+  }
+
+  public removeRemotePlayer(id: string) {
+    const group = this.remotePlayerGroups.get(id);
+    if (group) {
+      this.disposeExplorerGroup(group);
 
       this.remotePlayerGroups.delete(id);
       this.remoteStates.delete(id);
@@ -2261,7 +2322,7 @@ export class GameEngine {
     const halfStride = running ? 1.1 : state === "crouching" ? 0.45 : 0.7;
     if (anim.speed > 0.35 && anim.stepDist >= halfStride) {
       anim.stepDist = 0;
-      this.onRemoteFootstep(group.position.x, group.position.z, state);
+      if (!group.userData.silentFeet) this.onRemoteFootstep(group.position.x, group.position.z, state);
     }
 
     const skinBody = group.getObjectByName("monsterSkinBody") as THREE.Group | undefined;
@@ -2501,7 +2562,8 @@ export class GameEngine {
     this.teardownLevelG();
     this.level = level;
     this.level4DoorOpen = false;
-    
+    this.funCakeEaten = false;
+
     // 1. Terminate current map mesh references
     if (this.map) {
       this.map.disposeGateway(this.scene);
@@ -3300,6 +3362,8 @@ export class GameEngine {
         text = t("act.megEmployee");
       } else if (this.nearMegDoor()) {
         text = t("act.megDoor");
+      } else if (this.nearFunCake()) {
+        text = t("fun.act.eatCake");
       }
     }
     if (text !== this.lastInteractPrompt) {
@@ -3366,13 +3430,36 @@ export class GameEngine {
     return dx * dx + dz * dz < 5.2 * 5.2;
   }
 
+  /** The hidden office party's cake: eating it is Level FUN's secret entrance. */
+  private nearFunCake(): boolean {
+    if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map || !this.player || this.map.funCakeX < 0 || this.funCakeEaten) return false;
+    const cs = this.map.cellSize;
+    const dx = this.player.position.x - (this.map.funCakeX * cs + cs / 2);
+    const dz = this.player.position.z - (this.map.funCakeZ * cs + cs / 2);
+    return dx * dx + dz * dz < 2.0 * 2.0;
+  }
+
   // ---------------------------------------------------------------------
   // Level FUN
   // ---------------------------------------------------------------------
 
+  /** Camera-attached slot for Level FUN's held-item model (see FunHost.setHeldItem). */
+  private funHandGroup: THREE.Group | null = null;
+
+  private ensureFunHandGroup(): THREE.Group {
+    if (!this.funHandGroup) {
+      this.funHandGroup = new THREE.Group();
+      this.funHandGroup.position.set(0.32, -0.28, -0.55);
+      this.funHandGroup.rotation.set(0.08, -0.5, 0.04);
+      this.camera.add(this.funHandGroup);
+    }
+    return this.funHandGroup;
+  }
+
   private teardownFun() {
     this.funDirector?.dispose();
     this.funDirector = null;
+    if (this.funHandGroup) while (this.funHandGroup.children.length) this.funHandGroup.remove(this.funHandGroup.children[0]);
     if (this.lastFunObjective !== null) {
       this.lastFunObjective = null;
       this.onObjectiveChange?.(null);
@@ -3390,10 +3477,15 @@ export class GameEngine {
         const [lookX, lookZ] = this.lookDirectionXZ();
         return { x: this.player.position.x, z: this.player.position.z, lookX, lookZ };
       },
-      handAnchor: () => this.camera,
       globalEvent: (state, seconds) => this.map?.startGlobalEvent(state, seconds),
       send: (kind, index) => this.sendToServer({ type: "fun_event", level: FUN_LEVEL, kind, index }),
       stageChanged: () => { /* atmosphere is re-read from the stage every frame */ },
+      setHeldItem: (obj) => {
+        const group = this.ensureFunHandGroup();
+        while (group.children.length) group.remove(group.children[0]);
+        if (obj) group.add(obj);
+      },
+      kill: () => this.die("caught"),
     });
   }
 
@@ -3446,7 +3538,7 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | null {
+  public tryInteract(): "terminal" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | null {
     if (this.isDead) return null;
     if (this.funDirector) {
       const used = this.funDirector.interact();
@@ -3470,6 +3562,15 @@ export class GameEngine {
     if (this.nearMegDoor()) {
       this.onMegDoorRequest?.();
       return "meg_door";
+    }
+    if (this.nearFunCake()) {
+      // A completely unrelated secret from Level G's: eating the cake at
+      // the hidden office party leaves for Level FUN, nowhere near the real
+      // exit door (level4DoorX/Z) or the Level G door (abandonedSecretX/Z).
+      this.funCakeEaten = true;
+      this.audio.playFunSound("giggle", 0, 0.5);
+      this.onSecretLevelFound?.(FUN_LEVEL);
+      return "fun_cake";
     }
     if (this.nearExitDesk()) {
       this.readingAnchor = { x: this.map.exitDeskX, z: this.map.exitDeskZ };
@@ -3581,18 +3682,25 @@ export class GameEngine {
     if (this.player) this.applyCheatsToPlayer();
   }
 
-  /** World position of this level's secret entrance (Level 1 → Lights Out, Abandoned Office → Level FUN), if any. */
-  public secretEntranceTarget(): { x: number; z: number; label: string } | null {
+  /**
+   * World position of every secret entrance on this level (Level 1 → Lights
+   * Out, Abandoned Office → Level G, Abandoned Office → the hidden cake ->
+   * Level FUN). Abandoned Office has two at once, so this returns a list
+   * rather than a single target.
+   */
+  public secretEntranceTargets(): { x: number; z: number; label: string }[] {
     const map = this.map;
-    if (!map) return null;
+    if (!map) return [];
     const cs = map.cellSize;
-    if (this.level === 1 && map.secretGridX >= 0) return { x: (map.secretGridX + 0.5) * cs, z: (map.secretGridZ + 0.5) * cs, label: "6" };
-    if (this.level === ABANDONED_OFFICE_LEVEL && map.abandonedFunX >= 0) return { x: (map.abandonedFunX + 0.5) * cs, z: (map.abandonedFunZ + 0.5) * cs, label: "FUN" };
-    return null;
+    const targets: { x: number; z: number; label: string }[] = [];
+    if (this.level === 1 && map.secretGridX >= 0) targets.push({ x: (map.secretGridX + 0.5) * cs, z: (map.secretGridZ + 0.5) * cs, label: "6" });
+    if (this.level === ABANDONED_OFFICE_LEVEL && map.abandonedSecretX >= 0) targets.push({ x: (map.abandonedSecretX + 0.5) * cs, z: (map.abandonedSecretZ + 0.5) * cs, label: "G" });
+    if (this.level === ABANDONED_OFFICE_LEVEL && map.funCakeX >= 0 && !this.funCakeEaten) targets.push({ x: (map.funCakeX + 0.5) * cs, z: (map.funCakeZ + 0.5) * cs, label: "FUN" });
+    return targets;
   }
 
   /** Sets (or, with null, clears) the SKIN cheat's monster body; replicated to teammates on the next network tick. */
-  public applySkinCheat(type: EntityType | null) {
+  public applySkinCheat(type: SkinBodyChoice | null) {
     this.cheatSkin = type && MONSTER_SKIN_TYPES.includes(type) ? type : null;
   }
 

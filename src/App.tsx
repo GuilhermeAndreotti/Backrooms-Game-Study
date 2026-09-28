@@ -336,6 +336,9 @@ export default function App() {
       case "fun":
         // Something on Level FUN was picked up, placed or opened.
         return true;
+      case "fun_cake":
+        // The transition itself already fired via onSecretLevelFound.
+        return true;
       case "fun_panel":
         setIsFunPanelOpen(true);
         document.exitPointerLock?.();
@@ -713,7 +716,8 @@ export default function App() {
                         console.log("Found the office door that shouldn't exist... entering LEVEL G.");
                         unlockAchievement("level_g_found");
                       } else if (targetLevel === FUN_LEVEL) {
-                        console.log("Found the party at the office exit... entering LEVEL FUN.");
+                        console.log("Ate the cake nobody was watching... entering LEVEL FUN.");
+                        unlockAchievement("secret_level_found");
                       } else {
                          console.log("Found the dark corridor... entering Level 6: Lights Out.");
                         unlockAchievement("secret_level_found");

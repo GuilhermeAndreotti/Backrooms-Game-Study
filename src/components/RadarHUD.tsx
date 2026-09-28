@@ -253,9 +253,10 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
         }
       }
 
-      // 4b. SETA cheat: an arrow toward this level's secret entrance (Level 6 / Level FUN).
-      const secret = engine.cheatArrow ? engine.secretEntranceTarget() : null;
-      if (secret) {
+      // 4b. SETA cheat: an arrow toward each of this level's secret entrances
+      // (Level 6, Level G, and Abandoned Office's hidden cake into Level FUN).
+      const secrets = engine.cheatArrow ? engine.secretEntranceTargets() : [];
+      for (const secret of secrets) {
         const rx = secret.x - px;
         const rz = secret.z - pz;
         const dist = Math.sqrt(rx * rx + rz * rz);

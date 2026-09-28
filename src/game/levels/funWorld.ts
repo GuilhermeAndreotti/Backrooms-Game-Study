@@ -26,7 +26,7 @@ import type { LightFixture } from "../ProceduralMap";
 import * as M from "../LevelFunModels";
 import { t } from "../../i18n";
 import {
-  FUN_EXIT, FUN_GATES, FUN_GRID, FUN_SPAWN, FUN_THEMES, FunCode, FunGate, FunRandom, FunTheme,
+  FUN_EXIT, FUN_GATES, FUN_GRID, FUN_SPAWN, FUN_THEMES, FunCode, FunGate, FunRandom, FunTheme, P1_ORDER,
   THEME_SYMBOL, PANEL_BUTTONS, funCellCenter, funCodeForSeed, funGateAt, funRegionAt,
 } from "./funLayout";
 
@@ -158,6 +158,8 @@ export class FunWorld {
   private readonly layers: { obj: THREE.Object3D; from: M.FunStage; to: M.FunStage }[] = [];
   private readonly shifts: Shift[] = [];
   private readonly bobbers: { obj: THREE.Object3D; baseY: number; phase: number }[] = [];
+  /** Every Partygoer body in the level, animated each frame while visible (see M.funAnimatePartygoer). */
+  private readonly partygoers: THREE.Object3D[] = [];
   /** Fixtures the director may make stutter. */
   readonly flickyFixtures: LightFixture[] = [];
   private readonly lightsByRegion = new Map<string, DynamicLightSource[]>();
@@ -206,8 +208,8 @@ export class FunWorld {
       this.gates.set(gate.id, { gate, closed: gate.closed, angle: 0, leaf: null, barrier: null, lock: null });
       for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) this.reserved.add(`${gate.gx + dx},${gate.gz + dz}`);
     }
-    // Keep the exit stretch clear too.
-    for (let x = FUN_EXIT.gx; x <= FUN_EXIT.gx + 3; x++) this.reserved.add(`${x},${FUN_EXIT.gz}`);
+    // Keep the exit column clear too (it runs along z, not x).
+    for (let z = FUN_EXIT.gz; z >= FUN_EXIT.gz - 3; z--) this.reserved.add(`${FUN_EXIT.gx},${z}`);
     for (let dx = -2; dx <= 2; dx++) for (let dz = -1; dz <= 1; dz++) this.reserved.add(`${FUN_SPAWN.gx + dx},${FUN_SPAWN.gz + dz}`);
   }
 
@@ -228,6 +230,37 @@ export class FunWorld {
   }
 
   gateClosed(id: string): boolean { return this.gates.get(id)?.closed ?? false; }
+
+  /** Walkable and not behind a shut door. */
+  isOpenCell(gx: number, gz: number): boolean {
+    return funRegionAt(gx, gz) !== null && !this.isGateClosed(gx, gz);
+  }
+
+  private roamerObj: THREE.Object3D | null = null;
+
+  /**
+   * The director's roaming glimpse: one silhouette Partygoer, moved into
+   * whichever cell it's shown in (cells are all built up front). Returns
+   * null if that cell doesn't exist.
+   */
+  showRoamer(x: number, z: number, yaw: number): THREE.Object3D | null {
+    const group = this.groups.get(`${Math.floor(x / CELL)},${Math.floor(z / CELL)}`);
+    if (!group) return null;
+    if (!this.roamerObj) {
+      this.roamerObj = M.funPartygoer(this.kit, { silhouette: true }).object;
+      this.partygoers.push(this.roamerObj);
+    }
+    const o = this.roamerObj;
+    group.add(o);
+    o.position.set(x, 0, z);
+    o.rotation.y = yaw;
+    o.visible = true;
+    return o;
+  }
+
+  hideRoamer() {
+    if (this.roamerObj) this.roamerObj.visible = false;
+  }
 
   gateCenter(id: string): [number, number] | null {
     const g = this.gates.get(id)?.gate;
@@ -263,37 +296,6 @@ export class FunWorld {
     return { kit: this.kit, rng: new FunRandom(this.env.seed + seedSalt * 977), code: this.code };
   }
 
-  /** A local-only copy used by the first-person carry view. */
-  makeHeldItem(id: string): M.FunPiece {
-    const env = this.makeEnv(700 + id.length);
-    switch (id) {
-      case "tablecloth": return M.funTableclothFolded(env.kit, "red");
-      case "plates": {
-        const g = new THREE.Group();
-        for (let i = 0; i < 3; i++) {
-          const plate = M.funPlate(env.kit, i % 2 ? "white" : "blue").object;
-          plate.position.y = i * 0.035;
-          g.add(plate);
-        }
-        return { object: g, footprint: [] };
-      }
-      case "cups": {
-        const g = new THREE.Group();
-        for (const [i, color] of (["red", "yellow", "blue"] as M.PartyColor[]).entries()) {
-          const cup = M.funCup(env.kit, color).object;
-          cup.position.set((i - 1) * 0.16, 0, 0);
-          g.add(cup);
-        }
-        return { object: g, footprint: [] };
-      }
-      case "gift": return M.funGift(env.kit, "pink", "yellow", 0.32);
-      case "candles": return M.funCandleBox(env.kit);
-      case "balloons": return M.funBalloonCluster(env.kit, env.rng, 3);
-      case "cake": return M.funCake(env.kit, { candles: 5, lit: true });
-      case "balloon": return M.funSpecialBalloon(env.kit, 0.85);
-      default: return M.funGift(env.kit, "purple", "yellow", 0.3);
-    }
-  }
 
   /** A cosmetic apparition in the player's current cell. It never has collision. */
   spawnPartygoer(x: number, z: number, yaw: number): THREE.Object3D | null {
@@ -341,6 +343,11 @@ export class FunWorld {
       }
     });
     for (const b of this.bobbers) b.obj.position.y = b.baseY + Math.sin(time * 0.9 + b.phase) * 0.05;
+    // Idle life for every Partygoer on show; the director drives the ones
+    // that are walking (userData.pgWalking) itself, at their real speed.
+    for (const pg of this.partygoers) {
+      if (pg.visible && !pg.userData.pgWalking) M.funAnimatePartygoer(pg, delta, 0);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -428,6 +435,7 @@ export class FunWorld {
       this.shifts.push({ obj, alt: spec.alt, base: { x: spec.x, z: spec.z, yaw: spec.yaw ?? 0 }, done: false });
     }
     if (spec.bob) this.bobbers.push({ obj, baseY: spec.y ?? 0, phase: (spec.x * 3.1 + spec.z) % 6 });
+    if (obj.userData.pgRig) this.partygoers.push(obj);
   }
 
   private buildFixture(group: THREE.Group, gx: number, gz: number, px: number, pz: number, regionId: string, kind: string) {
@@ -610,312 +618,279 @@ export class FunWorld {
   }
 
   private sceneHallA(specs: PropSpec[]) {
-    // The table: a long one, with five numbered places along it.
-    const [tx, tz] = cc(7, 6);
-    tableSet(specs, tx, tz, { length: 3.4, depth: 1.0, places: 3, cloth: "white", tag: "p1table", chairColors: ["red", "blue", "yellow", "green", "pink", "purple"], tipFrom: 1 });
+    // The table: five numbered places along it.
+    const [tx, tz] = cc(5, 4);
+    tableSet(specs, tx, tz, { length: 2.4, depth: 0.9, places: 2, cloth: "white", tag: "p1table", chairColors: ["red", "blue", "yellow", "green", "pink", "purple"], tipFrom: 1 });
     for (let i = 0; i < 5; i++) {
-      specs.push({ x: tx + (i - 2) * 0.66, z: tz, y: TABLE_TOP, cell: [7, 6], solid: false, tag: `slot:${i}`, make: (e) => M.funNumberMarker(e.kit, i + 1, 0.5) });
+      specs.push({ x: tx + (i - 2) * 0.46, z: tz, y: TABLE_TOP, cell: [5, 4], solid: false, tag: `slot:${i}`, make: (e) => M.funNumberMarker(e.kit, i + 1, 0.4) });
     }
     // Things hanging over it.
-    this.onWall(specs, 6, 2, "N", 0, 2.85, (e) => M.funBirthdayBanner(e.kit, 3.4));
-    for (const dx of [-1.4, 1.4]) {
-      for (let i = 0; i < 3; i++) {
-        const colors: M.PartyColor[] = ["red", "yellow", "blue"];
-        specs.push({ x: tx + dx + (i - 1) * 0.3, z: tz + (i - 1) * 0.5, y: WALL_H, cell: [7, 6], solid: false, make: (e) => M.funStreamer(e.kit, colors[i], 0.9 + i * 0.3) });
-      }
+    this.onWall(specs, 5, 2, "N", 0, 2.85, (e) => M.funBirthdayBanner(e.kit, 2.8));
+    for (const [dx, color] of [[-1.0, "red"], [1.0, "blue"]] as const) {
+      specs.push({ x: tx + dx, z: tz, y: WALL_H, cell: [5, 4], solid: false, make: (e) => M.funStreamer(e.kit, color, 1.0) });
     }
 
-    // Clues imply the table-setting order without listing the solution outright.
-    this.onWall(specs, 2, 5, "W", 0, 1.5, (e) => M.funNote(e.kit, lines("fun.hint.table"), 1));
-    this.onWall(specs, 2, 7, "W", 0.3, 1.45, (e) => M.funDrawing(e.kit, { kind: "house" }, 4));
-    this.onWall(specs, 9, 2, "N", 0, 1.5, (e) => { const l = lines("fun.poster.rules"); return M.funPoster(e.kit, l[0], l.slice(1), "pink"); });
-    this.onWall(specs, 4, 2, "N", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 4 }, 2), { to: 0 });
-    this.onWall(specs, 4, 2, "N", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 4, wrong: true }, 2), { from: 1 });
-    this.onWall(specs, 12, 6, "E", 0.9, 1.5, (e) => M.funDrawing(e.kit, { kind: "partygoer" }, 3), { from: 2 });
-    this.onWall(specs, 10, 10, "S", 0, 1.4, (e) => M.funNote(e.kit, lines("fun.note.a"), 1));
-    this.onWall(specs, 11, 6, "E", -0.6, 1.9, (e) => M.funWallSymbol(e.kit, "smile", "red", 0.55), { from: 2 });
+    // Clues: the first two steps by the spawn, the poster over the table.
+    this.onWall(specs, 2, 3, "W", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "sequence", steps: P1_ORDER.slice(0, 2) as M.PartyItem[], start: 1 }, 1));
+    this.onWall(specs, 2, 6, "W", 0, 1.45, (e) => M.funDrawing(e.kit, { kind: "house" }, 4));
+    this.onWall(specs, 8, 2, "N", 0, 1.5, (e) => { const l = lines("fun.poster.rules"); return M.funPoster(e.kit, l[0], l.slice(1), "pink"); });
+    this.onWall(specs, 3, 2, "N", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 4 }, 2), { to: 0 });
+    this.onWall(specs, 3, 2, "N", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 4, wrong: true }, 2), { from: 1 });
+    this.onWall(specs, 8, 6, "E", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "partygoer" }, 3), { from: 2 });
+    this.onWall(specs, 6, 7, "S", 0, 1.4, (e) => M.funNote(e.kit, lines("fun.note.a"), 1));
+    this.onWall(specs, 8, 5, "E", 0, 1.9, (e) => M.funWallSymbol(e.kit, "smile", "red", 0.5), { from: 2 });
 
     // Pickups: everything a party needs, and one thing it doesn't.
-    const [sx, sz] = cc(10, 2);
-    specs.push({ x: sx, z: 8 + 0.55, cell: [10, 2], make: (e) => M.funPartyTable(e.kit, "blue", { length: 1.0, depth: 0.6, places: 1, stage: 1 }) });
-    specs.push({ x: sx, z: 8 + 0.55, y: 0.75, cell: [10, 2], solid: false, tag: "pickup:tablecloth", glow: { color: 0xffe08a, size: 0.8 }, make: (e) => M.funTableclothFolded(e.kit, "red") });
-    const [gx, gz] = cc(12, 10);
-    specs.push({ x: gx + 0.7, z: gz + 0.5, cell: [12, 10], make: (e) => M.funGift(e.kit, "blue", "white", 0.42) });
-    specs.push({ x: gx - 0.4, z: gz + 0.8, yaw: 0.6, cell: [12, 10], make: (e) => M.funGift(e.kit, "green", "red", 0.34) });
-    specs.push({ x: gx - 0.5, z: gz - 0.1, yaw: -0.3, y: 0, cell: [12, 10], solid: false, tag: "pickup:gift", glow: { color: 0xffe08a, size: 0.9 }, make: (e) => M.funGift(e.kit, "pink", "yellow", 0.3) });
-    const [bx, bz] = cc(12, 3);
-    specs.push({ x: bx, z: bz, cell: [12, 3], tag: "pickup:balloons", glow: { color: 0xffe08a, size: 1.1 }, make: (e) => M.funBalloonCluster(e.kit, e.rng, 4) });
+    const [scx, scz] = cc(3, 3);
+    specs.push({ x: scx, z: scz, cell: [3, 3], make: (e) => M.funPartyTable(e.kit, "blue", { length: 0.9, depth: 0.55, places: 1, stage: 1 }) });
+    specs.push({ x: scx, z: scz, y: 0.75, cell: [3, 3], solid: false, tag: "pickup:tablecloth", glow: { color: 0xffe08a, size: 0.8 }, make: (e) => M.funTableclothFolded(e.kit, "red") });
+    const [gx, gz] = cc(7, 6);
+    specs.push({ x: gx, z: gz, yaw: -0.3, cell: [7, 6], solid: false, tag: "pickup:gift", glow: { color: 0xffe08a, size: 0.9 }, make: (e) => M.funGift(e.kit, "pink", "yellow", 0.3) });
+    const [bx, bz] = cc(2, 2);
+    specs.push({ x: bx + 0.5, z: bz + 0.5, cell: [2, 2], tag: "pickup:balloons", glow: { color: 0xffe08a, size: 1.0 }, make: (e) => M.funBalloonCluster(e.kit, e.rng, 4) });
     // More balloons, for the look of the place.
-    for (const [cx, cz] of [[3, 3], [3, 9], [11, 4]] as const) {
+    for (const [cx, cz] of [[7, 2], [4, 6]] as const) {
       const [x, z] = cc(cx, cz);
-      specs.push({ x, z, cell: [cx, cz], make: (e) => M.funBalloonCluster(e.kit, e.rng, 5) });
+      specs.push({ x, z, cell: [cx, cz], make: (e) => M.funBalloonCluster(e.kit, e.rng, 4) });
     }
-    const [dx, dz] = cc(5, 8);
-    specs.push({ x: dx, z: dz, cell: [5, 8], solid: false, make: (e) => M.funPartyDebris(e.kit, e.rng, 1) });
   }
 
   private sceneSideRooms(specs: PropSpec[]) {
     // --- Room A2: plates and candles -------------------------------------
-    const [px] = cc(3, 14);
-    specs.push({ x: px, z: 14 * CELL + 0.55, cell: [3, 14], make: (e) => M.funPartyTable(e.kit, "pink", { length: 1.0, depth: 0.6, places: 1, stage: 1 }) });
+    const [p2x, p2z] = cc(3, 9);
+    specs.push({ x: p2x, z: p2z + 0.6, cell: [3, 9], make: (e) => M.funPartyTable(e.kit, "pink", { length: 0.9, depth: 0.55, places: 1, stage: 1 }) });
     specs.push({
-      x: px, z: 14 * CELL + 0.55, y: TABLE_TOP - 0.005, cell: [3, 14], solid: false, tag: "pickup:plates", glow: { color: 0xffe08a, size: 0.8 },
+      x: p2x, z: p2z + 0.6, y: TABLE_TOP - 0.005, cell: [3, 9], solid: false, tag: "pickup:plates", glow: { color: 0xffe08a, size: 0.8 },
       make: (e) => {
         const g = new THREE.Group();
         for (let i = 0; i < 4; i++) { const p = M.funPlate(e.kit, i % 2 ? "white" : "blue").object; p.position.y = i * 0.02; g.add(p); }
         return { object: g, footprint: [] };
       },
     });
-    const [cx] = cc(5, 19);
-    specs.push({ x: cx, z: 20 * CELL - 0.55, cell: [5, 19], make: (e) => M.funPartyTable(e.kit, "yellow", { length: 1.0, depth: 0.6, places: 1, stage: 1 }) });
-    specs.push({ x: cx, z: 20 * CELL - 0.55, y: TABLE_TOP, cell: [5, 19], solid: false, tag: "pickup:candles", glow: { color: 0xffe08a, size: 0.7 }, make: (e) => M.funCandleBox(e.kit) });
-    this.onWall(specs, 2, 16, "W", 0, 1.5, (e) => M.funNote(e.kit, lines("fun.hint.service"), 5));
-    this.onWall(specs, 6, 16, "E", 0.4, 1.45, (e) => M.funNote(e.kit, lines("fun.note.b"), 2));
-    this.onWall(specs, 4, 14, "N", 1.3, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 3 }, 6), { to: 0 });
-    this.onWall(specs, 4, 14, "N", 1.3, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 3, wrong: true }, 6), { from: 1 });
-    const [ax, az] = cc(3, 17);
-    tableSet(specs, ax + 0.4, az, { length: 1.4, depth: 0.8, places: 2, cloth: "pink", cell: [3, 17], tipFrom: 1 });
-    const [bx, bz] = cc(6, 15);
-    specs.push({ x: bx - 0.3, z: bz, cell: [6, 15], make: (e) => M.funBalloonCluster(e.kit, e.rng, 4) });
+    const [c2x, c2z] = cc(4, 11);
+    specs.push({ x: c2x, z: c2z - 0.6, cell: [4, 11], make: (e) => M.funPartyTable(e.kit, "yellow", { length: 0.9, depth: 0.55, places: 1, stage: 1 }) });
+    specs.push({ x: c2x, z: c2z - 0.6, y: TABLE_TOP, cell: [4, 11], solid: false, tag: "pickup:candles", glow: { color: 0xffe08a, size: 0.7 }, make: (e) => M.funCandleBox(e.kit) });
+    this.onWall(specs, 2, 10, "W", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "sequence", steps: P1_ORDER.slice(2, 4) as M.PartyItem[], start: 3 }, 5));
+    this.onWall(specs, 5, 9, "E", 0, 1.45, (e) => M.funNote(e.kit, lines("fun.note.b"), 2));
+    this.onWall(specs, 3, 9, "N", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 3 }, 6), { to: 0 });
+    this.onWall(specs, 3, 9, "N", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 3, wrong: true }, 6), { from: 1 });
+    const [a2x, a2z] = cc(4, 10);
+    tableSet(specs, a2x, a2z, { length: 1.0, depth: 0.55, places: 1, cloth: "pink", cell: [4, 10], tipFrom: 1 });
 
     // --- Room A3: cups and the last drawing ------------------------------
-    const [ux] = cc(12, 14);
-    specs.push({ x: ux, z: 14 * CELL + 0.55, cell: [12, 14], make: (e) => M.funPartyTable(e.kit, "green", { length: 1.0, depth: 0.6, places: 1, stage: 1 }) });
+    const [c3x, c3z] = cc(8, 9);
+    specs.push({ x: c3x, z: c3z + 0.6, cell: [8, 9], make: (e) => M.funPartyTable(e.kit, "green", { length: 0.9, depth: 0.55, places: 1, stage: 1 }) });
     specs.push({
-      x: ux, z: 14 * CELL + 0.55, y: TABLE_TOP, cell: [12, 14], solid: false, tag: "pickup:cups", glow: { color: 0xffe08a, size: 0.7 },
+      x: c3x, z: c3z + 0.6, y: TABLE_TOP, cell: [8, 9], solid: false, tag: "pickup:cups", glow: { color: 0xffe08a, size: 0.7 },
       make: (e) => {
         const g = new THREE.Group();
         for (const [i, c] of (["red", "yellow", "blue"] as M.PartyColor[]).entries()) { const cup = M.funCup(e.kit, c).object; cup.position.set((i - 1) * 0.13, 0, 0); g.add(cup); }
         return { object: g, footprint: [] };
       },
     });
-    this.onWall(specs, 13, 16, "E", 0, 1.5, (e) => M.funNote(e.kit, lines("fun.hint.last"), 7));
-    this.onWall(specs, 9, 17, "W", 0, 1.5, (e) => { const l = lines("fun.poster.order"); return M.funPoster(e.kit, l[0], l.slice(1), "purple"); });
-    this.onWall(specs, 11, 19, "S", -0.9, 1.4, (e) => M.funNote(e.kit, lines("fun.note.c"), 3));
-    const [kx, kz] = cc(10, 18);
-    specs.push({ x: kx, z: kz, cell: [10, 18], solid: false, make: (e) => M.funPartyDebris(e.kit, e.rng, 1) });
-    const [wx, wz] = cc(13, 18);
-    specs.push({ x: wx - 0.4, z: wz - 0.3, cell: [13, 18], make: (e) => M.funBalloonCluster(e.kit, e.rng, 3) });
+    this.onWall(specs, 10, 11, "E", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "sequence", steps: P1_ORDER.slice(4) as M.PartyItem[], start: 5 }, 7));
+    this.onWall(specs, 7, 11, "W", 0, 1.5, (e) => { const l = lines("fun.poster.order"); return M.funPoster(e.kit, l[0], l.slice(1), "purple"); });
+    this.onWall(specs, 9, 11, "S", 0, 1.4, (e) => M.funNote(e.kit, lines("fun.note.c"), 3));
+    const [b3x, b3z] = cc(10, 9);
+    specs.push({ x: b3x - 0.4, z: b3z + 0.4, cell: [10, 9], make: (e) => M.funBalloonCluster(e.kit, e.rng, 3) });
   }
 
   private sceneHub(specs: PropSpec[]) {
-    // The lock, and the hint beside it.
-    const panel = wallAt(38, 8, "E", 0);
+    // The lock, and the hint beside it — kept off the gated row (z=4).
+    const panel = wallAt(27, 2, "E", 0);
     specs.push({
-      x: panel.x, z: panel.z, yaw: panel.yaw, cell: [38, 8], solid: false, tag: "panel",
+      x: panel.x, z: panel.z, yaw: panel.yaw, cell: [27, 2], solid: false, tag: "panel",
       make: (e) => M.funSequencePanel(e.kit, PANEL_BUTTONS.map((b) => ({ ...b })), 4),
     });
-    this.onWall(specs, 38, 4, "E", 0, 1.5, (e) => { const l = lines("fun.poster.sequence"); return M.funPoster(e.kit, l[0], l.slice(1), "orange"); });
-    this.onWall(specs, 38, 3, "E", 0, 2.8, (e) => M.funBirthdayBanner(e.kit, 3.4));
+    this.onWall(specs, 27, 3, "E", 0, 1.5, (e) => { const l = lines("fun.poster.sequence"); return M.funPoster(e.kit, l[0], l.slice(1), "orange"); });
 
     // A coloured dot by each room's corridor, so the doors read before you reach them.
-    for (const [theme, gx] of [["red", 16], ["blue", 22], ["yellow", 28], ["green", 34]] as const) {
-      this.onWall(specs, gx, 9, "S", 0.5, 1.5, (e) => M.funWallSymbol(e.kit, "circle", theme, 0.55));
+    for (const [theme, gx] of [["red", 13], ["blue", 17], ["yellow", 21], ["green", 25]] as const) {
+      this.onWall(specs, gx, 6, "S", 0, 1.5, (e) => M.funWallSymbol(e.kit, "circle", theme, 0.5));
     }
     // Windows onto nothing — with something in them, now and then.
-    [20, 26, 32].forEach((gx, i) => {
-      const w = wallAt(gx, 9, "S", 0);
-      specs.push({ x: w.x, z: w.z, yaw: w.yaw, cell: [gx, 9], solid: false, make: (e) => backedWindow(e.kit) });
-      specs.push({ x: w.x, z: w.z, y: 0, yaw: w.yaw, cell: [gx, 9], solid: false, hidden: true, tag: `pg:window:${i}`, make: (e) => windowFigure(e.kit) });
+    [15, 19, 23].forEach((gx, i) => {
+      const w = wallAt(gx, 6, "S", 0);
+      specs.push({ x: w.x, z: w.z, yaw: w.yaw, cell: [gx, 6], solid: false, make: (e) => backedWindow(e.kit) });
+      specs.push({ x: w.x, z: w.z, y: 0, yaw: w.yaw, cell: [gx, 6], solid: false, hidden: true, tag: `pg:window:${i}`, make: (e) => windowFigure(e.kit) });
     });
 
-    // Tables scattered down the gallery, some already turned over.
-    const sets: [number, number, number, M.PartyColor][] = [[19, 4, 0, "pink"], [25, 6, 0.4, "blue"], [30, 4, 0, "yellow"], [36, 6, 0.2, "green"], [22, 3, 0, "purple"]];
+    // A couple of tables down the gallery, one already turned over.
+    const sets: [number, number, number, M.PartyColor][] = [[14, 4, 0, "pink"], [23, 3, -0.2, "yellow"]];
     for (const [gx, gz, yaw, cloth] of sets) {
       const [x, z] = cc(gx, gz);
-      tableSet(specs, x, z, { length: 1.6, depth: 0.8, places: 2, cloth, yaw, cell: [gx, gz], tipFrom: 1 });
+      tableSet(specs, x, z, { length: 1.2, depth: 0.65, places: 1, cloth, yaw, cell: [gx, gz], tipFrom: 1 });
     }
-    for (const gx of [18, 27, 33]) {
-      const [x, z] = cc(gx, 8);
-      specs.push({ x, z, cell: [gx, 8], make: (e) => M.funBalloonCluster(e.kit, e.rng, 5) });
-    }
-    this.onWall(specs, 20, 2, "N", 0, 2.85, (e) => M.funBirthdayBanner(e.kit, 3.4));
-    this.onWall(specs, 29, 2, "N", 0, 2.85, (e) => M.funGarland(e.kit, 3.6, 0.3));
-    this.onWall(specs, 24, 2, "N", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 5 }, 11), { to: 1 });
-    this.onWall(specs, 24, 2, "N", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "partygoer" }, 11), { from: 2 });
-    this.onWall(specs, 16, 4, "W", 0, 1.5, (e) => M.funNote(e.kit, lines("fun.note.d"), 4));
+    this.onWall(specs, 13, 2, "N", 0, 2.8, (e) => M.funBirthdayBanner(e.kit, 2.8));
+    this.onWall(specs, 21, 2, "N", 0, 2.8, (e) => M.funGarland(e.kit, 3.0, 0.25));
+    this.onWall(specs, 17, 2, "N", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 5 }, 11), { to: 1 });
+    this.onWall(specs, 17, 2, "N", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "partygoer" }, 11), { from: 2 });
+    this.onWall(specs, 12, 3, "W", 0, 1.5, (e) => M.funNote(e.kit, lines("fun.note.d"), 4));
     // Far end of the gallery: something standing where the party should be.
-    const [ex, ez] = cc(37, 3);
-    specs.push({ x: ex, z: ez, yaw: Math.PI / 2 + 0.2, cell: [37, 3], solid: false, hidden: true, tag: "pg:hubEnd", make: (e) => M.funPartygoer(e.kit, { silhouette: true }) });
-    const [mx, mz] = cc(17, 9);
-    specs.push({ x: mx, z: mz - 1.2, yaw: 0, cell: [17, 9], solid: false, hidden: true, tag: "pg:hubMouth", make: (e) => M.funPartygoer(e.kit, { silhouette: true }) });
+    const [ex, ez] = cc(26, 3);
+    specs.push({ x: ex, z: ez, yaw: Math.PI / 2 + 0.2, cell: [26, 3], solid: false, hidden: true, tag: "pg:hubEnd", make: (e) => M.funPartygoer(e.kit, { silhouette: true }) });
+    const [mx, mz] = cc(13, 6);
+    specs.push({ x: mx, z: mz - 1.2, yaw: 0, cell: [13, 6], solid: false, hidden: true, tag: "pg:hubMouth", make: (e) => M.funPartygoer(e.kit, { silhouette: true }) });
   }
 
   private sceneThemedRooms(specs: PropSpec[]) {
-    const rooms: { theme: FunTheme; x1: number; x2: number }[] = [
-      { theme: "red", x1: 16, x2: 19 }, { theme: "blue", x1: 22, x2: 25 },
-      { theme: "yellow", x1: 28, x2: 31 }, { theme: "green", x1: 34, x2: 37 },
+    const rooms: { theme: FunTheme; x1: number }[] = [
+      { theme: "red", x1: 12 }, { theme: "blue", x1: 16 }, { theme: "yellow", x1: 20 }, { theme: "green", x1: 24 },
     ];
-    for (const { theme, x1, x2 } of rooms) {
+    for (const { theme, x1 } of rooms) {
       const place = this.code.position[theme];
-      const cxm = (x1 + x2 + 1) * (CELL / 2);
+      const x2 = x1 + 2;
+      const [tX, tZ] = cc(x1 + 1, 9);
       // The party table, laid for guests.
-      tableSet(specs, cxm, 16 * CELL + 0.5, { length: 1.6, depth: 0.8, places: 2, cloth: theme, cell: [x1 + 1, 16], chairColors: [theme, "white"], tipFrom: 2 });
+      tableSet(specs, tX, tZ, { length: 1.2, depth: 0.6, places: 1, cloth: theme, cell: [x1 + 1, 9], chairColors: [theme, "white"], tipFrom: 2 });
       // The clue: this room's symbol, drawn as many times as its place in the sequence.
-      this.onWall(specs, x1 + 1, 18, "S", 0.5, 1.45, (e) => M.funDrawing(e.kit, { kind: "symbol", symbol: THEME_SYMBOL[theme], color: theme, count: place }, x1 * 3));
+      this.onWall(specs, x1 + 1, 10, "S", 0, 1.4, (e) => M.funDrawing(e.kit, { kind: "symbol", symbol: THEME_SYMBOL[theme], color: theme, count: place }, x1 * 3));
       // ...and the same number told as balloons. They come and go between visits.
-      const [ax, az] = cc(x1, 13);
-      specs.push({ x: ax + 0.3, z: az + 0.3, cell: [x1, 13], tag: `balloonsA:${theme}`, make: (e) => M.funBalloonCluster(e.kit, e.rng, place, [theme]) });
-      const [bx, bz] = cc(x2, 18);
-      specs.push({ x: bx - 0.3, z: bz - 0.2, cell: [x2, 18], tag: `balloonsB:${theme}`, hidden: true, make: (e) => M.funBalloonCluster(e.kit, e.rng, place, [theme]) });
-      // Presents nobody opened, garlands, and the room going wrong at stage 2.
-      const [gx, gz] = cc(x2, 15);
-      specs.push({ x: gx - 0.5, z: gz, yaw: 0.4, cell: [x2, 15], make: (e) => M.funGift(e.kit, theme, "white", 0.34) });
-      this.onWall(specs, x1 + 2, 13, "N", 1.2, 2.85, (e) => M.funGarland(e.kit, 3.0, 0.25, [theme, "white"]));
-      this.onWall(specs, x1, 16, "W", 0, 1.9, (e) => M.funWallSymbol(e.kit, "smile", "red", 0.5), { from: 2 });
-      this.onWall(specs, x2, 15, "E", 0, 1.5, (e) => M.funNote(e.kit, lines("fun.note.e"), x1), { from: 1, to: 1 });
-      specs.push({ x: gx - 1.4, z: gz + 1.6, cell: [x2, 16], solid: false, from: 1, make: (e) => M.funPartyDebris(e.kit, e.rng, 2) });
+      const [ax, az] = cc(x1, 8);
+      specs.push({ x: ax + 0.3, z: az + 0.3, cell: [x1, 8], tag: `balloonsA:${theme}`, make: (e) => M.funBalloonCluster(e.kit, e.rng, place, [theme]) });
+      const [bx, bz] = cc(x2, 10);
+      specs.push({ x: bx - 0.3, z: bz - 0.3, cell: [x2, 10], tag: `balloonsB:${theme}`, hidden: true, make: (e) => M.funBalloonCluster(e.kit, e.rng, place, [theme]) });
+      // A present nobody opened, a garland, and the room going wrong at stage 2.
+      const [ggx, ggz] = cc(x2, 8);
+      specs.push({ x: ggx - 0.4, z: ggz + 0.4, yaw: 0.4, cell: [x2, 8], make: (e) => M.funGift(e.kit, theme, "white", 0.3) });
+      this.onWall(specs, x1, 8, "N", 0, 2.7, (e) => M.funGarland(e.kit, 2.2, 0.2, [theme, "white"]));
+      this.onWall(specs, x1, 9, "W", 0, 1.8, (e) => M.funWallSymbol(e.kit, "smile", "red", 0.45), { from: 2 });
+      this.onWall(specs, x2, 9, "E", 0, 1.5, (e) => M.funNote(e.kit, lines("fun.note.e"), x1), { from: 1, to: 1 });
+      specs.push({ x: tX - 0.4, z: tZ + 1.0, cell: [x1 + 1, 9], solid: false, from: 1, make: (e) => M.funPartyDebris(e.kit, e.rng, 2) });
     }
   }
 
   private sceneP3Corridor(specs: PropSpec[]) {
-    // The long walk between the puzzles: a figure at the far end, and little else.
-    const [x, z] = cc(44, 21);
-    specs.push({ x, z, yaw: 0, cell: [44, 21], solid: false, hidden: true, tag: "pg:corridorEnd", make: (e) => M.funPartygoer(e.kit, { silhouette: true }) });
-    const [px, pz] = cc(41, 6);
-    specs.push({ x: px, z: pz, yaw: -Math.PI / 2, cell: [41, 6], solid: false, hidden: true, tag: "pg:corrG2", make: (e) => M.funPartygoer(e.kit, { silhouette: true }) });
-    this.onWall(specs, 44, 10, "W", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "partygoer" }, 21));
-    this.onWall(specs, 44, 15, "E", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 6, wrong: true }, 22));
-    this.onWall(specs, 44, 19, "W", 0, 1.3, (e) => M.funNote(e.kit, lines("fun.note.f"), 5));
-    const [bx, bz] = cc(44, 12);
-    specs.push({ x: bx, z: bz, cell: [44, 12], make: (e) => M.funBalloon(e.kit, "red", { deflated: true }), solid: false });
-    for (const gz of [8, 14, 20]) {
-      const w = wallAt(44, gz, "W", 0);
-      specs.push({ x: w.x, z: w.z, yaw: w.yaw, y: 2.85, cell: [44, gz], solid: false, make: (e) => M.funGarland(e.kit, 3.4, 0.3, ["white", "red"]) });
+    // The long walk between the puzzles (column x=30 — g2 sits one cell
+    // north, on its own straight run, so nothing here touches its cell):
+    // a figure at either end, and little else.
+    const [ex, ez] = cc(30, 15);
+    specs.push({ x: ex, z: ez, yaw: 0, cell: [30, 15], solid: false, hidden: true, tag: "pg:corridorEnd", make: (e) => M.funPartygoer(e.kit, { silhouette: true }) });
+    const [gx, gz] = cc(30, 6);
+    specs.push({ x: gx, z: gz, yaw: Math.PI, cell: [30, 6], solid: false, hidden: true, tag: "pg:corrG2", make: (e) => M.funPartygoer(e.kit, { silhouette: true }) });
+    this.onWall(specs, 30, 7, "E", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "partygoer" }, 21));
+    this.onWall(specs, 30, 13, "E", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 6, wrong: true }, 22));
+    this.onWall(specs, 30, 9, "E", 0, 1.3, (e) => M.funNote(e.kit, lines("fun.note.f"), 5));
+    const [bx, bz] = cc(30, 11);
+    specs.push({ x: bx, z: bz, cell: [30, 11], make: (e) => M.funBalloon(e.kit, "red", { deflated: true }), solid: false });
+    // z=14 is skipped: that's the depot's doorway on this corridor's west wall.
+    for (const gzr of [6, 10]) {
+      const w = wallAt(30, gzr, "W", 0);
+      specs.push({ x: w.x, z: w.z, yaw: w.yaw, y: 2.85, cell: [30, gzr], solid: false, make: (e) => M.funGarland(e.kit, 3.0, 0.25, ["white", "red"]) });
     }
   }
 
   private sceneLastHall(specs: PropSpec[]) {
-    const [cx, cz] = cc(37, 32);
-    const slots: [string, M.PartyItem, number][] = [["gift", "gift", -1.1], ["cake", "cake", 0], ["balloon", "balloons", 1.1]];
-    // The banquet: three lengths of table end to end, far too many chairs.
+    const [cx, cz] = cc(28, 20);
+    const perSide = 3;
+    specs.push({ x: cx, z: cz, cell: [28, 20], make: (e) => M.funPartyTable(e.kit, "white", { length: 3.2, depth: 1.0, places: perSide, stage: 2 }) });
     const seats: { x: number; z: number; yaw: number }[] = [];
-    const perSection = 4;
-    for (const off of [-2.5, 0, 2.5]) {
-      const sx = cx + off;
-      const seatCell: [number, number] = [Math.floor(sx / CELL), Math.floor(cz / CELL)];
-      specs.push({ x: sx, z: cz, cell: seatCell, make: (e) => M.funPartyTable(e.kit, "white", { length: 2.4, depth: 1.1, places: perSection, stage: 2 }) });
-      for (const side of [1, -1]) {
-        for (let i = 0; i < perSection; i++) {
-          const x = sx + (i - (perSection - 1) / 2) * (2.4 / perSection), z = cz + side * (1.1 / 2 + 0.3);
-          const yaw = side > 0 ? Math.PI : 0;
-          const idx = seats.length;
-          seats.push({ x, z, yaw });
-          const color = (["red", "blue", "yellow", "green", "pink", "purple", "orange"] as M.PartyColor[])[(seats.length * 3) % 7];
-          const askew = ((seats.length * 37) % 11) / 11 * 0.4 - 0.2;
-          specs.push({
-            x, z, yaw: yaw + askew, cell: [Math.floor(x / CELL), Math.floor(z / CELL)],
-            make: (e) => M.funKidChair(e.kit, color, idx % 9 === 0),
-          });
-        }
+    for (const side of [1, -1]) {
+      for (let i = 0; i < perSide; i++) {
+        const x = cx + (i - (perSide - 1) / 2) * (3.2 / perSide), z = cz + side * (1.0 / 2 + 0.3);
+        const yaw = side > 0 ? Math.PI : 0;
+        const idx = seats.length;
+        seats.push({ x, z, yaw });
+        const color = (["red", "blue", "yellow", "green", "pink", "purple", "orange"] as M.PartyColor[])[(idx * 3) % 7];
+        const askew = ((idx * 37) % 11) / 11 * 0.4 - 0.2;
+        specs.push({
+          x, z, yaw: yaw + askew, cell: [Math.floor(x / CELL), Math.floor(z / CELL)],
+          make: (e) => M.funKidChair(e.kit, color, idx % 7 === 0),
+        });
       }
     }
     for (const yaw of [-Math.PI / 2, Math.PI / 2]) {
-      const x = cx + (yaw < 0 ? 3.9 : -3.9);
+      const x = cx + (yaw < 0 ? 2.0 : -2.0);
       seats.push({ x, z: cz, yaw });
       specs.push({ x, z: cz, yaw, cell: [Math.floor(x / CELL), Math.floor(cz / CELL)], make: (e) => M.funKidChair(e.kit, "purple", false) });
     }
     // The three empty places the final items belong in.
+    const slots: [string, M.PartyItem, number][] = [["gift", "gift", -0.85], ["cake", "cake", 0], ["balloon", "balloons", 0.85]];
     for (const [name, item, dx] of slots) {
-      specs.push({ x: cx + dx, z: cz, y: TABLE_TOP, cell: [Math.floor((cx + dx) / CELL), Math.floor(cz / CELL)], solid: false, tag: `p3slot:${name}`, make: (e) => M.funPlacementMarker(e.kit, item, 0.5) });
+      specs.push({ x: cx + dx, z: cz, y: TABLE_TOP, cell: [Math.floor((cx + dx) / CELL), Math.floor(cz / CELL)], solid: false, tag: `p3slot:${name}`, make: (e) => M.funPlacementMarker(e.kit, item, 0.4) });
     }
-    // A place setting in front of nearly every seat.
+    // A place setting in front of most seats.
     seats.forEach((seat, i) => {
-      if (i % 4 === 3 || seat.z === cz) return;
-      const tz = seat.z + (seat.z > cz ? -0.62 : 0.62);
+      if (i % 3 === 2 || seat.z === cz) return;
+      const tz = seat.z + (seat.z > cz ? -0.55 : 0.55);
       specs.push({ x: seat.x, z: tz, y: TABLE_TOP, cell: [Math.floor(seat.x / CELL), Math.floor(tz / CELL)], solid: false, make: (e) => M.funPlate(e.kit, i % 2 ? "white" : "pink") });
-      if (i % 3 !== 0) specs.push({ x: seat.x + 0.16, z: tz, y: TABLE_TOP, cell: [Math.floor((seat.x + 0.16) / CELL), Math.floor(tz / CELL)], solid: false, make: (e) => M.funCup(e.kit, i % 2 ? "red" : "blue", i % 5 === 0) });
     });
 
     // The message, and the door that is visible but not yet yours.
-    this.onWall(specs, 37, 23, "N", 0, 1.75, (e) => M.funWallMessage(e.kit, 3.6));
-    this.onWall(specs, 33, 23, "N", 0, 2.8, (e) => M.funBirthdayBanner(e.kit, 3.4));
-    this.onWall(specs, 41, 23, "N", 0, 2.8, (e) => M.funBirthdayBanner(e.kit, 3.4));
-    this.onWall(specs, 44, 30, "E", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 7, wrong: true }, 31));
-    this.onWall(specs, 44, 35, "E", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "partygoer" }, 32));
-    this.onWall(specs, 40, 41, "S", 0, 1.5, (e) => M.funNote(e.kit, lines("fun.note.g"), 6));
-    for (const [gx, gz] of [[31, 24], [43, 24], [31, 40], [43, 40], [44, 27]] as const) {
+    this.onWall(specs, 28, 17, "N", 0, 1.6, (e) => M.funWallMessage(e.kit, 3.0));
+    this.onWall(specs, 25, 17, "N", 0, 2.7, (e) => M.funBirthdayBanner(e.kit, 2.8));
+    this.onWall(specs, 32, 17, "N", 0, 2.7, (e) => M.funBirthdayBanner(e.kit, 2.8));
+    this.onWall(specs, 33, 19, "E", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 7, wrong: true }, 31));
+    this.onWall(specs, 33, 22, "E", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "partygoer" }, 32));
+    this.onWall(specs, 30, 24, "S", 0, 1.5, (e) => M.funNote(e.kit, lines("fun.note.g"), 6));
+    for (const [gx, gz] of [[25, 18], [31, 18], [25, 23], [31, 23]] as const) {
       const [x, z] = cc(gx, gz);
-      specs.push({ x, z, cell: [gx, gz], make: (e) => M.funBalloonCluster(e.kit, e.rng, 6) });
+      specs.push({ x, z, cell: [gx, gz], make: (e) => M.funBalloonCluster(e.kit, e.rng, 4) });
     }
-    for (const [gx, gz] of [[34, 27], [40, 37], [33, 36], [42, 28]] as const) {
+    for (const [gx, gz] of [[26, 22], [30, 19]] as const) {
       const [x, z] = cc(gx, gz);
       specs.push({ x, z, cell: [gx, gz], solid: false, make: (e) => M.funPartyDebris(e.kit, e.rng, 2) });
-    }
-    for (const [gx, gz] of [[34, 30], [40, 34], [36, 26], [39, 39]] as const) {
-      const [x, z] = cc(gx, gz);
-      for (let i = 0; i < 3; i++) {
-        const colors: M.PartyColor[] = ["red", "yellow", "purple"];
-        specs.push({ x: x + (i - 1) * 0.4, z, y: WALL_H, cell: [gx, gz], solid: false, make: (e) => M.funStreamer(e.kit, colors[i], 1.0 + i * 0.2) });
-      }
     }
 
     // The crowd: every seat, and standing figures packed between the tables. Hidden until the director says so.
     const rng = new FunRandom(this.env.seed + 0xc20d);
     seats.forEach((seat, i) => {
-      if (i % 9 === 4) return;
+      if (i % 5 === 2) return;
       specs.push({
         x: seat.x, z: seat.z, yaw: seat.yaw, hidden: true, solid: false, tag: "crowd",
         cell: [Math.floor(seat.x / CELL), Math.floor(seat.z / CELL)], y: 0,
         make: (e) => M.funPartygoer(e.kit, { pose: "sit", silhouette: true, scale: 0.95 + (i % 5) * 0.03 }),
       });
     });
-    for (let i = 0; i < 26; i++) {
+    for (let i = 0; i < 10; i++) {
       let x = 0, z = 0;
       do {
-        x = rng.nextRange(30.6, 44.6) * CELL; z = rng.nextRange(23.6, 40.6) * CELL;
-      } while (Math.abs(z - cz) < 2.0 && Math.abs(x - cx) < 5.2);
+        x = rng.nextRange(24.6, 32.6) * CELL; z = rng.nextRange(17.6, 23.6) * CELL;
+      } while (Math.abs(z - cz) < 1.8 && Math.abs(x - cx) < 3.4);
       const yaw = Math.atan2(cx - x, cz - z) + rng.nextRange(-0.3, 0.3);
       specs.push({
         x, z, yaw, hidden: true, solid: false, tag: "crowd", cell: [Math.floor(x / CELL), Math.floor(z / CELL)],
         make: (e) => M.funPartygoer(e.kit, { silhouette: true, scale: 0.9 + (i % 6) * 0.05 }),
       });
     }
-    // One that isn't a silhouette: at the head of the table, facing the door you came in by, and one at the exit.
-    specs.push({ x: cx - 4.8, z: cz, yaw: -Math.PI / 2, cell: [Math.floor((cx - 4.8) / CELL), Math.floor(cz / CELL)], hidden: true, solid: false, tag: "pg:head", make: (e) => M.funPartygoer(e.kit, { scale: 1.08 }) });
-    const [exx, exz] = cc(30, 38);
-    specs.push({ x: exx + 0.5, z: exz, yaw: -Math.PI / 2, cell: [30, 38], hidden: true, solid: false, tag: "pg:exit", make: (e) => M.funPartygoer(e.kit, { scale: 1.1 }) });
+    // One that isn't a silhouette: at the head of the table, and one at the exit.
+    specs.push({ x: cx - 3.3, z: cz, yaw: -Math.PI / 2, cell: [Math.floor((cx - 3.3) / CELL), Math.floor(cz / CELL)], hidden: true, solid: false, tag: "pg:head", make: (e) => M.funPartygoer(e.kit, { scale: 1.08 }) });
+    const [exx, exz] = cc(25, 24);
+    specs.push({ x: exx, z: exz - 0.5, yaw: -Math.PI / 2, cell: [25, 24], hidden: true, solid: false, tag: "pg:exit", make: (e) => M.funPartygoer(e.kit, { scale: 1.1 }) });
   }
 
   private sceneAnnexes(specs: PropSpec[]) {
     // --- Depot: the toy chest (the present) ---------------------------------
-    const [dx] = cc(40, 14);
-    const chestZ = 14 * CELL + 0.45;
-    specs.push({ x: dx, z: chestZ, cell: [40, 14], tag: "container:gift", make: (e) => M.funToyChest(e.kit, "blue") });
-    specs.push({ x: dx, z: chestZ, y: 0.5, yaw: 0.3, cell: [40, 14], solid: false, hidden: true, tag: "item:gift", glow: { color: 0xffe08a, size: 0.9 }, make: (e) => M.funGift(e.kit, "purple", "yellow", 0.32) });
-    this.onWall(specs, 39, 17, "W", 0, 1.4, (e) => M.funNote(e.kit, lines("fun.note.h"), 8));
-    const [sx, sz] = cc(41, 19);
-    for (let i = 0; i < 5; i++) specs.push({ x: sx + (i % 2) * 0.3, z: sz + 0.5, y: 0, cell: [41, 19], solid: i === 0, make: (e) => M.funGift(e.kit, (["red", "green", "yellow", "pink", "blue"] as M.PartyColor[])[i], "white", 0.3 + (i % 3) * 0.05) });
-    const [tx, tz] = cc(40, 18);
-    tableSet(specs, tx, tz, { length: 1.4, depth: 0.7, places: 2, cloth: "blue", cell: [40, 18], tipFrom: 2 });
-    this.onWall(specs, 42, 15, "E", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 4, wrong: true }, 41));
+    const [dx, dz] = cc(26, 14);
+    specs.push({ x: dx, z: dz, cell: [26, 14], tag: "container:gift", make: (e) => M.funToyChest(e.kit, "blue") });
+    specs.push({ x: dx, z: dz, y: 0.5, yaw: 0.3, cell: [26, 14], solid: false, hidden: true, tag: "item:gift", glow: { color: 0xffe08a, size: 0.9 }, make: (e) => M.funGift(e.kit, "purple", "yellow", 0.32) });
+    this.onWall(specs, 25, 13, "W", 0, 1.4, (e) => M.funNote(e.kit, lines("fun.note.h"), 8));
+    const [sx, sz] = cc(27, 15);
+    for (let i = 0; i < 3; i++) specs.push({ x: sx - 0.3 + (i % 2) * 0.3, z: sz - 0.3, y: 0, cell: [27, 15], solid: i === 0, make: (e) => M.funGift(e.kit, (["red", "green", "yellow"] as M.PartyColor[])[i], "white", 0.26 + (i % 2) * 0.05) });
+    this.onWall(specs, 27, 13, "E", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "family", figures: 4, wrong: true }, 41));
 
     // --- Kitchen: the cabinet (the cake) ------------------------------------
-    const cab = wallAt(40, 45, "E", 0);
-    specs.push({ x: cab.x, z: cab.z, yaw: cab.yaw, cell: [40, 45], tag: "container:cake", make: (e) => M.funCabinet(e.kit) });
+    const cab = wallAt(31, 26, "E", 0);
+    specs.push({ x: cab.x, z: cab.z, yaw: cab.yaw, cell: [31, 26], tag: "container:cake", make: (e) => M.funCabinet(e.kit) });
     // Shelf is 0.225 m out from the wall along the cabinet's +Z (-X in the world).
-    specs.push({ x: cab.x - 0.225, z: cab.z, y: 0.85 + 0.36 + 0.013, cell: [40, 45], solid: false, hidden: true, tag: "item:cake", glow: { color: 0xffe08a, size: 0.9 }, make: (e) => M.funCake(e.kit, { candles: 5, lit: false }) });
-    for (const gx of [34, 38]) {
-      const w = wallAt(gx, 44, "N", 0);
-      specs.push({ x: w.x, z: w.z + 0.35, cell: [gx, 44], make: (e) => counterUnit(e.kit) });
-    }
-    const [kx, kz] = cc(36, 45);
-    tableSet(specs, kx, kz, { length: 1.8, depth: 0.9, places: 2, cloth: "white", cell: [36, 45], tipFrom: 1 });
-    specs.push({ x: kx, z: kz, y: TABLE_TOP, cell: [36, 45], solid: false, make: (e) => M.funCake(e.kit, { candles: 4, lit: false, rotten: true }) });
-    this.onWall(specs, 33, 45, "W", 0, 1.4, (e) => M.funNote(e.kit, lines("fun.note.i"), 9));
-    this.onWall(specs, 38, 46, "S", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "partygoer" }, 51), { from: 2 });
-    const [dbx, dbz] = cc(34, 46);
-    specs.push({ x: dbx, z: dbz, cell: [34, 46], solid: false, make: (e) => M.funPartyDebris(e.kit, e.rng, 2) });
+    specs.push({ x: cab.x - 0.225, z: cab.z, y: 0.85 + 0.36 + 0.013, cell: [31, 26], solid: false, hidden: true, tag: "item:cake", glow: { color: 0xffe08a, size: 0.9 }, make: (e) => M.funCake(e.kit, { candles: 5, lit: false }) });
+    const cw = wallAt(29, 27, "S", 0);
+    specs.push({ x: cw.x, z: cw.z - 0.4, cell: [29, 27], make: (e) => counterUnit(e.kit) });
+    const [kx, kz] = cc(29, 26);
+    tableSet(specs, kx, kz, { length: 1.1, depth: 0.55, places: 1, cloth: "white", cell: [29, 26], tipFrom: 1 });
+    specs.push({ x: kx, z: kz, y: TABLE_TOP, cell: [29, 26], solid: false, make: (e) => M.funCake(e.kit, { candles: 4, lit: false, rotten: true }) });
+    this.onWall(specs, 28, 27, "W", 0, 1.4, (e) => M.funNote(e.kit, lines("fun.note.i"), 9));
+    this.onWall(specs, 30, 27, "S", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "partygoer" }, 51), { from: 2 });
 
     // --- Playroom: the ball pit of balloons (the special one) ----------------
-    const [px, pz] = cc(22, 31);
+    const [px, pz] = cc(19, 21);
     specs.push({
-      x: px, z: pz, cell: [22, 31], tag: "container:balloon",
+      x: px, z: pz, cell: [19, 21], tag: "container:balloon",
       make: (e) => {
         const g = new THREE.Group();
         const colors: M.PartyColor[] = ["red", "blue", "yellow", "green", "pink", "purple", "orange"];
-        for (let i = 0; i < 34; i++) {
-          const a = e.rng.nextRange(0, Math.PI * 2), d = Math.sqrt(e.rng.next()) * 1.1;
+        for (let i = 0; i < 26; i++) {
+          const a = e.rng.nextRange(0, Math.PI * 2), d = Math.sqrt(e.rng.next()) * 0.9;
           const b = M.funBalloon(e.kit, colors[e.rng.nextInt(0, colors.length)], { height: 0 }).object;
           b.children.forEach((c) => { c.visible = c.name === "balloon"; });
           const body = b.getObjectByName("balloon");
@@ -923,19 +898,16 @@ export class FunWorld {
           b.position.set(Math.cos(a) * d, e.rng.nextRange(0, 0.28), Math.sin(a) * d);
           g.add(b);
         }
-        return { object: g, footprint: [[0, 0, 1.05]] };
+        return { object: g, footprint: [[0, 0, 0.9]] };
       },
     });
-    specs.push({ x: px, z: pz, y: 0.3, cell: [22, 31], solid: false, hidden: true, tag: "item:balloon", glow: { color: 0xffe08a, size: 1.2 }, make: (e) => M.funSpecialBalloon(e.kit, 1.1) });
-    this.onWall(specs, 20, 30, "W", 0, 1.4, (e) => M.funNote(e.kit, lines("fun.note.j"), 10));
-    this.onWall(specs, 23, 28, "N", 0, 1.5, (e) => M.funDrawing(e.kit, { kind: "symbol", symbol: "star", color: "yellow", count: 3 }, 61));
-    const [qx, qz] = cc(24, 33);
-    tableSet(specs, qx, qz, { length: 1.4, depth: 0.7, places: 2, cloth: "orange", cell: [24, 33], tipFrom: 1 });
-    const [wx, wz] = cc(21, 29);
-    specs.push({ x: wx, z: wz, cell: [21, 29], make: (e) => M.funBalloonCluster(e.kit, e.rng, 4) });
-    this.onWall(specs, 25, 33, "E", 0, 2.85, (e) => M.funGarland(e.kit, 3.4, 0.3));
-    const [pgx, pgz] = cc(25, 29);
-    specs.push({ x: pgx, z: pgz, yaw: Math.PI, cell: [25, 29], solid: false, hidden: true, tag: "pg:playroom", make: (e) => M.funPartygoer(e.kit, { silhouette: true, pose: "peek" }) });
+    specs.push({ x: px, z: pz, y: 0.3, cell: [19, 21], solid: false, hidden: true, tag: "item:balloon", glow: { color: 0xffe08a, size: 1.1 }, make: (e) => M.funSpecialBalloon(e.kit, 1.0) });
+    this.onWall(specs, 18, 20, "W", 0, 1.4, (e) => M.funNote(e.kit, lines("fun.note.j"), 10));
+    this.onWall(specs, 19, 22, "S", 0, 1.4, (e) => M.funDrawing(e.kit, { kind: "symbol", symbol: "star", color: "yellow", count: 3 }, 61));
+    const [wx, wz] = cc(20, 20);
+    specs.push({ x: wx - 0.4, z: wz + 0.4, cell: [20, 20], make: (e) => M.funBalloonCluster(e.kit, e.rng, 3) });
+    const [pgx, pgz] = cc(20, 21);
+    specs.push({ x: pgx - 0.5, z: pgz, yaw: Math.PI, cell: [20, 21], solid: false, hidden: true, tag: "pg:playroom", make: (e) => M.funPartygoer(e.kit, { silhouette: true, pose: "peek" }) });
   }
 }
 

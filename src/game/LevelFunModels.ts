@@ -1320,43 +1320,54 @@ export function funPartygoer(kit: DecorKit, opts: { pose?: PartygoerPose; silhou
   const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
   const sit = pose === "sit";
   const hipY = sit ? 0.42 : 1.05;
-  // Torso: a slim, smooth capsule.
-  const torso = mesh(kit, "pg_torso", () => new THREE.CapsuleGeometry(0.17, 0.5, 6, 14), body, 0, hipY + 0.38, 0);
-  torso.scale.set(1, 1, 0.75);
-  g.add(torso);
   const neckY = hipY + 0.72;
-  g.add(rod(kit, 0.04, body, V(0, neckY, 0), V(0, neckY + 0.14, 0)));
-  const head = new THREE.Group();
-  head.name = "head";
-  head.position.set(0, neckY + 0.3, 0);
+  // Rigged like the monsters' bipeds (see mobs/anim.ts): every limb hangs
+  // from a named pivot, so funAnimatePartygoer can pose it. At rest the
+  // pivots carry no rotation and the body looks exactly as it's laid out.
+  const joint = (name: string, parent: THREE.Object3D, x: number, y: number, z: number) => {
+    const j = new THREE.Group();
+    j.name = name;
+    j.position.set(x, y, z);
+    parent.add(j);
+    return j;
+  };
+  const root = joint("pgRoot", g, 0, 0, 0);
+  // Everything above the hips rides one "spine" pivot at the pelvis.
+  const spine = joint("pgSpine", root, 0, hipY, 0);
+  const torso = mesh(kit, "pg_torso", () => new THREE.CapsuleGeometry(0.17, 0.5, 6, 14), body, 0, 0.38, 0);
+  torso.scale.set(1, 1, 0.75);
+  spine.add(torso);
+  spine.add(rod(kit, 0.04, body, V(0, neckY - hipY, 0), V(0, neckY - hipY + 0.14, 0)));
+  const head = joint("head", spine, 0, neckY + 0.3 - hipY, 0);
   const skull = sphere(kit, 0.2, body, 0, 0, 0, 18);
   skull.scale.set(1, 1.12, 0.95);
   head.add(skull);
-  const f = plane(kit, 0.34, 0.34, face, 0, -0.02, 0.19);
-  head.add(f);
+  head.add(plane(kit, 0.34, 0.34, face, 0, -0.02, 0.19));
   if (pose === "peek") head.rotation.z = -0.5;
-  g.add(head);
 
-  // Arms: long, hanging past the knees.
-  for (const [side, name] of [[-1, "armL"], [1, "armR"]] as const) {
-    const arm = new THREE.Group();
-    arm.name = name;
-    arm.position.set(side * 0.2, neckY - 0.06, 0);
+  // Arms: long, hanging past the knees; shoulder -> elbow -> hand.
+  for (const [side, name, fore] of [[-1, "armL", "foreL"], [1, "armR", "foreR"]] as const) {
+    const arm = joint(name, spine, side * 0.2, neckY - 0.06 - hipY, 0);
     const hand = sit ? V(side * 0.12, -0.42, 0.34) : V(side * 0.1, -0.95, 0.04);
     const elbow = sit ? V(side * 0.1, -0.38, 0.05) : V(side * 0.08, -0.48, -0.03);
     arm.add(rod(kit, 0.035, body, V(0, 0, 0), elbow));
-    arm.add(rod(kit, 0.03, body, elbow, hand));
-    arm.add(sphere(kit, 0.045, body, hand.x, hand.y, hand.z, 8));
-    g.add(arm);
+    const f2 = joint(fore, arm, elbow.x, elbow.y, elbow.z);
+    const rel = hand.clone().sub(elbow);
+    f2.add(rod(kit, 0.03, body, V(0, 0, 0), rel));
+    f2.add(sphere(kit, 0.045, body, rel.x, rel.y, rel.z, 8));
   }
-  // Legs.
-  for (const side of [-1, 1]) {
+  // Legs: hip -> knee -> foot.
+  for (const [side, leg, shin] of [[-1, "legL", "shinL"], [1, "legR", "shinR"]] as const) {
     const hip = V(side * 0.1, hipY, 0);
     const knee = sit ? V(side * 0.12, hipY, 0.42) : V(side * 0.1, hipY * 0.5, 0.02);
     const foot = sit ? V(side * 0.12, 0.04, 0.46) : V(side * 0.1, 0.04, 0);
-    g.add(rod(kit, 0.045, body, hip, knee));
-    g.add(rod(kit, 0.04, body, knee, foot));
-    g.add(sphere(kit, 0.05, body, foot.x, 0.04, foot.z + 0.04, 8));
+    const l = joint(leg, root, hip.x, hip.y, hip.z);
+    const kneeRel = knee.clone().sub(hip);
+    l.add(rod(kit, 0.045, body, V(0, 0, 0), kneeRel));
+    const k = joint(shin, l, kneeRel.x, kneeRel.y, kneeRel.z);
+    const footRel = foot.clone().sub(knee);
+    k.add(rod(kit, 0.04, body, V(0, 0, 0), footRel));
+    k.add(sphere(kit, 0.05, body, footRel.x, footRel.y, footRel.z + 0.04, 8));
   }
   if (pose === "peek") {
     // Lean out from behind a door edge at x = 0: only the head and one arm clear it.
@@ -1368,7 +1379,60 @@ export function funPartygoer(kit: DecorKit, opts: { pose?: PartygoerPose; silhou
   wrap.add(g);
   wrap.scale.setScalar(scale);
   wrap.name = "partygoer";
+  wrap.userData.pgRig = { pose, seed: Math.random() * 100 };
   return { object: wrap, footprint: sit ? [] : [[0, 0, 0.3 * scale]] };
+}
+
+/**
+ * Poses a funPartygoer body for this frame, the way mobs/*.ts animate the
+ * monsters. `speed` is its ground speed in m/s: at 0 it idles (a slow sway,
+ * the head drifting and tilting, now and then a sharp twitch); moving, it
+ * walks with long stiff strides, arms reaching forward, leaning into it.
+ * Every joint is set absolutely each call, so nothing drifts. Cosmetic only.
+ */
+export function funAnimatePartygoer(obj: THREE.Object3D, delta: number, speed = 0) {
+  const rig = obj.userData.pgRig as { pose: PartygoerPose; seed: number; phase?: number; time?: number; move?: number; j?: Record<string, THREE.Object3D | undefined> } | undefined;
+  if (!rig) return;
+  const j = (rig.j ??= Object.fromEntries(
+    ["pgRoot", "pgSpine", "head", "armL", "armR", "foreL", "foreR", "legL", "legR", "shinL", "shinR"].map((n) => [n, obj.getObjectByName(n)]),
+  ));
+  const time = (rig.time = (rig.time ?? rig.seed) + delta);
+  const sit = rig.pose === "sit";
+  const target = !sit && speed > 0.2 ? 1 : 0;
+  const move = (rig.move = THREE.MathUtils.damp(rig.move ?? 0, target, 6, delta));
+  // Long strides: one full cycle per ~1.6 m.
+  const phase = (rig.phase = (rig.phase ?? 0) + (speed / 1.6) * Math.PI * 2 * delta);
+  const sw = Math.sin(phase), cw = Math.cos(phase);
+  const idle = 1 - move;
+
+  if (!sit) {
+    j.legL?.rotation.set(-sw * 0.6 * move, 0, 0);
+    j.legR?.rotation.set(sw * 0.6 * move, 0, 0);
+    // The knee folds only while that leg swings forward.
+    j.shinL?.rotation.set(Math.max(0, cw) * 0.8 * move, 0, 0);
+    j.shinR?.rotation.set(Math.max(0, -cw) * 0.8 * move, 0, 0);
+  }
+  // A step's bob, and a lean into the walk; idle, a slow sway on the spot.
+  if (j.pgRoot) j.pgRoot.position.y = Math.abs(sw) * 0.05 * move;
+  j.pgSpine?.rotation.set(0.14 * move, Math.sin(phase) * 0.08 * move, Math.sin(time * 0.7) * 0.05 * idle + sw * 0.04 * move);
+
+  // Arms: barely swinging at rest; walking, they reach out in front — at you.
+  const reach = -0.9 * move;
+  j.armL?.rotation.set(reach + sw * 0.15 * move + Math.sin(time * 0.9) * 0.05 * idle, 0, -0.05 * idle);
+  j.armR?.rotation.set(reach - sw * 0.15 * move + Math.sin(time * 0.9 + 1.7) * 0.05 * idle, 0, 0.05 * idle);
+  j.foreL?.rotation.set(-0.35 * move, 0, 0);
+  j.foreR?.rotation.set(-0.35 * move, 0, 0);
+
+  if (j.head) {
+    // Idle: the head drifts and tilts too far; now and then it snaps sideways.
+    const twitch = ((time * 0.23 + rig.seed) % 1) < 0.025 ? 0.55 : 0;
+    const peek = rig.pose === "peek" ? -0.5 : 0;
+    j.head.rotation.set(
+      Math.sin(time * 0.37) * 0.12 * idle - 0.1 * move,
+      Math.sin(time * 0.41 + rig.seed) * 0.45 * idle,
+      peek + Math.sin(time * 0.55) * 0.22 * idle + twitch * idle + Math.sin(phase * 2) * 0.06 * move,
+    );
+  }
 }
 
 /**

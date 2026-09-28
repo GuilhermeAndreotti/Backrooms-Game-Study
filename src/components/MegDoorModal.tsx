@@ -24,10 +24,10 @@ export function MegDoorModal({ onSubmit, onClose }: MegDoorModalProps) {
         <input
           autoFocus
           value={ids}
-          onChange={(event) => { setIds(event.target.value.replace(/[^0-9,\s]/g, "").slice(0, 18)); setError(false); }}
+          onChange={(event) => { setIds(event.target.value.replace(/[^0-9,\s]/g, "").slice(0, 12)); setError(false); }}
           onKeyDown={(event) => { if (event.key === "Enter") submit(); }}
           inputMode="numeric"
-          placeholder="4821, 7314, 1952"
+          placeholder="48, 73, 19"
           className="mb-2 w-full border border-slate-600 bg-slate-950 px-3 py-3 text-sm outline-none focus:border-sky-400"
         />
         {error && <div className="mb-3 text-sm text-red-300">Acesso recusado. Consulte os três programadores novamente.</div>}

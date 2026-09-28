@@ -114,8 +114,8 @@ function sanitizeFace(value: unknown): string {
   return typeof value === "string" && FACE_PATTERN.test(value) ? value : "";
 }
 
-/** Monster bodies the lobby's SKIN cheat may hand out — kept in sync with client-side MONSTER_SKIN_TYPES. */
-const MONSTER_SKIN_TYPES = new Set(["DULLER", "HOUND", "CLUMP", "SKIN_STEALER", "WRETCH"]);
+/** Bodies the lobby's SKIN cheat may hand out — every monster type plus the NPC looks; kept in sync with client-side MONSTER_SKIN_TYPES. */
+const MONSTER_SKIN_TYPES = new Set<string>([...ALL_ENTITY_TYPES, "OFFICE_WORKER", "PARTYGOER"]);
 
 function sanitizeMonsterSkin(value: unknown): string {
   return typeof value === "string" && MONSTER_SKIN_TYPES.has(value) ? value : "";

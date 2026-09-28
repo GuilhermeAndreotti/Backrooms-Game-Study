@@ -11,10 +11,42 @@ import { MOB_DEFS } from "./mobs/registry";
 import { MobBuildCtx, MobJoints, MobSenseCtx, NO_SCRIPTED_POSE } from "./mobs/types";
 import { resetRig } from "./mobs/anim";
 import { ELECTRICAL_ROOM_LEVEL, LEVEL_2, LIGHTS_OUT_LEVEL, POOLROOMS_LEVEL } from "./levels/constants";
+import { OfficeWorker } from "./npc/OfficeWorker";
+import { funAnimatePartygoer, funPartygoer } from "./LevelFunModels";
+import type { DecorKit } from "./LevelDecor";
 
 // Re-exported for existing import sites (GameEngine.ts etc.) — the type now
 // lives in src/shared/entityTypes.ts so server.ts can share it too.
 export { EntityType };
+
+/**
+ * Everything the lobby's SKIN cheat can hand out: every monster type, plus
+ * two NPC looks that have nothing to do with WanderingEntity's own registry
+ * (a MEG office worker, a Level FUN partygoer) — kept as plain string
+ * literals rather than EntityType members so they never have to satisfy
+ * MOB_DEFS' "every EntityType needs a MobDefinition" invariant.
+ */
+export type SkinBodyChoice = EntityType | "OFFICE_WORKER" | "PARTYGOER";
+
+/** A throwaway geo/mat cache for building one-off cosmetic bodies (see buildSkinMesh) — never shared with a level's own kit. */
+function scratchKit(): DecorKit {
+  const geos = new Map<string, THREE.BufferGeometry>();
+  const mats = new Map<string, THREE.Material>();
+  return {
+    geo: (key, build) => {
+      let g = geos.get(key);
+      if (!g) { g = build(); geos.set(key, g); }
+      return g as ReturnType<typeof build>;
+    },
+    mat: (key, build) => {
+      let m = mats.get(key);
+      if (!m) { m = build(); mats.set(key, m); }
+      return m as ReturnType<typeof build>;
+    },
+    wallTile: new THREE.MeshStandardMaterial(),
+    track: () => { /* nothing external references these textures; GC handles it when the body is discarded */ },
+  };
+}
 
 /**
  * One monster's replicated state, streamed by the level's authority client
@@ -1019,7 +1051,18 @@ export class WanderingEntity {
    * the handful of genuinely per-instance materials (Duller, Skin-Stealer)
    * that *do* need disposing when a skinned player leaves.
    */
-  public static buildSkinMesh(type: EntityType): THREE.Group {
+  public static buildSkinMesh(type: SkinBodyChoice): THREE.Group {
+    // The two NPC looks build their own rig entirely outside MOB_DEFS, and
+    // have no per-frame animation (animateSkinBody no-ops without a `rig`
+    // in userData) — they just stand however they're posed.
+    if (type === "OFFICE_WORKER") return OfficeWorker.buildSkinBody("senior");
+    if (type === "PARTYGOER") {
+      const body = new THREE.Group();
+      body.add(funPartygoer(scratchKit(), { pose: "stand" }).object);
+      body.name = "monsterSkinBody";
+      body.userData.partygoer = true;
+      return body;
+    }
     const proto = Object.create(WanderingEntity.prototype) as WanderingEntity;
     proto.tintMaterials = [];
     proto.type = type;
@@ -1038,6 +1081,15 @@ export class WanderingEntity {
    * `speed`: the avatar's ground speed (m/s).
    */
   public static animateSkinBody(body: THREE.Group, delta: number, speed: number, running: boolean) {
+    if (body.userData.partygoer) {
+      const pg = body.children[0];
+      if (pg) funAnimatePartygoer(pg, delta, speed);
+      return;
+    }
+    if (body.userData.officeRig) {
+      OfficeWorker.animateSkinBody(body, delta, speed, running);
+      return;
+    }
     const rig = body.userData.rig as { type: EntityType; joints: MobJoints; phase: number; time: number; move: number; run: number; anchorY?: number } | undefined;
     if (!rig) return;
     const def = MOB_DEFS[rig.type];
@@ -1060,7 +1112,10 @@ export class WanderingEntity {
   }
 
   /** Height above the floor the type's body is centred at — mirrors syncWorldPosition's `ey`. */
-  public static skinAnchorY(type: EntityType): number {
+  public static skinAnchorY(type: SkinBodyChoice): number {
+    // Both NPC bodies are built floor-anchored (feet at y=0), unlike the
+    // monster rigs, which are centred around baseHeight.
+    if (type === "OFFICE_WORKER" || type === "PARTYGOER") return 0;
     return MOB_DEFS[type].baseHeight;
   }
 

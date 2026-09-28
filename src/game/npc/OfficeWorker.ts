@@ -37,7 +37,7 @@ function mulberry(seed: number) {
 }
 
 export class OfficeWorker {
-  readonly group = new THREE.Group();
+  group = new THREE.Group();
   readonly name: string;
   private body = new THREE.Group();
   private joints: MobJoints = {};
@@ -50,6 +50,42 @@ export class OfficeWorker {
   private heading = 0;
   private phase = 0;
   private time = 0;
+
+  /**
+   * A standalone rigged body (see build()), with no position/pacing state —
+   * for the lobby's SKIN cheat, which just wears it on a player avatar the
+   * same way it wears a monster's body (WanderingEntity.buildSkinMesh).
+   */
+  public static buildSkinBody(grade: EmployeeGrade = "senior"): THREE.Group {
+    const proto = Object.create(OfficeWorker.prototype) as OfficeWorker;
+    proto.group = new THREE.Group();
+    proto.body = new THREE.Group();
+    proto.joints = {};
+    proto.materials = [];
+    proto.geometries = [];
+    proto.build(LOOKS[grade]);
+    proto.body.name = "monsterSkinBody";
+    proto.body.userData.officeRig = { joints: proto.joints, time: 0, phase: 0, move: 0, run: 0 };
+    return proto.body;
+  }
+
+  /** Walks a buildSkinBody() body along with the avatar wearing it; `speed` in m/s. */
+  public static animateSkinBody(body: THREE.Group, delta: number, speed: number, running: boolean) {
+    const rig = body.userData.officeRig as { joints: MobJoints; time: number; phase: number; move: number; run: number } | undefined;
+    if (!rig) return;
+    const moving = speed > 0.3;
+    rig.time += delta;
+    rig.move = THREE.MathUtils.damp(rig.move, moving ? 1 : 0, 8, delta);
+    rig.run = THREE.MathUtils.damp(rig.run, moving && running ? 1 : 0, 5, delta);
+    rig.phase += (speed / 1.3) * Math.PI * 2 * delta;
+    body.position.set(0, 0, 0);
+    body.rotation.set(0, 0, 0);
+    animateBiped({
+      joints: rig.joints, body, time: rig.time, delta, phase: rig.phase,
+      move: rig.move, run: rig.run, observe: 0, look: 0, lookYaw: 0, lookPitch: 0,
+      agitated: false, chasing: false, ...NO_SCRIPTED_POSE,
+    }, { stride: 0.35, armSwing: 0.3, knee: 0.6, elbow: 0.12, lean: 0.05, bounce: 0.03, breathe: 0.02 });
+  }
   private waitTimer: number;
   private targetX: number;
   private moveW = 0;
@@ -228,6 +264,24 @@ export class OfficeWorker {
       rot(j.armR, -0.58, 0, -0.08);
       rx(j.foreL, -0.55);
       rx(j.foreR, -0.55);
+
+      // At the keyboard: types in bursts, and every so often leans back and
+      // stretches. Fades out while they look at or talk to a visitor.
+      const { time } = this;
+      const busy = (1 - this.talkW) * (1 - this.lookW * 0.7);
+      const burst = Math.sin(time * 0.5) > -0.2 ? 1 : 0.15;
+      rx(j.foreL, -0.55 + Math.sin(time * 15) * 0.09 * busy * burst);
+      rx(j.foreR, -0.55 + Math.sin(time * 15 + 1.9) * 0.09 * busy * burst);
+      if (j.head) j.head.rotation.x += 0.12 * busy; // eyes on the screen
+      const stretch = Math.min(1, Math.max(0, Math.sin(time * 0.13 + 2) - 0.93) * 16) * busy; // 0..1, rare
+      if (stretch > 0) {
+        rot(j.armL, -0.58 - 2.1 * stretch, 0, 0.08 + 0.35 * stretch);
+        rot(j.armR, -0.58 - 2.1 * stretch, 0, -0.08 - 0.35 * stretch);
+        rx(j.foreL, -0.55 + 0.45 * stretch);
+        rx(j.foreR, -0.55 + 0.45 * stretch);
+        if (j.spine) j.spine.rotation.x -= 0.18 * stretch;
+        if (j.head) j.head.rotation.x -= 0.35 * stretch;
+      }
     }
 
     const { time } = this;

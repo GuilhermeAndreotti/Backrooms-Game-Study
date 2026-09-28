@@ -25,7 +25,7 @@ import type { AudioManager } from "../AudioManager";
 import * as M from "../LevelFunModels";
 import { t, type MessageKey } from "../../i18n";
 import { FUN_THEMES, P1_DECOY, P1_ORDER, P3_ITEMS, funRegionAt, type FunFinalItem } from "./funLayout";
-import type { FunWorld } from "./funWorld";
+import type { FunWorld, TaggedProp } from "./funWorld";
 
 export type FunAudio = Pick<AudioManager, "startFunMusic" | "stopFunMusic" | "playFunSound" | "triggerHumFlicker" | "playTerminalBeep"> & { readonly funMusicPlaying: boolean };
 
@@ -35,21 +35,26 @@ export interface FunHost {
   /** Player position and horizontal look direction (unit vector). */
   player(): { x: number; z: number; lookX: number; lookZ: number };
   /** Local camera parent for a cosmetic first-person carried item. */
-  handAnchor(): THREE.Object3D;
   globalEvent(state: "blackout" | "flicker_storm", seconds: number): void;
   send(kind: "p1_slot" | "p2_solved" | "p3_placed", index: number): void;
   /** The stage changed: refresh anything the engine keeps per stage (fog, ambient). */
   stageChanged(stage: M.FunStage): void;
+  /** Shows (or, with null, clears) a small held-item model in front of the camera. */
+  setHeldItem(obj: THREE.Object3D | null): void;
+  /** Kills the local explorer, exactly like being caught by any other monster. */
+  kill(): void;
 }
 
 const TABLE_TOP = 0.737;
 const CELL = 4;
+/** Puzzle 1's rooms: the party before it goes wrong. */
+const START_AREA: readonly string[] = ["hallA", "roomA2", "roomA3", "corrA2", "corrA3", "corrA23", "corrG1"];
 
 type ContainerState = "sealed" | "revealed" | "taken" | "placed";
 
 interface Carry { group: "p1" | "p3"; id: string }
 interface Candidate { id: string; x: number; z: number; radius: number; prompt: string | null; run: (() => void) | null; panel?: boolean }
-interface Glimpse { tag: string; shown: number; seen: number; maxSeconds: number; hideDist: number }
+interface Glimpse { obj: THREE.Object3D; x: number; z: number; roamer: boolean; shown: number; seen: number; maxSeconds: number; hideDist: number }
 
 const key = (k: string) => k as MessageKey;
 
@@ -105,8 +110,15 @@ export class FunDirector {
   p3Done = false;
   exitOpen = false;
 
+  // Easter egg: linger in the last hall after the exit opens and the
+  // "crowd" stops being scenery.
+  private lingerTimer = 0;
+  private lingerTriggered = false;
+  private chasers: TaggedProp[] = [];
+  private static readonly LINGER_SECONDS = 60;
+  private static readonly CHASE_SPEED = 2.6;
+
   private carry: Carry | null = null;
-  private heldVisual: THREE.Group | null = null;
   private closeScare: { obj: THREE.Object3D; until: number } | null = null;
   private nextAmbient = 20;
   private nextGlimpse = 26;
@@ -125,9 +137,9 @@ export class FunDirector {
   }
 
   dispose() {
-    this.clearHeldVisual();
     this.clearCloseScare();
     this.host.audio.stopFunMusic(true);
+    this.host.setHeldItem(null);
   }
 
   // -------------------------------------------------------------------------
@@ -232,12 +244,27 @@ export class FunDirector {
   // Puzzle 1
   // -------------------------------------------------------------------------
 
+  /** Clones a world prop into a small held-item model shown in front of the camera. */
+  private showHeld(tp: { obj: THREE.Object3D } | undefined) {
+    if (!tp) { this.host.setHeldItem(null); return; }
+    const held = tp.obj.clone(true);
+    held.visible = true;
+    held.position.set(0, 0, 0);
+    held.rotation.set(0, 0, 0);
+    const box = new THREE.Box3().setFromObject(held);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z, 0.05);
+    held.scale.setScalar(0.22 / maxDim);
+    this.host.setHeldItem(held);
+  }
+
   private takeP1(item: M.PartyItem) {
     this.returnCarry();
     const p = this.world.tag(`pickup:${item}`);
+    this.showHeld(p);
     if (p) p.obj.visible = false;
     this.carry = { group: "p1", id: item };
-    this.showHeldVisual(this.carry);
     this.host.notify(t("fun.n.carry", { item: t(key(`fun.item.${item}`)) }));
     this.host.audio.playFunSound("pop", 0, 0.25);
   }
@@ -249,30 +276,10 @@ export class FunDirector {
     const tag = c.group === "p1" ? `pickup:${c.id}` : `item:${c.id}`;
     const p = this.world.tag(tag);
     if (p) p.obj.visible = true;
+    this.host.setHeldItem(null);
     if (c.group === "p3") this.containers[c.id as FunFinalItem] = "revealed";
     this.carry = null;
-    this.clearHeldVisual();
     if (notify) this.host.notify(t("fun.n.returned", { item: t(key(`fun.item.${c.id}`)) }));
-  }
-
-  private showHeldVisual(carry: Carry) {
-    this.clearHeldVisual();
-    const held = new THREE.Group();
-    const piece = this.world.makeHeldItem(carry.id);
-    const scale = carry.id === "balloons" || carry.id === "balloon" ? 0.3 : carry.id === "cake" ? 0.44 : 0.62;
-    piece.object.scale.setScalar(scale);
-    piece.object.rotation.set(-0.18, -0.45, 0.08);
-    held.add(piece.object);
-    held.position.set(0.38, -0.38, -0.76);
-    held.rotation.set(-0.12, -0.28, -0.08);
-    this.host.handAnchor().add(held);
-    this.heldVisual = held;
-  }
-
-  private clearHeldVisual() {
-    if (!this.heldVisual) return;
-    this.heldVisual.removeFromParent();
-    this.heldVisual = null;
   }
 
   private tryPlaceP1(slot: number) {
@@ -284,6 +291,8 @@ export class FunDirector {
       return;
     }
     if (P1_ORDER[slot] === item) {
+      this.carry = null;
+      this.host.setHeldItem(null);
       this.placeP1(slot, true);
       return;
     }
@@ -302,7 +311,7 @@ export class FunDirector {
     if (pick) pick.obj.visible = false;
     if (this.carry?.group === "p1" && this.carry.id === item) {
       this.carry = null;
-      this.clearHeldVisual();
+      this.host.setHeldItem(null);
     }
     const s = this.world.tag(`slot:${slot}`);
     if (s) {
@@ -403,19 +412,16 @@ export class FunDirector {
     if (this.containers[item] !== "revealed") return;
     this.returnCarry();
     const it = this.world.tag(`item:${item}`);
+    this.showHeld(it);
     if (it) it.obj.visible = false;
     this.containers[item] = "taken";
     this.carry = { group: "p3", id: item };
-    this.showHeldVisual(this.carry);
     this.host.notify(t("fun.n.carry", { item: t(key(`fun.item.${item}`)) }));
   }
 
   private placeP3(item: FunFinalItem, local: boolean) {
     if (this.containers[item] === "placed") return;
-    if (this.carry?.group === "p3" && this.carry.id === item) {
-      this.carry = null;
-      this.clearHeldVisual();
-    }
+    if (this.carry?.group === "p3" && this.carry.id === item) { this.carry = null; this.host.setHeldItem(null); }
     this.containers[item] = "placed";
     const src = this.world.tag(`item:${item}`);
     if (src) src.obj.visible = false;
@@ -528,13 +534,58 @@ export class FunDirector {
 
     // After the party is set, the first steps away from it are when it changes.
     if (this.stageOnePending && this.p1Done) {
-      const away = region !== null && !["hallA", "roomA2", "roomA3", "corrA2", "corrA3", "corrA23", "corrG1"].includes(region);
+      const away = region !== null && !START_AREA.includes(region);
       if (away) { this.stageOnePending = false; this.setStage(1); }
     }
 
     this.updateScares(delta, p, region);
+    this.updateLingerChase(delta, p, region);
     this.lastRegion = region;
 
+  }
+
+  /**
+   * Easter egg: stay in the last hall for a full minute after the exit
+   * opens, instead of leaving, and the "crowd" stops being scenery. A
+   * handful of the nearest silhouettes wake up and start closing in;
+   * touching one kills the explorer exactly like any other monster.
+   */
+  private updateLingerChase(delta: number, p: { x: number; z: number }, region: string | null) {
+    if (!this.exitOpen) return;
+    if (!this.lingerTriggered) {
+      this.lingerTimer = region === "hallLast" ? this.lingerTimer + delta : 0;
+      if (this.lingerTimer >= FunDirector.LINGER_SECONDS) this.startChase(p);
+      return;
+    }
+    const speed = FunDirector.CHASE_SPEED;
+    for (const c of this.chasers) {
+      const dx = p.x - c.obj.position.x, dz = p.z - c.obj.position.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 0.01) continue;
+      const step = Math.min(dist, speed * delta);
+      c.obj.position.x += (dx / dist) * step;
+      c.obj.position.z += (dz / dist) * step;
+      c.obj.rotation.y = Math.atan2(dx, dz);
+      M.funAnimatePartygoer(c.obj, delta, step / Math.max(delta, 1e-4));
+      if (dist < 1.1) { this.host.kill(); return; }
+    }
+  }
+
+  private startChase(p: { x: number; z: number }) {
+    this.lingerTriggered = true;
+    const all = this.world.tagAll("crowd");
+    // A few of the nearest silhouettes peel off from their seats — not the
+    // whole room at once.
+    this.chasers = [...all]
+      .sort((a, b) => Math.hypot(a.x - p.x, a.z - p.z) - Math.hypot(b.x - p.x, b.z - p.z))
+      .slice(0, 5);
+    for (const c of this.chasers) { c.obj.visible = true; c.obj.userData.pgWalking = true; }
+    const head = this.world.tag("pg:head");
+    if (head) { head.obj.visible = true; head.obj.userData.pgWalking = true; this.chasers.push(head); }
+    this.host.notify(t("fun.n.stayedTooLong"));
+    this.host.audio.playFunSound("giggle", 0, 0.7);
+    this.host.audio.playFunSound("steps", -0.3, 0.5);
+    this.host.globalEvent("flicker_storm", 3.5);
   }
 
   private miniScare() {
@@ -574,10 +625,15 @@ export class FunDirector {
       }
     }
 
-    // Everything below is for the stretch between the first and the last puzzle.
-    const tense = this.p1Done && !this.p3Done;
     this.updateGlimpse(delta, p);
-    if (!tense || this.stage === 0) return;
+    // The periodic scares run everywhere until the last party is complete —
+    // keyed on where the explorer actually is, not on puzzle flags, so they
+    // still happen however you got here (CLIP included). The opening rooms
+    // just get them less often, before the table is set.
+    if (this.p3Done) return;
+    const startArea = region !== null && START_AREA.includes(region);
+    const calm = startArea && !this.p1Done;
+    if (region !== null && !startArea && this.stage === 0) { this.stageOnePending = false; this.setStage(1); }
 
     // The Partygoer never hunts, but increasingly invades the player's space.
     if (this.clock >= this.nextCloseScare && !this.closeScare) {
@@ -587,9 +643,9 @@ export class FunDirector {
 
     // Noises from rooms that should be empty.
     if (this.clock >= this.nextAmbient) {
-      this.nextAmbient = this.clock + 16 + Math.random() * 26;
+      this.nextAmbient = this.clock + (calm ? 30 : 14) + Math.random() * (calm ? 30 : 20);
       const kinds = ["slam", "giggle", "steps", "creak"] as const;
-      this.host.audio.playFunSound(kinds[Math.floor(Math.random() * kinds.length)], (Math.random() - 0.5) * 1.8, 0.16 + Math.random() * 0.22);
+      this.host.audio.playFunSound(kinds[Math.floor(Math.random() * kinds.length)], (Math.random() - 0.5) * 1.8, 0.28 + Math.random() * 0.25);
     }
 
     // The music stops in the middle of a note.
@@ -613,9 +669,9 @@ export class FunDirector {
       }
     }
 
-    // A figure at the edge of sight.
+    // A figure at the edge of sight — something happens on every tick.
     if (this.clock >= this.nextGlimpse && !this.glimpse) {
-      this.nextGlimpse = this.clock + (this.p2Solved ? 26 : 34) + Math.random() * 30;
+      this.nextGlimpse = this.clock + (calm ? 45 : this.p2Solved ? 20 : 26) + Math.random() * (calm ? 25 : 18);
       this.startGlimpse(p, region);
     }
   }
@@ -651,37 +707,69 @@ export class FunDirector {
     if (region === "hub") {
       add("pg:hubEnd", 6, 9); add("pg:hubMouth", 4, 5);
       [0, 1, 2].forEach((i) => add(`pg:window:${i}`, 2.6, 3));
-    } else if (region === "corrLong") add("pg:corridorEnd", 5, 8);
-    else if (region === "corrG2") add("pg:corrG2", 4, 6);
-    else if (region === "playroom") add("pg:playroom", 3.5, 3.5);
-    if (pool.length === 0) return;
+    } else if (region === "corrLong") {
+      // pg:corrG2 stands just past the gate, inside this corridor.
+      add("pg:corridorEnd", 5, 8); add("pg:corrG2", 4, 6);
+    } else if (region === "playroom") add("pg:playroom", 3.5, 3.5);
     // Only figures in front of the player and at a distance where they read as "far away".
     const usable = pool.filter((c) => {
       const tp = this.world.tag(c.tag)!;
       const dx = tp.x - p.x, dz = tp.z - p.z, dist = Math.hypot(dx, dz);
       return dist > c.hideDist + 1 && dist < 32 && (dx * p.lookX + dz * p.lookZ) / Math.max(dist, 0.01) > -0.2;
     });
-    if (usable.length === 0) return;
-    const c = usable[Math.floor(Math.random() * usable.length)];
-    const tp = this.world.tag(c.tag)!;
-    tp.obj.visible = true;
-    this.glimpse = { tag: c.tag, shown: 0, seen: 0, maxSeconds: c.maxSeconds, hideDist: c.hideDist };
+    if (usable.length > 0 && Math.random() < 0.6) {
+      const c = usable[Math.floor(Math.random() * usable.length)];
+      const tp = this.world.tag(c.tag)!;
+      tp.obj.visible = true;
+      this.glimpse = { obj: tp.obj, x: tp.x, z: tp.z, roamer: false, shown: 0, seen: 0, maxSeconds: c.maxSeconds, hideDist: c.hideDist };
+      return;
+    }
+    if (this.showRoamer(p)) return;
+    // Nowhere to stand one in view (a tiny room, facing a wall): it's behind you instead.
+    this.host.audio.playFunSound("steps", Math.random() < 0.5 ? -0.7 : 0.7, 0.5);
+    this.host.globalEvent("flicker_storm", 1.2);
+  }
+
+  /** Stands the roaming silhouette somewhere near the edge of sight, with a clear line to it. */
+  private showRoamer(p: { x: number; z: number; lookX: number; lookZ: number }): boolean {
+    const base = Math.atan2(p.lookX, p.lookZ);
+    const side = Math.random() < 0.5 ? 1 : -1;
+    for (const a of [0.4, 0.25, 0.6, 0.1]) {
+      for (const ang of [base + a * side, base - a * side]) {
+        for (const d of [11, 8, 14, 6]) {
+          const dx = Math.sin(ang), dz = Math.cos(ang);
+          if (!this.clearLine(p.x, p.z, dx, dz, d)) continue;
+          const x = p.x + dx * d, z = p.z + dz * d;
+          const obj = this.world.showRoamer(x, z, Math.atan2(p.x - x, p.z - z));
+          if (!obj) continue;
+          this.glimpse = { obj, x, z, roamer: true, shown: 0, seen: 0, maxSeconds: 4.5, hideDist: 4 };
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Every point on the way (and a little past it) is open floor: no wall, no shut door. */
+  private clearLine(x: number, z: number, dx: number, dz: number, dist: number): boolean {
+    for (let t = 1; t <= dist + 0.8; t += 0.7) {
+      if (!this.world.isOpenCell(Math.floor((x + dx * t) / CELL), Math.floor((z + dz * t) / CELL))) return false;
+    }
+    return true;
   }
 
   private updateGlimpse(delta: number, p: { x: number; z: number; lookX: number; lookZ: number }) {
     const g = this.glimpse;
     if (!g) return;
-    const tp = this.world.tag(g.tag);
-    if (!tp) { this.glimpse = null; return; }
     g.shown += delta;
-    const dx = tp.x - p.x, dz = tp.z - p.z, dist = Math.hypot(dx, dz);
+    const dx = g.x - p.x, dz = g.z - p.z, dist = Math.hypot(dx, dz);
     const facing = (dx * p.lookX + dz * p.lookZ) / Math.max(dist, 0.01);
     if (facing > 0.9) g.seen += delta;
     // Gone once it has been looked at, approached, or has stood there long enough.
     if (g.seen > 0.7 || dist < g.hideDist || g.shown > g.maxSeconds) {
-      tp.obj.visible = false;
+      if (g.roamer) this.world.hideRoamer(); else g.obj.visible = false;
       this.glimpse = null;
-      if (g.seen > 0.7) this.host.audio.playFunSound("steps", (dx > 0 ? 0.5 : -0.5), 0.3);
+      if (g.seen > 0.7) this.host.audio.playFunSound("steps", (dx > 0 ? 0.5 : -0.5), 0.35);
     }
   }
 }

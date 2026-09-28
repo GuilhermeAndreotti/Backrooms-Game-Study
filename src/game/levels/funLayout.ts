@@ -42,40 +42,50 @@ const rect = (id: string, kind: FunRectKind, x1: number, z1: number, x2: number,
  */
 export const FUN_RECTS: readonly FunRect[] = [
   // --- Puzzle 1 --------------------------------------------------------
-  rect("hallA", "hall", 2, 2, 12, 10),
-  rect("roomA2", "room", 2, 14, 6, 19),
-  rect("roomA3", "room", 9, 14, 13, 19),
-  rect("corrA2", "corridor", 4, 11, 4, 13),
-  rect("corrA3", "corridor", 11, 11, 11, 13),
-  rect("corrA23", "corridor", 7, 17, 8, 17),
-  rect("corrG1", "corridor", 13, 6, 14, 6),
+  rect("hallA", "hall", 2, 2, 8, 7),
+  rect("roomA2", "room", 2, 9, 5, 11),
+  rect("roomA3", "room", 7, 9, 10, 11),
+  rect("corrA2", "corridor", 4, 8, 4, 8),
+  rect("corrA3", "corridor", 8, 8, 8, 8),
+  rect("corrA23", "corridor", 6, 10, 6, 10),
+  rect("corrG1", "corridor", 9, 4, 10, 4),
 
   // --- Puzzle 2 --------------------------------------------------------
-  rect("hub", "hall", 15, 2, 38, 9),
-  rect("red", "room", 16, 13, 19, 18),
-  rect("blue", "room", 22, 13, 25, 18),
-  rect("yellow", "room", 28, 13, 31, 18),
-  rect("green", "room", 34, 13, 37, 18),
-  rect("corrRed", "corridor", 17, 10, 17, 12),
-  rect("corrBlue", "corridor", 23, 10, 23, 12),
-  rect("corrYellow", "corridor", 29, 10, 29, 12),
-  rect("corrGreen", "corridor", 35, 10, 35, 12),
-  rect("corrG2", "corridor", 39, 6, 44, 6),
+  rect("corrHubIn", "corridor", 11, 4, 11, 4),
+  rect("hub", "hall", 12, 2, 27, 6),
+  rect("red", "room", 12, 8, 14, 10),
+  rect("blue", "room", 16, 8, 18, 10),
+  rect("yellow", "room", 20, 8, 22, 10),
+  rect("green", "room", 24, 8, 26, 10),
+  rect("corrRed", "corridor", 13, 7, 13, 7),
+  rect("corrBlue", "corridor", 17, 7, 17, 7),
+  rect("corrYellow", "corridor", 21, 7, 21, 7),
+  rect("corrGreen", "corridor", 25, 7, 25, 7),
+  // Gate g2 sits at x=29, the MIDDLE cell of this straight run — both its
+  // neighbours here are corridor, not a turn, so the door actually blocks
+  // the only way through instead of standing beside an open bend.
+  rect("corrG2", "corridor", 28, 4, 30, 4),
 
   // --- Puzzle 3 --------------------------------------------------------
-  rect("corrLong", "corridor", 44, 7, 44, 22),
-  rect("depot", "room", 39, 14, 42, 20),
-  rect("corrDepot", "corridor", 43, 17, 43, 17),
-  rect("hallLast", "hall", 30, 23, 44, 41),
-  rect("kitchen", "room", 33, 44, 40, 46),
-  rect("corrKitchen", "corridor", 36, 42, 36, 43),
-  rect("playroom", "room", 20, 28, 25, 34),
-  rect("corrPlay", "corridor", 26, 31, 29, 31),
-  rect("corrExit", "corridor", 26, 38, 29, 38),
+  // Column x=30, not 29: the turn south happens one cell past the gate,
+  // never on the gate's own cell.
+  rect("corrLong", "corridor", 30, 5, 30, 16),
+  rect("depot", "room", 25, 13, 27, 15),
+  rect("corrDepot", "corridor", 28, 14, 29, 14),
+  rect("hallLast", "hall", 24, 17, 33, 24),
+  // Kept one column clear of corrExit's x=26 so the party room never touches
+  // the gated exit column directly (that would let players sidestep g3).
+  rect("kitchen", "room", 28, 26, 31, 27),
+  rect("corrKitchen", "corridor", 28, 25, 28, 25),
+  rect("playroom", "room", 18, 20, 20, 22),
+  rect("corrPlay", "corridor", 21, 21, 23, 21),
+  // Single-file, gated at its mouth (g3): the only way out of hallLast is
+  // straight through this column, never alongside it.
+  rect("corrExit", "corridor", 26, 25, 26, 27),
 ];
 
-export const FUN_SPAWN = { gx: 3, gz: 6 };
-export const FUN_EXIT = { gx: 26, gz: 38 };
+export const FUN_SPAWN = { gx: 3, gz: 4 };
+export const FUN_EXIT = { gx: 26, gz: 27 };
 
 export interface FunGate {
   id: string;
@@ -90,14 +100,14 @@ export interface FunGate {
 }
 
 export const FUN_GATES: readonly FunGate[] = [
-  { id: "g1", gx: 13, gz: 6, axis: "x", color: "yellow", variant: "blocked", closed: true },
-  { id: "g2", gx: 39, gz: 6, axis: "x", color: "purple", variant: "blocked", closed: true },
-  { id: "g3", gx: 29, gz: 38, axis: "x", color: "green", variant: "exit", closed: true },
+  { id: "g1", gx: 10, gz: 4, axis: "x", color: "yellow", variant: "blocked", closed: true },
+  { id: "g2", gx: 29, gz: 4, axis: "x", color: "purple", variant: "blocked", closed: true },
+  { id: "g3", gx: 26, gz: 25, axis: "z", color: "green", variant: "exit", closed: true },
   // The themed rooms' own doors: open, apart from the odd scripted slam.
-  { id: "doorRed", gx: 17, gz: 11, axis: "z", color: "red", variant: "normal", closed: false },
-  { id: "doorBlue", gx: 23, gz: 11, axis: "z", color: "blue", variant: "normal", closed: false },
-  { id: "doorYellow", gx: 29, gz: 11, axis: "z", color: "yellow", variant: "normal", closed: false },
-  { id: "doorGreen", gx: 35, gz: 11, axis: "z", color: "green", variant: "normal", closed: false },
+  { id: "doorRed", gx: 13, gz: 7, axis: "z", color: "red", variant: "normal", closed: false },
+  { id: "doorBlue", gx: 17, gz: 7, axis: "z", color: "blue", variant: "normal", closed: false },
+  { id: "doorYellow", gx: 21, gz: 7, axis: "z", color: "yellow", variant: "normal", closed: false },
+  { id: "doorGreen", gx: 25, gz: 7, axis: "z", color: "green", variant: "normal", closed: false },
 ];
 
 // ---------------------------------------------------------------------------

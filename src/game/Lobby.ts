@@ -11,6 +11,7 @@
  */
 
 import * as THREE from "three";
+import { Reflector } from "three/examples/jsm/objects/Reflector.js";
 export { LOBBY_LEVEL } from "./levels/constants";
 
 /** Layout in world metres (the hall itself is grid cells 2..21 x 2..15, 4 m each). */
@@ -22,6 +23,8 @@ export const LOBBY = {
   hall: { minCell: 2, maxCellX: 11, maxCellZ: 9 },
   /** The cheat terminal, off in the corner away from the pitch (world XZ). */
   terminal: { x: 44, z: 34 },
+  /** A full-length standing mirror near the spawn; its glass faces -X (toward the pitch). */
+  mirror: { x: 46.6, z: 16, width: 1.3, height: 2.2 },
 };
 
 const BALL_RADIUS = 0.35;
@@ -49,6 +52,8 @@ export interface LobbyUpdateContext {
 export class Lobby {
   public group = new THREE.Group();
   private ball: THREE.Mesh;
+  /** The mirror's glass (a planar render-to-texture reflection, see buildMirror). */
+  public mirror: Reflector | null = null;
 
   public x = LOBBY.field.cx;
   public z = LOBBY.field.cz;
@@ -71,6 +76,7 @@ export class Lobby {
     this.buildGoals();
     this.buildBenches();
     this.buildCheatTerminal();
+    this.buildMirror();
     this.ball = this.buildBall();
     scene.add(this.group);
   }
@@ -171,6 +177,56 @@ export class Lobby {
         l.position.set(cx + ox + lx, 0.25, cz + width / 2 + 1.8);
         this.group.add(l);
       }
+    }
+  }
+
+  /**
+   * A cheap full-length mirror: three's Reflector re-renders the scene from
+   * the mirrored camera into a texture each frame — no ray tracing, one extra
+   * low-res pass, and only while the glass faces the camera. GameEngine hangs
+   * a copy of the local explorer's avatar in front of it that only the
+   * reflection pass ever sees (see GameEngine.updateMirrorSelf).
+   */
+  private buildMirror() {
+    const { x, z, width, height } = LOBBY.mirror;
+    const root = new THREE.Group();
+    root.position.set(x, 0, z);
+    root.rotation.y = -Math.PI / 2; // local +Z (the glass's front) -> world -X
+    this.group.add(root);
+
+    const wood = this.track(new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.7 }));
+    const bottom = 0.15;
+    const glass = new Reflector(this.track(new THREE.PlaneGeometry(width, height)), {
+      textureWidth: 512,
+      textureHeight: 1024,
+      clipBias: 0.003,
+      color: 0xb8bcbf,
+    });
+    glass.position.set(0, bottom + height / 2, 0.03);
+    root.add(glass);
+    this.mirror = glass;
+    this.disposables.push({ dispose: () => glass.dispose() });
+
+    // Frame, back panel and two feet.
+    const t = 0.08;
+    const frame = [
+      [width + t * 2, t, 0, bottom + height + t / 2],
+      [width + t * 2, t, 0, bottom - t / 2],
+      [t, height, -width / 2 - t / 2, bottom + height / 2],
+      [t, height, width / 2 + t / 2, bottom + height / 2],
+    ];
+    for (const [w, h, fx, fy] of frame) {
+      const m = new THREE.Mesh(this.track(new THREE.BoxGeometry(w, h, 0.1)), wood);
+      m.position.set(fx, fy, 0.02);
+      root.add(m);
+    }
+    const back = new THREE.Mesh(this.track(new THREE.BoxGeometry(width, height, 0.03)), wood);
+    back.position.set(0, bottom + height / 2, -0.02);
+    root.add(back);
+    for (const fx of [-width / 2, width / 2]) {
+      const foot = new THREE.Mesh(this.track(new THREE.BoxGeometry(0.12, 0.08, 0.6)), wood);
+      foot.position.set(fx, 0.04, 0);
+      root.add(foot);
     }
   }
 

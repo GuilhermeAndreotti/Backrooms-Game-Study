@@ -7,11 +7,12 @@ import React, { useEffect, useRef, useState } from "react";
 import { Terminal, X, Check, Skull } from "lucide-react";
 import * as THREE from "three";
 import { t, useLanguage } from "../i18n";
-import { EntityType, WanderingEntity } from "../game/WanderingEntity";
+import { WanderingEntity, type SkinBodyChoice } from "../game/WanderingEntity";
+import { ALL_ENTITY_TYPES } from "../shared/entityTypes";
 
-/** The five monster bodies the SKIN cheat can hand out (mirrors GameEngine's MONSTER_SKIN_TYPES). */
-const SKIN_OPTIONS = ["DULLER", "HOUND", "CLUMP", "SKIN_STEALER", "WRETCH"] as const;
-export type SkinChoice = (typeof SKIN_OPTIONS)[number];
+/** Every body the SKIN cheat can hand out: all monsters plus the NPC looks (mirrors GameEngine's MONSTER_SKIN_TYPES). */
+const SKIN_OPTIONS: readonly SkinBodyChoice[] = [...ALL_ENTITY_TYPES, "OFFICE_WORKER", "PARTYGOER"];
+export type SkinChoice = SkinBodyChoice;
 
 /** Static 3D thumbnail used to identify each monster in the SKIN picker. */
 const MonsterSkinPreview: React.FC<{ type: SkinChoice }> = ({ type }) => {
@@ -35,7 +36,7 @@ const MonsterSkinPreview: React.FC<{ type: SkinChoice }> = ({ type }) => {
     key.position.set(2, 4, 4);
     scene.add(ambient, key);
 
-    const body = WanderingEntity.buildSkinMesh(type as EntityType);
+    const body = WanderingEntity.buildSkinMesh(type);
     const bounds = new THREE.Box3().setFromObject(body);
     const center = bounds.getCenter(new THREE.Vector3());
     const size = bounds.getSize(new THREE.Vector3());
@@ -184,7 +185,7 @@ export const CheatTerminalModal: React.FC<CheatTerminalModalProps> = ({ onSubmit
         ) : (
           <div>
             <p className="mt-4 text-[11px] text-[#ffb703]/80 uppercase leading-relaxed">{t("cheat.pickSkin")}</p>
-            <div className="mt-4 grid grid-cols-2 gap-2">
+            <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-[55vh] overflow-y-auto pr-1">
               <button
                 type="button"
                 id="btn-skin-none"
