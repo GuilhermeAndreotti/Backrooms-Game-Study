@@ -24,7 +24,7 @@ export class PlayerController {
 
   // Movement speed configuration (meters per second)
   private walkSpeed = 2.4;
-  private runSpeed = 4.2;
+  private runSpeed = 4.8;
   private crouchSpeed = 1.3;
 
   // Stamina parameters

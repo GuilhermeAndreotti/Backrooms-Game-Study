@@ -23,8 +23,8 @@ export const LOBBY = {
   hall: { minCell: 2, maxCellX: 11, maxCellZ: 9 },
   /** The cheat terminal, off in the corner away from the pitch (world XZ). */
   terminal: { x: 44, z: 34 },
-  /** A full-length standing mirror near the spawn; its glass faces -X (toward the pitch). */
-  mirror: { x: 46.6, z: 16, width: 1.3, height: 2.2 },
+  /** A big standing mirror right beside the cheat terminal; its glass faces -X (toward the pitch). */
+  mirror: { x: 44, z: 30, width: 2.2, height: 3.2 },
 };
 
 const BALL_RADIUS = 0.35;
@@ -197,7 +197,7 @@ export class Lobby {
     const wood = this.track(new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.7 }));
     const bottom = 0.15;
     const glass = new Reflector(this.track(new THREE.PlaneGeometry(width, height)), {
-      textureWidth: 512,
+      textureWidth: 768,
       textureHeight: 1024,
       clipBias: 0.003,
       color: 0xb8bcbf,
