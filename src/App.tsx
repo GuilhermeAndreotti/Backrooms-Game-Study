@@ -243,6 +243,13 @@ export default function App() {
     if (canvasEl) lockGameInput(canvasEl);
   }, []);
   const spacePowered = useCallback(() => engineRef.current?.spacePowered() ?? true, []);
+  /**
+   * An in-game panel (terminal, door panel, wiring...) is open. They release
+   * the pointer lock on purpose so the mouse can be used, which must not
+   * count as "the player left the game": no pause menu behind them.
+   */
+  const interfaceOpen = isTerminalOpen || isMegDoorOpen || isFunPanelOpen || isCheatTerminalOpen || isLevelSelectorOpen
+    || isAchievementsOpen || spaceTerminal !== null || spaceWiring !== null;
   useEffect(() => {
     if (currentLevel !== SPACE_LEVEL) { setSpaceTerminal(null); setSpaceWiring(null); }
   }, [currentLevel]);
@@ -1314,7 +1321,7 @@ export default function App() {
 
           {/* Locked Mouse Notice/Overlay */}
           {/* Locked Mouse Notice/Overlay (Custom Pause Menu with Diário) */}
-          {!pointerLocked && !pointerLockedOverride && !isInventoryOpen && !allDead && (
+          {!pointerLocked && !pointerLockedOverride && !isInventoryOpen && !allDead && !interfaceOpen && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#000000]/92 text-[#deb81d] z-50 text-center px-4 font-mono select-none">
               <div className="w-full max-w-3xl border border-[#a28e3b]/50 bg-[#14130a] rounded shadow-[0_0_50px_rgba(222,184,29,0.15)] flex flex-col h-[520px] max-h-[90vh] overflow-hidden pointer-events-auto">
                 
