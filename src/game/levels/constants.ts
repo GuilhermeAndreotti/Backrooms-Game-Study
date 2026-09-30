@@ -14,6 +14,12 @@ export const MOTION_LEVEL = 8;
 /** Level FUN: the abandoned children's party venue (secret, picked from the lobby). */
 export const FUN_LEVEL = 9;
 export const LOBBY_LEVEL = 10;
+/**
+ * Level 79 "Space Station" (picked from the lobby). 11 is skipped: it is
+ * Level FUN's *content* id, and contentLevelFor() maps 12 to itself, so this
+ * one number is both the network id and the id ProceduralMap sees.
+ */
+export const SPACE_LEVEL = 12;
 
 /** Main route after the lobby. */
 export const MAIN_LEVELS = [
@@ -23,6 +29,8 @@ export const MAIN_LEVELS = [
   ELECTRICAL_ROOM_LEVEL,
   ABANDONED_OFFICE_LEVEL,
   POOLROOMS_LEVEL,
+  // The Poolrooms' exit is a station door: the route ends in Level 79.
+  SPACE_LEVEL,
 ] as const;
 
 /** Content id ProceduralMap uses for Level FUN (9 is already the Abandoned Office's). */

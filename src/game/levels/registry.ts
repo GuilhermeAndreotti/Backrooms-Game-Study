@@ -20,6 +20,7 @@ import {
   LIGHTS_OUT_LEVEL,
   MOTION_LEVEL,
   POOLROOMS_LEVEL,
+  SPACE_LEVEL,
 } from "./constants";
 
 export const LEVEL_DEFS: Record<number, LevelDefinition> = {
@@ -148,6 +149,14 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
   [FUN_LEVEL]: {
     id: FUN_LEVEL,
     displayLabel: "LEVEL FUN",
+    spawn: { kind: "bespoke" },
+  },
+
+  // Level 79 ("Space Station"): no mobs at all. It is exploration and a
+  // navigation puzzle (see levels/spaceDirector.ts), never a chase.
+  [SPACE_LEVEL]: {
+    id: SPACE_LEVEL,
+    displayLabel: "LEVEL 79 · SPACE STATION",
     spawn: { kind: "bespoke" },
   },
 };

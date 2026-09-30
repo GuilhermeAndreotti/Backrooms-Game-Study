@@ -16,8 +16,11 @@ import { PauseSettings } from "./components/PauseSettings";
 import { LevelSelectorModal } from "./components/LevelSelectorModal";
 import { MegDoorModal } from "./components/MegDoorModal";
 import { FunPanelModal } from "./components/FunPanelModal";
+import { SpaceTerminalModal } from "./components/SpaceTerminalModal";
+import { SpaceWiringModal } from "./components/SpaceWiringModal";
+import type { SpaceTerminalId, WireColor } from "./game/levels/spaceLayout";
 import { AdSlot } from "./components/AdSlot";
-import { LOBBY_LEVEL, FUN_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, MOTION_LEVEL, nextMainLevel } from "./game/levels/constants";
+import { LOBBY_LEVEL, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, MOTION_LEVEL, nextMainLevel } from "./game/levels/constants";
 import { addAchievementListener, removeAchievementListener, unlockAchievement } from "./utils/achievements";
 import { isTypingInField, lockGameInput } from "./utils/input";
 import { EMPTY_FACE } from "./utils/face";
@@ -40,6 +43,7 @@ function displayLabelForLevel(level: number): string {
   if (level === LEVEL_G) return "LEVEL G · SECRET";
   if (level === MOTION_LEVEL) return "MOTION";
   if (level === FUN_LEVEL) return "LEVEL FUN";
+  if (level === SPACE_LEVEL) return "LEVEL 79 · SPACE STATION";
   return String(level);
 }
 
@@ -141,7 +145,12 @@ export default function App() {
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [isMegDoorOpen, setIsMegDoorOpen] = useState(false);
   const [isFunPanelOpen, setIsFunPanelOpen] = useState(false);
+  /** The current level's goal line on the HUD (Level FUN, Level 79). */
   const [funObjective, setFunObjective] = useState<string | null>(null);
+  /** Level 79: the terminal whose modal is open. */
+  const [spaceTerminal, setSpaceTerminal] = useState<SpaceTerminalId | null>(null);
+  /** Level 79: the power bus's wiring panel, open (with its layout) while the bus is still down. */
+  const [spaceWiring, setSpaceWiring] = useState<{ left: WireColor[]; right: WireColor[] } | null>(null);
   /** Level the explorer last escaped from, so the report can tell FUN's ending apart. */
   const [escapedFrom, setEscapedFrom] = useState<number | null>(null);
   const [megDialogue, setMegDialogue] = useState<{ name: string; grade: string; dialogue: string } | null>(null);
@@ -223,6 +232,20 @@ export default function App() {
   const socketRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const engineRef = useRef<GameEngine | null>(null);
+  const spaceTerminalView = useCallback(
+    () => (spaceTerminal ? engineRef.current?.spaceTerminalView(spaceTerminal) ?? null : null),
+    [spaceTerminal],
+  );
+  const closeSpaceTerminal = useCallback(() => {
+    setSpaceTerminal(null);
+    setSpaceWiring(null);
+    const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+    if (canvasEl) lockGameInput(canvasEl);
+  }, []);
+  const spacePowered = useCallback(() => engineRef.current?.spacePowered() ?? true, []);
+  useEffect(() => {
+    if (currentLevel !== SPACE_LEVEL) { setSpaceTerminal(null); setSpaceWiring(null); }
+  }, [currentLevel]);
 
   /**
    * Authoritative roster, mutated at network rate. `connectedPlayers` is a slow
@@ -341,6 +364,16 @@ export default function App() {
         return true;
       case "fun_panel":
         setIsFunPanelOpen(true);
+        document.exitPointerLock?.();
+        return true;
+      case "space_terminal":
+        setIsInventoryOpen(false);
+        setIsAchievementsOpen(false);
+        {
+          const wiring = engine.spaceTerminal === "power" ? engine.spaceTerminalView("power")?.wiring : undefined;
+          if (wiring) setSpaceWiring(wiring);
+          else setSpaceTerminal(engine.spaceTerminal);
+        }
         document.exitPointerLock?.();
         return true;
       case "terminal":
@@ -663,8 +696,6 @@ export default function App() {
                              level: nextLevel,
                            }));
                          }
-                      } else if (engine.level === POOLROOMS_LEVEL) {
-                        socketRef.current?.send(JSON.stringify({ type: "level_transition_request", level: LOBBY_LEVEL }));
                       } else if (engine.level === LIGHTS_OUT_LEVEL && socketRef.current?.readyState === WebSocket.OPEN) {
                         socketRef.current.send(JSON.stringify({ type: "level_transition_request", level: ELECTRICAL_ROOM_LEVEL, secret: true }));
                       } else if (engine.level === LEVEL_G && socketRef.current?.readyState === WebSocket.OPEN) {
@@ -1085,6 +1116,10 @@ export default function App() {
 
           else if (type === "fun_event") {
             engineRef.current?.applyFunEvent(data);
+          }
+
+          else if (type === "space_event") {
+            engineRef.current?.applySpaceEvent(data);
           }
 
           else if (type === "chat_message") {
@@ -1756,6 +1791,29 @@ export default function App() {
               }}
             />
           )}
+          {spaceWiring && currentLevel === SPACE_LEVEL && (
+            <SpaceWiringModal
+              left={spaceWiring.left}
+              right={spaceWiring.right}
+              isPowered={spacePowered}
+              onPlug={(ok) => engineRef.current?.spaceWireFeedback(ok)}
+              onSolved={() => engineRef.current?.spacePowerOn()}
+              onClose={closeSpaceTerminal}
+            />
+          )}
+          {spaceTerminal && currentLevel === SPACE_LEVEL && (
+            <SpaceTerminalModal
+              getView={spaceTerminalView}
+              onChoose={(target) => {
+                if (spaceTerminal === "orientation" || spaceTerminal === "destination" || spaceTerminal === "trajectory") {
+                  engineRef.current?.spaceChoose(spaceTerminal, target);
+                }
+              }}
+              onExecute={() => engineRef.current?.spaceExecute()}
+              onAbort={() => engineRef.current?.spaceAbort()}
+              onClose={closeSpaceTerminal}
+            />
+          )}
           {isMegDoorOpen && currentLevel === 4 && (
             <MegDoorModal
               onSubmit={(ids) => engineRef.current?.submitMegDoorIds(ids) ?? false}
@@ -2041,7 +2099,7 @@ export default function App() {
               <div className="space-y-4">
                 <h2 className="text-2xl font-black tracking-widest text-green-400 uppercase">{t("esc.doneTitle")}</h2>
                 <p className="text-sm text-green-300 uppercase leading-relaxed font-sans">
-                  {escapedFrom === FUN_LEVEL ? t("esc.funText") : t("esc.doneText2")}
+                  {escapedFrom === FUN_LEVEL ? t("esc.funText") : escapedFrom === SPACE_LEVEL ? t("esc.spaceText") : t("esc.doneText2")}
                 </p>
                 
                 <div className="p-4 bg-black/60 border border-green-950/60 rounded text-left space-y-1.5 text-xs text-[#a28e3b]/80">

@@ -16,7 +16,7 @@ import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { ALL_ENTITY_TYPES } from "./src/shared/entityTypes";
 import { ROOM_CHEATS, SUDO_CHEAT, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
-import { LOBBY_LEVEL, MAIN_LEVELS, FUN_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
+import { LOBBY_LEVEL, MAIN_LEVELS, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
 import { POOL_ROOM_COUNT, POOL_VALVE_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./src/game/poolroomsPuzzle";
 
 // ---------------------------------------------------------------------------
@@ -333,6 +333,8 @@ const MAX_SPEECH_LENGTH = 64;
 const GLOBAL_EVENTS = new Set(["flicker_storm", "blackout", "levelg_alarm"]);
 /** Level FUN puzzle facts a client may announce (see funDirector.ts). */
 const FUN_EVENT_KINDS = new Set(["p1_slot", "p2_solved", "p3_placed"]);
+/** Level 79 facts a client may announce (see spaceDirector.ts): power restored (0), a console set (0-8), a course executed (0 planet, 1 black hole), the planet course aborted (0). */
+const SPACE_EVENT_MAX_INDEX: Record<string, number> = { power: 0, set: 8, exec: 1, abort: 0 };
 
 function gridInt(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < 256 ? value : null;
@@ -430,15 +432,6 @@ function tryAdvanceRoom(room: Room) {
   const onLevel = Array.from(room.players.values()).filter((p) => p.level === room.level);
   if (!onLevel.some((p) => p.exitReady)) return;
   if (onLevel.some((p) => !p.dead && !p.exitReady)) return;
-
-  if (room.level === POOLROOMS_LEVEL) {
-    room.level = LOBBY_LEVEL;
-    reviveAll(room);
-    room.players.forEach((p) => { p.level = LOBBY_LEVEL; p.exitReady = false; room.dirty.add(p.id); });
-    refreshAuthority(room);
-    broadcastToRoom(room, { type: "return_to_lobby", level: LOBBY_LEVEL, seed: room.seed, completed: true });
-    return;
-  }
 
   const expected = nextMainLevel(room.level);
   if (expected === null) return;
@@ -666,7 +659,7 @@ async function startServer() {
         p.flashlight = typeof data.flashlight === "boolean" ? data.flashlight : p.flashlight;
         p.state = typeof data.state === "string" ? data.state.slice(0, 16) : p.state;
         const requestedPlayerLevel = finiteNumber(data.level, p.level);
-        const isPrivateLevel = requestedPlayerLevel === LIGHTS_OUT_LEVEL || requestedPlayerLevel === LEVEL_G || requestedPlayerLevel === MOTION_LEVEL || requestedPlayerLevel === FUN_LEVEL;
+        const isPrivateLevel = requestedPlayerLevel === LIGHTS_OUT_LEVEL || requestedPlayerLevel === LEVEL_G || requestedPlayerLevel === MOTION_LEVEL || requestedPlayerLevel === FUN_LEVEL || requestedPlayerLevel === SPACE_LEVEL;
         const isAllowedMainLevel = (MAIN_LEVELS as readonly number[]).includes(requestedPlayerLevel) || requestedPlayerLevel === LOBBY_LEVEL;
         if (Number.isInteger(requestedPlayerLevel) && (isPrivateLevel || (isAllowedMainLevel && requestedPlayerLevel === room.level))) {
           p.level = requestedPlayerLevel;
@@ -743,6 +736,18 @@ async function startServer() {
         return;
       }
 
+      // Level 79: same shape as fun_event — idempotent facts every client
+      // replays into the same timeline, so only the kind and range are checked.
+      if (type === "space_event") {
+        const level = conn.player.level;
+        const kind = data.kind;
+        const index = data.index;
+        if (level !== SPACE_LEVEL || data.level !== level || typeof kind !== "string" || !Object.hasOwn(SPACE_EVENT_MAX_INDEX, kind)) return;
+        if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > SPACE_EVENT_MAX_INDEX[kind]) return;
+        broadcastToLevel(room, level, { type: "space_event", level, kind, index }, conn);
+        return;
+      }
+
       // Level G: a non-authority player typed a code into the terminal. The
       // authority decides (alarm for everyone, or sets the monster on them).
       if (type === "levelg_code") {
@@ -804,9 +809,9 @@ async function startServer() {
           return;
         }
 
+        // (The Poolrooms used to end the route here; its exit now leads on to Level 79.)
         const expected = nextMainLevel(room.level);
-        const completingPoolrooms = room.level === POOLROOMS_LEVEL && requested === LOBBY_LEVEL;
-        if ((!expected || requested !== expected) && !completingPoolrooms) return;
+        if (!expected || requested !== expected) return;
         if (conn.player.level !== room.level) return;
         if (requested === POOLROOMS_LEVEL) resetPoolroomsState(room);
 
@@ -856,7 +861,7 @@ async function startServer() {
       if (type === "start_game") {
         if (room.level !== LOBBY_LEVEL || room.hostId !== conn.player.id) return;
         const requestedLevel = data.level === undefined ? 0 : data.level;
-        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || (requestedLevel > MOTION_LEVEL && requestedLevel !== FUN_LEVEL) || requestedLevel === LOBBY_LEVEL) return;
+        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || (requestedLevel > MOTION_LEVEL && requestedLevel !== FUN_LEVEL && requestedLevel !== SPACE_LEVEL) || requestedLevel === LOBBY_LEVEL) return;
         room.level = requestedLevel;
         resetPoolroomsState(room);
         reviveAll(room);

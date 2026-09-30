@@ -10,7 +10,9 @@ import { DynamicLightSource } from "./LightPool";
 import { QualityProfile, getQualityProfile } from "./Quality";
 import { NoiseBus } from "./systems/noiseBus";
 import { VisitTracker } from "./systems/visitTracker";
-import { contentLevelFor, FUN_CONTENT_LEVEL } from "./levels/constants";
+import { contentLevelFor, FUN_CONTENT_LEVEL, SPACE_LEVEL } from "./levels/constants";
+import { SpaceWorld } from "./levels/spaceWorld";
+import { SPACE_GRID, SPACE_RECTS, SPACE_SPAWN } from "./levels/spaceLayout";
 import { FunWorld } from "./levels/funWorld";
 import { FUN_EXIT, FUN_RECTS, FUN_SPAWN } from "./levels/funLayout";
 import * as Decor from "./LevelDecor";
@@ -87,6 +89,7 @@ export const LEVEL_G_DOOR_OPEN_ANGLE = -Math.PI * 0.55;
 export function gridSizeForLevel(level: number): number {
   level = contentLevelFor(level);
   if (level === 4) return 18; // Level G: a small office, on purpose
+  if (level === SPACE_LEVEL) return SPACE_GRID; // Level 79: a hand-laid station
   if (level === LOBBY_LEVEL) return 16; // the room lobby: small, open-air
   if (level === 6 || level === 7) return 40; // the new main-progression levels — simpler layouts than 1/2, a smaller grid to match
   if (level === 3 || level === 8 || level === 9) return 48;
@@ -543,6 +546,7 @@ export class ProceduralMap {
     this.prng = new SeededRandom(seed);
     this.initMaterials();
     if (this.level === FUN_CONTENT_LEVEL) this.fun = this.createFunWorld();
+    if (this.level === SPACE_LEVEL) this.space = this.createSpaceWorld();
     this.generateGrid();
     this.findExitPath();
   }
@@ -692,7 +696,7 @@ export class ProceduralMap {
 
     // Level G: no breadcrumbs, drafts or wet trails to the exit — finding the
     // emergency door (and earning it) is the level.
-    if (this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL) foundPath = [];
+    if (this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL || this.level === SPACE_LEVEL) foundPath = [];
 
     this.exitPath = foundPath;
     this.exitPathSet.clear();
@@ -1954,6 +1958,8 @@ export class ProceduralMap {
       this.carveLevel4Office();
     } else if (this.level === FUN_CONTENT_LEVEL) {
       this.carveFun();
+    } else if (this.level === SPACE_LEVEL) {
+      this.carveSpace();
     } else if (this.level === LOBBY_LEVEL) {
       this.carveLobby();
     } else if (this.level === 3) {
@@ -2250,7 +2256,7 @@ export class ProceduralMap {
 
     // Level G is hand-laid; the generic spawn clearing below would punch
     // through its reception walls.
-    if (this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL) return;
+    if (this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL || this.level === SPACE_LEVEL) return;
 
     // Ensure spawn around (2,2) is safe, walkable, and fully cleared
     for (let dx = -1; dx <= 2; dx++) {
@@ -2923,6 +2929,40 @@ export class ProceduralMap {
     });
   }
 
+  /**
+   * Level 79: the hand-authored station of spaceLayout.ts. There is no exit
+   * cell (exitGrid stays 0,0, which the engine reads as "none"): the level is
+   * won from the observation deck by the director.
+   */
+  private carveSpace() {
+    for (const r of SPACE_RECTS) {
+      const type = r.kind === "corridor" ? CellType.CORRIDOR : r.kind === "hall" ? CellType.OPEN_AREA : CellType.ROOM_LARGE;
+      for (let x = r.x1; x <= r.x2; x++) for (let z = r.z1; z <= r.z2; z++) this.grid[x][z] = type;
+    }
+    this.spawnGridX = SPACE_SPAWN.gx;
+    this.spawnGridZ = SPACE_SPAWN.gz;
+    this.exitGridX = 0;
+    this.exitGridZ = 0;
+  }
+
+  private createSpaceWorld(): SpaceWorld {
+    this.decorKit ??= {
+      geo: (key, build) => this.sharedGeo(key, build),
+      mat: (key, build) => this.sharedMat(key, build),
+      wallTile: this.wallMaterial,
+      track: (texture) => { this.sharedTextures.push(texture); },
+    };
+    return new SpaceWorld({
+      kit: this.decorKit,
+      seed: this.seed,
+      registerLight: (gx, gz, x, y, z, color, intensity, distance, decay) => this.registerLight(gx, gz, x, y, z, color, intensity, distance, decay),
+      addObstacle: (gx, gz, x, z, radius) => { this.addObstacle(gx, gz, x, z, radius); },
+      pushFixture: (fixture) => { this.lightFixtures.push(fixture); },
+      glassOn: this.fluorescentGlassOn as THREE.MeshBasicMaterial,
+      glassOff: this.fluorescentGlassOff,
+    });
+  }
+
   /** The room lobby: a small open-air plot, no exit; props are added by Lobby. */
   private carveLobby() {
     const h = LOBBY.hall;
@@ -3524,13 +3564,51 @@ export class ProceduralMap {
     this.poolWaterMeshes.push(water);
 
     if (gx === this.exitGridX && gz === this.exitGridZ) {
+      // The way on to Level 79: a white metal station door, with a window full of space.
       const door = new THREE.Group();
-      const frameMat = this.sharedMat("pool_exit_frame", () => new THREE.MeshStandardMaterial({ color: 0x176b7c, metalness: 0.65, roughness: 0.28, emissive: 0x07313c, emissiveIntensity: 0.65 }));
-      const leafMat = this.sharedMat("pool_exit_leaf", () => new THREE.MeshStandardMaterial({ color: 0x0d4d62, metalness: 0.35, roughness: 0.3, emissive: 0x0b5064, emissiveIntensity: 0.9 }));
-      const frame = new THREE.Mesh(this.sharedGeo("pool_exit_frame", () => new THREE.BoxGeometry(1.8, 2.25, 0.16)), frameMat);
-      frame.position.set(0, POOL_FLOOR_Y + 1.12, -this.cellSize / 2 + 0.1); door.add(frame);
-      const leaf = new THREE.Mesh(this.sharedGeo("pool_exit_leaf", () => new THREE.BoxGeometry(1.54, 1.96, 0.08)), leafMat);
-      leaf.position.set(0, POOL_FLOOR_Y + 1.1, -this.cellSize / 2 + 0.01); door.add(leaf);
+      const edgeZ = -this.cellSize / 2;
+      const frameMat = this.sharedMat("pool_exit_frame_white", () => new THREE.MeshStandardMaterial({ color: 0xc9d0d6, metalness: 0.6, roughness: 0.35 }));
+      const leafMat = this.sharedMat("pool_exit_leaf_white", () => new THREE.MeshStandardMaterial({ color: 0xeef2f5, metalness: 0.45, roughness: 0.3 }));
+      const trimMat = this.sharedMat("pool_exit_trim", () => new THREE.MeshStandardMaterial({ color: 0x8a939b, metalness: 0.7, roughness: 0.3 }));
+      const frame = new THREE.Mesh(this.sharedGeo("pool_exit_frame_w", () => new THREE.BoxGeometry(1.9, 2.4, 0.18)), frameMat);
+      frame.position.set(0, POOL_FLOOR_Y + 1.2, edgeZ + 0.09); door.add(frame);
+      const leaf = new THREE.Mesh(this.sharedGeo("pool_exit_leaf_w", () => new THREE.BoxGeometry(1.5, 2.1, 0.08)), leafMat);
+      leaf.position.set(0, POOL_FLOOR_Y + 1.08, edgeZ + 0.2); door.add(leaf);
+      // Pressed panel lines and a handle, so it reads as a hatch rather than a slab.
+      for (const y of [0.45, 1.2]) {
+        const seam = new THREE.Mesh(this.sharedGeo("pool_exit_seam", () => new THREE.BoxGeometry(1.3, 0.025, 0.02)), trimMat);
+        seam.position.set(0, POOL_FLOOR_Y + y, edgeZ + 0.25); door.add(seam);
+      }
+      const handle = new THREE.Mesh(this.sharedGeo("pool_exit_handle", () => new THREE.BoxGeometry(0.06, 0.34, 0.06)), trimMat);
+      handle.position.set(0.55, POOL_FLOOR_Y + 1.0, edgeZ + 0.27); door.add(handle);
+      // The window: a thick ring of frame around a pane of stars and a far-off, orange-rimmed dark.
+      const windowFrame = new THREE.Mesh(this.sharedGeo("pool_exit_window_frame", () => new THREE.TorusGeometry(0.3, 0.05, 10, 28)), trimMat);
+      windowFrame.position.set(0, POOL_FLOOR_Y + 1.62, edgeZ + 0.25); door.add(windowFrame);
+      const spaceMat = this.sharedMat("pool_exit_space", () => {
+        const c = document.createElement("canvas");
+        c.width = c.height = 256;
+        const ctx = c.getContext("2d")!;
+        ctx.fillStyle = "#020309"; ctx.fillRect(0, 0, 256, 256);
+        const rng = new SeededRandom(7979);
+        for (let i = 0; i < 140; i++) {
+          const b = 120 + Math.floor(rng.next() * 135);
+          ctx.fillStyle = `rgb(${b},${b},${Math.min(255, b + 20)})`;
+          ctx.fillRect(rng.next() * 256, rng.next() * 256, rng.next() < 0.1 ? 2 : 1, 1);
+        }
+        const glow = ctx.createRadialGradient(170, 150, 14, 170, 150, 70);
+        glow.addColorStop(0, "rgba(255,190,110,0.95)");
+        glow.addColorStop(0.3, "rgba(255,120,40,0.45)");
+        glow.addColorStop(1, "rgba(255,90,20,0)");
+        ctx.fillStyle = glow; ctx.fillRect(0, 0, 256, 256);
+        ctx.fillStyle = "#000"; ctx.beginPath(); ctx.arc(170, 150, 16, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "rgba(90,160,255,0.9)"; ctx.beginPath(); ctx.arc(205, 118, 6, 0, Math.PI * 2); ctx.fill();
+        const tex = new THREE.CanvasTexture(c);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        this.sharedTextures.push(tex);
+        return new THREE.MeshBasicMaterial({ map: tex, fog: false });
+      });
+      const pane = new THREE.Mesh(this.sharedGeo("pool_exit_pane", () => new THREE.CircleGeometry(0.3, 28)), spaceMat);
+      pane.position.set(0, POOL_FLOOR_Y + 1.62, edgeZ + 0.245); door.add(pane);
       door.position.set(posX, 0, posZ);
       door.visible = this.poolroomsSolved;
       group.add(door);
@@ -3623,6 +3701,9 @@ export class ProceduralMap {
 
   /** Level FUN's world (geometry, props, gates); null on every other level. */
   public fun: FunWorld | null = null;
+
+  /** Level 79's station (geometry, doors, screens, lights); null on every other level. */
+  public space: SpaceWorld | null = null;
 
   /** Whether a Level 3/4 cell may take a thin wall divider without crowding anything. */
   private dividerAllowed(gx: number, gz: number, cellType: CellType): boolean {
@@ -3769,6 +3850,8 @@ export class ProceduralMap {
 
     // Level FUN builds every cell itself (see levels/funWorld.ts).
     if (this.fun && cellType !== CellType.SOLID) return this.fun.createCell(gx, gz);
+    // Level 79 likewise (see levels/spaceWorld.ts).
+    if (this.space && cellType !== CellType.SOLID) return this.space.createCell(gx, gz);
 
     if (cellType === CellType.SOLID) {
       // Solid cells are wall blocks. We construct walls outward towards neighbors
@@ -3942,25 +4025,25 @@ export class ProceduralMap {
         this.registerLight(gx, gz, lightX, 1.1, lightZ, 0xff3b18, 4.5, 7.0, 1.0);
       }
       if (gx === this.level3GateX && gz === this.level3GateZ && !this.level3GateOpen) {
-        const gateMat = this.sharedMat("level3_gate", () => new THREE.MeshStandardMaterial({ color: 0x202326, metalness: 0.9, roughness: 0.3 }));
-        const barGeo = this.sharedGeo("level3_gate_bar", () => new THREE.CylinderGeometry(0.055, 0.055, height - 0.18, 8));
+        // A plain wooden door out of place in the brick service halls, sealing
+        // off the final approach until every panel is switched on.
+        const frameMat = this.officeMat("level3_gate_frame", 0x3d3024, 0.75);
+        const leafMat = this.officeMat("level3_gate_leaf", 0x6f5a41, 0.7);
         const gate = new THREE.Group();
         gate.name = "level3_exit_gate";
         const gateLength = this.cellSize - 0.2;
-        for (let z = -gateLength / 2 + 0.22; z < gateLength / 2; z += 0.42) {
-          const bar = new THREE.Mesh(barGeo, gateMat);
-          bar.position.set(0, height / 2, z);
-          gate.add(bar);
-        }
-        const header = new THREE.Mesh(this.sharedGeo("level3_gate_frame", () => new THREE.BoxGeometry(0.16, 0.16, gateLength)), gateMat);
-        header.position.set(0, height - 0.08, 0); gate.add(header);
-        const postGeo = this.sharedGeo("level3_gate_post", () => new THREE.BoxGeometry(0.16, height, 0.16));
+        const doorH = height - 0.18;
+        const header = new THREE.Mesh(this.officeBox(0.16, 0.2, gateLength), frameMat);
+        header.position.set(0, doorH + 0.02, 0); gate.add(header);
+        const postGeo = this.officeBox(0.16, doorH, 0.16);
         for (const z of [-gateLength / 2, gateLength / 2]) {
-          const post = new THREE.Mesh(postGeo, gateMat);
-          post.position.set(0, height / 2, z); gate.add(post);
+          const post = new THREE.Mesh(postGeo, frameMat);
+          post.position.set(0, doorH / 2, z); gate.add(post);
         }
-        const warning = new THREE.Mesh(this.sharedGeo("level3_gate_warning", () => new THREE.BoxGeometry(0.08, 0.08, gateLength)), this.sharedMat("level3_gate_warning", () => new THREE.MeshBasicMaterial({ color: 0xff5a24 })));
-        warning.position.set(-0.1, 2.55, 0); gate.add(warning);
+        const leaf = new THREE.Mesh(this.officeBox(0.06, doorH - 0.08, gateLength - 0.24), leafMat);
+        leaf.position.set(0.02, doorH / 2, 0); gate.add(leaf);
+        const knob = new THREE.Mesh(this.sharedGeo("level3_gate_knob", () => new THREE.SphereGeometry(0.035, 8, 8)), this.officeMat("brass", 0xb08d3c, 0.3, 0.8));
+        knob.position.set(0.09, doorH / 2, gateLength / 2 - 0.3); gate.add(knob);
         gate.position.set(this.level3GateX * this.cellSize + 0.08, 0, (this.level3GateZ + 0.5) * this.cellSize);
         group.add(gate);
         this.level3GateMesh = gate;
@@ -3969,6 +4052,25 @@ export class ProceduralMap {
         const lowHeader = new THREE.Mesh(this.sharedGeo("level3_low_header", () => new THREE.BoxGeometry(hSize, 0.35, 0.18)), this.wallMaterial);
         lowHeader.position.set(posX, 1.42, posZ - hSize / 2);
         group.add(lowHeader);
+      }
+      // The last stretch before the wooden door reads as a clean white
+      // corridor, breaking from the grimy brick halls behind it.
+      if (this.level3LowCorridor.has(`${gx},${gz}`) || (gx === this.level3GateX && gz === this.level3GateZ) || (gx === this.exitGridX && gz === this.exitGridZ)) {
+        const whiteWallMat = this.sharedMat("level3_white_wall", () => new THREE.MeshStandardMaterial({ color: 0xf2f2ec, roughness: 0.55, metalness: 0.05 }));
+        const whiteFloorMat = this.sharedMat("level3_white_floor", () => new THREE.MeshStandardMaterial({ color: 0xe4e4dc, roughness: 0.5, metalness: 0.0 }));
+        const floorOverlay = new THREE.Mesh(this.sharedGeo("level3_white_floor_plane", () => new THREE.PlaneGeometry(hSize, hSize)), whiteFloorMat);
+        floorOverlay.rotation.x = -Math.PI / 2;
+        floorOverlay.position.set(posX, 0.01, posZ);
+        group.add(floorOverlay);
+        const wallPlaneGeo = this.sharedGeo("level3_white_wall_plane", () => new THREE.PlaneGeometry(hSize, height - 0.05));
+        for (const [wdx, wdz] of [[0, -1], [0, 1], [-1, 0], [1, 0]] as [number, number][]) {
+          if (this.grid[gx + wdx]?.[gz + wdz] !== CellType.SOLID) continue;
+          const wallOverlay = new THREE.Mesh(wallPlaneGeo, whiteWallMat);
+          wallOverlay.position.set(posX + wdx * (hSize / 2 - 0.03), (height - 0.05) / 2, posZ + wdz * (hSize / 2 - 0.03));
+          wallOverlay.rotation.y = Math.atan2(wdx, wdz) + Math.PI;
+          group.add(wallOverlay);
+        }
+        this.registerLight(gx, gz, posX, height - 0.4, posZ, 0xffffff, 3.2, 7.5, 1.1);
       }
     }
 
@@ -4114,14 +4216,38 @@ export class ProceduralMap {
       }
       // The employees themselves are animated NPCs (npc/OfficeWorker.ts), spawned by GameEngine.
       if (gx === this.level4DoorX && gz === this.level4DoorZ) {
-        const blue = this.sharedMat("meg_blue_door", () => new THREE.MeshStandardMaterial({ color: 0x155e91, emissive: 0x0b3554, emissiveIntensity: 0.55, metalness: 0.55, roughness: 0.35 }));
+        // A blue office door, dressed with the same wood frame and brass
+        // fittings as Level G's doors — the devs' code unlocks it to swing open.
+        const doorH = 2.65;
+        const frameMat = this.officeMat("meg_door_frame", 0x3d3024, 0.75);
+        const leafMat = this.officeMat("meg_blue_leaf", 0x1d5f8f, 0.4, 0.5, 0x0b3554);
+        const insetMat = this.officeMat("meg_blue_inset", 0x2a76ad, 0.35, 0.55, 0x123a55);
+
+        // Fixed frame, mounted on the wall and left untouched when the leaf swings open.
+        const frame = new THREE.Group();
+        const header = new THREE.Mesh(this.officeBox(0.2, height - doorH, hSize - 0.2), frameMat);
+        header.position.set(hSize / 2 - 0.02, doorH + (height - doorH) / 2, 0);
+        frame.add(header);
+        for (const side of [-1, 1]) {
+          const post = new THREE.Mesh(this.officeBox(0.16, doorH, 0.16), frameMat);
+          post.position.set(hSize / 2 - 0.02, doorH / 2, side * (hSize / 2 - 0.1));
+          frame.add(post);
+        }
+        frame.position.set(posX, 0, posZ);
+        group.add(frame);
+
         const door = new THREE.Group();
         door.name = "meg_exit_door_leaf";
-        const leaf = new THREE.Mesh(this.sharedGeo("meg_blue_door", () => new THREE.BoxGeometry(0.16, 2.65, hSize - 0.35)), blue);
-        leaf.position.set(hSize / 2 - 0.08, 1.32, 0); door.add(leaf);
+        const leaf = new THREE.Mesh(this.sharedGeo("meg_blue_door", () => new THREE.BoxGeometry(0.16, doorH - 0.08, hSize - 0.35)), leafMat);
+        leaf.position.set(hSize / 2 - 0.08, doorH / 2, 0); door.add(leaf);
+        const inset = new THREE.Mesh(this.officeBox(0.03, doorH - 0.5, hSize - 0.75), insetMat);
+        inset.position.set(hSize / 2 - 0.005, doorH / 2, 0); door.add(inset);
+        const handle = new THREE.Mesh(this.sharedGeo("meg_door_handle", () => new THREE.BoxGeometry(0.05, 0.05, 0.28)), this.officeMat("brass", 0xb08d3c, 0.3, 0.8));
+        handle.position.set(hSize / 2 - 0.16, doorH / 2, hSize / 2 - 0.55); door.add(handle);
         door.position.set(posX, 0, posZ);
         if (this.level4DoorOpen) door.rotation.y = Math.PI / 2;
         group.add(door);
+
         const sign = new THREE.Mesh(this.sharedGeo("meg_door_sign", () => new THREE.BoxGeometry(1.25, 0.22, 0.04)), this.sharedMat("meg_door_sign", () => new THREE.MeshBasicMaterial({ color: 0x8bd5ff })));
         sign.position.set(posX + hSize / 2 + 0.02, 2.42, posZ); sign.rotation.y = Math.PI / 2; group.add(sign);
       }
@@ -4176,14 +4302,21 @@ export class ProceduralMap {
       }
     }
 
-    // Pipe Dreams final narrow corridor styling
+    // Pipe Dreams final narrow corridor styling — leans harder into the pipe
+    // theming so the approach to the Level 2 portal reads as a preview of it,
+    // without touching the portal's own rusty/orange color scheme.
     if (this.level === 1 && gx >= 38 && gz === 45) {
-      // Create hot copper pipes on the walls/ceiling
+      const pipeRng = new SeededRandom(this.seed + gx * 97 + gz * 53);
       const pipeGeo = this.sharedGeo("pipe_06", () => new THREE.CylinderGeometry(0.06, 0.06, hSize + 0.1, 6));
       const hotPipeMat = this.sharedMat("pipe_copper", () => new THREE.MeshStandardMaterial({
         color: 0xb55a30, // Copper red/orange pipe color
         roughness: 0.18,
         metalness: 0.85
+      }));
+      const dirtyIronPipeMat = this.sharedMat("pipe_iron", () => new THREE.MeshStandardMaterial({
+        color: 0x5a5c5e, // Dirty dark iron pipe color
+        roughness: 0.35,
+        metalness: 0.9
       }));
 
       // Ceiling pipe 1
@@ -4197,6 +4330,20 @@ export class ProceduralMap {
       ceilPipe2.rotation.z = Math.PI / 2;
       ceilPipe2.position.set(posX, height - 0.25, posZ + 0.6);
       group.add(ceilPipe2);
+
+      // A third, dirtier ceiling pipe and a pair of wall-mounted risers, the
+      // same density Level 2's "Pipe Dreams" corridors use.
+      const ceilPipe3 = new THREE.Mesh(pipeGeo, dirtyIronPipeMat);
+      ceilPipe3.rotation.z = Math.PI / 2;
+      ceilPipe3.position.set(posX, height - 0.5, posZ);
+      group.add(ceilPipe3);
+
+      const wallPipeGeo = this.sharedGeo("pipe_048", () => new THREE.CylinderGeometry(0.048, 0.048, height - 0.3, 6));
+      for (const side of [-1, 1]) {
+        const wallPipe = new THREE.Mesh(wallPipeGeo, pipeRng.next() > 0.5 ? hotPipeMat : dirtyIronPipeMat);
+        wallPipe.position.set(posX + pipeRng.nextRange(-1.1, 1.1), (height - 0.3) / 2, posZ + side * (hSize / 2 - 0.15));
+        group.add(wallPipe);
+      }
 
       // Add soft glowing hot red/orange lights under the pipes (pooled)
       this.registerLight(gx, gz, posX, fY + height - 0.4, posZ, 0xff5a1a, 2.4, 6.5, 1.2);
@@ -6907,6 +7054,7 @@ export class ProceduralMap {
    */
   public clearAll(scene: THREE.Scene) {
     this.fun = null;
+    this.space = null;
     this.lastCulledX = -9999;
     this.lastCulledZ = -9999;
     this.visibleCellKeys.clear();

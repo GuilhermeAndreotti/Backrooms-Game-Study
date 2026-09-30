@@ -1827,11 +1827,181 @@ export class AudioManager {
     setTimeout(() => { try { out.disconnect(); panner.disconnect(); } catch { /* gone */ } }, 3500);
   }
 
+  // ---------------------------------------------------------------------
+  // Level 79 — a station still breathing through its vents, and the deep
+  // groan of the hull as it is pulled towards something very heavy.
+  // ---------------------------------------------------------------------
+  private spaceAmbience: { nodes: AudioScheduledSourceNode[]; out: GainNode; rumble: GainNode } | null = null;
+
+  /** Starts the station bed (ventilation hiss, electrical hum, a silent rumble). Returns false until audio is ready. */
+  public startSpaceAmbience(): boolean {
+    if (!this.ctx || !this.masterGain) return false;
+    if (this.spaceAmbience) return true;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.0001, t);
+    out.gain.linearRampToValueAtTime(this.settings.volumeHum * 0.5, t + 3);
+    out.connect(this.masterGain);
+
+    const vent = ctx.createBufferSource();
+    vent.buffer = this.noise();
+    vent.loop = true;
+    const ventFilter = ctx.createBiquadFilter();
+    ventFilter.type = "bandpass";
+    ventFilter.frequency.value = 420;
+    ventFilter.Q.value = 0.6;
+    const ventGain = ctx.createGain();
+    ventGain.gain.value = 0.05;
+    // The air handlers cycle slowly, like breathing.
+    const ventLfo = ctx.createOscillator();
+    ventLfo.frequency.value = 0.07;
+    const ventDepth = ctx.createGain();
+    ventDepth.gain.value = 0.02;
+    ventLfo.connect(ventDepth);
+    ventDepth.connect(ventGain.gain);
+    vent.connect(ventFilter);
+    ventFilter.connect(ventGain);
+    ventGain.connect(out);
+
+    const hum = ctx.createOscillator();
+    hum.type = "sawtooth";
+    hum.frequency.value = 100;
+    const humFilter = ctx.createBiquadFilter();
+    humFilter.type = "lowpass";
+    humFilter.frequency.value = 240;
+    const humGain = ctx.createGain();
+    humGain.gain.value = 0.012;
+    hum.connect(humFilter);
+    humFilter.connect(humGain);
+    humGain.connect(out);
+
+    const rumbleSrc = ctx.createBufferSource();
+    rumbleSrc.buffer = this.noise();
+    rumbleSrc.loop = true;
+    const rumbleFilter = ctx.createBiquadFilter();
+    rumbleFilter.type = "lowpass";
+    rumbleFilter.frequency.value = 90;
+    const sub = ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.value = 34;
+    const subGain = ctx.createGain();
+    subGain.gain.value = 0.5;
+    const rumble = ctx.createGain();
+    rumble.gain.value = 0;
+    rumbleSrc.connect(rumbleFilter);
+    rumbleFilter.connect(rumble);
+    sub.connect(subGain);
+    subGain.connect(rumble);
+    rumble.connect(out);
+
+    for (const n of [vent, ventLfo, hum, rumbleSrc, sub]) n.start(t);
+    this.spaceAmbience = { nodes: [vent, ventLfo, hum, rumbleSrc, sub], out, rumble };
+    return true;
+  }
+
+  /** 0 (still) .. 1 (the hull groaning under the pull). */
+  public setSpaceRumble(amount: number) {
+    if (!this.ctx || !this.spaceAmbience) return;
+    const target = Math.max(0, Math.min(1, amount)) * 0.9;
+    this.spaceAmbience.rumble.gain.setTargetAtTime(target, this.ctx.currentTime, 0.25);
+  }
+
+  public stopSpaceAmbience() {
+    const a = this.spaceAmbience;
+    this.spaceAmbience = null;
+    if (!a || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    a.out.gain.cancelScheduledValues(t);
+    a.out.gain.setValueAtTime(a.out.gain.value, t);
+    a.out.gain.linearRampToValueAtTime(0.0001, t + 0.4);
+    setTimeout(() => a.nodes.forEach((n) => { try { n.stop(); n.disconnect(); } catch { /* already stopped */ } }), 500);
+  }
+
+  /** One-shot station sounds. `pan` is -1..1, `volume` 0..1 (already attenuated by distance). */
+  public playSpaceSound(kind: "doorOpen" | "doorClose" | "confirm" | "error" | "lock" | "arrival" | "power", pan = 0, volume = 1) {
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.value = Math.max(0, Math.min(1, volume)) * this.settings.volumeSfx;
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, pan));
+    out.connect(panner);
+    panner.connect(this.masterGain);
+    this.toReverb(out, 0.5);
+    const hiss = (dur: number, freq: number, amp: number, at: number) => {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise();
+      const f = ctx.createBiquadFilter();
+      f.type = "bandpass"; f.frequency.value = freq; f.Q.value = 0.9;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(amp, at + 0.04);
+      g.gain.exponentialRampToValueAtTime(0.0005, at + dur);
+      src.connect(f); f.connect(g); g.connect(out);
+      src.start(at, Math.random());
+      src.stop(at + dur + 0.02);
+    };
+    const tone = (type: OscillatorType, f0: number, f1: number, dur: number, amp: number, at: number) => {
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(f0, at);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(20, f1), at + dur);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(amp, at + Math.min(0.03, dur / 3));
+      g.gain.exponentialRampToValueAtTime(0.0005, at + dur);
+      osc.connect(g); g.connect(out);
+      osc.start(at); osc.stop(at + dur + 0.02);
+    };
+    let life = 2;
+    switch (kind) {
+      case "doorOpen":
+        hiss(0.45, 1800, 0.25, t);
+        tone("sine", 140, 90, 0.35, 0.12, t);
+        break;
+      case "doorClose":
+        hiss(0.35, 1400, 0.18, t);
+        tone("sine", 110, 60, 0.18, 0.2, t + 0.3);
+        break;
+      case "confirm":
+        [523, 659, 784].forEach((f, i) => tone("sine", f, f, 0.35, 0.09, t + i * 0.14));
+        break;
+      case "error":
+        tone("square", 220, 200, 0.22, 0.05, t);
+        tone("square", 180, 160, 0.3, 0.05, t + 0.26);
+        break;
+      case "lock":
+        tone("sawtooth", 80, 40, 2.2, 0.18, t);
+        hiss(1.6, 300, 0.2, t + 0.1);
+        life = 3;
+        break;
+      case "power":
+        // A heavy relay closes, then the whole station spins back up.
+        hiss(0.12, 900, 0.5, t);
+        tone("sine", 70, 40, 0.25, 0.5, t);
+        tone("sawtooth", 45, 190, 1.8, 0.07, t + 0.15);
+        tone("sine", 90, 380, 1.8, 0.06, t + 0.15);
+        life = 3;
+        break;
+      case "arrival":
+        // The alarm stops and something enormous answers.
+        tone("sine", 42, 28, 7.5, 0.5, t);
+        tone("triangle", 84, 50, 6, 0.08, t + 0.4);
+        hiss(6, 120, 0.25, t + 0.2);
+        life = 9;
+        break;
+    }
+    setTimeout(() => { try { out.disconnect(); panner.disconnect(); } catch { /* gone */ } }, life * 1000 + 500);
+  }
+
   /**
    * Destroys the audio engine.
    */
   public destroy() {
     try {
+      this.stopSpaceAmbience();
       this.stopFunMusic(true);
       this.stopAlarm();
       this.stopDistantAmbianceScheduler();

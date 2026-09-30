@@ -31,9 +31,12 @@ import {
   LIGHTS_OUT_LEVEL,
   MOTION_LEVEL,
   POOLROOMS_LEVEL,
+  SPACE_LEVEL,
 } from "./levels/constants";
 import { POOL_VALVE_COUNT } from "./poolroomsPuzzle";
 import { FunDirector } from "./levels/funDirector";
+import { SpaceDirector, type SpaceTerminalView } from "./levels/spaceDirector";
+import type { SpaceConsoleId, SpaceTarget, SpaceTerminalId } from "./levels/spaceLayout";
 import type { FunStage } from "./LevelFunModels";
 import {
   AdaptiveResolution,
@@ -117,6 +120,8 @@ function levelAtmosphere(level: number, funStage: FunStage = 0) {
         { ambientColor: 0xe6d29c, ambientIntensity: 1.2, fogColor: 0xb8a25a, dimmedFogColor: 0x463a1c },
         { ambientColor: 0xd0ae8a, ambientIntensity: 0.95, fogColor: 0x76603c, dimmedFogColor: 0x2a2010 },
       ][funStage];
+    case SPACE_LEVEL: // Level 79: cold white panels, and the black of space behind the glass
+      return { ambientColor: 0xdce6f5, ambientIntensity: 1.45, fogColor: 0x080b12, dimmedFogColor: 0x020304 };
     case LOBBY_LEVEL: // room lobby: open-air field under a clear blue sky
       return { ambientColor: 0xfff6e0, ambientIntensity: 2.6, fogColor: 0x8fc7f0, dimmedFogColor: 0x4a6a8a };
     case LEVEL_G: // Level G: dim, cold office under failing tubes
@@ -401,6 +406,13 @@ export class GameEngine {
   /** Level FUN's puzzles and scares; null on every other level. */
   private funDirector: FunDirector | null = null;
   private lastFunObjective: string | null = null;
+  /** Level 79's navigation puzzle, sky and finale; null on every other level. */
+  private spaceDirector: SpaceDirector | null = null;
+  private lastSpaceObjective: string | null = null;
+  /** The Level 79 terminal E last opened, for the App's modal. */
+  public spaceTerminal: SpaceTerminalId | null = null;
+  private spaceShake = 0;
+  private fadeOverlay: THREE.Mesh | null = null;
   public onSectorChange?: (sector: string) => void;
   public onInventoryChange?: (items: string[]) => void;
   private onSanityChange?: (val: number) => void;
@@ -703,7 +715,7 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === LOBBY_LEVEL ? 0.008 : level === LEVEL_G ? 0.06 : level === ABANDONED_OFFICE_LEVEL ? 0.016 : level === ELECTRICAL_ROOM_LEVEL ? 0.035 : level === POOLROOMS_LEVEL ? 0.006 : level === FUN_LEVEL ? 0.018 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
+    const authored = level === LOBBY_LEVEL ? 0.008 : level === LEVEL_G ? 0.06 : level === ABANDONED_OFFICE_LEVEL ? 0.016 : level === ELECTRICAL_ROOM_LEVEL ? 0.035 : level === POOLROOMS_LEVEL ? 0.006 : level === FUN_LEVEL ? 0.018 : level === SPACE_LEVEL ? 0.013 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
@@ -745,6 +757,7 @@ export class GameEngine {
     this.setupLobby();
     this.setupOfficeWorkers();
     this.setupFun();
+    this.setupSpace();
 
     // Spotlight representing local F key Flashlight
     this.flashlight = new THREE.SpotLight(0xfffaec, 2.8, 16, Math.PI / 5, 0.45, 1.0);
@@ -911,6 +924,7 @@ export class GameEngine {
       this.updateLobby(delta);
       this.updateOfficeWorkers(delta);
       this.updateFun(delta);
+      this.updateSpace(delta);
       this.updateInteractPrompt(delta);
       this.updateReadingRange();
       if (this.radarBoostTimer > 0) this.radarBoostTimer = Math.max(0, this.radarBoostTimer - delta);
@@ -1207,7 +1221,7 @@ export class GameEngine {
         // 3. Darkness check
         let darknessDepletion = 0;
         const isFlashlightOn = this.player.isFlashlightOn;
-        if (!isFlashlightOn && this.level !== LOBBY_LEVEL) {
+        if (!isFlashlightOn && this.level !== LOBBY_LEVEL && this.level !== SPACE_LEVEL) {
           if (this.map.globalEventState === "blackout") {
             darknessDepletion = 0.014; // completed blackout is terrifying (retuned ~3x slower)
           } else if (this.level === ELECTRICAL_ROOM_LEVEL) {
@@ -1303,7 +1317,8 @@ export class GameEngine {
       // Flickering fluorescent tubes ticks. Only the level's authority rolls
       // blackouts/flicker storms; it broadcasts each one as it starts.
       // Level FUN scripts its own blackouts; random ones would step on them.
-      this.map.rollGlobalEvents = this.isWorldAuthority && this.level !== LOBBY_LEVEL && this.level !== FUN_LEVEL;
+      // Level 79's lighting belongs to its navigation sequences for the same reason.
+      this.map.rollGlobalEvents = this.isWorldAuthority && this.level !== LOBBY_LEVEL && this.level !== FUN_LEVEL && this.level !== SPACE_LEVEL;
       const eventBefore = this.map.globalEventState;
       this.map.updateLights(
         delta,
@@ -1368,6 +1383,15 @@ export class GameEngine {
           const alarmFog = pulse > 0.5 ? 0x2a0504 : 0x0d0202;
           if (fog) fog.color.setHex(alarmFog);
           background.setHex(alarmFog);
+        }
+
+        // Level 79: the navigation sequences own the station's light (green, red, fading).
+        if (this.spaceDirector) {
+          const a = this.spaceDirector.atmosphere();
+          this.ambientLight.color.setHex(a.color);
+          this.ambientLight.intensity = a.intensity;
+          if (fog) fog.color.setHex(a.fog);
+          background.setHex(a.fog);
         }
       }
 
@@ -2559,6 +2583,7 @@ export class GameEngine {
   public transitionToLevel(level: number, seed: number, settings: GameSettings) {
     console.log(`Transitioning to Level ${level} in backrooms...`);
     this.teardownFun();
+    this.teardownSpace();
     this.teardownLevelG();
     this.level = level;
     this.level4DoorOpen = false;
@@ -2615,6 +2640,7 @@ export class GameEngine {
     this.setupLobby();
     this.setupOfficeWorkers();
     this.setupFun();
+    this.setupSpace();
 
     // Reset total play time for the new layout
     this.totalPlayTime = 0;
@@ -3346,8 +3372,11 @@ export class GameEngine {
     if (this.map && this.player && this.player.mapFullyLoaded && (this.player.isLocked || this.player.isOverrideActive)) {
       const [fx, fz] = this.lookDirectionXZ();
       const funPrompt = this.funDirector ? this.funDirector.interactionPrompt() : null;
+      const spacePrompt = this.spaceDirector ? this.spaceDirector.interactionPrompt() : null;
       if (funPrompt) {
         text = funPrompt;
+      } else if (spacePrompt) {
+        text = spacePrompt;
       } else if (this.nearExitDesk()) {
         text = t("act.readPaper");
       } else if (this.nearCheatTerminal()) {
@@ -3502,6 +3531,115 @@ export class GameEngine {
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Level 79
+  // ---------------------------------------------------------------------
+
+  private teardownSpace() {
+    this.spaceDirector?.dispose();
+    this.spaceDirector = null;
+    this.spaceTerminal = null;
+    if (this.lastSpaceObjective !== null) {
+      this.lastSpaceObjective = null;
+      this.onObjectiveChange?.(null);
+    }
+  }
+
+  private setupSpace() {
+    this.teardownSpace();
+    const world = this.level === SPACE_LEVEL ? this.map?.space : null;
+    if (!world) return;
+    this.spaceDirector = new SpaceDirector(world, {
+      audio: this.audio,
+      scene: this.scene,
+      notify: (text) => this.onHUDNotification?.(text),
+      player: () => {
+        const [lookX, lookZ] = this.lookDirectionXZ();
+        return { x: this.player.position.x, z: this.player.position.z, lookX, lookZ };
+      },
+      viewer: (out) => this.camera.getWorldPosition(out),
+      send: (kind, index) => this.sendToServer({ type: "space_event", level: SPACE_LEVEL, kind, index }),
+      setFade: (alpha) => this.setFade(alpha),
+      shake: (amount) => { this.spaceShake = amount; },
+      escape: () => this.onEscapeTrigger?.(),
+      kill: () => { if (!this.isDead) this.die("caught"); },
+    });
+  }
+
+  private updateSpace(delta: number) {
+    const director = this.spaceDirector;
+    if (!director || !this.player) return;
+    director.update(delta);
+    // Shake the head rig, not the camera: the rig is re-seated on the player every frame.
+    const rig = this.camera.parent;
+    if (this.spaceShake > 0 && rig) {
+      rig.position.x += (Math.random() - 0.5) * this.spaceShake * 2;
+      rig.position.y += (Math.random() - 0.5) * this.spaceShake * 2;
+      rig.position.z += (Math.random() - 0.5) * this.spaceShake * 2;
+    }
+    const objective = director.objective();
+    if (objective !== this.lastSpaceObjective) {
+      this.lastSpaceObjective = objective;
+      this.onObjectiveChange?.(objective);
+    }
+  }
+
+  /** A black card in front of the camera, for fades (Level 79's finale). 0 hides it. */
+  private setFade(alpha: number) {
+    if (alpha <= 0) {
+      if (this.fadeOverlay) this.fadeOverlay.visible = false;
+      return;
+    }
+    if (!this.fadeOverlay) {
+      const mat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, depthTest: false, depthWrite: false, fog: false });
+      this.fadeOverlay = new THREE.Mesh(new THREE.PlaneGeometry(4, 4), mat);
+      this.fadeOverlay.position.z = -0.15;
+      this.fadeOverlay.renderOrder = 10000;
+      this.fadeOverlay.frustumCulled = false;
+      this.camera.add(this.fadeOverlay);
+    }
+    this.fadeOverlay.visible = true;
+    (this.fadeOverlay.material as THREE.MeshBasicMaterial).opacity = Math.min(1, alpha);
+  }
+
+  /** What a Level 79 terminal's modal shows right now; null once the level is gone. */
+  public spaceTerminalView(id: SpaceTerminalId): SpaceTerminalView | null {
+    return this.spaceDirector?.terminalView(id) ?? null;
+  }
+
+  public spaceChoose(console: SpaceConsoleId, target: SpaceTarget) {
+    this.spaceDirector?.choose(console, target);
+  }
+
+  public spaceExecute() {
+    this.spaceDirector?.execute();
+  }
+
+  public spaceAbort() {
+    this.spaceDirector?.abort();
+  }
+
+  /** The wiring panel: a cable went into a socket (right colour or not), for the sound and a spark. */
+  public spaceWireFeedback(ok: boolean) {
+    this.spaceDirector?.wireFeedback(ok);
+  }
+
+  /** The wiring panel is complete: the main bus closes for the whole level. */
+  public spacePowerOn() {
+    this.spaceDirector?.powerOn();
+  }
+
+  public spacePowered(): boolean {
+    return this.spaceDirector?.isPowered ?? false;
+  }
+
+  /** A teammate set a console or executed a course (relayed by the server). */
+  public applySpaceEvent(msg: { level?: unknown; kind?: unknown; index?: unknown }) {
+    if (this.level !== SPACE_LEVEL || msg.level !== SPACE_LEVEL || !this.spaceDirector) return;
+    if (typeof msg.kind !== "string" || typeof msg.index !== "number") return;
+    this.spaceDirector.applyRemote(msg.kind, msg.index);
+  }
+
   /** A teammate's puzzle progress (relayed by the server). */
   public applyFunEvent(msg: { level?: unknown; kind?: unknown; index?: unknown }) {
     if (this.level !== FUN_LEVEL || msg.level !== FUN_LEVEL || !this.funDirector) return;
@@ -3538,12 +3676,19 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | null {
+  public tryInteract(): "terminal" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | null {
     if (this.isDead) return null;
     if (this.funDirector) {
       const used = this.funDirector.interact();
       if (used === "panel") return "fun_panel";
       if (used === "done") return "fun";
+    }
+    if (this.spaceDirector) {
+      const terminal = this.spaceDirector.interact();
+      if (terminal) {
+        this.spaceTerminal = terminal;
+        return "space_terminal";
+      }
     }
     const switchIndex = this.nearUntouchedLevel3Switch();
     if (switchIndex >= 0) {
@@ -4309,6 +4454,12 @@ export class GameEngine {
 
     this.voip.dispose();
     this.teardownFun();
+    this.teardownSpace();
+    if (this.fadeOverlay) {
+      this.fadeOverlay.geometry.dispose();
+      (this.fadeOverlay.material as THREE.Material).dispose();
+      this.fadeOverlay = null;
+    }
 
     this.clearAllSmilers();
     if (this.smilerTexture) {
