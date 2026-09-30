@@ -27,17 +27,19 @@
  * *you* were on the deck at arrival is decided per client. Flicker and shake
  * are cosmetic and local (Math.random is fine here).
  *
- * The station's computer speaks English on purpose (it is part of the world,
- * like the signage); everything addressed to the player goes through t().
+ * Every screen, sign and notification goes through t(), same as the rest of
+ * the game: the station's computer follows whichever language the player
+ * has selected, not a fixed one.
  */
 
 import * as THREE from "three";
 import type { AudioManager } from "../AudioManager";
 import { t } from "../../i18n";
 import {
-  ARRIVAL_SECONDS, OBSERVATION_REGIONS, SPACE_CONSOLES, SPACE_TARGETS, SPACE_TERMINALS, TARGET_LABEL,
+  ARRIVAL_SECONDS, OBSERVATION_REGIONS, SPACE_CONSOLES, SPACE_TARGETS, SPACE_TERMINALS, TARGET_KEY,
   SpaceConfig, SpaceConsoleId, SpaceTarget, SpaceTerminalId, WireColor, decodeSetting, encodeSetting, evaluateSpaceConfig, spaceRegionAt, wiringForSeed,
 } from "./spaceLayout";
+import type { MessageKey } from "../../i18n";
 import { SpaceSky } from "./spaceSky";
 import type { ScreenPage, ScreenTone, SpaceWorld } from "./spaceWorld";
 
@@ -84,21 +86,30 @@ type Phase = "idle" | "planetRun" | "planetArrival" | "lockRun" | "final" | "col
 /** Seconds from SAFE DESTINATION CONFIRMED to reaching "the planet" (and dying there). */
 const PLANET_ARRIVAL_SECONDS = 26;
 
-const CONSOLE_TITLE: Record<SpaceConsoleId, string> = {
-  orientation: "ORIENTATION SYSTEM",
-  destination: "DESTINATION SYSTEM",
-  trajectory: "TRAJECTORY SYSTEM",
+const CONSOLE_TITLE_KEY: Record<SpaceConsoleId, MessageKey> = {
+  orientation: "space.scr.consoleTitle.orientation",
+  destination: "space.scr.consoleTitle.destination",
+  trajectory: "space.scr.consoleTitle.trajectory",
 };
 
-const CONSOLE_BLURB: Record<SpaceConsoleId, string> = {
-  orientation: "CONTROLS STATION ATTITUDE.",
-  destination: "SELECTS THE ARRIVAL POINT.",
-  trajectory: "PLOTS THE APPROACH VECTOR.",
+const CONSOLE_BLURB_KEY: Record<SpaceConsoleId, MessageKey> = {
+  orientation: "space.scr.blurb.orientation",
+  destination: "space.scr.blurb.destination",
+  trajectory: "space.scr.blurb.trajectory",
+};
+
+/** The console's own short name, reusing its terminal nameplate key (ORIENTATION, DESTINATION, TRAJECTORY). */
+const SPACE_CONSOLE_NAME_KEY: Record<SpaceConsoleId, MessageKey> = {
+  orientation: "space.name.orientation",
+  destination: "space.name.destination",
+  trajectory: "space.name.trajectory",
 };
 
 const pad = (s: string, n: number) => (s + " ".repeat(n)).slice(0, n);
 const clock = (seconds: number) => `00:00:${String(Math.max(0, Math.ceil(seconds))).padStart(2, "0")}`;
 const ease = (from: number, to: number, rate: number, delta: number) => from + (to - from) * Math.min(1, rate * delta);
+/** A key whose translation is several screen lines joined by "|" (same convention as Level FUN's posters). */
+const lines = (key: MessageKey) => t(key).split("|");
 
 export class SpaceDirector {
   private readonly world: SpaceWorld;
@@ -213,7 +224,7 @@ export class SpaceDirector {
   interactionPrompt(): string | null {
     const id = this.pick();
     if (!id) return null;
-    return t("space.act.terminal", { name: SPACE_TERMINALS.find((term) => term.id === id)!.name });
+    return t("space.act.terminal", { name: t(SPACE_TERMINALS.find((term) => term.id === id)!.nameKey) });
   }
 
   /** E pressed: the terminal to open, or null. */
@@ -241,7 +252,7 @@ export class SpaceDirector {
     if (this.powered) return;
     this.powered = true;
     this.powerTime = 0;
-    this.host.notify("MAIN POWER RESTORED.");
+    this.host.notify(t("space.ntf.powerRestored"));
     this.host.audio.playSpaceSound("power");
     this.world.flickerBurst(0.7);
     if (announce) this.host.send("power", 0);
@@ -261,12 +272,12 @@ export class SpaceDirector {
     if (this.busy() || !this.powered) { this.host.audio.playTerminalBeep(false); return; }
     const result = evaluateSpaceConfig(this.config);
     if (result.ok === false) {
-      const text = {
-        incomplete: "INCOMPLETE CONFIGURATION. ALL THREE SYSTEMS REQUIRED.",
-        conflict: "CONFLICT: SYSTEMS NOT ALIGNED ON ONE TARGET.",
-        noCoordinates: "NO COORDINATES FOR TARGET 'UNKNOWN'.",
-      }[result.reason];
-      this.helmMessage = { text, tone: "warn" };
+      const keys: Record<typeof result.reason, MessageKey> = {
+        incomplete: "space.err.incomplete",
+        conflict: "space.err.conflict",
+        noCoordinates: "space.err.noCoordinates",
+      };
+      this.helmMessage = { text: t(keys[result.reason]), tone: "warn" };
       this.host.audio.playTerminalBeep(false);
       this.refreshScreens();
       return;
@@ -285,7 +296,7 @@ export class SpaceDirector {
   /** The planet course is called off: the systems reset and the planet never quite recovers. */
   private abortPlanet() {
     this.countFalseRun();
-    this.host.notify("COURSE ABORTED. DESTINATION DATA INCONSISTENT.");
+    this.host.notify(t("space.ntf.aborted"));
     this.host.audio.playSpaceSound("error");
     this.resetNavigation();
   }
@@ -321,127 +332,88 @@ export class SpaceDirector {
   // -------------------------------------------------------------------------
 
   private planetTag(): string {
-    return this.falseRuns > 0 ? "[RECOMMENDED] ERR" : "[RECOMMENDED]";
+    return t(this.falseRuns > 0 ? "space.tag.recommendedErr" : "space.tag.recommended");
   }
 
   private tagFor(target: SpaceTarget): string {
-    return target === "planet" ? this.planetTag() : target === "blackhole" ? "[HAZARD]" : "[NO DATA]";
+    return target === "planet" ? this.planetTag() : t(target === "blackhole" ? "space.tag.hazard" : "space.tag.noData");
   }
 
   private setting(console: SpaceConsoleId): string {
     const v = this.config[console];
-    return v ? TARGET_LABEL[v] : "---";
+    return v ? t(TARGET_KEY[v]) : "---";
   }
 
   private page(id: SpaceTerminalId | "navDisplay"): ScreenPage {
     const P = this.phaseTime;
     if (id === "power") {
       return this.powered
-        ? { title: "POWER DISTRIBUTION", tone: "ok", lines: ["MAIN BUS: ONLINE", "", "ALL CIRCUITS CLOSED.", "LIGHTING: NOMINAL", "NAVIGATION: AVAILABLE"] }
-        : { title: "POWER DISTRIBUTION", tone: "warn", lines: ["MAIN BUS: OFFLINE", "5 CIRCUITS OPEN", "", "RECONNECT EACH CABLE", "TO THE SOCKET OF ITS", "OWN COLOUR."] };
+        ? { title: t("space.name.power"), tone: "ok", lines: lines("space.scr.power.on") }
+        : { title: t("space.name.power"), tone: "warn", lines: lines("space.scr.power.off") };
     }
     if (!this.powered) {
-      if (id === "navDisplay") return { title: "STATION STATUS", tone: "warn", lines: ["MAIN POWER: OFFLINE", "EMERGENCY LIGHTING", "", "RESTORE POWER AT", "ENGINEERING BUS"] };
-      return { title: SPACE_TERMINALS.find((term) => term.id === id)!.name, tone: "dim", lines: ["", "NO POWER.", "", "MAIN BUS OFFLINE.", "RESTORE AT ENGINEERING."] };
+      if (id === "navDisplay") return { title: t("space.scr.status.title"), tone: "warn", lines: lines("space.scr.nav.offline") };
+      return { title: t(SPACE_TERMINALS.find((term) => term.id === id)!.nameKey), tone: "dim", lines: lines("space.scr.term.offline") };
     }
     switch (id) {
       case "helm": {
         if (this.phase === "planetRun") {
           const bad = P > 6.5;
           return {
-            title: "NAVIGATION CORE",
+            title: t("space.name.helm"),
             tone: bad ? (P > 10 ? "alert" : "warn") : "ok",
             lines: bad
-              ? ["COURSE: PLANET", "", "ERROR.", "DISTANCE CANNOT BE CALCULATED.", P > 10 ? "TRAJECTORY INVALID." : "", "", `ARRIVAL: ${clock(PLANET_ARRIVAL_SECONDS - P)}`, "ABORT AVAILABLE."]
-              : ["COURSE: PLANET", "", "SAFE DESTINATION CONFIRMED.", "", `DISTANCE: ${(0.93 - P * 0.01).toFixed(3)} AU`, `ARRIVAL: ${clock(PLANET_ARRIVAL_SECONDS - P)}`],
+              ? [...lines("space.scr.helm.planetBad"), P > 10 ? t("space.scr.helm.trajInvalid") : "", "", t("space.scr.helm.arrival", { t: clock(PLANET_ARRIVAL_SECONDS - P) }), t("space.scr.helm.abortAvailable")]
+              : [...lines("space.scr.helm.planetGood"), "", t("space.scr.helm.distance", { d: (0.93 - P * 0.01).toFixed(3) }), t("space.scr.helm.arrival", { t: clock(PLANET_ARRIVAL_SECONDS - P) })],
           };
         }
         if (this.phase === "lockRun") {
-          return { title: "NAVIGATION CORE", tone: "alert", lines: ["TRAJECTORY LOCKED", "", "DESTINATION:", "BLACK HOLE", "", "ESTIMATED ARRIVAL:", clock(ARRIVAL_SECONDS - P), "", "OBSERVATION REQUIRED AT ARRIVAL."] };
+          return { title: t("space.name.helm"), tone: "alert", lines: [...lines("space.scr.helm.locked"), clock(ARRIVAL_SECONDS - P), "", t("space.scr.helm.obsRequired")] };
         }
         if (this.phase === "planetArrival") {
-          return { title: "NAVIGATION CORE", tone: "alert", lines: ["ARRIVAL: OBJECT B", "", "NO SURFACE.", "NO ATMOSPHERE.", "NO PLANET."] };
+          return { title: t("space.name.helm"), tone: "alert", lines: lines("space.scr.helm.arrivalObjB") };
         }
         if (this.phase === "collapse") {
-          return { title: "NAVIGATION CORE", tone: "warn", lines: ["ARRIVAL NOT OBSERVED.", "TRAJECTORY COLLAPSED.", "", "RECALCULATING..."] };
+          return { title: t("space.name.helm"), tone: "warn", lines: lines("space.scr.helm.collapse") };
         }
         if (this.phase === "final" || this.phase === "done") {
-          return { title: "NAVIGATION CORE", tone: "dim", lines: ["", "", "      ARRIVAL."] };
+          return { title: t("space.name.helm"), tone: "dim", lines: lines("space.scr.helm.arrivalFinal") };
         }
-        const lines = [
-          "CURRENT POSITION",
-          "UNKNOWN SECTOR",
+        const lines_ = [
+          ...lines("space.scr.helm.idleHead"),
+          ...SPACE_TARGETS.map((target) => `  ${pad(t(TARGET_KEY[target]), 12)}${target === "unknown" ? "" : this.tagFor(target)}`),
           "",
-          "AVAILABLE DESTINATIONS:",
-          ...SPACE_TARGETS.map((target) => `  ${pad(TARGET_LABEL[target], 12)}${target === "unknown" ? "" : this.tagFor(target)}`),
-          "",
-          ...SPACE_CONSOLES.map((c) => `${pad(c.toUpperCase(), 13)}: ${this.setting(c)}`),
+          ...SPACE_CONSOLES.map((c) => `${pad(t(SPACE_CONSOLE_NAME_KEY[c]).toUpperCase(), 13)}: ${this.setting(c)}`),
         ];
-        if (this.helmMessage) lines.push("", `> ${this.helmMessage.text}`);
-        return { title: "NAVIGATION CORE", tone: this.helmMessage?.tone ?? "idle", lines };
+        if (this.helmMessage) lines_.push("", `> ${this.helmMessage.text}`);
+        return { title: t("space.name.helm"), tone: this.helmMessage?.tone ?? "idle", lines: lines_ };
       }
       case "orientation":
       case "destination":
       case "trajectory": {
-        if (this.busy()) return { title: CONSOLE_TITLE[id], tone: this.phase === "lockRun" ? "alert" : "dim", lines: ["", "LOCKED.", "NAVIGATION IN PROGRESS."] };
+        if (this.busy()) return { title: t(CONSOLE_TITLE_KEY[id]), tone: this.phase === "lockRun" ? "alert" : "dim", lines: lines("space.scr.console.locked") };
         return {
-          title: CONSOLE_TITLE[id],
+          title: t(CONSOLE_TITLE_KEY[id]),
           tone: "idle",
-          lines: [CONSOLE_BLURB[id], "", `CURRENT TARGET: ${this.setting(id)}`, "", "RECOMMENDED: PLANET", this.falseRuns > 0 ? "(RECOMMENDATION UNVERIFIED)" : "(SAFE, HABITABLE)"],
+          lines: [t(CONSOLE_BLURB_KEY[id]), "", t("space.scr.console.currentTarget", { v: this.setting(id) }), "", t("space.scr.console.recommendedPlanet"), t(this.falseRuns > 0 ? "space.scr.console.unverified" : "space.scr.console.safe")],
         };
       }
       case "analysis":
-        return {
-          title: "OBJECT ANALYSIS",
-          tone: "idle",
-          lines: [
-            "OBJECT A", "TYPE: UNKNOWN", "GRAVITATIONAL DISTORTION: EXTREME", "EVENT HORIZON: DETECTED", "",
-            "OBJECT B", "TYPE: PLANET", "ATMOSPHERE: STABLE", "LIFE SIGNATURE: DETECTED", "DISTANCE: ERROR", "",
-            "WARNING:", "OBJECT B DOES NOT OBEY", "EXPECTED ORBITAL PARAMETERS.",
-          ],
-        };
+        return { title: t("space.name.analysis"), tone: "idle", lines: lines("space.scr.analysis") };
       case "comms":
-        return {
-          title: "SIGNAL LOG",
-          tone: "idle",
-          lines: [
-            "SOURCE: OBJECT B", "FREQUENCY: 121.500 MHZ (THIS STATION)", "CONTENT: OUR OWN DISTRESS CALL", "DELAY: -00:04:12", "",
-            "NOTE: THE REPLY ARRIVES BEFORE", "WE TRANSMIT. B ONLY REPEATS US.", "",
-            "SOURCE: OBJECT A", "SIGNAL: NONE. NOTHING COMES BACK.",
-          ],
-        };
+        return { title: t("space.name.comms"), tone: "idle", lines: lines("space.scr.comms") };
       case "crewLog":
-        return {
-          title: "CREW LOG",
-          tone: "idle",
-          lines: [
-            "ENTRY 311", "Course set for the planet again.", "Day 3 of approach: it is SMALLER.", "Kessler says it was never behind",
-            "the anomaly. Only its light, bent", "around it. The computer still", "calls it SAFE. The computer has", "never looked out a window.", "",
-            "ENTRY 312", "Kessler aimed us at the dark and", "went to the deck to watch.",
-          ],
-        };
+        return { title: t("space.name.crewLog"), tone: "idle", lines: lines("space.scr.crewLog") };
       case "destAnalysis":
         if (this.falseRuns === 0) {
-          return { title: "DESTINATION ANALYSIS", tone: "dim", lines: ["STATUS: AWAITING DATA", "", "NO COURSE ON RECORD.", "EXECUTE A COURSE TO", "GENERATE ANALYSIS."] };
+          return { title: t("space.name.destAnalysis"), tone: "dim", lines: lines("space.scr.destAnalysis.awaiting") };
         }
-        return {
-          title: "DESTINATION ANALYSIS",
-          tone: "warn",
-          lines: [
-            "PLANET", "STATUS: INVALID", "DISTANCE GROWS UNDER APPROACH", "",
-            "BLACK HOLE", "STATUS: VALID", "TRAJECTORY: CALCULABLE", "",
-            "UNKNOWN", "STATUS: NO COORDINATES",
-          ],
-        };
+        return { title: t("space.name.destAnalysis"), tone: "warn", lines: lines("space.scr.destAnalysis.ready") };
       case "navDisplay": {
-        if (this.phase === "lockRun") return { title: "STATION STATUS", tone: "alert", lines: ["", "TRAJECTORY LOCKED", "DESTINATION: BLACK HOLE", "", `ARRIVAL IN ${clock(ARRIVAL_SECONDS - P)}`, "", "ALL CREW TO OBSERVATION DECK"] };
-        if (this.phase === "planetRun") return { title: "STATION STATUS", tone: P > 6.5 ? "alert" : "ok", lines: ["", "COURSE: PLANET", P > 6.5 ? "TRAJECTORY INVALID" : "SAFE DESTINATION CONFIRMED", "", `OBJECT B RANGE: ${P > 6.5 ? "ERR" : "CLOSING"}`] };
-        if (this.phase === "final" || this.phase === "done") return { title: "STATION STATUS", tone: "dim", lines: [] };
-        return {
-          title: "STATION STATUS",
-          tone: "idle",
-          lines: ["POWER: 31%", "LIFE SUPPORT: NOMINAL", "CREW ABOARD: 0", "POSITION: UNKNOWN SECTOR", "", "OBJECT A: BEARING 000, CLOSE", `OBJECT B: BEARING 007, ${this.falseRuns > 0 ? "RANGE ERR" : "SAFE"}`],
-        };
+        if (this.phase === "lockRun") return { title: t("space.scr.status.title"), tone: "alert", lines: [...lines("space.scr.status.lockHead"), t("space.scr.status.arrivalIn", { t: clock(ARRIVAL_SECONDS - P) }), "", t("space.scr.status.allCrew")] };
+        if (this.phase === "planetRun") return { title: t("space.scr.status.title"), tone: P > 6.5 ? "alert" : "ok", lines: [...lines("space.scr.status.planetHead"), t(P > 6.5 ? "space.scr.status.trajInvalid2" : "space.scr.status.confirmed2"), "", t(P > 6.5 ? "space.scr.status.rangeErr" : "space.scr.status.rangeClosing")] };
+        if (this.phase === "final" || this.phase === "done") return { title: t("space.scr.status.title"), tone: "dim", lines: [] };
+        return { title: t("space.scr.status.title"), tone: "idle", lines: [...lines("space.scr.status.idle"), t(this.falseRuns > 0 ? "space.scr.status.objBErr" : "space.scr.status.objBSafe")] };
       }
     }
   }
@@ -451,7 +423,7 @@ export class SpaceDirector {
     const page = this.page(id);
     const view: SpaceTerminalView = { id, title: page.title, lines: page.lines, tone: page.tone, locked: this.busy() || !this.powered };
     if (id === "orientation" || id === "destination" || id === "trajectory") {
-      view.options = SPACE_TARGETS.map((target) => ({ target, label: TARGET_LABEL[target], tag: this.tagFor(target), selected: this.config[id] === target }));
+      view.options = SPACE_TARGETS.map((target) => ({ target, label: t(TARGET_KEY[target]), tag: this.tagFor(target), selected: this.config[id] === target }));
     }
     if (id === "helm") {
       view.canExecute = !this.busy() && this.powered;
@@ -488,11 +460,11 @@ export class SpaceDirector {
     this.helmMessage = null;
     if (target === "planet") {
       this.setPhase("planetRun");
-      this.host.notify("SAFE DESTINATION CONFIRMED.");
+      this.host.notify(t("space.ntf.planetConfirmed"));
       this.host.audio.playSpaceSound("confirm");
     } else {
       this.setPhase("lockRun");
-      this.host.notify(`TRAJECTORY LOCKED · DESTINATION: BLACK HOLE · ESTIMATED ARRIVAL: ${clock(ARRIVAL_SECONDS)}`);
+      this.host.notify(t("space.ntf.lockLocked", { t: clock(ARRIVAL_SECONDS) }));
       this.host.audio.startAlarm();
       this.host.audio.playSpaceSound("lock");
     }
@@ -560,24 +532,24 @@ export class SpaceDirector {
           sky.starDrift = ease(sky.starDrift, -0.006, 0.5, delta);
         }
         this.beat(6.5, "error", () => {
-          this.host.notify("ERROR. DISTANCE CANNOT BE CALCULATED.");
+          this.host.notify(t("space.ntf.error"));
           this.host.audio.playTerminalBeep(false);
           this.host.audio.playSpaceSound("error");
           this.world.flickerBurst(0.35);
           this.refreshScreens();
         });
         this.beat(10, "invalid", () => {
-          this.host.notify("TRAJECTORY INVALID.");
+          this.host.notify(t("space.ntf.invalid"));
           this.host.audio.playSpaceSound("error");
           this.world.flickerBurst(0.25);
           this.refreshScreens();
         });
-        this.beat(16, "abortHint", () => this.host.notify("WARNING: OBJECT B NOT FOUND AT DESTINATION. ABORT RECOMMENDED."));
+        this.beat(16, "abortHint", () => this.host.notify(t("space.ntf.abortHint")));
         if (P >= PLANET_ARRIVAL_SECONDS) {
           // Nobody aborted: the station arrives where the planet seemed to be.
           this.setPhase("planetArrival");
           this.countFalseRun();
-          this.host.notify("ARRIVAL: OBJECT B. NO SURFACE. NO PLANET.");
+          this.host.notify(t("space.ntf.planetArrival"));
           this.host.audio.playSpaceSound("arrival");
           this.refreshScreens();
         } else if (Math.floor(P * 2) !== Math.floor((P - delta) * 2)) this.refreshScreens();
@@ -609,7 +581,7 @@ export class SpaceDirector {
         rumble = 0.3 + 0.6 * k;
         shake = 0.006 + 0.03 * k;
         if (Math.random() < delta * (0.4 + k)) this.world.flickerBurst(0.08);
-        this.beat(3.2, "observe", () => this.host.notify("OBSERVATION REQUIRED AT ARRIVAL. PROCEED TO OBSERVATION DECK."));
+        this.beat(3.2, "observe", () => this.host.notify(t("space.ntf.observeRequired")));
         if (Math.floor(P) !== Math.floor(P - delta)) this.refreshScreens();
         if (P >= ARRIVAL_SECONDS) {
           this.host.audio.stopAlarm();
@@ -619,7 +591,7 @@ export class SpaceDirector {
           } else {
             this.setPhase("collapse");
             this.collapses++;
-            this.host.notify("ARRIVAL NOT OBSERVED. TRAJECTORY COLLAPSED.");
+            this.host.notify(t("space.ntf.collapsed"));
             this.host.audio.playSpaceSound("error");
           }
           this.refreshScreens();
@@ -640,9 +612,9 @@ export class SpaceDirector {
         rumble = P < 6 ? 0.5 + 0.5 * grow : Math.max(0, 1 - (P - 6) / 2.5);
         shake = P < 6.5 ? 0.01 + 0.025 * grow : 0;
         fade = Math.min(1, Math.max(0, (P - 6.5) / 2.5));
-        this.beat(2.0, "lost", () => this.host.notify("OBJECT B: SIGNAL LOST."));
-        this.beat(4.2, "never", () => this.host.notify("OBJECT B: NO SOURCE. ONLY LIGHT, BENT AROUND OBJECT A."));
-        this.beat(6.5, "horizon", () => this.host.notify("EVENT HORIZON."));
+        this.beat(2.0, "lost", () => this.host.notify(t("space.ntf.signalLost")));
+        this.beat(4.2, "never", () => this.host.notify(t("space.ntf.noSource")));
+        this.beat(6.5, "horizon", () => this.host.notify(t("space.ntf.horizon")));
         this.beat(9.8, "escape", () => {
           this.setPhase("done");
           this.host.escape();
@@ -658,7 +630,7 @@ export class SpaceDirector {
         rumble = Math.max(0.08, 0.7 - P * 0.12);
         shake = Math.max(0, 0.02 - P * 0.004);
         this.beat(6, "reset", () => {
-          this.host.notify("NAVIGATION RESET. AN OBSERVER MUST BE ON DECK AT ARRIVAL.");
+          this.host.notify(t("space.ntf.resetCollapse"));
           this.resetNavigation();
         });
         break;

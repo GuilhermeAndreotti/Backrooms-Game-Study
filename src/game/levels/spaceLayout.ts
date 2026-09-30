@@ -67,6 +67,23 @@ export const SPACE_SPAWN = { gx: 3, gz: 15 };
 /** Standing anywhere in these regions when the station arrives counts as watching it happen. */
 export const OBSERVATION_REGIONS: readonly string[] = ["deck"];
 
+/** A physical area's identity, shared by door signage and wayfinding signs. Translated via {@link ROOM_LABEL_KEY}. */
+export type SpaceRoomKey = "corridor" | "lab" | "nav" | "deck" | "comms" | "crew" | "tech" | "eng" | "dock" | "cargo";
+
+/** i18n key for each room label — spaceWorld.ts translates it when it builds a door or a sign. */
+export const ROOM_LABEL_KEY: Record<SpaceRoomKey, string> = {
+  corridor: "space.room.corridor",
+  lab: "space.room.lab",
+  nav: "space.room.nav",
+  deck: "space.room.deck",
+  comms: "space.room.comms",
+  crew: "space.room.crew",
+  tech: "space.room.tech",
+  eng: "space.room.eng",
+  dock: "space.room.dock",
+  cargo: "space.room.cargo",
+};
+
 export interface SpaceDoor {
   id: string;
   gx: number;
@@ -74,20 +91,20 @@ export interface SpaceDoor {
   /** Axis a walker crosses the door along. */
   axis: "x" | "z";
   /** Sign over the door as read from its lower-coordinate side (-x or -z), and from the other side. */
-  fromLow: string;
-  fromHigh: string;
+  fromLow: SpaceRoomKey;
+  fromHigh: SpaceRoomKey;
 }
 
 /** Automatic doors: always in a straight corridor cell, next to the room they serve. */
 export const SPACE_DOORS: readonly SpaceDoor[] = [
-  { id: "dLab", gx: 6, gz: 13, axis: "z", fromLow: "MAIN CORRIDOR", fromHigh: "ASTRONOMY LAB" },
-  { id: "dNavS", gx: 14, gz: 13, axis: "z", fromLow: "MAIN CORRIDOR", fromHigh: "NAVIGATION" },
-  { id: "dNavE", gx: 18, gz: 10, axis: "x", fromLow: "OBSERVATION DECK", fromHigh: "NAVIGATION" },
-  { id: "dDeck", gx: 19, gz: 6, axis: "z", fromLow: "NAVIGATION", fromHigh: "OBSERVATION DECK" },
-  { id: "dComms", gx: 23, gz: 13, axis: "z", fromLow: "MAIN CORRIDOR", fromHigh: "COMMUNICATIONS" },
-  { id: "dCrew", gx: 6, gz: 17, axis: "z", fromLow: "CREW QUARTERS", fromHigh: "MAIN CORRIDOR" },
-  { id: "dTech", gx: 13, gz: 17, axis: "z", fromLow: "SYSTEMS ANALYSIS", fromHigh: "MAIN CORRIDOR" },
-  { id: "dEng", gx: 21, gz: 16, axis: "z", fromLow: "ENGINEERING", fromHigh: "MAIN CORRIDOR" },
+  { id: "dLab", gx: 6, gz: 13, axis: "z", fromLow: "corridor", fromHigh: "lab" },
+  { id: "dNavS", gx: 14, gz: 13, axis: "z", fromLow: "corridor", fromHigh: "nav" },
+  { id: "dNavE", gx: 18, gz: 10, axis: "x", fromLow: "deck", fromHigh: "nav" },
+  { id: "dDeck", gx: 19, gz: 6, axis: "z", fromLow: "nav", fromHigh: "deck" },
+  { id: "dComms", gx: 23, gz: 13, axis: "z", fromLow: "corridor", fromHigh: "comms" },
+  { id: "dCrew", gx: 6, gz: 17, axis: "z", fromLow: "crew", fromHigh: "corridor" },
+  { id: "dTech", gx: 13, gz: 17, axis: "z", fromLow: "tech", fromHigh: "corridor" },
+  { id: "dEng", gx: 21, gz: 16, axis: "z", fromLow: "eng", fromHigh: "corridor" },
 ];
 
 export type SpaceSide = "N" | "S" | "W" | "E";
@@ -119,14 +136,14 @@ export const SPACE_WINDOWS: readonly { region: string; side: SpaceSide; from?: n
  * north wall (reader facing north) "►" points east, on a south wall west,
  * on a west wall north.
  */
-export const SPACE_SIGNS: readonly { gx: number; gz: number; side: SpaceSide; text: string }[] = [
-  { gx: 8, gz: 15, side: "N", text: "◄ DOCK      NAVIGATION ►" },
-  { gx: 12, gz: 15, side: "N", text: "◄ ASTRONOMY LAB      NAVIGATION ►" },
-  { gx: 17, gz: 15, side: "N", text: "◄ NAVIGATION      COMMUNICATIONS ►" },
-  { gx: 25, gz: 15, side: "N", text: "◄ NAVIGATION      CARGO ►" },
-  { gx: 10, gz: 15, side: "S", text: "◄ SYSTEMS ANALYSIS      CREW ►" },
-  { gx: 18, gz: 15, side: "S", text: "◄ ENGINEERING      SYSTEMS ►" },
-  { gx: 19, gz: 8, side: "W", text: "OBSERVATION DECK ►" },
+export const SPACE_SIGNS: readonly { gx: number; gz: number; side: SpaceSide; left?: SpaceRoomKey; right?: SpaceRoomKey; single?: SpaceRoomKey }[] = [
+  { gx: 8, gz: 15, side: "N", left: "dock", right: "nav" },
+  { gx: 12, gz: 15, side: "N", left: "lab", right: "nav" },
+  { gx: 17, gz: 15, side: "N", left: "nav", right: "comms" },
+  { gx: 25, gz: 15, side: "N", left: "nav", right: "cargo" },
+  { gx: 10, gz: 15, side: "S", left: "tech", right: "crew" },
+  { gx: 18, gz: 15, side: "S", left: "eng", right: "tech" },
+  { gx: 19, gz: 8, side: "W", single: "deck" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -145,25 +162,25 @@ export interface SpaceTerminal {
   z: number;
   /** Rotation about Y; 0 means the screen faces +z (south). */
   yaw: number;
-  /** Short name on the console's own nameplate. */
-  name: string;
+  /** i18n key for the console's own nameplate. */
+  nameKey: string;
 }
 
 export const SPACE_TERMINALS: readonly SpaceTerminal[] = [
   // Engineering: the main power bus. Nothing else answers until it's rewired.
-  { id: "power", x: 80, z: 68.8, yaw: 0, name: "POWER DISTRIBUTION" },
+  { id: "power", x: 80, z: 68.8, yaw: 0, nameKey: "space.name.power" },
   // The three navigation systems are spread over the rooms around the helm:
   // DESTINATION in the Navigation Room, ORIENTATION in the astronomy lab,
   // TRAJECTORY in communications.
-  { id: "destination", x: 58, z: 40.2, yaw: 0, name: "DESTINATION" },
-  { id: "orientation", x: 29, z: 37.2, yaw: 0, name: "ORIENTATION" },
-  { id: "trajectory", x: 91, z: 37.2, yaw: 0, name: "TRAJECTORY" },
-  { id: "helm", x: 58, z: 46.5, yaw: 0, name: "NAVIGATION CORE" },
+  { id: "destination", x: 58, z: 40.2, yaw: 0, nameKey: "space.name.destination" },
+  { id: "orientation", x: 29, z: 37.2, yaw: 0, nameKey: "space.name.orientation" },
+  { id: "trajectory", x: 91, z: 37.2, yaw: 0, nameKey: "space.name.trajectory" },
+  { id: "helm", x: 58, z: 46.5, yaw: 0, nameKey: "space.name.helm" },
   // Clues.
-  { id: "analysis", x: 18, z: 37.2, yaw: 0, name: "OBJECT ANALYSIS" },
-  { id: "comms", x: 96, z: 37.2, yaw: 0, name: "SIGNAL LOG" },
-  { id: "crewLog", x: 32, z: 72.8, yaw: 0, name: "CREW LOG" },
-  { id: "destAnalysis", x: 62, z: 72.8, yaw: 0, name: "DESTINATION ANALYSIS" },
+  { id: "analysis", x: 18, z: 37.2, yaw: 0, nameKey: "space.name.analysis" },
+  { id: "comms", x: 96, z: 37.2, yaw: 0, nameKey: "space.name.comms" },
+  { id: "crewLog", x: 32, z: 72.8, yaw: 0, nameKey: "space.name.crewLog" },
+  { id: "destAnalysis", x: 62, z: 72.8, yaw: 0, nameKey: "space.name.destAnalysis" },
 ];
 
 export function spaceTerminal(id: SpaceTerminalId): SpaceTerminal {
@@ -177,11 +194,11 @@ export function spaceTerminal(id: SpaceTerminalId): SpaceTerminal {
 export type SpaceTarget = "planet" | "blackhole" | "unknown";
 export const SPACE_TARGETS: readonly SpaceTarget[] = ["planet", "blackhole", "unknown"];
 
-/** What the station's computer calls each target (diegetic text: the station speaks English). */
-export const TARGET_LABEL: Record<SpaceTarget, string> = {
-  planet: "PLANET",
-  blackhole: "BLACK HOLE",
-  unknown: "UNKNOWN",
+/** i18n key for what the station's computer calls each target. */
+export const TARGET_KEY: Record<SpaceTarget, string> = {
+  planet: "space.target.planet",
+  blackhole: "space.target.blackhole",
+  unknown: "space.target.unknown",
 };
 
 export type SpaceConfig = Record<SpaceConsoleId, SpaceTarget | null>;

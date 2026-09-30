@@ -91,7 +91,7 @@ export function SpaceTerminalModal({ getView, onChoose, onExecute, onAbort, onCl
                 onClick={abort}
                 className="w-full animate-pulse border border-red-500 bg-red-950/50 px-3 py-2 text-sm font-bold tracking-[0.3em] text-red-200 hover:bg-red-900/60"
               >
-                ABORT COURSE
+                {t("space.term.abort")}
               </button>
             ) : (
               <button
@@ -99,7 +99,7 @@ export function SpaceTerminalModal({ getView, onChoose, onExecute, onAbort, onCl
                 onClick={execute}
                 className="w-full border border-amber-500 bg-amber-950/40 px-3 py-2 text-sm font-bold tracking-[0.3em] text-amber-200 hover:bg-amber-900/50 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                EXECUTE
+                {t("space.term.execute")}
               </button>
             )}
           </div>

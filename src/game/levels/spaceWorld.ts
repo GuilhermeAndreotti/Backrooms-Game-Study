@@ -21,8 +21,9 @@ import * as THREE from "three";
 import type { DecorKit } from "../LevelDecor";
 import type { DynamicLightSource } from "../LightPool";
 import type { LightFixture } from "../ProceduralMap";
+import { t } from "../../i18n";
 import {
-  SPACE_GRID, SPACE_SIGNS, SPACE_TERMINALS, SPACE_WALL_H, SpaceDoor, SpaceSide,
+  ROOM_LABEL_KEY, SPACE_GRID, SPACE_SIGNS, SPACE_TERMINALS, SPACE_WALL_H, SpaceDoor, SpaceSide,
   SpaceTerminal, SpaceTerminalId, spaceDoorAt, spaceRegionAt, spaceRng, spaceWindowAt,
 } from "./spaceLayout";
 
@@ -272,7 +273,11 @@ export class SpaceWorld {
     if (door) this.buildDoor(group, door, px, pz);
     if (region.kind === "corridor" && !door) this.buildCorridorDressing(group, gx, gz, px, pz);
     for (const sign of SPACE_SIGNS) {
-      if (sign.gx === gx && sign.gz === gz) this.buildWallSign(group, px, pz, sign.side, sign.text);
+      if (sign.gx !== gx || sign.gz !== gz) continue;
+      const text = sign.single
+        ? `${t(ROOM_LABEL_KEY[sign.single])} ►`
+        : `◄ ${t(ROOM_LABEL_KEY[sign.left!])}      ${t(ROOM_LABEL_KEY[sign.right!])} ►`;
+      this.buildWallSign(group, px, pz, sign.side, text);
     }
     for (const spec of this.specsByCell.get(key) ?? []) this.buildSpec(group, spec);
     return group;
@@ -442,8 +447,8 @@ export class SpaceWorld {
       leaves.push(leaf);
     }
     const lamp = this.box(root, 0.16, 0.06, 0.34, this.kit.mat("sp_led_red", () => new THREE.MeshBasicMaterial({ color: 0xff3b2a })), 0, 2.5, 0);
-    for (const [face, text] of [[-1, door.fromLow], [1, door.fromHigh]] as [number, string][]) {
-      const sign = new THREE.Mesh(this.kit.geo("sp_sign_door", () => new THREE.PlaneGeometry(1.7, 0.3)), this.label(text, 1.7, 0.3));
+    for (const [face, roomKey] of [[-1, door.fromLow], [1, door.fromHigh]] as [number, typeof door.fromLow][]) {
+      const sign = new THREE.Mesh(this.kit.geo("sp_sign_door", () => new THREE.PlaneGeometry(1.7, 0.3)), this.label(t(ROOM_LABEL_KEY[roomKey]), 1.7, 0.3));
       sign.position.set(0, 2.85, face * 0.16);
       if (face < 0) sign.rotation.y = Math.PI;
       root.add(sign);
@@ -499,7 +504,7 @@ export class SpaceWorld {
   // Models (built facing +z: a terminal's screen faces +z at yaw 0)
   // -------------------------------------------------------------------------
 
-  private terminalModel(t: SpaceTerminal, wide: boolean): Piece {
+  private terminalModel(term: SpaceTerminal, wide: boolean): Piece {
     const g = new THREE.Group();
     const w = wide ? 1.9 : 1.3;
     this.box(g, w, 0.82, 0.62, this.trimMat, 0, 0.41, 0);
@@ -509,12 +514,12 @@ export class SpaceWorld {
     head.position.set(0, 0.87, -0.12);
     head.rotation.x = -0.55;
     this.box(head, w - 0.1, 0.62, 0.06, this.darkMat, 0, 0.31, -0.03);
-    const scr = new THREE.Mesh(this.kit.geo(`sp_screen_${w}`, () => new THREE.PlaneGeometry(w - 0.22, 0.52)), this.screen(t.id).material);
+    const scr = new THREE.Mesh(this.kit.geo(`sp_screen_${w}`, () => new THREE.PlaneGeometry(w - 0.22, 0.52)), this.screen(term.id).material);
     scr.position.set(0, 0.31, 0.005);
     head.add(scr);
     g.add(head);
     // Nameplate and a row of small indicator lights along the front lip.
-    const plate = new THREE.Mesh(this.kit.geo(`sp_plate_${w}`, () => new THREE.PlaneGeometry(w * 0.6, 0.12)), this.label(t.name, w * 0.6, 0.12, "#a8ecff", "#0b1d27"));
+    const plate = new THREE.Mesh(this.kit.geo(`sp_plate_${w}`, () => new THREE.PlaneGeometry(w * 0.6, 0.12)), this.label(t(term.nameKey), w * 0.6, 0.12, "#a8ecff", "#0b1d27"));
     plate.position.set(0, 0.62, 0.312);
     g.add(plate);
     const ledOn = this.kit.mat("sp_led_blue", () => new THREE.MeshBasicMaterial({ color: 0x5fd0ff }));
@@ -698,7 +703,7 @@ export class SpaceWorld {
       ctx.strokeStyle = "#ff4a3a"; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(284, 84); ctx.lineTo(316, 116); ctx.moveTo(316, 84); ctx.lineTo(284, 116); ctx.stroke();
       ctx.fillStyle = "#ff4a3a"; ctx.font = "14px monospace";
-      ctx.fillText("B IS WHERE A BENDS THE LIGHT", 250, 200);
+      ctx.fillText(t("space.scr.chart"), 250, 200);
       const tex = new THREE.CanvasTexture(c);
       tex.colorSpace = THREE.SRGBColorSpace;
       this.kit.track(tex);
@@ -718,7 +723,7 @@ export class SpaceWorld {
     const S = Math.PI, W = Math.PI / 2, E = -Math.PI / 2;
 
     // Terminals (and the helm's wider body).
-    for (const t of SPACE_TERMINALS) add(t.x, t.z, t.yaw, () => this.terminalModel(t, t.id === "helm"));
+    for (const term of SPACE_TERMINALS) add(term.x, term.z, term.yaw, () => this.terminalModel(term, term.id === "helm"));
 
     // Dock (spawn): lockers of suits nobody came back for, a bench, crates.
     add(10.5, 56.5, 0, () => this.locker());
