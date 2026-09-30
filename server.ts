@@ -15,6 +15,7 @@ import path from "path";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { ALL_ENTITY_TYPES } from "./src/shared/entityTypes";
+import { GIVE_RANGE_SERVER, isInventoryItemId, isQuickChatId } from "./src/shared/items";
 import { ROOM_CHEATS, SUDO_CHEAT, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
 import { LOBBY_LEVEL, MAIN_LEVELS, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
 import { POOL_ROOM_COUNT, POOL_VALVE_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./src/game/poolroomsPuzzle";
@@ -51,6 +52,9 @@ const MAX_CHAT_LENGTH = 240;
 /** Chat messages allowed per player per CHAT_WINDOW_MS. */
 const CHAT_BURST = 8;
 const CHAT_WINDOW_MS = 10_000;
+/** Item hand-offs allowed per player per GIVE_WINDOW_MS. */
+const GIVE_BURST = 4;
+const GIVE_WINDOW_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // State
@@ -126,6 +130,7 @@ interface Connection {
   player: PlayerState;
   isAlive: boolean;
   chatTimestamps: number[];
+  giveTimestamps: number[];
 }
 
 interface Room {
@@ -603,7 +608,7 @@ async function startServer() {
           monsterSkin: sanitizeMonsterSkin(data.monsterSkin),
         };
 
-        conn = { ws, player, isAlive: true, chatTimestamps: [] };
+        conn = { ws, player, isAlive: true, chatTimestamps: [], giveTimestamps: [] };
         connections.set(ws, conn);
         room.connections.add(conn);
         room.players.set(playerId, player);
@@ -986,7 +991,59 @@ async function startServer() {
         if (conn.chatTimestamps.length >= CHAT_BURST) return; // rate limited
         conn.chatTimestamps.push(now);
 
-        broadcastToRoom(room, { type: "chat_message", sender: conn.player.name, text });
+        broadcastToRoom(room, { type: "chat_message", sender: conn.player.name, senderId: conn.player.id, text });
+        return;
+      }
+
+      // --- quick chat ---------------------------------------------------------
+      // Canned callouts travel as an id so every client shows them in its own
+      // language; they share the typed chat's rate limit.
+      if (type === "chat_quick") {
+        if (!isQuickChatId(data.id)) return;
+
+        const now = Date.now();
+        conn.chatTimestamps = conn.chatTimestamps.filter((t) => now - t < CHAT_WINDOW_MS);
+        if (conn.chatTimestamps.length >= CHAT_BURST) return; // rate limited
+        conn.chatTimestamps.push(now);
+
+        broadcastToRoom(room, { type: "chat_message", sender: conn.player.name, senderId: conn.player.id, quick: data.id });
+        return;
+      }
+
+      // --- item hand-off ------------------------------------------------------
+      // The inventory lives on the client, so the server can't prove the giver
+      // owns the item; it only checks the hand-off is physically plausible
+      // (same level, both alive, standing close) and rate-limits it. The giver
+      // drops the item only on "item_give_ok", so a refused hand-off loses
+      // nothing.
+      if (type === "item_give") {
+        const item = data.item;
+        if (!isInventoryItemId(item)) return;
+        const fail = (reason: string) => send(ws, { type: "item_give_failed", item, reason });
+
+        const giver = conn.player;
+        const target = typeof data.to === "string" ? room.players.get(data.to) : undefined;
+        if (!target || target.id === giver.id) return fail("no_target");
+        if (giver.dead || target.dead || giver.exitReady || target.exitReady || target.level !== giver.level) {
+          return fail("no_target");
+        }
+        const dx = target.x - giver.x;
+        const dz = target.z - giver.z;
+        if (dx * dx + dz * dz > GIVE_RANGE_SERVER * GIVE_RANGE_SERVER) return fail("too_far");
+
+        const now = Date.now();
+        conn.giveTimestamps = conn.giveTimestamps.filter((t) => now - t < GIVE_WINDOW_MS);
+        if (conn.giveTimestamps.length >= GIVE_BURST) return fail("rate_limited");
+        conn.giveTimestamps.push(now);
+
+        let delivered = false;
+        room.connections.forEach((c) => {
+          if (c.player.id !== target.id || delivered) return;
+          send(c.ws, { type: "item_received", from: giver.id, fromName: giver.name, item });
+          delivered = true;
+        });
+        if (!delivered) return fail("no_target");
+        send(ws, { type: "item_give_ok", to: target.id, toName: target.name, item });
         return;
       }
     });

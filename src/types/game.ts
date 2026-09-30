@@ -59,6 +59,16 @@ export interface ChatMessage {
   sender: string;
   text: string;
   time: string;
+  /** Sender's player id (absent on local system lines). */
+  senderId?: string;
+  /** "system" lines come from the client itself; "quick" ones are canned callouts. */
+  kind?: "player" | "system" | "quick";
+  /** Quick callout id (QUICK_CHAT_IDS); its text is localized at render time via `quick.<id>`. */
+  quickId?: string;
+  /** Horizontal distance to the sender when a quick callout arrived, in meters. */
+  distance?: number;
+  /** Arrival time (Date.now()), for the fading feed shown while the chat is closed. */
+  receivedAt: number;
 }
 
 export interface GameSettings {

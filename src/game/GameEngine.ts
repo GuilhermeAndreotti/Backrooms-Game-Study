@@ -15,6 +15,7 @@ import { FACE_SIZE, drawFace, hasFace } from "../utils/face";
 import { AudioManager } from "./AudioManager";
 import { WanderingEntity, EntityType, EntityNetState, type SkinBodyChoice } from "./WanderingEntity";
 import { ALL_ENTITY_TYPES } from "../shared/entityTypes";
+import { USABLE_ITEMS } from "../shared/items";
 import { KingScratches } from "./KingScratches";
 import { KING_POSE_STARE } from "./mobs/fingerKing";
 import { GameSettings, RemotePlayer, RoomCheat } from "../types/game";
@@ -101,6 +102,20 @@ export const RADAR_BASE_RANGE = 26;
 const RADAR_BOOST_RANGE = 70;
 const RADAR_BOOST_SECONDS = 30;
 const ADRENALINE_SECONDS = 10;
+/** Minimum gap between two item uses, so a double-tapped hotbar key doesn't burn two. */
+const ITEM_USE_COOLDOWN_MS = 800;
+/** Sanity at or above this counts as full: restoring it would waste the item. */
+const SANITY_FULL = 0.98;
+
+/** Outcome of GameEngine.useInventoryItem, for the hotbar's feedback. */
+export type ItemUseResult = "used" | "blocked" | "missing" | "passive";
+
+/** A running item effect shown on the HUD (`total` 0 = passive, no timer). */
+export interface ActiveBuff {
+  id: string;
+  remaining: number;
+  total: number;
+}
 
 /** Consumables that go into the inventory on pickup (see useInventoryItem for what each does). */
 const INVENTORY_PICKUPS: Partial<Record<string, { notification: MessageKey; achievement?: string }>> = {
@@ -390,6 +405,8 @@ export class GameEngine {
   private readingAnchor: { x: number; z: number } | null = null;
   /** Cassette tape: seconds left of extended radar range. */
   private radarBoostTimer = 0;
+  /** performance.now() of the last successful item use (see ITEM_USE_COOLDOWN_MS). */
+  private lastItemUseAt = -Infinity;
   private onDiaryPageCollected?: () => void;
   private lastInteractPrompt: string | null = null;
   private interactPromptTimer = 0;
@@ -4385,14 +4402,28 @@ export class GameEngine {
   }
 
   /**
-   * Consumes/uses an item from the inventory.
+   * Consumes/uses an item from the inventory (hotbar key or the inventory's
+   * USE button). Refuses — without spending the item — when using it now
+   * would be wasted: sanity already full, the same buff still running, or
+   * another item used a moment ago.
    */
-  public useInventoryItem(itemId: string) {
+  public useInventoryItem(itemId: string): ItemUseResult {
     const idx = this.inventory.indexOf(itemId);
-    if (idx === -1) return;
+    if (idx === -1) return "missing";
+    if (!USABLE_ITEMS.has(itemId)) return "passive";
+    if (this.isDead || this.isWaitingForTransition) return "blocked";
+
+    const now = performance.now();
+    if (now - this.lastItemUseAt < ITEM_USE_COOLDOWN_MS) return "blocked";
+
+    const refuse = (key: MessageKey): ItemUseResult => {
+      this.onHUDNotification?.(t(key));
+      return "blocked";
+    };
 
     switch (itemId) {
       case "almond_water":
+        if (this.sanity >= SANITY_FULL && this.player.stamina >= this.player.maxStamina) return refuse("eng.itemBlocked.sanityFull");
         this.sanity = Math.min(1.0, this.sanity + 0.20);
         this.player.stamina = Math.min(this.player.maxStamina, this.player.stamina + 0.15); // restores physical stamina too
         this.audio.playGlitchNoclipSound();
@@ -4401,12 +4432,14 @@ export class GameEngine {
         break;
       case "old_photo":
         // Remembering who you are: the strongest sanity restore, no stamina.
+        if (this.sanity >= SANITY_FULL) return refuse("eng.itemBlocked.sanityFull");
         this.sanity = Math.min(1.0, this.sanity + 0.35);
         this.audio.playGlitchNoclipSound();
         this.onHUDNotification?.(t("eng.photoUsed"));
         break;
       case "liquid_pain":
         // Adrenaline: a burst of undrained, slightly faster sprinting that burns the mind.
+        if (this.player.adrenalineTimer > 0) return refuse("eng.itemBlocked.active");
         this.player.adrenalineTimer = ADRENALINE_SECONDS;
         this.player.stamina = this.player.maxStamina;
         if (!this.cheatLife) this.sanity = Math.max(0.0, this.sanity - 0.15);
@@ -4415,19 +4448,75 @@ export class GameEngine {
         break;
       case "cassette_tape":
         // The recording's static sweeps the halls: the radar reaches much farther for a while.
+        if (this.radarBoostTimer > 0) return refuse("eng.itemBlocked.active");
         this.radarBoostTimer = RADAR_BOOST_SECONDS;
         this.audio.triggerHumFlicker(400);
         this.onHUDNotification?.(t("eng.tapeUsed"));
         break;
       default:
-        // Passive (strange_crystal) or unknown: nothing to consume.
-        return;
+        return "passive";
     }
 
+    this.lastItemUseAt = now;
     // Remove one instance of the item
     this.inventory.splice(idx, 1);
     this.onInventoryChange?.([...this.inventory]);
     this.onSanityChange?.(this.sanity);
+    return "used";
+  }
+
+  /** A teammate handed over an item (server-validated "item_received"). */
+  public receiveItem(itemId: string, fromName: string) {
+    this.inventory.push(itemId);
+    this.audio.playGlitchNoclipSound();
+    this.onHUDNotification?.(t("eng.itemReceived", { name: fromName, item: t(`item.${itemId}.name` as MessageKey) }));
+    this.onInventoryChange?.([...this.inventory]);
+  }
+
+  /** The server confirmed a hand-off ("item_give_ok"): drop one of that item. */
+  public removeGivenItem(itemId: string, toName: string) {
+    const idx = this.inventory.indexOf(itemId);
+    if (idx === -1) return;
+    this.inventory.splice(idx, 1);
+    this.onHUDNotification?.(t("eng.itemGiven", { name: toName, item: t(`item.${itemId}.name` as MessageKey) }));
+    this.onInventoryChange?.([...this.inventory]);
+  }
+
+  /** Timed item effects still running, for the HUD's buff pills. */
+  public activeBuffs(): ActiveBuff[] {
+    const buffs: ActiveBuff[] = [];
+    if (!this.player) return buffs;
+    if (this.player.adrenalineTimer > 0) {
+      buffs.push({ id: "liquid_pain", remaining: this.player.adrenalineTimer, total: ADRENALINE_SECONDS });
+    }
+    if (this.radarBoostTimer > 0) {
+      buffs.push({ id: "cassette_tape", remaining: this.radarBoostTimer, total: RADAR_BOOST_SECONDS });
+    }
+    if (this.inventory.includes("strange_crystal")) buffs.push({ id: "strange_crystal", remaining: 0, total: 0 });
+    return buffs;
+  }
+
+  /** Horizontal distance to a teammate on this level, or null if unknown / elsewhere. */
+  public distanceToPlayer(id: string): number | null {
+    const st = this.remoteStates.get(id);
+    if (!st || !this.player || (st.level !== undefined && st.level !== this.level)) return null;
+    return Math.hypot(st.x - this.player.position.x, st.z - this.player.position.z);
+  }
+
+  /** Closest living teammate on this level within `range` meters (for item hand-offs). */
+  public nearestTeammateInRange(range: number): { id: string; name: string } | null {
+    if (this.isDead) return null;
+    let best: { id: string; name: string } | null = null;
+    let bestDist = range;
+    this.remoteStates.forEach((st, id) => {
+      if (st.dead || st.exitReady || this.remoteDead.has(id)) return;
+      const d = this.distanceToPlayer(id);
+      if (d !== null && d <= bestDist) {
+        bestDist = d;
+        best = { id, name: st.name };
+      }
+    });
+    return best;
   }
 
   /** Strange Crystal cuts every sanity drain while it's carried (one is enough; they don't stack). */

@@ -6,11 +6,12 @@
 import { t, useLanguage } from "../i18n";
 import { FUN_LEVEL, LEVEL_G, SPACE_LEVEL } from "../game/levels/constants";
 import React, { useState, useEffect, useRef } from "react";
-import { Flashlight, ShieldAlert, Send, MessageSquare, Terminal, Backpack, Trophy, Mic, MicOff } from "lucide-react";
+import { Flashlight, ShieldAlert, Backpack, Trophy, Mic, MicOff } from "lucide-react";
 import { ChatMessage, RemotePlayer } from "../types/game";
 import { RadarHUD } from "./RadarHUD";
 import { GameEngine, LevelGProgress } from "../game/GameEngine";
-import { isTypingInField } from "../utils/input";
+import { ChatHUD } from "./ChatHUD";
+import type { QuickChatId } from "../shared/items";
 
 interface GameHUDProps {
   stamina: number; // 0 to 1
@@ -26,6 +27,10 @@ interface GameHUDProps {
   showFps?: boolean;
   chatMessages: ChatMessage[];
   onSendMessage: (msg: string) => void;
+  onSendQuick: (id: QuickChatId) => void;
+  localPlayerId: string | null;
+  /** False while a panel (inventory, terminal...) owns the keyboard. */
+  chatHotkeysEnabled: boolean;
   latency?: number; // Real round-trip ms to the relay (undefined until the first pong arrives)
   level?: number;
   engineRef: React.MutableRefObject<GameEngine | null>;
@@ -58,6 +63,9 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
   showFps = false,
   chatMessages,
   onSendMessage,
+  onSendQuick,
+  localPlayerId,
+  chatHotkeysEnabled,
   latency,
   level = 0,
   engineRef,
@@ -74,56 +82,19 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
   onToggleVoip
 }) => {
   useLanguage();
-  const [inputText, setInputText] = useState("");
-  const [showChat, setShowChat] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  const chatInputRef = useRef<HTMLInputElement>(null);
-  // Bumped every time "T" should (re)focus the chat box — a plain ref write
-  // wouldn't re-run the focus effect if showChat was already true.
-  const [focusChatSignal, setFocusChatSignal] = useState(0);
-
-  // Infiltration clock timer
+  // The inventory button glows for a moment when the item count goes up,
+  // instead of pulsing forever.
+  const prevInventoryCount = useRef(inventoryCount);
+  const [inventoryGlow, setInventoryGlow] = useState(false);
   useEffect(() => {
-    const interval = setInterval(() => {
-      setElapsedSeconds((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Quick chat shortcut: "T" opens the comms drawer and focuses the input,
-  // same convention as most co-op games. Ignored while already typing
-  // somewhere (including a second "T" typed straight into an open chat).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (isTypingInField()) return;
-      if ((e.key === "t" || e.key === "T") && !e.ctrlKey && !e.altKey && !e.metaKey) {
-        e.preventDefault();
-        setShowChat(true);
-        setFocusChatSignal((n: number) => n + 1);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  useEffect(() => {
-    if (showChat) chatInputRef.current?.focus();
-  }, [showChat, focusChatSignal]);
-
-  // Auto scroll chat to newest messages
-  useEffect(() => {
-    if (chatEndRef.current) {
-      chatEndRef.current.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [chatMessages]);
-
-  const handleSend = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inputText.trim()) return;
-    onSendMessage(inputText.trim());
-    setInputText("");
-  };
+    const gained = inventoryCount > prevInventoryCount.current;
+    prevInventoryCount.current = inventoryCount;
+    if (!gained) return;
+    setInventoryGlow(true);
+    const timer = setTimeout(() => setInventoryGlow(false), 2000);
+    return () => clearTimeout(timer);
+  }, [inventoryCount]);
 
   /**
    * Helper function to parse seconds to HH:MM:SS
@@ -295,116 +266,63 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
         </div>
       </div>
 
-      {/* 2. CHAT DRAWER OR OVERLAY */}
-      <div className="absolute left-4 bottom-22 pointer-events-auto h-52 w-[340px] flex flex-col justify-end gap-2">
-        <div className="flex gap-2">
-          {/* Toggle chat messaging window */}
+      {/* 2. CHAT (history, fading feed, quick messages) + HUD BUTTONS */}
+      <ChatHUD
+        messages={chatMessages}
+        playerName={playerName}
+        localPlayerId={localPlayerId}
+        connectedPlayers={connectedPlayers}
+        onSendMessage={onSendMessage}
+        onSendQuick={onSendQuick}
+        hotkeysEnabled={chatHotkeysEnabled}
+      >
+        {/* Toggle inventory window */}
+        {onOpenInventory && (
           <button
-            onClick={() => setShowChat((prev) => !prev)}
-            id="btn-hud-chat-toggle"
-            className="flex items-center gap-2 bg-[#0b0a05]/85 hover:bg-[#141208] text-[#a28e3b] hover:text-[#deb81d] border border-[#a28e3b]/20 hover:border-[#deb81d]/40 rounded px-2.5 py-1.5 text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer"
+            onClick={onOpenInventory}
+            id="btn-hud-inventory-toggle"
+            className={`flex items-center gap-2 bg-[#0b0a05]/85 hover:bg-[#141208] text-[#a28e3b] hover:text-[#deb81d] border border-[#a28e3b]/20 hover:border-[#deb81d]/40 rounded px-2.5 py-1.5 text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer ${inventoryGlow ? "animate-pulse border-[#deb81d]/70 text-[#deb81d]" : ""}`}
           >
-            <MessageSquare className="w-4 h-4" />
-            {t("hud.chat")}
-            {chatMessages.length > 0 && (
+            <Backpack className="w-4 h-4 text-[#deb81d]" />
+            {t("hud.inventory")}
+            {inventoryCount > 0 && (
               <span className="px-1.5 py-0.2 bg-[#deb81d] text-black font-extrabold rounded-full text-[9px]">
-                {chatMessages.length}
+                {inventoryCount}
               </span>
             )}
           </button>
-
-          {/* Toggle inventory window */}
-          {onOpenInventory && (
-            <button
-              onClick={onOpenInventory}
-              id="btn-hud-inventory-toggle"
-              className="flex items-center gap-2 bg-[#0b0a05]/85 hover:bg-[#141208] text-[#a28e3b] hover:text-[#deb81d] border border-[#a28e3b]/20 hover:border-[#deb81d]/40 rounded px-2.5 py-1.5 text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer animate-pulse hover:animate-none"
-            >
-              <Backpack className="w-4 h-4 text-[#deb81d]" />
-              {t("hud.inventory")}
-              {inventoryCount > 0 && (
-                <span className="px-1.5 py-0.2 bg-[#deb81d] text-black font-extrabold rounded-full text-[9px]">
-                  {inventoryCount}
-                </span>
-              )}
-            </button>
-          )}
-
-          {/* Toggle achievements window */}
-          {onOpenAchievements && (
-            <button
-              onClick={onOpenAchievements}
-              id="btn-hud-achievements-toggle"
-              className="flex items-center gap-2 bg-[#0b0a05]/85 hover:bg-[#141208] text-[#a28e3b] hover:text-[#deb81d] border border-[#a28e3b]/20 hover:border-[#deb81d]/40 rounded px-2.5 py-1.5 text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer"
-            >
-              <Trophy className="w-4 h-4 text-[#deb81d]" />
-              {t("hud.achievements")}
-            </button>
-          )}
-
-          {/* Proximity VOIP: mic on/off, glowing green while the local mic is picking up speech */}
-          {onToggleVoip && (
-            <button
-              onClick={onToggleVoip}
-              id="btn-hud-voip-toggle"
-              className={`flex items-center gap-2 border rounded px-2.5 py-1.5 text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer ${
-                voipEnabled
-                  ? voipSpeaking
-                    ? "bg-green-500/20 text-green-400 border-green-400/60"
-                    : "bg-[#0b0a05]/85 text-[#deb81d] border-[#deb81d]/40"
-                  : "bg-[#0b0a05]/85 text-[#a28e3b] border-[#a28e3b]/20 hover:border-[#deb81d]/40 hover:text-[#deb81d]"
-              }`}
-            >
-              {voipEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
-              {t("hud.voip")}
-            </button>
-          )}
-        </div>
-
-        {showChat && (
-          <div className="bg-[#0b0a05]/92 border border-[#a28e3b]/30 w-full rounded p-3 flex flex-col h-40 shadow-lg pointer-events-auto">
-            {/* Scrollable messages area */}
-            <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-[#a28e3b]/20 pr-1 space-y-1.5 text-xs select-text">
-              {chatMessages.length === 0 ? (
-                <div className="text-[#a28e3b]/40 text-center py-6 text-[10px] italic">
-                  {t("hud.noMessages")}
-                </div>
-              ) : (
-                chatMessages.map((m) => (
-                  <div key={m.id} className="break-all leading-tight">
-                    <span className="text-[#a28e3b] font-bold">[{m.time}] </span>
-                    <span className={m.sender === playerName ? "text-[#deb81d] font-bold" : "text-[#d1bd66]"}>
-                      {m.sender}:
-                    </span>{" "}
-                    <span className="text-gray-300 font-sans tracking-wide">{m.text}</span>
-                  </div>
-                ))
-              )}
-              <div ref={chatEndRef} />
-            </div>
-
-            {/* Input Form */}
-            <form onSubmit={handleSend} className="mt-2 flex gap-1 border-t border-[#a28e3b]/10 pt-2">
-              <input
-                ref={chatInputRef}
-                type="text"
-                maxLength={45}
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                placeholder={t("hud.chatPlaceholder")}
-                className="flex-1 bg-[#12110a] border border-[#a28e3b]/30 text-xs px-2.5 py-1.5 rounded outline-none text-[#deb81d] focus:border-[#deb81d]"
-              />
-              <button
-                type="submit"
-                id="btn-hud-chat-send"
-                className="bg-[#deb81d] hover:bg-[#ebd255] text-black px-2.5 py-1 rounded cursor-pointer transition-colors"
-              >
-                <Send className="w-3.5 h-3.5" />
-              </button>
-            </form>
-          </div>
         )}
-      </div>
+
+        {/* Toggle achievements window */}
+        {onOpenAchievements && (
+          <button
+            onClick={onOpenAchievements}
+            id="btn-hud-achievements-toggle"
+            className="flex items-center gap-2 bg-[#0b0a05]/85 hover:bg-[#141208] text-[#a28e3b] hover:text-[#deb81d] border border-[#a28e3b]/20 hover:border-[#deb81d]/40 rounded px-2.5 py-1.5 text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer"
+          >
+            <Trophy className="w-4 h-4 text-[#deb81d]" />
+            {t("hud.achievements")}
+          </button>
+        )}
+
+        {/* Proximity VOIP: mic on/off, glowing green while the local mic is picking up speech */}
+        {onToggleVoip && (
+          <button
+            onClick={onToggleVoip}
+            id="btn-hud-voip-toggle"
+            className={`flex items-center gap-2 border rounded px-2.5 py-1.5 text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer ${
+              voipEnabled
+                ? voipSpeaking
+                  ? "bg-green-500/20 text-green-400 border-green-400/60"
+                  : "bg-[#0b0a05]/85 text-[#deb81d] border-[#deb81d]/40"
+                : "bg-[#0b0a05]/85 text-[#a28e3b] border-[#a28e3b]/20 hover:border-[#deb81d]/40 hover:text-[#deb81d]"
+            }`}
+          >
+            {voipEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+            {t("hud.voip")}
+          </button>
+        )}
+      </ChatHUD>
 
       {/* RADIO RADAR WIDGET */}
       <div className="absolute right-4 bottom-22 pointer-events-auto w-64 flex flex-col justify-end">
@@ -417,12 +335,11 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
 
       {/* 3. BOTTOM PANEL HUD (STAMINA + DISCONNECT + FLASHLIGHT) */}
       <div className="flex justify-between items-end pointer-events-auto">
-        {/* ("Abort infiltration" lives in the pause menu now.) */}
-        <div />
-
-        {/* Diagnostic widgets */}
-        <div className="flex flex-col gap-1 text-[10px] text-[#a28e3b]/40 select-none">
-          <div className="flex items-center gap-1.5 justify-end">
+        {/* ("Abort infiltration" lives in the pause menu now.) Diagnostics sit
+            bottom-left, under the chat buttons: the bottom center belongs to
+            the item hotbar. */}
+        <div className="flex gap-3 text-[10px] text-[#a28e3b]/40 select-none">
+          <div className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse inline-block" />
             {t("hud.vhfActive")}
           </div>
