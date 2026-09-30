@@ -2326,8 +2326,8 @@ export class GameEngine {
   private poseRemotePlayer(group: THREE.Group, pitch: number, delta: number, flashOn: boolean) {
     const anim = (group.userData.anim ??= {
       lastX: group.position.x, lastZ: group.position.z,
-      speed: 0, phase: 0, time: Math.random() * 10, move: 0, run: 0, crouch: 0, watch: 0,
-    }) as { lastX: number; lastZ: number; speed: number; phase: number; time: number; move: number; run: number; crouch: number; watch: number; stepDist?: number };
+      speed: 0, phase: 0, time: Math.random() * 10, move: 0, run: 0, crouch: 0,
+    }) as { lastX: number; lastZ: number; speed: number; phase: number; time: number; move: number; run: number; crouch: number; stepDist?: number };
     const dt = Math.max(delta, 1e-4);
     const vx = (group.position.x - anim.lastX) / dt;
     const vz = (group.position.z - anim.lastZ) / dt;
@@ -2400,17 +2400,15 @@ export class GameEngine {
     if (rFore) rFore.rotation.x = -(0.2 + run * move * 1.0 + (flashOn ? 0.5 : 0));
 
     // Head: follows the look pitch (the model faces +Z, so looking up tilts
-    // back: -x). Standing still near us, the explorer turns to look at us.
+    // back: -x). No yaw targeting of nearby players — the body itself already
+    // faces the real look direction (own yaw for remote players, the actual
+    // camera yaw for the mirror's copy of us, see updateMirrorSelf), so any
+    // extra head-yaw logic here would just be an independent, unrelated
+    // rotation layered on top of it.
     if (head) {
       const targetTilt = -THREE.MathUtils.clamp(pitch, -1.2, 1.2);
       head.rotation.x += (targetTilt - head.rotation.x) * Math.min(1, 15 * delta);
-      const dx = this.player.position.x - group.position.x;
-      const dz = this.player.position.z - group.position.z;
-      const near = !this.isDead && dx * dx + dz * dz < 6 * 6 && move < 0.3;
-      anim.watch = damp(anim.watch, near ? 1 : 0, 4, delta);
-      let rel = Math.atan2(dx, dz) - group.rotation.y;
-      rel = Math.atan2(Math.sin(rel), Math.cos(rel));
-      head.rotation.y = THREE.MathUtils.clamp(rel, -1.1, 1.1) * anim.watch + Math.sin(time * 0.4) * 0.2 * (1 - anim.watch) * (1 - move);
+      head.rotation.y += (0 - head.rotation.y) * Math.min(1, 15 * delta);
     }
   }
 
