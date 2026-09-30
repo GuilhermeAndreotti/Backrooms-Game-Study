@@ -24,6 +24,8 @@ export interface RemotePlayer {
   exitReady?: boolean;
   /** SKIN cheat: an EntityType name ("HOUND", ...) worn instead of the hazmat suit, or "" for none. */
   monsterSkin?: string;
+  /** Level FUN: the puzzle item this explorer carries ("p1:<n>"/"p3:<n>"), or "" for none. Server-owned. */
+  held?: string;
 }
 
 export type DeathAction = 'current_level' | 'level_0' | 'lobby';

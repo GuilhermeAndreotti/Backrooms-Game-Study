@@ -225,6 +225,8 @@ export class ProceduralMap {
     type: "almond_water" | "energy_bar" | "old_photo" | "cassette_tape" | "strange_crystal" | "liquid_pain" | "diary_page" | "scrap_of_note" | "g_document";
     /** Level G documents: which digit of the terminal code this one reveals. */
     docIndex?: number;
+    /** Same on every client (see assignConsumableIds); how pickups are synced. */
+    netId?: string;
     x: number;
     z: number;
     gridX: number;
@@ -6953,6 +6955,54 @@ export class ProceduralMap {
     scene.add(fog);
   }
 
+  /** Consumables numbered so far (see assignConsumableIds). */
+  private consumablesNumbered = 0;
+  private consumableCellCounts = new Map<string, number>();
+  /** Pickups a teammate already took, including ones in cells not built here yet. */
+  private takenConsumableIds = new Set<string>();
+
+  /**
+   * Gives every consumable an id that matches on every client. Cells stream
+   * in lazily, in whatever order each explorer walks, so the array index
+   * differs between clients — but a cell always builds its own items in the
+   * same order, so "<cell>#<ordinal within the cell>" does not. Items a
+   * teammate already took are hidden as their cell appears.
+   */
+  private assignConsumableIds() {
+    for (; this.consumablesNumbered < this.consumables.length; this.consumablesNumbered++) {
+      const c = this.consumables[this.consumablesNumbered];
+      const cell = `${c.gridX},${c.gridZ}`;
+      const n = this.consumableCellCounts.get(cell) ?? 0;
+      this.consumableCellCounts.set(cell, n + 1);
+      c.netId = `${cell}#${n}`;
+      if (this.takenConsumableIds.has(c.netId)) {
+        c.collected = true;
+        c.mesh.visible = false;
+      }
+    }
+  }
+
+  /** Stable id of a consumable (see assignConsumableIds). */
+  public consumableId(item: ProceduralMap["consumables"][number]): string {
+    this.assignConsumableIds();
+    return item.netId ?? "";
+  }
+
+  /**
+   * A teammate took this pickup: hide it here too. Returns whether it was
+   * still lying around on this client (false if already gone, or its cell
+   * isn't built yet — it's hidden when it is).
+   */
+  public markConsumableTaken(id: string): boolean {
+    this.takenConsumableIds.add(id);
+    this.assignConsumableIds();
+    const item = this.consumables.find((c) => c.netId === id);
+    if (!item || item.collected) return false;
+    item.collected = true;
+    item.mesh.visible = false;
+    return true;
+  }
+
   /**
    * Rebuilds the per-frame simulation lists (lamps, leaks, animated props,
    * collectibles) from the cells currently streamed in.
@@ -6962,6 +7012,7 @@ export class ProceduralMap {
    * the player could not possibly see.
    */
   private rebuildActiveWorkLists(minX: number, maxX: number, minZ: number, maxZ: number) {
+    this.assignConsumableIds();
     const inRange = (gx: number, gz: number) =>
       gx >= minX && gx <= maxX && gz >= minZ && gz <= maxZ;
 
@@ -7082,6 +7133,9 @@ export class ProceduralMap {
     this.animatingMeshes = [];
     this.waterDrips = [];
     this.consumables = [];
+    this.consumablesNumbered = 0;
+    this.consumableCellCounts.clear();
+    this.takenConsumableIds.clear();
     this.dynamicLights = [];
     this.activeLightFixtures = [];
     this.activeWaterDrips = [];

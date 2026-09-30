@@ -92,6 +92,13 @@ interface PlayerState {
    * `face`) it rides along on every movement snapshot.
    */
   monsterSkin: string;
+  /**
+   * Level FUN: the puzzle item in this explorer's hands ("p1:<n>"/"p3:<n>",
+   * see funDirector.ts), or "" for none. Server-owned — set only by an
+   * accepted "fun_take" — so a prop is only ever in one pair of hands, and
+   * it rides the movement snapshots so teammates can draw it.
+   */
+  held: string;
 }
 
 /**
@@ -160,6 +167,14 @@ interface Room {
   poolValvesTurned: Set<number>;
   poolValveRevision: number;
   poolVigiaIntellect: number;
+  /** Level FUN puzzle facts announced so far ("kind:index"), replayed to explorers who arrive later. */
+  funFacts: Set<string>;
+  /**
+   * Map pickups (almond water, notes, Level G documents...) already taken,
+   * per level: consumable id -> Level G document index (-1 for anything
+   * else). Dropped once nobody is on that level any more.
+   */
+  consumed: Map<number, Map<string, number>>;
 }
 
 const rooms = new Map<string, Room>();
@@ -337,7 +352,12 @@ const MAX_SPEECH_LENGTH = 64;
 /** Level-wide events the authority may broadcast ("levelg_alarm": Level G's final alarm). */
 const GLOBAL_EVENTS = new Set(["flicker_storm", "blackout", "levelg_alarm"]);
 /** Level FUN puzzle facts a client may announce (see funDirector.ts). */
-const FUN_EVENT_KINDS = new Set(["p1_slot", "p2_solved", "p3_placed"]);
+const FUN_EVENT_KINDS = new Set(["p1_slot", "p2_solved", "p3_open", "p3_placed"]);
+/** A Level FUN puzzle item: group (table setting / final party) and its index in that group's list. */
+const FUN_ITEM = /^p[13]:[0-7]$/;
+/** Map pickup id: "<gx>,<gz>#<ordinal within the cell>" (see ProceduralMap.assignConsumableIds). */
+const CONSUMABLE_ID = /^\d{1,3},\d{1,3}#\d{1,2}$/;
+const MAX_CONSUMED_PER_LEVEL = 4000;
 /** Level 79 facts a client may announce (see spaceDirector.ts): power restored (0), a console set (0-8), a course executed (0 planet, 1 black hole), the planet course aborted (0). */
 const SPACE_EVENT_MAX_INDEX: Record<string, number> = { power: 0, set: 8, exec: 1, abort: 0 };
 
@@ -393,6 +413,7 @@ function resetRoom(room: Room, action: DeathAction) {
   if (scratch) room.level = 0;
   if (toLobby) room.level = LOBBY_LEVEL;
   resetPoolroomsState(room);
+  resetSharedLevelState(room);
   reviveAll(room);
   room.players.forEach((p) => { p.level = room.level; });
   refreshAuthority(room);
@@ -465,6 +486,36 @@ function tryAdvanceRoom(room: Room) {
   });
 }
 
+/** Level FUN: the explorer puts down whatever they carry; every client on the level shows it back where it came from. */
+function releaseFunHeld(room: Room, p: PlayerState) {
+  if (!p.held) return;
+  const item = p.held;
+  p.held = "";
+  room.dirty.add(p.id);
+  broadcastToLevel(room, FUN_LEVEL, { type: "fun_carry", level: FUN_LEVEL, item, holder: null });
+}
+
+/**
+ * Per tick: nobody carries a FUN prop off the level or into death, and
+ * shared level state is dropped once the last explorer has left that level
+ * (whoever comes next starts it fresh, like their own map does).
+ */
+function sweepSharedLevelState(room: Room) {
+  const occupied = new Set<number>();
+  room.players.forEach((p) => {
+    occupied.add(p.level);
+    if (p.held && (p.dead || p.level !== FUN_LEVEL)) releaseFunHeld(room, p);
+  });
+  if (!occupied.has(FUN_LEVEL)) room.funFacts.clear();
+  room.consumed.forEach((_ids, level) => { if (!occupied.has(level)) room.consumed.delete(level); });
+}
+
+function resetSharedLevelState(room: Room) {
+  room.funFacts.clear();
+  room.consumed.clear();
+  room.players.forEach((p) => { if (p.held) { p.held = ""; room.dirty.add(p.id); } });
+}
+
 function reviveAll(room: Room) {
   // Marked dirty so the next snapshot tells every client they're alive again.
   room.players.forEach((p) => { p.dead = false; p.exitReady = false; room.dirty.add(p.id); });
@@ -476,6 +527,7 @@ function removeConnection(conn: Connection) {
   const room = rooms.get(conn.player.room);
   if (!room) return;
 
+  releaseFunHeld(room, conn.player);
   room.connections.delete(conn);
   room.players.delete(conn.player.id);
   room.dirty.delete(conn.player.id);
@@ -564,6 +616,8 @@ async function startServer() {
             authorityKey: "",
             poolValvesTurned: new Set(),
             poolValveRevision: 0,
+            funFacts: new Set(),
+            consumed: new Map(),
             poolVigiaIntellect: 0,
           };
           rooms.set(roomKey, room);
@@ -606,6 +660,7 @@ async function startServer() {
           exitReady: false,
           face: sanitizeFace(data.face),
           monsterSkin: sanitizeMonsterSkin(data.monsterSkin),
+          held: "",
         };
 
         conn = { ws, player, isAlive: true, chatTimestamps: [], giveTimestamps: [] };
@@ -737,7 +792,71 @@ async function startServer() {
         const index = data.index;
         if (level !== FUN_LEVEL || data.level !== level || typeof kind !== "string" || !FUN_EVENT_KINDS.has(kind)) return;
         if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 7) return;
+        room.funFacts.add(`${kind}:${index}`);
         broadcastToLevel(room, level, { type: "fun_event", level, kind, index }, conn);
+        // Placing on the table is what the carried item was for.
+        if (kind === "p1_slot" || kind === "p3_placed") releaseFunHeld(room, conn.player);
+        return;
+      }
+
+      // Level FUN: pick up a puzzle item. Granted only if nobody else has it;
+      // the answer goes to the whole level (sender included), and the picker
+      // only takes it into their hands once it arrives. Picking up something
+      // new puts down what they had.
+      if (type === "fun_take") {
+        const p = conn.player;
+        const item = data.item;
+        if (p.level !== FUN_LEVEL || data.level !== p.level || p.dead || typeof item !== "string" || !FUN_ITEM.test(item)) return;
+        let holder: PlayerState | undefined;
+        room.players.forEach((other) => { if (other.held === item && other.level === FUN_LEVEL) holder = other; });
+        if (holder) {
+          send(ws, { type: "fun_carry", level: FUN_LEVEL, item, holder: holder.id });
+          return;
+        }
+        releaseFunHeld(room, p);
+        p.held = item;
+        room.dirty.add(p.id);
+        broadcastToLevel(room, FUN_LEVEL, { type: "fun_carry", level: FUN_LEVEL, item, holder: p.id });
+        return;
+      }
+
+      if (type === "fun_drop") {
+        if (conn.player.level === FUN_LEVEL && data.level === FUN_LEVEL) releaseFunHeld(room, conn.player);
+        return;
+      }
+
+      // Level FUN: an explorer just arrived (or rebuilt the level) and needs
+      // everything the others already did — puzzle facts and who holds what.
+      if (type === "fun_sync") {
+        const held: [string, string][] = [];
+        room.players.forEach((other) => { if (other.held && other.level === FUN_LEVEL) held.push([other.id, other.held]); });
+        const facts = [...room.funFacts].map((f) => { const [kind, index] = f.split(":"); return [kind, Number(index)]; });
+        send(ws, { type: "fun_state", level: FUN_LEVEL, facts, held });
+        return;
+      }
+
+      // A map pickup (almond water, a note, a Level G document...) was taken:
+      // it disappears for everyone else on the level. First come wins; the
+      // server only dedupes and remembers it for late arrivals. `doc` is a
+      // Level G document's index, so teammates learn its code digit too.
+      if (type === "consumable_take") {
+        const level = conn.player.level;
+        const id = data.id;
+        if (data.level !== level || conn.player.dead || typeof id !== "string" || !CONSUMABLE_ID.test(id)) return;
+        const doc = typeof data.doc === "number" && Number.isInteger(data.doc) && data.doc >= 0 && data.doc <= 2 ? data.doc : -1;
+        let taken = room.consumed.get(level);
+        if (!taken) { taken = new Map(); room.consumed.set(level, taken); }
+        if (taken.has(id) || taken.size >= MAX_CONSUMED_PER_LEVEL) return;
+        taken.set(id, doc);
+        broadcastToLevel(room, level, { type: "consumable_taken", level, id, doc }, conn);
+        return;
+      }
+
+      if (type === "consumables_sync") {
+        const level = data.level;
+        if (typeof level !== "number" || !Number.isInteger(level)) return;
+        const taken = [...(room.consumed.get(level) ?? new Map<string, number>())];
+        send(ws, { type: "consumables_state", level, taken });
         return;
       }
 
@@ -1076,6 +1195,7 @@ async function startServer() {
       // Players change level via their movement updates (e.g. the solo
       // secret-level detour), so authority is re-checked every tick.
       refreshAuthority(room);
+      sweepSharedLevelState(room);
       if (room.dirty.size === 0) return;
 
       const players: Omit<PlayerState, "face">[] = [];

@@ -172,6 +172,10 @@ const LEVEL_G_DOCUMENTS = [
   (d: number) => t("eng.doc3", { d }),
 ];
 
+/** How far forward (radians) a teammate holds the upper arm / forearm while carrying a Level FUN item. */
+const REMOTE_CARRY_ARM = 0.95;
+const REMOTE_CARRY_FOREARM = 0.55;
+
 /** Eye height below which an explorer counts as crouched (floor at 0, as on Level G). */
 const CROUCHED_EYE_HEIGHT = (PLAYER_STANDING_HEIGHT + PLAYER_CROUCH_HEIGHT) / 2;
 
@@ -775,6 +779,7 @@ export class GameEngine {
     this.setupOfficeWorkers();
     this.setupFun();
     this.setupSpace();
+    this.requestLevelSync();
 
     // Spotlight representing local F key Flashlight
     this.flashlight = new THREE.SpotLight(0xfffaec, 2.8, 16, Math.PI / 5, 0.45, 1.0);
@@ -1077,6 +1082,8 @@ export class GameEngine {
             if (dx * dx + dz * dz < 2.56) {
               item.collected = true;
               item.mesh.visible = false;
+              // Gone for the teammates too (see applyConsumableTaken).
+              this.sendToServer({ type: "consumable_take", level: this.level, id: this.map.consumableId(item), doc: item.docIndex });
               // Play pickup sound (using exit glitch sound which is clear and beautiful!)
               this.audio.playGlitchNoclipSound();
               
@@ -2204,6 +2211,10 @@ export class GameEngine {
   private disposeExplorerGroup(group: THREE.Group) {
     this.scene.remove(group);
 
+      // A carried Level FUN prop shares its geometry/materials with the
+      // level's own props — never dispose it with the avatar.
+      this.setRemoteHeld(group, "");
+
       // A SKIN-cheat body (see createHazmatExplorer) shares WanderingEntity's
       // class-wide geometry/material caches with every live AI monster of
       // that type — the traversal below must never reach it. Detach it first
@@ -2267,8 +2278,11 @@ export class GameEngine {
     if (!group) {
       this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor, update.face, update.monsterSkin);
       this.refreshRemoteVisibility();
+      const spawned = this.remotePlayerGroups.get(id);
+      if (spawned) this.setRemoteHeld(spawned, update.held ?? "");
       return;
     }
+    this.setRemoteHeld(group, update.held ?? "");
 
     // The SKIN cheat can be typed mid-session — rebuild the visual (suit vs.
     // whichever monster body) when it no longer matches what's on screen.
@@ -2277,6 +2291,8 @@ export class GameEngine {
       this.remoteStates.set(id, update);
       this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor, update.face, update.monsterSkin);
       this.refreshRemoteVisibility();
+      const rebuilt = this.remotePlayerGroups.get(id);
+      if (rebuilt) this.setRemoteHeld(rebuilt, update.held ?? "");
       return;
     }
 
@@ -2299,6 +2315,35 @@ export class GameEngine {
 
     // Record remote state for animations
     anyGroup.animState = update.state;
+  }
+
+  /**
+   * Level FUN: shows the puzzle item a teammate carries (server-owned, see
+   * PlayerState.held) in their left hand — the right one has the flashlight.
+   * "" (or not being on Level FUN) takes it away.
+   */
+  private setRemoteHeld(group: THREE.Group, key: string) {
+    const want = this.level === FUN_LEVEL ? key : "";
+    const current = (group.userData.heldKey as string | undefined) ?? "";
+    if (current === want) return;
+    (group.userData.heldObj as THREE.Object3D | undefined)?.removeFromParent();
+    group.userData.heldObj = undefined;
+    group.userData.heldKey = "";
+    if (!want) return;
+    const model = this.funDirector?.heldModel(want);
+    if (!model) return;
+    const hand = group.getObjectByName("lForearm");
+    if (hand && !group.getObjectByName("monsterSkinBody")) {
+      // Arm held forward (see poseRemotePlayer): counter-rotate so the item stays upright in the glove.
+      model.position.set(0, -0.33, 0.06);
+      model.rotation.x = REMOTE_CARRY_ARM + REMOTE_CARRY_FOREARM;
+      hand.add(model);
+    } else {
+      model.position.set(0, 1.0, 0.45);
+      group.add(model);
+    }
+    group.userData.heldObj = model;
+    group.userData.heldKey = want;
   }
 
   /**
@@ -2411,9 +2456,13 @@ export class GameEngine {
     // Arms: counter-swing. The flashlight hand (right) is held forward and
     // steadier whenever the flashlight is on.
     const swing = 0.5 * gait;
-    if (lArm) lArm.rotation.set(sin * swing - crouch * 0.4 + breath * 2, 0, -0.08);
+    const carrying = !!group.userData.heldObj;
+    if (lArm) {
+      if (carrying) lArm.rotation.set(-REMOTE_CARRY_ARM + breath, 0, 0.12);
+      else lArm.rotation.set(sin * swing - crouch * 0.4 + breath * 2, 0, -0.08);
+    }
     if (rArm) rArm.rotation.set(-sin * swing * (flashOn ? 0.3 : 1) - (flashOn ? 0.9 : 0) - crouch * 0.3 + breath * 2, 0, 0.08);
-    if (lFore) lFore.rotation.x = -(0.2 + run * move * 1.0 + crouch * 0.4);
+    if (lFore) lFore.rotation.x = carrying ? -REMOTE_CARRY_FOREARM : -(0.2 + run * move * 1.0 + crouch * 0.4);
     if (rFore) rFore.rotation.x = -(0.2 + run * move * 1.0 + (flashOn ? 0.5 : 0));
 
     // Head: follows the look pitch (the model faces +Z, so looking up tilts
@@ -2656,6 +2705,7 @@ export class GameEngine {
     this.setupOfficeWorkers();
     this.setupFun();
     this.setupSpace();
+    this.requestLevelSync();
 
     // Reset total play time for the new layout
     this.totalPlayTime = 0;
@@ -3503,6 +3553,7 @@ export class GameEngine {
   private teardownFun() {
     this.funDirector?.dispose();
     this.funDirector = null;
+    this.remotePlayerGroups.forEach((group) => this.setRemoteHeld(group, ""));
     if (this.funHandGroup) while (this.funHandGroup.children.length) this.funHandGroup.remove(this.funHandGroup.children[0]);
     if (this.lastFunObjective !== null) {
       this.lastFunObjective = null;
@@ -3523,6 +3574,12 @@ export class GameEngine {
       },
       globalEvent: (state, seconds) => this.map?.startGlobalEvent(state, seconds),
       send: (kind, index) => this.sendToServer({ type: "fun_event", level: FUN_LEVEL, kind, index }),
+      claim: (key) => {
+        // Offline there's nobody to race: grant it on the spot.
+        if (this.socket?.readyState === WebSocket.OPEN) this.sendToServer({ type: "fun_take", level: FUN_LEVEL, item: key });
+        else this.funDirector?.applyCarry(key, this.localPlayerId, true);
+      },
+      release: () => this.sendToServer({ type: "fun_drop", level: FUN_LEVEL }),
       stageChanged: () => { /* atmosphere is re-read from the stage every frame */ },
       setHeldItem: (obj) => {
         const group = this.ensureFunHandGroup();
@@ -3653,6 +3710,62 @@ export class GameEngine {
     if (this.level !== SPACE_LEVEL || msg.level !== SPACE_LEVEL || !this.spaceDirector) return;
     if (typeof msg.kind !== "string" || typeof msg.index !== "number") return;
     this.spaceDirector.applyRemote(msg.kind, msg.index);
+  }
+
+  /**
+   * Asks the server what teammates already did on this level before we got
+   * here: map pickups taken, and on Level FUN the puzzle facts and who is
+   * carrying what. Also sent once the socket is up, for the very first level.
+   */
+  public requestLevelSync() {
+    if (!this.map) return;
+    this.sendToServer({ type: "consumables_sync", level: this.level });
+    if (this.funDirector) this.sendToServer({ type: "fun_sync", level: FUN_LEVEL });
+  }
+
+  /** A teammate took a map pickup: hide it here, and share a Level G document's digit. */
+  public applyConsumableTaken(msg: { level?: unknown; id?: unknown; doc?: unknown }, quiet = false) {
+    if (!this.map || msg.level !== this.level || typeof msg.id !== "string") return;
+    this.map.markConsumableTaken(msg.id);
+    const i = msg.doc;
+    if (this.level !== LEVEL_G || typeof i !== "number" || !Number.isInteger(i) || i < 0 || i >= this.levelGDigits.length) return;
+    if (this.levelGDigits[i] !== null) return;
+    const digit = Number(this.map.levelGCode[i]);
+    this.levelGDigits[i] = digit;
+    const found = this.levelGDigits.filter((d) => d !== null).length;
+    if (!quiet) this.onHUDNotification?.(t("eng.docTeammate", { n: found, text: LEVEL_G_DOCUMENTS[i](digit) }));
+    this.emitLevelGProgress();
+  }
+
+  /** Everything already taken on this level (answer to requestLevelSync). */
+  public applyConsumablesState(msg: { level?: unknown; taken?: unknown }) {
+    if (msg.level !== this.level || !Array.isArray(msg.taken)) return;
+    for (const entry of msg.taken) {
+      if (!Array.isArray(entry)) continue;
+      this.applyConsumableTaken({ level: msg.level, id: entry[0], doc: entry[1] }, true);
+    }
+  }
+
+  /** Level FUN: the server says who now holds a puzzle item (null: it's back where it belongs). */
+  public applyFunCarry(msg: { level?: unknown; item?: unknown; holder?: unknown }) {
+    if (this.level !== FUN_LEVEL || msg.level !== FUN_LEVEL || !this.funDirector || typeof msg.item !== "string") return;
+    const holder = typeof msg.holder === "string" ? msg.holder : null;
+    this.funDirector.applyCarry(msg.item, holder, holder !== null && holder === this.localPlayerId);
+  }
+
+  /** Level FUN: catching up on arrival — the puzzle so far, then who carries what. */
+  public applyFunState(msg: { level?: unknown; facts?: unknown; held?: unknown }) {
+    if (this.level !== FUN_LEVEL || msg.level !== FUN_LEVEL || !this.funDirector) return;
+    if (Array.isArray(msg.facts)) {
+      for (const f of msg.facts) {
+        if (Array.isArray(f) && typeof f[0] === "string" && typeof f[1] === "number") this.funDirector.applyRemote(f[0], f[1]);
+      }
+    }
+    if (Array.isArray(msg.held)) {
+      for (const h of msg.held) {
+        if (Array.isArray(h) && typeof h[0] === "string" && typeof h[1] === "string") this.applyFunCarry({ level: FUN_LEVEL, item: h[1], holder: h[0] });
+      }
+    }
   }
 
   /** A teammate's puzzle progress (relayed by the server). */

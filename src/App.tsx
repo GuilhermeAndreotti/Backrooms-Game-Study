@@ -1252,6 +1252,22 @@ export default function App() {
             engineRef.current?.applyFunEvent(data);
           }
 
+          else if (type === "fun_carry") {
+            engineRef.current?.applyFunCarry(data);
+          }
+
+          else if (type === "fun_state") {
+            engineRef.current?.applyFunState(data);
+          }
+
+          else if (type === "consumable_taken") {
+            engineRef.current?.applyConsumableTaken(data);
+          }
+
+          else if (type === "consumables_state") {
+            engineRef.current?.applyConsumablesState(data);
+          }
+
           else if (type === "space_event") {
             engineRef.current?.applySpaceEvent(data);
           }

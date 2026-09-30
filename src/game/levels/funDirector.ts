@@ -13,9 +13,15 @@
  *             interaction) and put them on the long table
  *
  * Puzzle progress is a handful of idempotent facts (a slot filled, the panel
- * solved, a final item placed). They are applied locally, announced through
- * `host.send`, and applied the same way when a teammate's arrive, so the whole
- * room converges on the same stage without the server knowing the rules.
+ * solved, a container opened, a final item placed). They are applied locally,
+ * announced through `host.send`, and applied the same way when a teammate's
+ * arrive, so the whole room converges on the same stage without the server
+ * knowing the rules.
+ *
+ * Carrying is different: an item can only be in one pair of hands, so taking
+ * one is a request (`host.claim`) the server grants or refuses, and every
+ * client hides or shows the props from who the server says holds what
+ * (`applyCarry`).
  * Scares are cosmetic and local (Math.random is fine here, unlike anything
  * that shapes the map).
  */
@@ -36,7 +42,11 @@ export interface FunHost {
   player(): { x: number; z: number; lookX: number; lookZ: number };
   /** Local camera parent for a cosmetic first-person carried item. */
   globalEvent(state: "blackout" | "flicker_storm", seconds: number): void;
-  send(kind: "p1_slot" | "p2_solved" | "p3_placed", index: number): void;
+  send(kind: "p1_slot" | "p2_solved" | "p3_open" | "p3_placed", index: number): void;
+  /** Asks to pick up a puzzle item (see carryKey); the answer comes back through applyCarry. */
+  claim(key: string): void;
+  /** Puts down whatever this explorer carries (a grant that arrived too late). */
+  release(): void;
   /** The stage changed: refresh anything the engine keeps per stage (fog, ambient). */
   stageChanged(stage: M.FunStage): void;
   /** Shows (or, with null, clears) a small held-item model in front of the camera. */
@@ -50,9 +60,24 @@ const CELL = 4;
 /** Puzzle 1's rooms: the party before it goes wrong. */
 const START_AREA: readonly string[] = ["hallA", "roomA2", "roomA3", "corrA2", "corrA3", "corrA23", "corrG1"];
 
-type ContainerState = "sealed" | "revealed" | "taken" | "placed";
+type ContainerState = "sealed" | "revealed" | "placed";
 
 interface Carry { group: "p1" | "p3"; id: string }
+
+/** Every puzzle-1 item that can be picked up, decoy included; a carry key's index points into this. */
+const P1_ALL: readonly M.PartyItem[] = [...P1_ORDER, P1_DECOY];
+
+/** Network name of a carried item: "p1:<index in P1_ALL>" or "p3:<index in P3_ITEMS>". */
+function carryKey(c: Carry): string {
+  return c.group === "p1" ? `p1:${P1_ALL.indexOf(c.id as M.PartyItem)}` : `p3:${P3_ITEMS.indexOf(c.id as FunFinalItem)}`;
+}
+
+function parseCarryKey(key: string): Carry | null {
+  const m = /^(p[13]):(\d)$/.exec(key);
+  if (!m) return null;
+  const id = m[1] === "p1" ? P1_ALL[Number(m[2])] : P3_ITEMS[Number(m[2])];
+  return id ? { group: m[1] as Carry["group"], id } : null;
+}
 interface Candidate { id: string; x: number; z: number; radius: number; prompt: string | null; run: (() => void) | null; panel?: boolean }
 interface Glimpse { obj: THREE.Object3D; x: number; z: number; roamer: boolean; shown: number; seen: number; maxSeconds: number; hideDist: number }
 
@@ -119,6 +144,11 @@ export class FunDirector {
   private static readonly CHASE_SPEED = 2.6;
 
   private carry: Carry | null = null;
+  /** Items in a teammate's hands (carry key -> player id). */
+  private readonly heldBy = new Map<string, string>();
+  /** The item asked for and not answered yet, so E isn't re-sent every press. */
+  private pendingClaim: string | null = null;
+  private pendingSince = 0;
   private closeScare: { obj: THREE.Object3D; until: number } | null = null;
   private nextAmbient = 20;
   private nextGlimpse = 26;
@@ -169,7 +199,7 @@ export class FunDirector {
     const w = this.world;
 
     if (!this.p1Done) {
-      for (const item of [...P1_ORDER, P1_DECOY]) {
+      for (const item of P1_ALL) {
         const p = w.tag(`pickup:${item}`);
         if (!p || !p.obj.visible || this.p1Placed.has(item)) continue;
         out.push({ id: `p1:${item}`, x: p.x, z: p.z, radius: 1.9, prompt: t("fun.act.take", { item: t(key(`fun.item.${item}`)) }), run: () => this.takeP1(item) });
@@ -197,8 +227,8 @@ export class FunDirector {
         const state = this.containers[item];
         const box = w.tag(`container:${item}`);
         if (state === "sealed" && box) {
-          out.push({ id: `open:${item}`, x: box.x, z: box.z, radius: 2.1, prompt: t(openKey[item]), run: () => this.openContainer(item) });
-        } else if (state === "revealed") {
+          out.push({ id: `open:${item}`, x: box.x, z: box.z, radius: 2.1, prompt: t(openKey[item]), run: () => this.openContainer(item, true) });
+        } else if (state === "revealed" && !this.isHeld(carryKey({ group: "p3", id: item }))) {
           const it = w.tag(`item:${item}`);
           if (it) out.push({ id: `take:${item}`, x: it.x, z: it.z, radius: 2.0, prompt: t("fun.act.take", { item: t(key(`fun.item.${item}`)) }), run: () => this.takeP3(item) });
         }
@@ -259,27 +289,103 @@ export class FunDirector {
     this.host.setHeldItem(held);
   }
 
-  private takeP1(item: M.PartyItem) {
-    this.returnCarry();
-    const p = this.world.tag(`pickup:${item}`);
-    this.showHeld(p);
-    if (p) p.obj.visible = false;
-    this.carry = { group: "p1", id: item };
-    this.host.notify(t("fun.n.carry", { item: t(key(`fun.item.${item}`)) }));
-    this.host.audio.playFunSound("pop", 0, 0.25);
+  private takeP1(item: M.PartyItem) { this.requestTake({ group: "p1", id: item }); }
+
+  private isHeld(k: string): boolean {
+    return (this.carry !== null && carryKey(this.carry) === k) || this.heldBy.has(k);
   }
 
-  /** Puts whatever is carried back where it came from. */
-  private returnCarry(notify = false) {
-    const c = this.carry;
+  private isPlaced(c: Carry): boolean {
+    return c.group === "p1" ? this.p1Placed.has(c.id as M.PartyItem) : this.containers[c.id as FunFinalItem] === "placed";
+  }
+
+  /** Shows or hides an item's world prop from the shared state: placed, still sealed away, or in somebody's hands. */
+  private refreshItem(k: string) {
+    const c = parseCarryKey(k);
     if (!c) return;
-    const tag = c.group === "p1" ? `pickup:${c.id}` : `item:${c.id}`;
-    const p = this.world.tag(tag);
-    if (p) p.obj.visible = true;
-    this.host.setHeldItem(null);
-    if (c.group === "p3") this.containers[c.id as FunFinalItem] = "revealed";
-    this.carry = null;
-    if (notify) this.host.notify(t("fun.n.returned", { item: t(key(`fun.item.${c.id}`)) }));
+    const held = this.isHeld(k);
+    if (c.group === "p1") {
+      const p = this.world.tag(`pickup:${c.id}`);
+      if (p) p.obj.visible = !held && !this.isPlaced(c);
+    } else {
+      const it = this.world.tag(`item:${c.id}`);
+      if (it) it.obj.visible = !held && this.containers[c.id as FunFinalItem] === "revealed";
+    }
+  }
+
+  private requestTake(c: Carry) {
+    const k = carryKey(c);
+    if (this.heldBy.has(k)) {
+      this.host.notify(t("fun.n.heldByOther", { item: this.itemName(c) }));
+      return;
+    }
+    if (this.isHeld(k)) return;
+    // A request the server dropped (we'd only just arrived, say) can be retried after a moment.
+    if (this.pendingClaim === k && this.clock - this.pendingSince < 1.5) return;
+    this.pendingClaim = k;
+    this.pendingSince = this.clock;
+    this.host.claim(k);
+  }
+
+  /**
+   * The server's word on who holds an item. `mine`: we got it (anything we
+   * had before was put back by the same request). Someone else, or nobody:
+   * it leaves our hands if it was in them (we died, or lost a race for it).
+   */
+  applyCarry(k: string, holder: string | null, mine: boolean) {
+    const c = parseCarryKey(k);
+    if (!c) return;
+    const asked = this.pendingClaim === k;
+    if (asked) this.pendingClaim = null;
+    if (mine) {
+      this.heldBy.delete(k);
+      // Granted after it was already set on the table: hand it straight back.
+      if (this.isPlaced(c)) { this.host.release(); return; }
+      this.grant(c);
+      return;
+    }
+    if (this.carry && carryKey(this.carry) === k) {
+      this.carry = null;
+      this.host.setHeldItem(null);
+    }
+    if (holder) {
+      this.heldBy.set(k, holder);
+      if (asked) this.host.notify(t("fun.n.heldByOther", { item: this.itemName(c) }));
+    } else {
+      this.heldBy.delete(k);
+    }
+    this.refreshItem(k);
+  }
+
+  private grant(c: Carry) {
+    const k = carryKey(c);
+    const prev = this.carry ? carryKey(this.carry) : null;
+    if (prev === k) return;
+    this.carry = c;
+    if (prev) this.refreshItem(prev);
+    this.showHeld(this.world.tag(c.group === "p1" ? `pickup:${c.id}` : `item:${c.id}`));
+    this.refreshItem(k);
+    this.host.notify(t("fun.n.carry", { item: this.itemName(c) }));
+    if (c.group === "p1") this.host.audio.playFunSound("pop", 0, 0.25);
+  }
+
+  /** A copy of an item for a teammate's avatar to hold: real size (capped), without the pickup glow. */
+  heldModel(k: string): THREE.Object3D | null {
+    const c = parseCarryKey(k);
+    const tp = c && this.world.tag(c.group === "p1" ? `pickup:${c.id}` : `item:${c.id}`);
+    if (!tp) return null;
+    const model = tp.obj.clone(true);
+    const sprites: THREE.Object3D[] = [];
+    model.traverse((o) => { if ((o as THREE.Sprite).isSprite) sprites.push(o); });
+    sprites.forEach((o) => o.removeFromParent());
+    model.visible = true;
+    model.position.set(0, 0, 0);
+    model.rotation.set(0, 0, 0);
+    model.scale.setScalar(1);
+    const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z, 0.05);
+    if (maxDim > 0.45) model.scale.setScalar(0.45 / maxDim);
+    return model;
   }
 
   private tryPlaceP1(slot: number) {
@@ -307,12 +413,11 @@ export class FunDirector {
     const item = P1_ORDER[slot];
     this.slots[slot] = item;
     this.p1Placed.add(item);
-    const pick = this.world.tag(`pickup:${item}`);
-    if (pick) pick.obj.visible = false;
     if (this.carry?.group === "p1" && this.carry.id === item) {
       this.carry = null;
       this.host.setHeldItem(null);
     }
+    this.refreshItem(carryKey({ group: "p1", id: item }));
     const s = this.world.tag(`slot:${slot}`);
     if (s) {
       const model = placedModel(this.world.makeEnv(slot).kit, item);
@@ -381,50 +486,44 @@ export class FunDirector {
   // Puzzle 3
   // -------------------------------------------------------------------------
 
-  private openContainer(item: FunFinalItem) {
+  /** Opens a container. A teammate's (local = false) opens it silently here: no sound, no scare. */
+  private openContainer(item: FunFinalItem, local: boolean) {
     if (this.containers[item] !== "sealed") return;
     this.containers[item] = "revealed";
+    if (local) this.host.send("p3_open", P3_ITEMS.indexOf(item));
     const box = this.world.tag(`container:${item}`);
     const it = this.world.tag(`item:${item}`);
     if (item === "cake") {
       const door = box?.obj.getObjectByName("door");
       if (door) this.animate(door, "rotation", "y", 0, -1.9, 0.7);
-      this.host.audio.playFunSound("creak", 0.1, 0.5);
+      if (local) this.host.audio.playFunSound("creak", 0.1, 0.5);
     } else if (item === "gift") {
       const lid = box?.obj.getObjectByName("lid");
       if (lid) this.animate(lid, "rotation", "x", 0, -1.75, 0.6);
-      this.host.audio.playFunSound("creak", -0.1, 0.5);
-    } else {
+      if (local) this.host.audio.playFunSound("creak", -0.1, 0.5);
+    } else if (local) {
       for (let i = 0; i < 4; i++) this.after(i * 0.28, () => this.host.audio.playFunSound("pop", 0, 0.12));
     }
-    if (it) {
-      it.obj.visible = true;
-      if (item === "balloon") {
-        it.obj.position.y = 0.25;
-        this.animate(it.obj, "position", "y", 0.25, 0.7, 1.1);
-      }
+    if (it && item === "balloon") {
+      it.obj.position.y = 0.25;
+      this.animate(it.obj, "position", "y", 0.25, 0.7, 1.1);
     }
+    this.refreshItem(carryKey({ group: "p3", id: item }));
+    if (!local) return;
     this.host.notify(t("fun.n.found", { item: t(key(`fun.item.${item}`)) }));
     this.after(0.7, () => this.startCloseScare(this.host.player()));
   }
 
   private takeP3(item: FunFinalItem) {
     if (this.containers[item] !== "revealed") return;
-    this.returnCarry();
-    const it = this.world.tag(`item:${item}`);
-    this.showHeld(it);
-    if (it) it.obj.visible = false;
-    this.containers[item] = "taken";
-    this.carry = { group: "p3", id: item };
-    this.host.notify(t("fun.n.carry", { item: t(key(`fun.item.${item}`)) }));
+    this.requestTake({ group: "p3", id: item });
   }
 
   private placeP3(item: FunFinalItem, local: boolean) {
     if (this.containers[item] === "placed") return;
     if (this.carry?.group === "p3" && this.carry.id === item) { this.carry = null; this.host.setHeldItem(null); }
     this.containers[item] = "placed";
-    const src = this.world.tag(`item:${item}`);
-    if (src) src.obj.visible = false;
+    this.refreshItem(carryKey({ group: "p3", id: item }));
     const slot = this.world.tag(`p3slot:${item}`);
     if (slot) {
       const env = this.world.makeEnv(90 + P3_ITEMS.indexOf(item));
@@ -481,6 +580,7 @@ export class FunDirector {
   applyRemote(kind: string, index: number) {
     if (kind === "p1_slot" && index >= 0 && index < this.slots.length) this.placeP1(index, false);
     else if (kind === "p2_solved") this.solveP2(false);
+    else if (kind === "p3_open" && index >= 0 && index < P3_ITEMS.length) this.openContainer(P3_ITEMS[index], false);
     else if (kind === "p3_placed" && index >= 0 && index < P3_ITEMS.length) {
       const item = P3_ITEMS[index];
       if (this.containers[item] === "sealed") this.containers[item] = "revealed";
