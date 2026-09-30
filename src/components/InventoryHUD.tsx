@@ -4,103 +4,90 @@
  */
 
 import { t, useLanguage } from "../i18n";
-import React, { useState } from "react";
-import { X, Backpack, Search, Calendar, Landmark, Info, Image, Volume2, Sparkles, AlertTriangle, GlassWater } from "lucide-react";
-import { motion, AnimatePresence } from "motion/react";
+import React, { useEffect, useState } from "react";
+import { X, Backpack, Search, Info, HandHelping } from "lucide-react";
+import { motion } from "motion/react";
+import { HOTBAR_ORDER, USABLE_ITEMS } from "../shared/items";
+import { isTypingInField } from "../utils/input";
+import { ItemIcon, itemDetails } from "./itemVisuals";
 
 interface InventoryHUDProps {
   inventory: string[];
   isOpen: boolean;
-  onClose: () => void;
+  /** `resume`: closed by a key/click that can take the pointer lock back (I, Enter, the X). */
+  onClose: (resume: boolean) => void;
   onUseItem?: (itemId: string) => void;
-}
-
-/** Items with a "use" action (GameEngine.useInventoryItem); strange_crystal is passive. */
-const USABLE_ITEMS = new Set(["almond_water", "old_photo", "liquid_pain", "cassette_tape"]);
-
-interface ItemDetails {
-  id: string;
-  name: string;
-  type: string;
-  icon: React.ReactNode;
-  description: string;
-  lore: string;
-  clueTitle: string;
-  clueText: string;
+  /** Closest teammate an item can be handed to right now, polled while open. */
+  getGiveTarget?: () => { id: string; name: string } | null;
+  onGiveItem?: (itemId: string) => void;
 }
 
 export const InventoryHUD: React.FC<InventoryHUDProps> = ({
   inventory,
   isOpen,
   onClose,
-  onUseItem
+  onUseItem,
+  getGiveTarget,
+  onGiveItem
 }) => {
   useLanguage();
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
+  const [giveTarget, setGiveTarget] = useState<{ id: string; name: string } | null>(null);
 
   // If the inventory is closed, reset selected item
-  React.useEffect(() => {
+  useEffect(() => {
     if (!isOpen) {
       setSelectedItem(null);
     }
   }, [isOpen]);
 
-  const itemsMap: Record<string, ItemDetails> = {
-    old_photo: {
-      id: "old_photo",
-      name: t("item.old_photo.name"),
-      type: t("item.old_photo.type"),
-      icon: <Image className="w-5 h-5 text-amber-300" />,
-      description: t("item.old_photo.desc"),
-      lore: t("item.old_photo.lore"),
-      clueTitle: t("item.old_photo.clueTitle"),
-      clueText: t("item.old_photo.clueText")
-    },
-    cassette_tape: {
-      id: "cassette_tape",
-      name: t("item.cassette_tape.name"),
-      type: t("item.cassette_tape.type"),
-      icon: <Volume2 className="w-5 h-5 text-amber-400" />,
-      description: t("item.cassette_tape.desc"),
-      lore: t("item.cassette_tape.lore"),
-      clueTitle: t("item.cassette_tape.clueTitle"),
-      clueText: t("item.cassette_tape.clueText")
-    },
-    strange_crystal: {
-      id: "strange_crystal",
-      name: t("item.strange_crystal.name"),
-      type: t("item.strange_crystal.type"),
-      icon: <Sparkles className="w-5 h-5 text-cyan-400" />,
-      description: t("item.strange_crystal.desc"),
-      lore: t("item.strange_crystal.lore"),
-      clueTitle: t("item.strange_crystal.clueTitle"),
-      clueText: t("item.strange_crystal.clueText")
-    },
-    liquid_pain: {
-      id: "liquid_pain",
-      name: t("item.liquid_pain.name"),
-      type: t("item.liquid_pain.type"),
-      icon: <AlertTriangle className="w-5 h-5 text-red-500 animate-pulse" />,
-      description: t("item.liquid_pain.desc"),
-      lore: t("item.liquid_pain.lore"),
-      clueTitle: t("item.liquid_pain.clueTitle"),
-      clueText: t("item.liquid_pain.clueText")
-    },
-    almond_water: {
-      id: "almond_water",
-      name: t("item.almond_water.name"),
-      type: t("item.almond_water.type"),
-      icon: <GlassWater className="w-5 h-5 text-amber-300" />,
-      description: t("item.almond_water.desc"),
-      lore: t("item.almond_water.lore"),
-      clueTitle: t("item.almond_water.clueTitle"),
-      clueText: t("item.almond_water.clueText")
-    }
-  };
+  // Deselect only once the item is really gone — a refused use (sanity
+  // already full...) leaves it in the inventory and selected.
+  useEffect(() => {
+    if (selectedItem && !inventory.includes(selectedItem)) setSelectedItem(null);
+  }, [inventory, selectedItem]);
+
+  // Who's close enough to receive an item, refreshed while the panel is open.
+  useEffect(() => {
+    if (!isOpen || !getGiveTarget) return;
+    const poll = () => {
+      const next = getGiveTarget();
+      setGiveTarget((prev) => (prev?.id === next?.id ? prev : next));
+    };
+    poll();
+    const id = setInterval(poll, 400);
+    return () => clearInterval(id);
+  }, [isOpen, getGiveTarget]);
+
+  // Keyboard: 1–5 select the matching slot, Enter uses it (or closes when
+  // nothing usable is selected). Capture phase so the hotbar handler in App
+  // doesn't also fire the item behind the panel.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingInField() || e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey) return;
+      const m = /^(?:Digit|Numpad)([1-9])$/.exec(e.code);
+      if (m) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const id = HOTBAR_ORDER[Number(m[1]) - 1];
+        if (id && inventory.includes(id)) setSelectedItem(id);
+        return;
+      }
+      if (e.key === "Enter" && !e.repeat) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (selectedItem && USABLE_ITEMS.has(selectedItem)) onUseItem?.(selectedItem);
+        else onClose(true);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [isOpen, inventory, selectedItem, onUseItem, onClose]);
 
   if (!isOpen) return null;
 
-  const currentDetails = selectedItem ? itemsMap[selectedItem] : null;
+  const currentDetails = selectedItem ? itemDetails(selectedItem) : null;
 
   // Count items by ID to handle duplicates elegantly
   const itemCounts: Record<string, number> = inventory.reduce((acc: Record<string, number>, itemId) => {
@@ -108,8 +95,8 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
     return acc;
   }, {});
 
-  // Unique list of items present
-  const uniqueItems = Object.keys(itemCounts);
+  // Unique list of items present, in hotbar order so card and key line up
+  const uniqueItems = HOTBAR_ORDER.filter((id) => itemCounts[id]);
 
   return (
     <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4 font-mono select-none pointer-events-auto backdrop-blur-sm">
@@ -151,7 +138,7 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
           ) : (
             <div className="flex-1 grid grid-cols-2 gap-3 auto-rows-max">
               {uniqueItems.map((itemId) => {
-                const details = itemsMap[itemId];
+                const details = itemDetails(itemId);
                 if (!details) return null;
                 const count = itemCounts[itemId];
                 const isSelected = selectedItem === itemId;
@@ -169,13 +156,18 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
                   >
                     <div className="flex justify-between items-center w-full mb-2">
                       <div className="p-1.5 bg-black/40 rounded border border-[#deb81d]/10">
-                        {details.icon}
+                        <ItemIcon id={itemId} />
                       </div>
-                      {count > 1 && (
-                        <span className="bg-[#deb81d] text-black text-[9px] font-black px-1.5 py-0.5 rounded-full">
-                          x{count}
+                      <div className="flex items-center gap-1">
+                        <span className="text-[8px] font-black text-[#a28e3b] border border-[#a28e3b]/30 rounded px-1 py-0.5">
+                          {t("inv.slot", { n: HOTBAR_ORDER.indexOf(itemId) + 1 })}
                         </span>
-                      )}
+                        {count > 1 && (
+                          <span className="bg-[#deb81d] text-black text-[9px] font-black px-1.5 py-0.5 rounded-full">
+                            x{count}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <span className="text-[11px] font-black uppercase tracking-wider block truncate w-full mb-1">
                       {details.name}
@@ -205,7 +197,7 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
         <div className="flex-1 bg-black/95 p-5 flex flex-col h-full overflow-y-auto relative">
           {/* Close main inventory panel button */}
           <button
-            onClick={onClose}
+            onClick={() => onClose(true)}
             id="btn-inv-close"
             className="absolute top-4 right-4 bg-black/50 border border-[#a28e3b]/30 text-[#a28e3b] hover:text-[#deb81d] hover:border-[#deb81d] p-1.5 rounded cursor-pointer transition-all z-10"
           >
@@ -382,16 +374,20 @@ export const InventoryHUD: React.FC<InventoryHUDProps> = ({
                 {selectedItem && USABLE_ITEMS.has(selectedItem) && (
                   <button
                     id="btn-use-item"
-                    onClick={() => {
-                      onUseItem?.(selectedItem);
-                      const count = inventory.filter(id => id === selectedItem).length;
-                      if (count <= 1) {
-                        setSelectedItem(null);
-                      }
-                    }}
-                    className="bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 border border-amber-300 text-black text-[11px] uppercase font-black px-5 py-2 rounded cursor-pointer transition-all shadow-[0_0_15px_rgba(245,158,11,0.3)] animate-pulse pointer-events-auto"
+                    onClick={() => onUseItem?.(selectedItem)}
+                    className="bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 border border-amber-300 text-black text-[11px] uppercase font-black px-5 py-2 rounded cursor-pointer transition-all shadow-[0_0_15px_rgba(245,158,11,0.3)] pointer-events-auto"
                   >
-                    {selectedItem === "almond_water" ? t("inv.consume") : t("inv.use")}
+                    {selectedItem === "almond_water" ? t("inv.consume") : t("inv.use")} <span className="opacity-60">[ENTER]</span>
+                  </button>
+                )}
+                {selectedItem && giveTarget && onGiveItem && (
+                  <button
+                    id="btn-give-item"
+                    onClick={() => onGiveItem(selectedItem)}
+                    className="flex items-center gap-1.5 bg-sky-900/60 hover:bg-sky-800/70 border border-sky-400/60 text-sky-100 text-[11px] uppercase font-black px-4 py-2 rounded cursor-pointer transition-all pointer-events-auto"
+                  >
+                    <HandHelping className="w-4 h-4" />
+                    {t("inv.giveTo", { name: giveTarget.name })}
                   </button>
                 )}
                 {selectedItem === "strange_crystal" && (

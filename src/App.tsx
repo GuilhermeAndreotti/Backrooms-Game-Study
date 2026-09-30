@@ -9,6 +9,8 @@ import { GameEngine, LevelGProgress } from "./game/GameEngine";
 import { MainMenu } from "./components/MainMenu";
 import { GameHUD } from "./components/GameHUD";
 import { InventoryHUD } from "./components/InventoryHUD";
+import { HotbarHUD, type HotbarFx } from "./components/HotbarHUD";
+import { HOTBAR_ORDER, GIVE_RANGE, isInventoryItemId, isQuickChatId, type QuickChatId } from "./shared/items";
 import { AchievementsHUD } from "./components/AchievementsHUD";
 import { TerminalModal } from "./components/TerminalModal";
 import { CheatTerminalModal, SkinChoice } from "./components/CheatTerminalModal";
@@ -90,6 +92,9 @@ function inviteLink(code: string): string {
 }
 
 
+/** Chat lines kept in memory; older ones scroll away for good. */
+const CHAT_HISTORY_LIMIT = 100;
+
 /** The terminal code that unlocks each room cheat, for the chat announcement. */
 const CHEAT_CODES: Record<RoomCheat | typeof SUDO_CHEAT, string> = { speed: "MVJM", stamina: "UHUM", clip: "CLIP", life: "LIFE", arrow: "SETA", sudo: "SUDO" };
 
@@ -138,6 +143,15 @@ export default function App() {
   const [pauseMenuTab, setPauseMenuTab] = useState<"controles" | "diario" | "config">("controles");
   const [selectedJournalNote, setSelectedJournalNote] = useState<BackroomsLore | null>(null);
   const [isInventoryOpen, setIsInventoryOpen] = useState(false);
+  /** "Give" mode (G): the teammate the next hotbar key hands an item to. */
+  const [giveMode, setGiveMode] = useState<{ id: string; name: string } | null>(null);
+  const giveModeRef = useRef(giveMode);
+  giveModeRef.current = giveMode;
+  const isInventoryOpenRef = useRef(isInventoryOpen);
+  isInventoryOpenRef.current = isInventoryOpen;
+  const [hotbarFx, setHotbarFx] = useState<HotbarFx | null>(null);
+  /** Items with an "item_give" in flight, so a double press can't hand over one item twice. */
+  const pendingGivesRef = useRef(new Map<string, number>());
   const [isAchievementsOpen, setIsAchievementsOpen] = useState(false);
   // Level G: documents found / alarm state, the terminal overlay, and the
   // special ending shown before the regular victory screen.
@@ -242,6 +256,7 @@ export default function App() {
     const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
     if (canvasEl) lockGameInput(canvasEl);
   }, []);
+  const getGiveTarget = useCallback(() => engineRef.current?.nearestTeammateInRange(GIVE_RANGE) ?? null, []);
   const spacePowered = useCallback(() => engineRef.current?.spacePowered() ?? true, []);
   /**
    * An in-game panel (terminal, door panel, wiring...) is open. They release
@@ -253,6 +268,16 @@ export default function App() {
   useEffect(() => {
     if (currentLevel !== SPACE_LEVEL) { setSpaceTerminal(null); setSpaceWiring(null); }
   }, [currentLevel]);
+  /** Read by the (rarely re-bound) global key handler: hotbar keys do nothing behind a panel. */
+  const panelOpenRef = useRef(false);
+  panelOpenRef.current = interfaceOpen || isInventoryOpen;
+
+  // Give mode lasts a few seconds, then falls back to plain item use.
+  useEffect(() => {
+    if (!giveMode) return;
+    const timer = setTimeout(() => setGiveMode(null), 4000);
+    return () => clearTimeout(timer);
+  }, [giveMode]);
 
   /**
    * Authoritative roster, mutated at network rate. `connectedPlayers` is a slow
@@ -429,11 +454,93 @@ export default function App() {
     return () => window.removeEventListener("wheel", onWheel);
   }, [activeLoreNote]);
 
+  const playHotbarFx = (item: string, kind: HotbarFx["kind"]) => {
+    setHotbarFx((prev) => ({ item, kind, key: (prev?.key ?? 0) + 1 }));
+  };
+
+  /** Closes the inventory; `resume` re-takes the pointer lock (only valid inside a key/click gesture, never Esc). */
+  const closeInventory = (resume: boolean) => {
+    setIsInventoryOpen(false);
+    if (!resume || engineRef.current?.isDead) return;
+    const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+    if (canvasEl) lockGameInput(canvasEl);
+  };
+
+  /** Asks the server to hand one `item` to `target`; it's only removed on "item_give_ok". */
+  const giveItem = (item: string, target: { id: string; name: string } | null) => {
+    const engine = engineRef.current;
+    const ws = socketRef.current;
+    if (!engine || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!target) {
+      triggerNotification(t("hotbar.nobodyNear"));
+      playHotbarFx(item, "blocked");
+      return;
+    }
+    const owned = engine.inventory.filter((id) => id === item).length;
+    const pending = pendingGivesRef.current.get(item) ?? 0;
+    if (owned - pending <= 0) {
+      playHotbarFx(item, "blocked");
+      return;
+    }
+    pendingGivesRef.current.set(item, pending + 1);
+    ws.send(JSON.stringify({ type: "item_give", to: target.id, item }));
+  };
+
+  const settlePendingGive = (item: string) => {
+    const pending = pendingGivesRef.current.get(item) ?? 0;
+    if (pending <= 1) pendingGivesRef.current.delete(item);
+    else pendingGivesRef.current.set(item, pending - 1);
+  };
+
+  /** Hotbar key 1–5: use the item — or, in give mode, hand it to the chosen teammate. */
+  const pressHotbarSlot = (item: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const target = giveModeRef.current;
+    if (target) {
+      setGiveMode(null);
+      giveItem(item, target);
+      return;
+    }
+    const result = engine.useInventoryItem(item);
+    if (result === "used") {
+      playHotbarFx(item, "used");
+    } else {
+      if (result === "passive") triggerNotification(t("inv.passive"));
+      playHotbarFx(item, "blocked");
+    }
+  };
+
+  /** G: pick the closest teammate for a hand-off (or cancel give mode). */
+  const toggleGiveMode = () => {
+    if (giveModeRef.current) {
+      setGiveMode(null);
+      return;
+    }
+    const engine = engineRef.current;
+    if (!engine || engine.isDead) return;
+    const target = engine.nearestTeammateInRange(GIVE_RANGE);
+    if (!target) {
+      triggerNotification(t("hotbar.nobodyNear"));
+      return;
+    }
+    setGiveMode(target);
+  };
+
+  const handleSendQuick = (id: QuickChatId) => {
+    const ws = socketRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "chat_quick", id }));
+  };
+
   // Keyboard listener for toggling inventory & achievements
   useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
         if (phase !== ConnectionPhase.PLAYING) return;
+        // Already handled by a panel/the chat box (e.g. the Enter that sends a
+        // message must not also start the game from the lobby).
+        if (e.defaultPrevented) return;
         if (e.key === "Escape" && !e.repeat) {
+          setGiveMode(null);
           const inputActive = document.pointerLockElement !== null || pointerLocked || pointerLockedOverride || engineRef.current?.player?.isOverrideActive;
           if (inputActive) {
             e.preventDefault();
@@ -466,16 +573,36 @@ export default function App() {
         engineRef.current.cycleSpectate(e.key === "ArrowRight" ? 1 : -1);
         return;
       }
-      if (e.key === "i" || e.key === "I") {
+      // Hotbar: 1–5 use (or, after G, hand over) the item in that slot,
+      // without ever leaving the game. e.code, so the numpad and non-QWERTY
+      // layouts work too.
+      const digit = /^(?:Digit|Numpad)([1-9])$/.exec(e.code);
+      if (digit && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        const item = HOTBAR_ORDER[Number(digit[1]) - 1];
+        if (!item) return;
+        e.preventDefault();
+        if (e.repeat || panelOpenRef.current || megDialogueRef.current || activeLoreNoteRef.current || engineRef.current?.isDead) return;
+        pressHotbarSlot(item);
+        return;
+      }
+      if ((e.key === "g" || e.key === "G") && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        if (!e.repeat && !panelOpenRef.current) toggleGiveMode();
+        return;
+      }
+      if ((e.key === "i" || e.key === "I") && !e.repeat) {
         e.preventDefault();
         setIsAchievementsOpen(false);
-        setIsInventoryOpen((prev) => {
-          const nextState = !prev;
-          if (nextState) {
-            document.exitPointerLock?.();
-          }
-          return nextState;
-        });
+        setGiveMode(null);
+        if (isInventoryOpenRef.current) {
+          // A key press is a user gesture, so the pointer lock can be taken
+          // straight back: closing the panel resumes play instead of landing
+          // on the pause menu.
+          closeInventory(true);
+        } else {
+          setIsInventoryOpen(true);
+          document.exitPointerLock?.();
+        }
       } else if ((e.key === "e" || e.key === "E") && !e.repeat && handleInteract()) {
         e.preventDefault();
       } else if ((e.key === "e" || e.key === "E") && !e.repeat && engineRef.current?.tryPushBox()) {
@@ -1130,17 +1257,41 @@ export default function App() {
           }
 
           else if (type === "chat_message") {
-            const { sender, text } = data;
-            const timeStr = new Date().toLocaleTimeString(localeTag(), { hour: "2-digit", minute: "2-digit" });
-            setChatMessages((prev) => [
-              ...prev,
-              {
-                id: Math.random().toString(36).substr(2, 9),
-                sender,
-                text,
-                time: timeStr,
-              }
-            ]);
+            const { sender, senderId, text, quick } = data;
+            if (typeof sender !== "string") return;
+            const senderIdStr = typeof senderId === "string" ? senderId : undefined;
+            if (isQuickChatId(quick)) {
+              // Canned callout: localized on render; tag it with how far away
+              // the teammate is so "over here!" actually means something.
+              const distance = senderIdStr && senderIdStr !== clientIdRef.current
+                ? engineRef.current?.distanceToPlayer(senderIdStr) ?? undefined
+                : undefined;
+              pushChatMessage({ sender, senderId: senderIdStr, text: "", kind: "quick", quickId: quick, distance });
+            } else if (typeof text === "string") {
+              pushChatMessage({ sender, senderId: senderIdStr, text, kind: "player" });
+            }
+          }
+
+          else if (type === "item_received") {
+            if (isInventoryItemId(data.item) && typeof data.fromName === "string") {
+              engineRef.current?.receiveItem(data.item, data.fromName);
+            }
+          }
+
+          else if (type === "item_give_ok") {
+            if (isInventoryItemId(data.item)) {
+              settlePendingGive(data.item);
+              engineRef.current?.removeGivenItem(data.item, typeof data.toName === "string" ? data.toName : "?");
+              playHotbarFx(data.item, "used");
+            }
+          }
+
+          else if (type === "item_give_failed") {
+            if (isInventoryItemId(data.item)) {
+              settlePendingGive(data.item);
+              playHotbarFx(data.item, "blocked");
+            }
+            triggerNotification(t(data.reason === "rate_limited" ? "eng.itemBlocked.active" : "eng.itemGiveFailed"));
           }
 
         } catch (err) {
@@ -1183,17 +1334,20 @@ export default function App() {
     }
   };
 
-  const logSystemMessage = (text: string) => {
+  /** Appends to the chat log, keeping only the newest CHAT_HISTORY_LIMIT lines. */
+  const pushChatMessage = (msg: Omit<ChatMessage, "id" | "time" | "receivedAt">) => {
     const timeStr = new Date().toLocaleTimeString(localeTag(), { hour: "2-digit", minute: "2-digit" });
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: Math.random().toString(36).substr(2, 9),
-        sender: "DISTANTE-LINK",
-        text,
-        time: timeStr,
-      }
-    ]);
+    const entry: ChatMessage = {
+      ...msg,
+      id: Math.random().toString(36).slice(2, 11),
+      time: timeStr,
+      receivedAt: Date.now(),
+    };
+    setChatMessages((prev) => [...prev.slice(-(CHAT_HISTORY_LIMIT - 1)), entry]);
+  };
+
+  const logSystemMessage = (text: string) => {
+    pushChatMessage({ sender: "DISTANTE-LINK", text, kind: "system" });
   };
 
   /**
@@ -1418,7 +1572,10 @@ export default function App() {
                         <div className="flex justify-between"><span>{t("controls.flashlight")}</span><span className="text-[#deb81d] font-bold">F</span></div>
                         <div className="flex justify-between"><span>{t("controls.inventory")}</span><span className="text-[#deb81d] font-bold">I</span></div>
                         <div className="flex justify-between"><span>{t("controls.achievements")}</span><span className="text-[#deb81d] font-bold">K</span></div>
+                        <div className="flex justify-between"><span>{t("controls.hotbar")}</span><span className="text-[#deb81d] font-bold">1 – 5</span></div>
+                        <div className="flex justify-between"><span>{t("controls.give")}</span><span className="text-[#deb81d] font-bold">G + 1 – 5</span></div>
                         <div className="flex justify-between"><span>{t("controls.chat")}</span><span className="text-[#deb81d] font-bold">T</span></div>
+                        <div className="flex justify-between"><span>{t("controls.quickChat")}</span><span className="text-[#deb81d] font-bold">Z</span></div>
                         <div className="flex justify-between"><span>{t("controls.release")}</span><span className="text-[#deb81d] font-bold">ESC</span></div>
                       </div>
                     </div>
@@ -1756,6 +1913,9 @@ export default function App() {
             latency={latency}
             chatMessages={chatMessages}
             onSendMessage={handleSendMessage}
+            onSendQuick={handleSendQuick}
+            localPlayerId={clientIdRef.current}
+            chatHotkeysEnabled={!isInventoryOpen && !interfaceOpen}
             level={currentLevel}
             engineRef={engineRef}
             currentSector={currentSector}
@@ -1775,6 +1935,9 @@ export default function App() {
               else engine.enableVoip();
             }}
           />
+
+          {/* Quick-use item bar (keys 1–5) with running effect timers */}
+          <HotbarHUD inventory={inventory} engineRef={engineRef} giveTarget={giveMode} fx={hotbarFx} />
 
           {isTerminalOpen && currentLevel === LEVEL_G && (
             <TerminalModal
@@ -1882,12 +2045,13 @@ export default function App() {
           <InventoryHUD
             inventory={inventory}
             isOpen={isInventoryOpen}
-            onClose={() => setIsInventoryOpen(false)}
+            onClose={closeInventory}
             onUseItem={(itemId) => {
-              if (engineRef.current) {
-                engineRef.current.useInventoryItem(itemId);
-              }
+              const result = engineRef.current?.useInventoryItem(itemId);
+              if (result) playHotbarFx(itemId, result === "used" ? "used" : "blocked");
             }}
+            getGiveTarget={getGiveTarget}
+            onGiveItem={(itemId) => giveItem(itemId, engineRef.current?.nearestTeammateInRange(GIVE_RANGE) ?? null)}
           />
 
           <AchievementsHUD
