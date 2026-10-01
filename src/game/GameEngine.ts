@@ -101,7 +101,23 @@ const CRYSTAL_DRAIN_FACTOR = 0.65;
 export const RADAR_BASE_RANGE = 26;
 const RADAR_BOOST_RANGE = 70;
 const RADAR_BOOST_SECONDS = 30;
+/** How far a teammate's jumpscare (getting caught) still carries over to you. */
+const JUMPSCARE_HEAR_RANGE = 30;
 const ADRENALINE_SECONDS = 10;
+/** Level 4: chance a MEG employee breaks character ("we aren't real") instead of their usual line. */
+const MEG_ILLUSION_CHANCE = 0.3;
+/** How many variants of that line (meg.illusion.N) and of a programmer's ID postscript (meg.illusion.id.N) exist. */
+const MEG_ILLUSION_LINES = 5;
+const MEG_ILLUSION_ID_LINES = 3;
+/** Level 1, floor 3: seconds of calm between blackouts, and how long each lasts. */
+const GARAGE_BLACKOUT_GAP: [number, number] = [20, 32];
+const GARAGE_BLACKOUT_LENGTH: [number, number] = [8, 11];
+/** Smilers that crowd in during one blackout. */
+const GARAGE_BLACKOUT_SMILERS = 6;
+/** Seconds after the lights die before moving counts (time to stop). */
+const GARAGE_BLACKOUT_GRACE = 1.2;
+/** Seconds of moving in the dark, outside an emergency light, that the Smilers allow. */
+const GARAGE_MOVE_BUDGET = 3.0;
 /** Minimum gap between two item uses, so a double-tapped hotbar key doesn't burn two. */
 const ITEM_USE_COOLDOWN_MS = 800;
 /** Sanity at or above this counts as full: restoring it would waste the item. */
@@ -213,6 +229,12 @@ function nearestTarget(targets: AiTarget[], x: number, z: number): { target: AiT
     }
   }
   return { target: best, distSq: bestDistSq };
+}
+
+/** O Alien hunts whoever it can actually see (nearest first); with nobody in sight, the nearest. */
+function nearestSeenByAlien(targets: AiTarget[], alien: WanderingEntity): { target: AiTarget; distSq: number } {
+  const seen = targets.filter((t) => alien.alienCanSee(t.x, t.z, t.state));
+  return nearestTarget(seen.length > 0 ? seen : targets, alien.mesh.position.x, alien.mesh.position.z);
 }
 
 /** Like nearestTarget, but anyone still visible beats anyone hidden. */
@@ -335,6 +357,16 @@ export class GameEngine {
   private levelGTime = 0;
   // --- Level 6 ("LEVEL 4" display): day/night cycle -------------------------
   private level6Time = 0;
+  // --- Level 1 garage (see levels/garageLayout.ts and updateGarage) ---
+  /** Authority only: seconds until floor 3's next blackout (counts down while anyone is there). */
+  private garageBlackoutIn = 12;
+  private garageWasBlackout = false;
+  private garageGrace = 0;
+  /** Seconds spent moving in this blackout, outside a light. */
+  private garageExposure = 0;
+  private garageWarned = false;
+  private garageLastX = 0;
+  private garageLastZ = 0;
   private level6IsNight = false;
   private readonly LEVEL6_DAY_S = 90;
   private readonly LEVEL6_NIGHT_S = 60;
@@ -808,6 +840,10 @@ export class GameEngine {
       const def3 = LEVEL_DEFS[ELECTRICAL_ROOM_LEVEL];
       if (def3.spawn.kind === "static") this.spawnStaticRoster(def3.spawn.roster, 8);
     }
+    if (this.level === SPACE_LEVEL) {
+      const def12 = LEVEL_DEFS[SPACE_LEVEL];
+      if (def12.spawn.kind === "static") this.spawnStaticRoster(def12.spawn.roster, 4);
+    }
 
     // Initial first-turn map culler tick
     this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z);
@@ -1154,6 +1190,9 @@ export class GameEngine {
       // Level 6: day/night cycle, O Ceifador's night hunt.
       this.updateLevel6(delta);
 
+      // Level 1: floor 2's shutter, floor 3's blackouts.
+      this.updateGarage(delta, aiTargets);
+
       if (this.entities.length > 0 && this.player) {
         const px = this.player.position.x;
         const pz = this.player.position.z;
@@ -1166,7 +1205,9 @@ export class GameEngine {
             // Hunt whichever explorer is closest (on Level G, visible ones first).
             const { target, distSq: entityDistSq } = this.level === LEVEL_G
               ? nearestHuntable(aiTargets, entity.mesh.position.x, entity.mesh.position.z)
-              : nearestTarget(aiTargets, entity.mesh.position.x, entity.mesh.position.z);
+              : entity.type === EntityType.ALIEN
+                ? nearestSeenByAlien(aiTargets, entity)
+                : nearestTarget(aiTargets, entity.mesh.position.x, entity.mesh.position.z);
             entity.targetHidden = target.hidden;
 
             // Entities far from everyone are simulated at a reduced rate: their
@@ -1178,7 +1219,8 @@ export class GameEngine {
 
             entity.update(entityDelta, target.x, target.z, target.state, target.dir, target.flashlight);
             // Billboard towards *our* camera, not the explorer it's hunting.
-            entity.mesh.lookAt(px, entity.mesh.position.y, pz);
+            // O Alien faces where it walks: its facing is its sight cone.
+            if (entity.type !== EntityType.ALIEN) entity.mesh.lookAt(px, entity.mesh.position.y, pz);
           } else {
             entity.updateReplica(delta, px, pz);
           }
@@ -1246,7 +1288,7 @@ export class GameEngine {
         let darknessDepletion = 0;
         const isFlashlightOn = this.player.isFlashlightOn;
         if (!isFlashlightOn && this.level !== LOBBY_LEVEL && this.level !== SPACE_LEVEL) {
-          if (this.map.globalEventState === "blackout") {
+          if (this.map.globalEventState === "blackout" && this.map.inGarageBlackoutZone(this.player.position.x)) {
             darknessDepletion = 0.014; // completed blackout is terrifying (retuned ~3x slower)
           } else if (this.level === ELECTRICAL_ROOM_LEVEL) {
             darknessDepletion = 0.003; // Brick halls have working ceiling fixtures; the flashlight is still useful
@@ -1342,7 +1384,8 @@ export class GameEngine {
       // blackouts/flicker storms; it broadcasts each one as it starts.
       // Level FUN scripts its own blackouts; random ones would step on them.
       // Level 79's lighting belongs to its navigation sequences for the same reason.
-      this.map.rollGlobalEvents = this.isWorldAuthority && this.level !== LOBBY_LEVEL && this.level !== FUN_LEVEL && this.level !== SPACE_LEVEL;
+      // Level 1's floor 3 schedules its own blackouts (updateGarage).
+      this.map.rollGlobalEvents = this.isWorldAuthority && this.level !== LOBBY_LEVEL && this.level !== FUN_LEVEL && this.level !== SPACE_LEVEL && this.level !== 1;
       const eventBefore = this.map.globalEventState;
       this.map.updateLights(
         delta,
@@ -1378,7 +1421,7 @@ export class GameEngine {
         const background = this.scene.background as THREE.Color;
         const fog = this.scene.fog instanceof THREE.FogExp2 ? this.scene.fog : null;
 
-        if (this.map.globalEventState === "blackout") {
+        if (this.map.globalEventState === "blackout" && this.map.inGarageBlackoutZone(this.player.position.x)) {
           // Pure pitch dark blackout
           this.ambientLight.intensity = 0.0;
           if (fog) fog.color.setHex(0x020202);
@@ -2090,6 +2133,20 @@ export class GameEngine {
     this.onPlayerRevive?.();
   }
 
+  /** A teammate just got caught by an entity: share the scare if we're close enough to have seen/heard it. */
+  public triggerRemoteJumpscare(id: string) {
+    if (this.isDead) return;
+    const st = this.remoteStates.get(id); // only tracked while on our level
+    if (!st) return;
+    const dx = st.x - this.player.position.x;
+    const dz = st.z - this.player.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist > JUMPSCARE_HEAR_RANGE) return;
+    const intensity = Math.max(0.25, 1 - dist / JUMPSCARE_HEAR_RANGE);
+    this.audio.playEntityCatchSound(intensity);
+    this.audio.triggerHumFlicker(Math.floor(250 * intensity));
+  }
+
   /** Marks a teammate dead/alive (server broadcast); dead ones vanish from the scene. */
   public setRemoteDead(id: string, dead: boolean) {
     if (dead) this.remoteDead.add(id); else this.remoteDead.delete(id);
@@ -2735,6 +2792,9 @@ export class GameEngine {
 
     // Level 6: fresh day/night cycle, no leftover night hunter.
     this.level6Time = 0;
+    this.garageBlackoutIn = 12;
+    this.garageWasBlackout = false;
+    this.garageExposure = 0;
     this.level6IsNight = false;
     this.ceifadorEntity = null; // already pooled by the blanket entities.forEach(returnToPool) above
 
@@ -2764,6 +2824,12 @@ export class GameEngine {
       if (def7.spawn.kind === "static") {
         this.spawnStaticRoster(def7.spawn.roster, 8);
       }
+    }
+
+    // Level 79 (Space Station): O Alien, starting at the far end from the dock.
+    if (level === SPACE_LEVEL) {
+      const def12 = LEVEL_DEFS[SPACE_LEVEL];
+      if (def12.spawn.kind === "static") this.spawnStaticRoster(def12.spawn.roster, 4);
     }
 
     // Initial map cull
@@ -3446,6 +3512,8 @@ export class GameEngine {
         text = t("act.readPaper");
       } else if (this.nearCheatTerminal()) {
         text = t("act.cheatTerminal");
+      } else if (this.nearGarageKeypad()) {
+        text = t("act.garageKeypad");
       } else if (this.map.findPushable(this.player.position.x, this.player.position.z, fx, fz)) {
         text = t("act.pushBox");
       } else if (this.nearUntouchedValve()) {
@@ -3504,7 +3572,7 @@ export class GameEngine {
     return -1;
   }
 
-  private nearMegEmployee(): { name: string; grade: string; dialogue: string; gx: number; gz: number } | null {
+  private nearMegEmployee(): ProceduralMap["level4Employees"][number] | null {
     if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map || !this.player) return null;
     const cs = this.map.cellSize;
     return this.map.level4Employees.find((employee) => {
@@ -3630,6 +3698,7 @@ export class GameEngine {
         return { x: this.player.position.x, z: this.player.position.z, lookX, lookZ };
       },
       viewer: (out) => this.camera.getWorldPosition(out),
+      doorOpeners: () => this.entities.map((e) => e.mesh.position),
       send: (kind, index) => this.sendToServer({ type: "space_event", level: SPACE_LEVEL, kind, index }),
       setFade: (alpha) => this.setFade(alpha),
       shake: (amount) => { this.spaceShake = amount; },
@@ -3721,6 +3790,7 @@ export class GameEngine {
     if (!this.map) return;
     this.sendToServer({ type: "consumables_sync", level: this.level });
     if (this.funDirector) this.sendToServer({ type: "fun_sync", level: FUN_LEVEL });
+    if (this.level === 1) this.sendToServer({ type: "garage_sync", level: 1 });
   }
 
   /** A teammate took a map pickup: hide it here, and share a Level G document's digit. */
@@ -3804,7 +3874,7 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | null {
+  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | null {
     if (this.isDead) return null;
     if (this.funDirector) {
       const used = this.funDirector.interact();
@@ -3829,7 +3899,7 @@ export class GameEngine {
       const cs = this.map.cellSize;
       this.readingAnchor = { x: employee.gx * cs + cs / 2, z: employee.gz * cs + cs / 2 };
       this.talkingEmployee = employee.name;
-      this.onMegDialogue?.(employee);
+      this.onMegDialogue?.({ ...employee, dialogue: this.megDialogueLine(employee) });
       return "meg_employee";
     }
     if (this.nearMegDoor()) {
@@ -3851,11 +3921,25 @@ export class GameEngine {
       return "paper";
     }
     if (this.nearCheatTerminal()) return "cheat";
+    if (this.nearGarageKeypad()) return "garage_keypad";
     if (this.level !== LEVEL_G || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
     const cs = this.map.cellSize;
     const dx = this.player.position.x - (this.map.levelGTerminalX * cs + cs / 2);
     const dz = this.player.position.z - (this.map.levelGTerminalZ * cs + cs / 2);
     return dx * dx + dz * dz < 2.4 * 2.4 ? "terminal" : null;
+  }
+
+  /**
+   * What a MEG employee says this time: usually their own line, but now and
+   * then they let slip that none of them are real. A programmer adds their
+   * access ID at the end, which still counts for the door.
+   */
+  private megDialogueLine(employee: { dialogue: string; role: string; accessId?: string }): string {
+    if (Math.random() >= MEG_ILLUSION_CHANCE) return employee.dialogue;
+    const line = t(`meg.illusion.${Math.floor(Math.random() * MEG_ILLUSION_LINES)}`);
+    return employee.role === "programmer" && employee.accessId
+      ? `${line} ${t(`meg.illusion.id.${Math.floor(Math.random() * MEG_ILLUSION_ID_LINES)}`, { id: employee.accessId })}`
+      : line;
   }
 
   public submitMegDoorIds(raw: string): boolean {
@@ -4158,16 +4242,16 @@ export class GameEngine {
   }
 
   /** Spawns a smiler 14-28 m from the explorer at (px, pz), if a spot exists. */
-  private spawnSmiler(px: number, pz: number) {
+  private spawnSmiler(px: number, pz: number, minDist = 14, maxDist = 28, allow?: (gx: number, gz: number) => boolean) {
     if (!this.map || !this.player) return;
 
-    // Find all walkable coordinates 14 to 30 meters away from the explorer
+    // Find all walkable coordinates minDist to maxDist meters away from the explorer
     const hSize = this.map.cellSize;
     
     const candidates: [number, number][] = [];
-    const minDistSq = 14 * 14;
-    const maxDistSq = 28 * 28;
-    const cellRadius = Math.ceil(28 / hSize) + 1;
+    const minDistSq = minDist * minDist;
+    const maxDistSq = maxDist * maxDist;
+    const cellRadius = Math.ceil(maxDist / hSize) + 1;
     const pgx = Math.floor(px / hSize);
     const pgz = Math.floor(pz / hSize);
     const scanMinX = Math.max(2, pgx - cellRadius);
@@ -4185,7 +4269,7 @@ export class GameEngine {
 
         if (distSq >= minDistSq && distSq <= maxDistSq) {
           // Verify cell is not SOLID
-          if (this.map.grid[x][z] !== 0) { // CellType.SOLID is 0
+          if (this.map.grid[x][z] !== 0 && (!allow || allow(x, z))) { // CellType.SOLID is 0
             // Ensure no existing Smiler nearby
             const alreadyHasSmiler = this.smilers.some(s => s.gridX === x && s.gridZ === z);
             if (!alreadyHasSmiler) {
@@ -4287,7 +4371,7 @@ export class GameEngine {
           for (let dz = -r; dz <= r && !found; dz++) {
             const nx = qx + dx, nz = qz + dz;
             if (nx >= 2 && nx < this.map.gridSize - 2 && nz >= 2 && nz < this.map.gridSize - 2 && (maxX === undefined || nx < maxX)) {
-              if (this.map.grid[nx][nz] !== 0) { entGX = nx; entGZ = nz; found = true; }
+              if (this.map.isWalkableForEntities(nx, nz)) { entGX = nx; entGZ = nz; found = true; }
             }
           }
         }
@@ -4307,8 +4391,8 @@ export class GameEngine {
     if (!this.map) return;
     const def = LEVEL_DEFS[1];
     if (def.spawn.kind !== "static") return;
-    // All targets sit inside sectors 1 & 2 (x < level1Sector3X).
-    this.spawnStaticRoster(def.spawn.roster, 12, this.map.level1Sector3X);
+    // All targets sit on the garage's ground floor (x < level1Sector2X).
+    this.spawnStaticRoster(def.spawn.roster, 12, this.map.level1Sector2X);
   }
 
   /**
@@ -4391,11 +4475,23 @@ export class GameEngine {
       // all over Level 6 (see updateLevel6's day/night cycle) — everywhere
       // else, clear them out.
       const level6Night = this.level === LIGHTS_OUT_LEVEL && this.level6IsNight;
-      const hunted = this.level === 1 ? targets.filter((t) => inSector3(t.x, t.z))
+      const garageBlackout = this.level === 1 && this.map.globalEventState === "blackout";
+      const hunted = this.level === 1 ? (garageBlackout ? targets.filter((t) => inSector3(t.x, t.z)) : [])
         : level6Night ? targets
         : [];
       if (hunted.length === 0) {
         if (this.smilers.length > 0) this.clearAllSmilers();
+        return;
+      }
+
+      // Floor 3's blackout: they gather fast and close, out of the dark.
+      if (garageBlackout) {
+        this.smilerSpawnCheckTimer += delta;
+        if (this.smilerSpawnCheckTimer >= 0.7 && this.smilers.length < GARAGE_BLACKOUT_SMILERS) {
+          this.smilerSpawnCheckTimer = 0;
+          const t = hunted[Math.floor(Math.random() * hunted.length)];
+          this.spawnSmiler(t.x, t.z, 6, 14, (gx) => this.getCurrentSector(gx, 0) === 3);
+        }
         return;
       }
 
@@ -4462,6 +4558,100 @@ export class GameEngine {
         smiler.gazeTimer = Math.max(0, smiler.gazeTimer - delta * 0.6);
       }
     }
+  }
+
+  /**
+   * Level 1's garage. The authority schedules floor 3's blackouts while anyone
+   * is up there (broadcast as ordinary "blackout" world events, which the map
+   * applies to floor 3 only). Each client then judges its own explorer: once
+   * the grace second is over, moving in the dark outside an emergency light's
+   * circle uses up GARAGE_MOVE_BUDGET, and the Smilers take whoever runs out.
+   */
+  private updateGarage(delta: number, targets: AiTarget[] | null) {
+    const map = this.map;
+    if (this.level !== 1 || !map?.garage || !this.player) return;
+    map.updateGarageGate(delta);
+
+    const blackout = map.globalEventState === "blackout";
+    if (targets && !blackout && targets.some((tg) => map.inGarageBlackoutZone(tg.x))) {
+      this.garageBlackoutIn -= delta;
+      if (this.garageBlackoutIn <= 0) {
+        const [lo, hi] = GARAGE_BLACKOUT_LENGTH;
+        const duration = lo + Math.random() * (hi - lo);
+        map.startGlobalEvent("blackout", duration);
+        this.sendToServer({ type: "world_event", level: this.level, state: "blackout", duration });
+        this.garageBlackoutIn = GARAGE_BLACKOUT_GAP[0] + Math.random() * (GARAGE_BLACKOUT_GAP[1] - GARAGE_BLACKOUT_GAP[0]);
+      }
+    }
+
+    const px = this.player.position.x, pz = this.player.position.z;
+    const here = map.inGarageBlackoutZone(px);
+    if (blackout && !this.garageWasBlackout) {
+      this.garageGrace = GARAGE_BLACKOUT_GRACE;
+      this.garageExposure = 0;
+      this.garageWarned = false;
+      if (here) {
+        this.audio.triggerHumFlicker(500);
+        this.onHUDNotification?.(t("eng.garageBlackout"));
+      }
+    } else if (!blackout && this.garageWasBlackout && here && !this.isDead) {
+      this.onHUDNotification?.(t("eng.garageLightsBack"));
+    }
+    this.garageWasBlackout = blackout;
+
+    const speed = Math.hypot(px - this.garageLastX, pz - this.garageLastZ) / Math.max(delta, 1e-3);
+    this.garageLastX = px;
+    this.garageLastZ = pz;
+    if (!blackout || !here || this.isDead || this.cheatLife) return;
+    this.garageGrace -= delta;
+    if (this.garageGrace > 0 || speed < 0.35 || map.inGarageSafeLight(px, pz)) return;
+    this.garageExposure += delta;
+    if (!this.garageWarned) {
+      this.garageWarned = true;
+      this.onHUDNotification?.(t("eng.garageMoving"));
+    }
+    if (Math.random() < delta * 3) this.audio.triggerHumFlicker(90);
+    if (this.garageExposure > GARAGE_MOVE_BUDGET) this.die("caught");
+  }
+
+  /** Standing at floor 2's keypad while the shutter is still down. */
+  private nearGarageKeypad(): boolean {
+    const plan = this.map?.garage;
+    if (this.level !== 1 || !plan || this.map.garageGateOpen || !this.player) return false;
+    return Math.hypot(this.player.position.x - plan.keypad.x, this.player.position.z - plan.keypad.z) < 2.2
+      && this.getCurrentSector(Math.floor(this.player.position.x / this.map.cellSize), 0) === 2;
+  }
+
+  /** The keypad's colour order (for its modal), or null off Level 1. */
+  public garageKeypadColors(): string[] | null {
+    return this.map?.garage ? [...this.map.garage.colorOrder] : null;
+  }
+
+  /** Checks a code typed at floor 2's keypad; right opens the shutter for everyone. */
+  public submitGarageCode(code: string): boolean {
+    const plan = this.map?.garage;
+    if (this.level !== 1 || !plan) return false;
+    const ok = code === plan.code;
+    this.audio.playTerminalBeep(ok);
+    if (ok) {
+      this.openGarageGate();
+      this.sendToServer({ type: "garage_gate", level: 1 });
+    } else {
+      this.onHUDNotification?.(t("eng.garageDenied"));
+    }
+    return ok;
+  }
+
+  /** A teammate opened the shutter (or it was already open when we arrived). */
+  public applyGarageGate(msg: { level?: unknown }) {
+    if (msg.level !== 1 || this.level !== 1 || !this.map?.garage || this.map.garageGateOpen) return;
+    this.openGarageGate();
+  }
+
+  private openGarageGate() {
+    if (!this.map || this.map.garageGateOpen) return;
+    this.map.openGarageGate();
+    this.onHUDNotification?.(t("eng.garageOpen"));
   }
 
   /**

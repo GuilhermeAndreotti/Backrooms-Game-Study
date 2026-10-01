@@ -11,6 +11,11 @@ import { MOB_DEFS } from "./mobs/registry";
 import { MobBuildCtx, MobJoints, MobSenseCtx, NO_SCRIPTED_POSE } from "./mobs/types";
 import { resetRig } from "./mobs/anim";
 import { ELECTRICAL_ROOM_LEVEL, LEVEL_2, LIGHTS_OUT_LEVEL, POOLROOMS_LEVEL } from "./levels/constants";
+import { SPACE_DOOR_RANGE, SPACE_PATROL_POINTS, SPACE_RECTS, SpaceRect, spaceCabinAt, spaceDoorAt, spaceSightClear } from "./levels/spaceLayout";
+import {
+  ALIEN_CABIN_BAN_SECONDS, ALIEN_CHASE_SPEED, ALIEN_FEEL_RANGE, ALIEN_HEAR_RANGE, ALIEN_LOSE_SECONDS, ALIEN_PATROL_SPEED,
+  ALIEN_SEARCH_SECONDS, ALIEN_SEARCH_SPEED, ALIEN_SIGHT_HALF_ANGLE, ALIEN_SIGHT_RANGE,
+} from "./mobs/alien";
 import { OfficeWorker } from "./npc/OfficeWorker";
 import { funAnimatePartygoer, funPartygoer } from "./LevelFunModels";
 import type { DecorKit } from "./LevelDecor";
@@ -506,11 +511,13 @@ export class WanderingEntity {
 
     // --- Pose blends
     const running = this.isMoving && (this.isChasing || this.moveSpeed > 2.2);
+    // A calm O Alien goes about its patrol as if nobody were there.
+    const ignoresViewer = !!def.calmIgnoresViewer && !this.isChasing && !this.isAgitated;
     const damp = THREE.MathUtils.damp;
     this.moveWeight = damp(this.moveWeight, this.isMoving ? 1 : 0, 8, delta);
     this.runWeight = damp(this.runWeight, running ? 1 : 0, 5, delta);
-    this.observeWeight = damp(this.observeWeight, !this.isMoving && !this.isChasing && dist < 12 ? 1 : 0, 3, delta);
-    this.lookWeight = damp(this.lookWeight, near ? 1 : 0, 4, delta);
+    this.observeWeight = damp(this.observeWeight, !ignoresViewer && !this.isMoving && !this.isChasing && dist < 12 ? 1 : 0, 3, delta);
+    this.lookWeight = damp(this.lookWeight, near && !ignoresViewer ? 1 : 0, 4, delta);
     if (this.isMoving) this.stridePhase += (this.moveSpeed / def.strideLength) * Math.PI * 2 * delta;
     if (this.pose !== this.lastAnimPose) {
       // A scripted pose that just ended already played its own lead-in to the chase.
@@ -537,7 +544,7 @@ export class WanderingEntity {
     const stepZ = this.targetGridZ - this.gridZ;
     if (def.facesViewer) want = toViewer;
     else if (this.isMoving && (stepX !== 0 || stepZ !== 0)) want = Math.atan2(stepX, stepZ);
-    else if (near) want = toViewer;
+    else if (near && !ignoresViewer) want = toViewer;
     this.heading = wrapAngle(this.heading + wrapAngle(want - this.heading) * Math.min(1, (this.isChasing ? 10 : 5) * delta));
     this.mesh.rotation.set(0, this.heading, 0);
 
@@ -740,7 +747,9 @@ export class WanderingEntity {
     // Level 3 ("Lights Out") stalkers are summoned specifically to hunt the
     // player, so they share Level 2's always-chasing behavior.
     const senseDef = MOB_DEFS[this.type];
-    if (this.map.networkLevel === LEVEL_2 || this.map.networkLevel === LIGHTS_OUT_LEVEL) {
+    if (this.type === EntityType.ALIEN) {
+      this.senseAlien(delta, playerX, playerZ, playerState, pxGrid, pzGrid);
+    } else if (this.map.networkLevel === LEVEL_2 || this.map.networkLevel === LIGHTS_OUT_LEVEL) {
       this.isChasing = true;
       // Level 2 and secret Level 6 are fast, unavoidable sprint chases.
       this.moveSpeed = senseDef.forcedChaseSpeed;
@@ -750,7 +759,7 @@ export class WanderingEntity {
       this.isChasing = false;
     }
 
-    if (this.map.networkLevel !== LEVEL_2 && this.map.networkLevel !== LIGHTS_OUT_LEVEL) {
+    if (this.type !== EntityType.ALIEN && this.map.networkLevel !== LEVEL_2 && this.map.networkLevel !== LIGHTS_OUT_LEVEL) {
       const ctx = this.senseCtx(delta, distanceMeters, playerX, playerZ, playerState, cameraDir, isFlashlightOn);
       const result = senseDef.sense(ctx);
       this.isChasing = result.chasing;
@@ -793,6 +802,8 @@ export class WanderingEntity {
         this.pauseTimer = this.type === EntityType.FINGER_KING
           // Lurks between steps while searching; no pauses once it has you.
           ? (this.isChasing ? 0.03 : 0.3 + this.decisionRandom() * 0.9)
+          // O Alien walks its routes in one smooth stride; it stops where it decides to (chooseAlienStep).
+          : this.type === EntityType.ALIEN ? 0
           : this.decisionRandom() * 0.4 + 0.2; // brief tension check
         this.syncWorldPosition();
       } else {
@@ -832,6 +843,10 @@ export class WanderingEntity {
   private chooseNextTarget(pXg: number, pZg: number) {
     if (this.type === EntityType.FINGER_KING) {
       this.chooseFingerKingStep(pXg, pZg);
+      return;
+    }
+    if (this.type === EntityType.ALIEN) {
+      this.chooseAlienStep();
       return;
     }
 
@@ -935,6 +950,7 @@ export class WanderingEntity {
     if (this.map.checkCollision(cx, cz, 0.35, crossesPoolGate)) return false;
     if (this.map.checkCollision((cx + ox) / 2, (cz + oz) / 2, 0.35, crossesPoolGate)) return false;
     if (!this.hunting && this.targetHidden && this.map.hideCells.has(`${x},${z}`)) return false;
+    if (this.type === EntityType.ALIEN && !this.alienMayStep(fx, fz, x, z)) return false;
     return true;
   }
 
@@ -964,6 +980,246 @@ export class WanderingEntity {
       }
     }
     return null;
+  }
+
+  // ---------------------------------------------------------------------
+  // O Alien (Level 79). Authority-only AI state, like the patrol fields
+  // above: a handoff resumes from the replicated chase flag and replans.
+  // ---------------------------------------------------------------------
+
+  private alienMode: "patrol" | "chase" | "search" = "patrol";
+  private alienModeTime = 0;
+  /** Seconds since it last saw whoever it is chasing. */
+  private alienLostTime = 0;
+  /** Last reachable cell it saw its quarry in: where a chase goes once sight is lost. */
+  private alienGoalX = -1;
+  private alienGoalZ = -1;
+  /** Patrol waypoints still to visit, each with how long it lingers there. */
+  private alienRoute: { x: number; z: number; dwell: number }[] = [];
+  private alienLastCabin: string | null = null;
+  /** Cabin id -> seconds it won't patrol into it (someone just escaped in there). */
+  private alienCabinBan = new Map<string, number>();
+  /** Seconds left of the rear-up screech before a chase starts moving. */
+  private alienAlertHold = 0;
+  /** Seconds left of hissing at someone it can see but won't follow into a cabin. */
+  private alienStareTime = 0;
+
+  private resetAlienBrain() {
+    this.alienMode = "patrol";
+    this.alienModeTime = 0;
+    this.alienLostTime = 0;
+    this.alienGoalX = -1;
+    this.alienGoalZ = -1;
+    this.alienRoute = [];
+    this.alienLastCabin = null;
+    this.alienCabinBan?.clear();
+    this.alienAlertHold = 0;
+    this.alienStareTime = 0;
+  }
+
+  private setAlienMode(mode: "patrol" | "chase" | "search") {
+    if (mode === this.alienMode) return;
+    this.alienMode = mode;
+    this.alienModeTime = 0;
+    this.alienRoute = [];
+  }
+
+  /** The cabin it is in, counting the doorway threshold it is stepping over either way. */
+  private alienCabin(): SpaceRect | null {
+    return spaceCabinAt(this.gridX, this.gridZ) ?? (this.isMoving ? spaceCabinAt(this.targetGridX, this.targetGridZ) : null);
+  }
+
+  /**
+   * Whether O Alien notices an explorer at (x, z): in its sight cone, right
+   * behind it, running within earshot, or in the same cabin as it — and in
+   * every case with a clear line between them (walls and shut doors block it).
+   */
+  public alienCanSee(x: number, z: number, state: "idle" | "walking" | "running" | "crouching"): boolean {
+    const pos = this.mesh.position;
+    const dx = x - pos.x, dz = z - pos.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist > ALIEN_SIGHT_RANGE) return false;
+    const cs = this.map.cellSize;
+    const here = this.alienCabin();
+    let aware = (!!here && here === spaceCabinAt(Math.floor(x / cs), Math.floor(z / cs)))
+      || dist < ALIEN_FEEL_RANGE
+      || (state === "running" && dist < ALIEN_HEAR_RANGE);
+    if (!aware && dist > 0.001) {
+      const facing = (dx * Math.sin(this.heading) + dz * Math.cos(this.heading)) / dist;
+      aware = facing > Math.cos(ALIEN_SIGHT_HALF_ANGLE);
+    }
+    if (!aware) return false;
+    // A door is open when either of them is close enough to have opened it.
+    return spaceSightClear(pos.x, pos.z, x, z, (door) => {
+      const doorX = door.gx * cs + cs / 2, doorZ = door.gz * cs + cs / 2;
+      return Math.hypot(pos.x - doorX, pos.z - doorZ) < SPACE_DOOR_RANGE || Math.hypot(x - doorX, z - doorZ) < SPACE_DOOR_RANGE;
+    });
+  }
+
+  /** Per-frame senses and mode changes (authority only); sets isChasing/moveSpeed like a sense() would. */
+  private senseAlien(delta: number, px: number, pz: number, state: "idle" | "walking" | "running" | "crouching", pxGrid: number, pzGrid: number) {
+    this.alienModeTime += delta;
+    this.alienAlertHold = Math.max(0, this.alienAlertHold - delta);
+    for (const [id, left] of this.alienCabinBan) {
+      if (left <= delta) this.alienCabinBan.delete(id);
+      else this.alienCabinBan.set(id, left - delta);
+    }
+
+    const sees = this.alienCanSee(px, pz, state);
+    const theirCabin = spaceCabinAt(pxGrid, pzGrid);
+    // It follows anyone anywhere, except into a cabin it isn't already in.
+    const reachable = !theirCabin || theirCabin === this.alienCabin();
+
+    if (sees && reachable) {
+      if (this.alienMode === "patrol") this.alienAlertHold = 0.8;
+      this.setAlienMode("chase");
+      this.alienLostTime = 0;
+      this.alienGoalX = pxGrid;
+      this.alienGoalZ = pzGrid;
+      this.alienStareTime = 0;
+    } else if (sees && theirCabin) {
+      // Seen, but safe behind a cabin's threshold: it gives up on that cabin.
+      if (this.alienMode === "chase") this.loseAlienQuarry();
+      else if (!this.alienCabinBan.has(theirCabin.id)) this.alienStareTime = 1.4;
+      this.alienCabinBan.set(theirCabin.id, ALIEN_CABIN_BAN_SECONDS);
+    } else if (this.alienMode === "chase") {
+      this.alienLostTime += delta;
+      if (this.alienLostTime > ALIEN_LOSE_SECONDS) this.loseAlienQuarry();
+    } else if (this.alienMode === "search" && this.alienModeTime > ALIEN_SEARCH_SECONDS) {
+      this.setAlienMode("patrol");
+    }
+
+    this.alienStareTime = Math.max(0, this.alienStareTime - delta);
+    this.isChasing = this.alienMode === "chase";
+    // Searching stays "calm" to the eye: it must not turn toward someone hiding nearby.
+    this.isAgitated = this.alienStareTime > 0;
+    this.moveSpeed = this.alienMode === "chase" ? ALIEN_CHASE_SPEED : this.alienMode === "search" ? ALIEN_SEARCH_SPEED : ALIEN_PATROL_SPEED;
+    this.pose = 0;
+  }
+
+  /** The chase is over: search the corridor here, and leave alone any cabin next to where they vanished. */
+  private loseAlienQuarry() {
+    if (this.alienGoalX >= 0) {
+      for (const [dx, dz] of [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0]]) {
+        const cabin = spaceCabinAt(this.alienGoalX + dx, this.alienGoalZ + dz);
+        if (cabin) this.alienCabinBan.set(cabin.id, ALIEN_CABIN_BAN_SECONDS);
+      }
+    }
+    this.setAlienMode("search");
+  }
+
+  /**
+   * Movement rule on top of walls and props: a chase (or the search after
+   * one) never steps from outside a cabin into it, and a search stays out of
+   * doorways so it can't hold a hiding place's door open. On patrol it only
+   * skips cabins it was recently beaten to.
+   */
+  private alienMayStep(fx: number, fz: number, x: number, z: number): boolean {
+    const into = spaceCabinAt(x, z);
+    if (!into || into === spaceCabinAt(fx, fz)) {
+      return !(this.alienMode === "search" && spaceDoorAt(x, z) && !spaceDoorAt(fx, fz));
+    }
+    if (this.alienMode !== "patrol") return false;
+    return !this.alienCabinBan.has(into.id);
+  }
+
+  private chooseAlienStep() {
+    let step: [number, number] | null = null;
+
+    if (this.alienStareTime > 0 || this.alienAlertHold > 0) {
+      this.pauseTimer = Math.max(this.alienStareTime, this.alienAlertHold);
+      return;
+    }
+
+    if (this.alienMode === "chase") {
+      if (this.gridX === this.alienGoalX && this.gridZ === this.alienGoalZ) {
+        // Got where it last saw them and they aren't here: look around.
+        if (this.alienLostTime > 0) this.loseAlienQuarry();
+      } else if (this.alienGoalX >= 0) {
+        step = this.bfsFirstStep(this.alienGoalX, this.alienGoalZ) ?? this.greedyStep(this.alienGoalX, this.alienGoalZ);
+      }
+    } else if (this.alienMode === "search") {
+      // Prowls the nearby corridor in short, hesitant moves.
+      step = this.randomOpenNeighbour();
+      this.pauseTimer = 0.4 + this.decisionRandom() * 0.9;
+      if (step) this.startStep(step);
+      return;
+    } else {
+      step = this.nextAlienPatrolStep();
+      if (!step) return; // lingering at a waypoint (pauseTimer is set)
+    }
+
+    if (step) this.startStep(step);
+    else this.pauseTimer = 0.4;
+  }
+
+  private startStep(step: [number, number]) {
+    this.prevGridX = this.gridX;
+    this.prevGridZ = this.gridZ;
+    this.targetGridX = step[0];
+    this.targetGridZ = step[1];
+    this.isMoving = true;
+    this.transitionProgress = 0.0;
+  }
+
+  /** A random open neighbour, preferring not to walk straight back. */
+  private randomOpenNeighbour(): [number, number] | null {
+    const options: [number, number][] = [];
+    for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+      const nx = this.gridX + dx, nz = this.gridZ + dz;
+      if (this.fingerCanEnter(this.gridX, this.gridZ, nx, nz)) options.push([nx, nz]);
+    }
+    const forward = options.filter(([x, z]) => x !== this.prevGridX || z !== this.prevGridZ);
+    const pool = forward.length > 0 ? forward : options;
+    return pool.length > 0 ? pool[Math.floor(this.decisionRandom() * pool.length)] : null;
+  }
+
+  /**
+   * Walks its own route: corridor junctions and cabins chosen at random (never
+   * from where anyone is), lingering at each stop. Null while it lingers.
+   */
+  private nextAlienPatrolStep(): [number, number] | null {
+    for (let tries = 0; tries < 4; tries++) {
+      if (this.alienRoute.length === 0) this.planAlienPatrol();
+      const stop = this.alienRoute[0];
+      if (!stop) break;
+      if (this.gridX === stop.x && this.gridZ === stop.z) {
+        this.alienRoute.shift();
+        this.pauseTimer = stop.dwell;
+        return null;
+      }
+      const step = this.bfsFirstStep(stop.x, stop.z);
+      if (step) return step;
+      this.alienRoute.shift(); // unreachable right now (a banned cabin in the way): next stop
+    }
+    this.pauseTimer = 0.6;
+    return null;
+  }
+
+  private planAlienPatrol() {
+    const rand = () => this.decisionRandom();
+    const cabins = SPACE_RECTS.filter((r) => r.kind !== "corridor" && r.id !== this.alienLastCabin && !this.alienCabinBan.has(r.id));
+    if (cabins.length > 0 && rand() < 0.45) {
+      // Look into a cabin: a few spots inside it, a pause at each.
+      const cabin = cabins[Math.floor(rand() * cabins.length)];
+      this.alienLastCabin = cabin.id;
+      const spots = 1 + Math.floor(rand() * 3);
+      for (let i = 0; i < spots; i++) {
+        for (let tries = 0; tries < 6; tries++) {
+          const x = cabin.x1 + Math.floor(rand() * (cabin.x2 - cabin.x1 + 1));
+          const z = cabin.z1 + Math.floor(rand() * (cabin.z2 - cabin.z1 + 1));
+          if (!this.fingerCanEnter(x, z, x, z)) continue; // a prop stands there
+          this.alienRoute.push({ x, z, dwell: 1.5 + rand() * 2.5 });
+          break;
+        }
+      }
+      if (this.alienRoute.length > 0) return;
+    }
+    // Otherwise somewhere along the corridors, never just next door.
+    const far = SPACE_PATROL_POINTS.filter(([x, z]) => Math.abs(x - this.gridX) + Math.abs(z - this.gridZ) >= 5);
+    const pool = far.length > 0 ? far : SPACE_PATROL_POINTS;
+    const [x, z] = pool[Math.floor(rand() * pool.length)];
+    this.alienRoute.push({ x, z, dwell: 0.5 + rand() * 2 });
   }
 
   /** Puts the entity on a specific cell instantly (Level G ambushes). */
@@ -1009,6 +1265,8 @@ export class WanderingEntity {
       this.targetGridZ = select[1];
       this.isMoving = false;
       this.isAgitated = false;
+      this.isChasing = false;
+      this.resetAlienBrain();
       this.resetBaseSpeed();
       this.syncWorldPosition();
       this.updateVisualState();
@@ -1021,6 +1279,8 @@ export class WanderingEntity {
       this.targetGridZ = size - 4;
       this.isMoving = false;
       this.isAgitated = false;
+      this.isChasing = false;
+      this.resetAlienBrain();
       this.resetBaseSpeed();
       this.syncWorldPosition();
       this.updateVisualState();
@@ -1197,6 +1457,7 @@ export class WanderingEntity {
     this.searchTimer = 0.0;
     this.prevGridX = -1;
     this.prevGridZ = -1;
+    this.resetAlienBrain();
 
     this.resetBaseSpeed();
     this.syncWorldPosition();

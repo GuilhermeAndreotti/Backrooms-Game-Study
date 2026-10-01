@@ -17,7 +17,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { ALL_ENTITY_TYPES } from "./src/shared/entityTypes";
 import { GIVE_RANGE_SERVER, isInventoryItemId, isQuickChatId } from "./src/shared/items";
 import { ROOM_CHEATS, SUDO_CHEAT, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
-import { LOBBY_LEVEL, MAIN_LEVELS, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
+import { LOBBY_LEVEL, LEVEL_1, MAIN_LEVELS, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
 import { POOL_ROOM_COUNT, POOL_VALVE_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./src/game/poolroomsPuzzle";
 
 // ---------------------------------------------------------------------------
@@ -175,6 +175,8 @@ interface Room {
    * else). Dropped once nobody is on that level any more.
    */
   consumed: Map<number, Map<string, number>>;
+  /** Level 1: someone typed floor 2's car code, so the shutter to floor 3 is up. */
+  garageGateOpen: boolean;
 }
 
 const rooms = new Map<string, Room>();
@@ -507,12 +509,14 @@ function sweepSharedLevelState(room: Room) {
     if (p.held && (p.dead || p.level !== FUN_LEVEL)) releaseFunHeld(room, p);
   });
   if (!occupied.has(FUN_LEVEL)) room.funFacts.clear();
+  if (!occupied.has(LEVEL_1)) room.garageGateOpen = false;
   room.consumed.forEach((_ids, level) => { if (!occupied.has(level)) room.consumed.delete(level); });
 }
 
 function resetSharedLevelState(room: Room) {
   room.funFacts.clear();
   room.consumed.clear();
+  room.garageGateOpen = false;
   room.players.forEach((p) => { if (p.held) { p.held = ""; room.dirty.add(p.id); } });
 }
 
@@ -618,6 +622,7 @@ async function startServer() {
             poolValveRevision: 0,
             funFacts: new Set(),
             consumed: new Map(),
+            garageGateOpen: false,
             poolVigiaIntellect: 0,
           };
           rooms.set(roomKey, room);
@@ -852,6 +857,20 @@ async function startServer() {
         return;
       }
 
+      // Level 1: floor 2's shutter opened (the code is checked client-side
+      // against the seed; the fact carries no data). Remembered for late arrivals.
+      if (type === "garage_gate") {
+        if (conn.player.level !== LEVEL_1 || data.level !== LEVEL_1 || room.garageGateOpen) return;
+        room.garageGateOpen = true;
+        broadcastToLevel(room, LEVEL_1, { type: "garage_gate", level: LEVEL_1 }, conn);
+        return;
+      }
+
+      if (type === "garage_sync") {
+        if (conn.player.level === LEVEL_1 && room.garageGateOpen) send(ws, { type: "garage_gate", level: LEVEL_1 });
+        return;
+      }
+
       if (type === "consumables_sync") {
         const level = data.level;
         if (typeof level !== "number" || !Number.isInteger(level)) return;
@@ -1072,7 +1091,8 @@ async function startServer() {
         if (conn.player.dead) return;
         conn.player.dead = true;
         room.dirty.add(conn.player.id);
-        broadcastToRoom(room, { type: "player_died", id: conn.player.id });
+        const cause = data.cause === "caught" ? "caught" : "sanity";
+        broadcastToRoom(room, { type: "player_died", id: conn.player.id, cause });
         refreshAuthority(room);
         checkAllDead(room);
         return;

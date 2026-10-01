@@ -409,7 +409,8 @@ export default function App() {
         document.exitPointerLock?.();
         return true;
       case "terminal":
-        // Level G's terminal
+      case "garage_keypad":
+        // Level G's terminal, or the keypad at Level 1's floor-2 shutter
         setIsInventoryOpen(false);
         setIsAchievementsOpen(false);
         setIsTerminalOpen(true);
@@ -928,10 +929,10 @@ export default function App() {
                       setSpectateName(null);
                       playersRef.current.forEach((p) => { p.dead = false; });
                     },
-                    onPlayerDeath: () => {
+                    onPlayerDeath: (cause) => {
                       setIsDead(true);
                       setSpectateName(engineRef.current?.spectateName() ?? null);
-                      socketRef.current?.send(JSON.stringify({ type: "died" }));
+                      socketRef.current?.send(JSON.stringify({ type: "died", cause }));
                     },
                     onDiaryPageCollected: () => {
                       const page: BackroomsLore = {
@@ -1130,12 +1131,13 @@ export default function App() {
           }
 
           else if (type === "player_died") {
-            const { id: deadId } = data;
+            const { id: deadId, cause } = data;
             const who = playersRef.current.find((p) => p.id === deadId);
             if (who) who.dead = true;
             engineRef.current?.setRemoteDead(deadId, true);
             if (deadId !== clientIdRef.current) {
               logSystemMessage(t("sys.died", { name: (who?.name ?? t("sys.someone")).toUpperCase() }));
+              if (cause === "caught") engineRef.current?.triggerRemoteJumpscare(deadId);
             }
             touchRoster();
           }
@@ -1242,6 +1244,10 @@ export default function App() {
 
           else if (type === "poolrooms_state") {
             engineRef.current?.applyPoolroomsState(data);
+          }
+
+          else if (type === "garage_gate") {
+            engineRef.current?.applyGarageGate(data);
           }
 
           else if (type === "brick_office_switch") {
@@ -1955,6 +1961,24 @@ export default function App() {
           {/* Quick-use item bar (keys 1–5) with running effect timers */}
           <HotbarHUD inventory={inventory} engineRef={engineRef} giveTarget={giveMode} fx={hotbarFx} />
 
+          {isTerminalOpen && currentLevel === 1 && (
+            <TerminalModal
+              length={4}
+              title={t("garage.keypad.title")}
+              prompt={t("garage.keypad.prompt")}
+              hint={
+                <span className="text-[#3cff7a] font-bold tracking-wider">
+                  {(engineRef.current?.garageKeypadColors() ?? []).map((c) => t(`garage.color.${c}`)).join(" · ")}
+                </span>
+              }
+              onSubmit={(code) => engineRef.current?.submitGarageCode(code) ?? false}
+              onClose={() => {
+                setIsTerminalOpen(false);
+                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+                if (canvasEl) lockGameInput(canvasEl);
+              }}
+            />
+          )}
           {isTerminalOpen && currentLevel === LEVEL_G && (
             <TerminalModal
               digits={levelGProgress.digits}

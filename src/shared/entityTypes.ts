@@ -32,6 +32,8 @@ export enum EntityType {
   VIGIA = "VIGIA",
   /** O Ceifador: adaptive apex predator, biased by VisitTracker. */
   CEIFADOR = "CEIFADOR",
+  /** O Alien: Level 79's stalker. Patrols anywhere, but never follows a chase into a cabin. */
+  ALIEN = "ALIEN",
 }
 
 /** Every known entity type, in enum declaration order. The single source of truth for server/client whitelists. */

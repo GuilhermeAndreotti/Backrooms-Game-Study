@@ -13,6 +13,7 @@ import { VisitTracker } from "./systems/visitTracker";
 import { contentLevelFor, FUN_CONTENT_LEVEL, SPACE_LEVEL } from "./levels/constants";
 import { SpaceWorld } from "./levels/spaceWorld";
 import { SPACE_GRID, SPACE_RECTS, SPACE_SPAWN } from "./levels/spaceLayout";
+import { CAR_COLOR_HEX, GARAGE_DIVIDERS, GARAGE_SAFE_RADIUS, GARAGE_FLOORS, GARAGE_FLOOR_Y, GaragePlan, garageFloorAt, garageKeepClear, garagePillarAt, garagePlan, rampAt, rampHeightAt } from "./levels/garageLayout";
 import { FunWorld } from "./levels/funWorld";
 import { FUN_EXIT, FUN_RECTS, FUN_SPAWN } from "./levels/funLayout";
 import * as Decor from "./LevelDecor";
@@ -448,6 +449,8 @@ export class ProceduralMap {
   public isWalkableForEntities(gx: number, gz: number): boolean {
     if (this.grid[gx]?.[gz] === undefined || this.grid[gx][gz] === CellType.SOLID) return false;
     if (this.level === 4 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) return false;
+    // Level 1's monsters patrol the ground floor and never take the ramps.
+    if (this.garage && (gx > GARAGE_FLOORS[0].x2 || this.rampCells.has(`${gx},${gz}`))) return false;
     return true;
   }
 
@@ -1851,107 +1854,10 @@ export class ProceduralMap {
         }
       });
     } else if (this.level === 1) {
-      // LEVEL 1: Industrial warehouse / boiler room
-      // Vast central field, long sweeping paths, lateral mazes
-      
-      // 1. Generate confusing lateral labyrinths in side lanes FIRST so wide main paths can overwrite any blockages
-      this.carveSideLabyrinth(2, 18, 9, 44, CellType.ROOM_SMALL);
-      this.carveSideLabyrinth(18, 2, 44, 9, CellType.ROOM_SMALL);
-      this.carveSideLabyrinth(10, 39, 36, 45, CellType.CORRIDOR);
+      // LEVEL 1: the three-storey parking garage (see levels/garageLayout.ts).
+      this.carveGarage();
 
-      // 2. Carve the massive open central area: 10 <= x <= 38, 10 <= z <= 38
-      for (let x = 10; x <= 38; x++) {
-        for (let z = 10; z <= 38; z++) {
-          this.grid[x][z] = CellType.OPEN_AREA;
-        }
-      }
-
-      // 3. Carve a long, wide primary pathway/spine from Spawn (2,2) to Exit (gridSize-3, gridSize-3)
-      // High-traffic central spine connects to the open field and winds towards the exit
-      const carveWidePath = (x1: number, z1: number, x2: number, z2: number) => {
-        const minX = Math.min(x1, x2);
-        const maxX = Math.max(x1, x2);
-        const minZ = Math.min(z1, z2);
-        const maxZ = Math.max(z1, z2);
-        for (let x = minX; x <= maxX; x++) {
-          for (let z = minZ; z <= maxZ; z++) {
-            // carve a thick path (2x2 or 3x3)
-            for (let dx = -1; dx <= 1; dx++) {
-              for (let dz = -1; dz <= 1; dz++) {
-                const nx = x + dx;
-                const nz = z + dz;
-                if (nx > 1 && nx < this.gridSize - 2 && nz > 1 && nz < this.gridSize - 2) {
-                  this.grid[nx][nz] = CellType.CORRIDOR;
-                }
-              }
-            }
-          }
-        }
-      };
-
-      // Sweeping long main path layout (unblocked, clean connections):
-      // Go from (2,2) down to (2, 20)
-      // Then turn east to (12, 20) to connect to central field
-      // From central field edge, we cross the massive central field
-      // Exit path leaves central field at (38, 28) and sweeps to (38, 43) -> (45, 45)
-      carveWidePath(2, 2, 2, 20);
-      carveWidePath(2, 20, 12, 20);
-      carveWidePath(38, 28, 38, 43);
-      
-      // Let the final corridor be a straight, narrow 1-cell-wide corridor running along z = 45 from x = 38 to 45
-      // First, connect (38, 43) to (38, 45)
-      this.grid[38][44] = CellType.CORRIDOR;
-      this.grid[38][45] = CellType.CORRIDOR;
-
-      for (let x = 39; x <= this.exitGridX; x++) {
-        this.grid[x][this.exitGridZ] = CellType.CORRIDOR;
-        // Reinforce with solid walls on both sides of the corridor so it is narrow and straight
-        if (this.exitGridZ - 1 >= 0) {
-          this.grid[x][this.exitGridZ - 1] = CellType.SOLID;
-        }
-        if (this.exitGridZ + 1 < this.gridSize) {
-          this.grid[x][this.exitGridZ + 1] = CellType.SOLID;
-        }
-      }
-
-      // 4. Place scattered structural pillars or individual boilers in the central area (Organic, sparse)
-      // Avoid obvious patterns: use seeded randomness with quiet probability
-      const pillarPrng = new SeededRandom(this.seed + 2026);
-      for (let x = 12; x <= 36; x++) {
-        for (let z = 12; z <= 36; z++) {
-          // Leave some paths fully open
-          if (x % 5 === 0 && z % 5 === 0) {
-            // place isolated structural support pillar (1x1 block)
-            if (pillarPrng.next() < 0.65) {
-              this.grid[x][z] = CellType.SOLID;
-            }
-          } else if (pillarPrng.next() < 0.04) {
-            // Place occasional isolated partition / machine walls (2-cell walls)
-            const horizontal = pillarPrng.next() > 0.5;
-            if (horizontal && x < 35 && this.grid[x+1][z] !== CellType.SOLID) {
-              this.grid[x][z] = CellType.SOLID;
-              this.grid[x+1][z] = CellType.SOLID;
-            } else if (!horizontal && z < 35 && this.grid[x][z+1] !== CellType.SOLID) {
-              this.grid[x][z] = CellType.SOLID;
-              this.grid[x][z+1] = CellType.SOLID;
-            }
-          }
-        }
-      }
-
-      // Connect these side lanes to the main area organically at specific points (narrow entries)
-      this.grid[9][25] = CellType.CORRIDOR;
-      this.grid[9][35] = CellType.CORRIDOR;
-      this.grid[25][9] = CellType.CORRIDOR;
-      this.grid[35][9] = CellType.CORRIDOR;
-      this.grid[15][39] = CellType.CORRIDOR;
-      this.grid[30][39] = CellType.CORRIDOR;
-
-      // Split into 3 sequential sectors; sector 3 (the smiler hall) is sealed off
-      // except for one long "ramp" corridor the player has to find.
-      this.partitionLevel1Sectors();
-
-      // Secret entrance to "Lights Out", somewhere different every seed.
+      // Secret entrance to "Lights Out", dug into a service core, somewhere different every seed.
       this.carveLevel1SecretCorridor();
 
     } else if (this.level === 4) {
@@ -2999,6 +2905,252 @@ export class ProceduralMap {
     return this.sharedMat("ramp_lip_mat", () => new THREE.MeshStandardMaterial({ color: 0xd7a233, emissive: 0x2a1c05, roughness: 0.7 }));
   }
 
+  // -------------------------------------------------------------------------
+  // Level 1 garage set pieces (see levels/garageLayout.ts)
+  // -------------------------------------------------------------------------
+
+  /** A ramp cell's floor: one tilted plane, rising toward +x, centred on the cell's mid height. */
+  private garageRampFloorGeo(gx: number, gz: number): THREE.BufferGeometry {
+    const ramp = rampAt(this.garage!, gx, gz)!;
+    const cs = this.cellSize;
+    const rise = rampHeightAt(ramp, gx + 1) - rampHeightAt(ramp, gx);
+    const angle = Math.atan2(rise, cs);
+    return this.sharedGeo(`garage_ramp_floor_${rise.toFixed(3)}`, () =>
+      new THREE.PlaneGeometry(cs / Math.cos(angle), cs).rotateX(-Math.PI / 2).rotateZ(angle));
+  }
+
+  /** A text plate on a cached canvas texture. */
+  private garageLabel(text: string, w: number, h: number, fg = "#111111", bg = "#e2b41f"): THREE.MeshBasicMaterial {
+    return this.sharedMat(`garage_label_${text}_${w}_${h}_${fg}_${bg}`, () => {
+      const c = document.createElement("canvas");
+      c.width = 512;
+      c.height = Math.max(32, Math.round(512 * (h / w)));
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.fillStyle = fg;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      let size = Math.floor(c.height * 0.62);
+      ctx.font = `bold ${size}px Courier New, monospace`;
+      while (size > 10 && ctx.measureText(text).width > c.width * 0.92) {
+        size -= 2;
+        ctx.font = `bold ${size}px Courier New, monospace`;
+      }
+      ctx.fillText(text, c.width / 2, c.height / 2 + 2);
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      this.sharedTextures.push(tex);
+      return new THREE.MeshBasicMaterial({ map: tex });
+    });
+  }
+
+  /**
+   * A ramp cell's enclosure: a concrete wall along each long side, tall enough
+   * to close off whatever the floor beside it shows (the storey below the
+   * slope, or the one above it), and a sign over each mouth.
+   */
+  private buildGarageRampCell(group: THREE.Group, gx: number, gz: number, posX: number, posZ: number, fY: number, height: number) {
+    const ramp = rampAt(this.garage!, gx, gz)!;
+    const cs = this.cellSize;
+    const half = cs / 2;
+    const T = 0.25;
+    for (const side of [-1, 1] as const) {
+      if ((side < 0 && gz !== ramp.z1) || (side > 0 && gz !== ramp.z2)) continue;
+      const nz = gz + side;
+      const neighbour = this.grid[gx]?.[nz] === CellType.SOLID ? fY : (this.floorHeight[gx]?.[nz] ?? fY);
+      const bottom = Math.min(0, neighbour - fY) - 0.5;
+      const top = height + Math.max(0, neighbour - fY) + 0.05;
+      const wall = new THREE.Mesh(this.unitBoxGeo, this.wallMaterial);
+      wall.scale.set(cs, top - bottom, T);
+      wall.position.set(posX, (top + bottom) / 2, posZ + side * (half - T / 2));
+      wall.receiveShadow = true;
+      group.add(wall);
+      // Hazard stripe along the foot of the wall, following the slope.
+      const curb = new THREE.Mesh(this.unitBoxGeo, this.getRampLipMaterial());
+      const rise = rampHeightAt(ramp, gx + 1) - rampHeightAt(ramp, gx);
+      curb.scale.set(cs / Math.cos(Math.atan2(rise, cs)), 0.16, 0.04);
+      curb.rotation.z = Math.atan2(rise, cs);
+      curb.position.set(posX, 0.1, posZ + side * (half - T - 0.02));
+      group.add(curb);
+    }
+    // Over each mouth: where it goes.
+    if (gz === ramp.z1 && (gx === ramp.x1 || gx === ramp.x2)) {
+      const up = gx === ramp.x1;
+      const target = up ? ramp.from + 2 : ramp.from + 1;
+      const sign = new THREE.Mesh(this.sharedGeo("garage_ramp_sign", () => new THREE.PlaneGeometry(4.2, 0.6)),
+        this.garageLabel(t(up ? "garage.sign.up" : "garage.sign.down", { n: target }), 4.2, 0.6));
+      sign.position.set(up ? gx * cs + 0.05 : (gx + 1) * cs - 0.05, height - 0.45, (ramp.z1 + 1) * cs);
+      sign.rotation.y = up ? -Math.PI / 2 : Math.PI / 2;
+      group.add(sign);
+    }
+  }
+
+  /** A parking-structure column with a hazard band and its storey number. */
+  private buildGaragePillar(group: THREE.Group, gx: number, gz: number, posX: number, posZ: number, height: number) {
+    const floor = garageFloorAt(gx) ?? 0;
+    const pillar = new THREE.Mesh(this.sharedGeo("garage_pillar", () => new THREE.BoxGeometry(1.1, height, 1.1)), this.wallMaterial);
+    pillar.position.set(posX, height / 2, posZ);
+    pillar.castShadow = true;
+    pillar.receiveShadow = true;
+    group.add(pillar);
+    const band = new THREE.Mesh(this.sharedGeo("garage_pillar_band", () => new THREE.BoxGeometry(1.14, 0.5, 1.14)), this.getRampLipMaterial());
+    band.position.set(posX, 0.25, posZ);
+    group.add(band);
+    const label = this.garageLabel(`P${floor + 1}`, 0.8, 0.5, "#e8e8e8", "#1f3a5a");
+    const plate = this.sharedGeo("garage_pillar_plate", () => new THREE.PlaneGeometry(0.8, 0.5));
+    for (let i = 0; i < 4; i++) {
+      const m = new THREE.Mesh(plate, label);
+      const a = (i * Math.PI) / 2;
+      m.position.set(posX + Math.sin(a) * 0.56, 1.75, posZ + Math.cos(a) * 0.56);
+      m.rotation.y = a;
+      group.add(m);
+    }
+    this.addObstacle(gx, gz, posX, posZ, 0.75);
+  }
+
+  private buildGarageCar(color: number): THREE.Group {
+    const key = color.toString(16);
+    const car = new THREE.Group();
+    const body = this.sharedMat(`garage_car_${key}`, () => new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.5 }));
+    const glass = this.sharedMat("parking_car_glass", () => new THREE.MeshStandardMaterial({ color: 0x26353b, roughness: 0.18, metalness: 0.55 }));
+    const tyre = this.sharedMat("garage_car_tyre", () => new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 }));
+    const lamp = this.sharedMat("garage_car_lamp", () => new THREE.MeshStandardMaterial({ color: 0xfff3c4, emissive: 0x332a10, roughness: 0.3 }));
+    const lower = new THREE.Mesh(this.sharedGeo("garage_car_lower", () => new THREE.BoxGeometry(1.7, 0.55, 3.9)), body);
+    lower.position.y = 0.6;
+    car.add(lower);
+    const cabin = new THREE.Mesh(this.sharedGeo("garage_car_cabin", () => new THREE.BoxGeometry(1.5, 0.5, 2.0)), glass);
+    cabin.position.set(0, 1.12, -0.2);
+    car.add(cabin);
+    const roof = new THREE.Mesh(this.sharedGeo("garage_car_roof", () => new THREE.BoxGeometry(1.52, 0.07, 1.7)), body);
+    roof.position.set(0, 1.4, -0.25);
+    car.add(roof);
+    const wheel = this.sharedGeo("garage_car_wheel", () => new THREE.CylinderGeometry(0.34, 0.34, 0.22, 12).rotateZ(Math.PI / 2));
+    for (const [wx, wz] of [[-0.8, 1.25], [0.8, 1.25], [-0.8, -1.25], [0.8, -1.25]]) {
+      const w = new THREE.Mesh(wheel, tyre);
+      w.position.set(wx, 0.34, wz);
+      car.add(w);
+    }
+    for (const lx of [-0.55, 0.55]) {
+      const l = new THREE.Mesh(this.sharedGeo("garage_car_light", () => new THREE.BoxGeometry(0.35, 0.14, 0.04)), lamp);
+      l.position.set(lx, 0.72, 1.96);
+      car.add(l);
+    }
+    car.traverse((o) => { o.castShadow = true; });
+    return car;
+  }
+
+  /** Everything a garage cell holds besides walls and floor: cars, the shutter, the keypad, emergency lights. */
+  private buildGarageSetPieces(group: THREE.Group, gx: number, gz: number, posX: number, posZ: number, fY: number) {
+    const plan = this.garage!;
+    const cs = this.cellSize;
+
+    for (const car of plan.cars) {
+      if (car.gx !== gx || car.gz !== gz) continue;
+      const mesh = this.buildGarageCar(CAR_COLOR_HEX[car.color]);
+      mesh.position.set(car.x, 0, car.z);
+      mesh.rotation.y = car.yaw;
+      group.add(mesh);
+      // Two circles cover the car's length, leaving the bay's sides walkable.
+      const ax = Math.sin(car.yaw) * 1.0, az = Math.cos(car.yaw) * 1.0;
+      this.addObstacle(gx, gz, car.x + ax, car.z + az, 0.95);
+      this.addObstacle(gx, gz, car.x - ax, car.z - az, 0.95);
+    }
+
+    // Floor 2's shutter across the mouth of the ramp up to floor 3.
+    const g = plan.gate;
+    if (gx === g.gx && gz === g.z1) {
+      const base = new THREE.Group();
+      base.position.set(g.gx * cs + 0.14, GARAGE_FLOOR_Y[1] - fY, (g.z1 + g.z2 + 1) * cs / 2);
+      const shutter = new THREE.Group();
+      const width = (g.z2 - g.z1 + 1) * cs - 0.5;
+      const slatMat = this.sharedMat("garage_shutter", () => new THREE.MeshStandardMaterial({ color: 0x6f767a, roughness: 0.55, metalness: 0.7 }));
+      for (let i = 0; i < 12; i++) {
+        const slat = new THREE.Mesh(this.sharedGeo("garage_shutter_slat", () => new THREE.BoxGeometry(0.08, 0.24, width)), slatMat);
+        slat.position.set(0, 0.13 + i * 0.25, 0);
+        shutter.add(slat);
+      }
+      const notice = new THREE.Mesh(this.sharedGeo("garage_shutter_sign", () => new THREE.PlaneGeometry(3.6, 0.7)),
+        this.garageLabel(t("garage.sign.locked"), 3.6, 0.7, "#ffffff", "#9b1c1c"));
+      notice.position.set(-0.05, 1.6, 0);
+      notice.rotation.y = -Math.PI / 2;
+      shutter.add(notice);
+      shutter.position.y = 2.7 * this.garageGateLift;
+      base.add(shutter);
+      group.add(base);
+      this.garageGateMesh = shutter;
+    }
+
+    // The keypad kiosk beside it: the screen lists the colours, in code order.
+    const k = plan.keypad;
+    if (gx === k.gx && gz === k.gz) {
+      const kiosk = new THREE.Group();
+      kiosk.position.set(k.x, 0, k.z);
+      const metal = this.sharedMat("garage_kiosk", () => new THREE.MeshStandardMaterial({ color: 0x2b3135, roughness: 0.5, metalness: 0.7 }));
+      const post = new THREE.Mesh(this.sharedGeo("garage_kiosk_post", () => new THREE.BoxGeometry(0.28, 1.15, 0.28)), metal);
+      post.position.y = 0.575;
+      kiosk.add(post);
+      const head = new THREE.Mesh(this.sharedGeo("garage_kiosk_head", () => new THREE.BoxGeometry(0.16, 0.75, 1.0)), metal);
+      head.position.set(0, 1.45, 0);
+      kiosk.add(head);
+      const screen = new THREE.Mesh(this.sharedGeo("garage_kiosk_screen", () => new THREE.PlaneGeometry(0.9, 0.65)), this.garageKeypadScreen());
+      screen.position.set(-0.085, 1.45, 0);
+      screen.rotation.y = -Math.PI / 2;
+      kiosk.add(screen);
+      group.add(kiosk);
+      this.addObstacle(gx, gz, k.x, k.z, 0.4);
+      this.registerLight(gx, gz, k.x - 0.6, fY + 1.6, k.z, 0x7dffa0, 0.6, 4);
+    }
+
+    // Floor 3's emergency lights: a lamp post and a painted circle of safe ground.
+    if (plan.safeLights.some(([x, z]) => x === gx && z === gz)) {
+      const amber = this.sharedMat("garage_safe_amber", () => new THREE.MeshBasicMaterial({ color: 0xffb347 }));
+      const ring = new THREE.Mesh(this.sharedGeo("garage_safe_ring", () => new THREE.RingGeometry(GARAGE_SAFE_RADIUS - 0.18, GARAGE_SAFE_RADIUS, 40).rotateX(-Math.PI / 2)), amber);
+      ring.position.set(posX, 0.015, posZ);
+      group.add(ring);
+      const pole = new THREE.Mesh(this.sharedGeo("garage_safe_pole", () => new THREE.CylinderGeometry(0.07, 0.09, 2.3, 8)), this.getRampLipMaterial());
+      pole.position.set(posX, 1.15, posZ);
+      group.add(pole);
+      const lampHead = new THREE.Mesh(this.sharedGeo("garage_safe_head", () => new THREE.SphereGeometry(0.2, 12, 8)), amber);
+      lampHead.position.set(posX, 2.4, posZ);
+      group.add(lampHead);
+      this.addObstacle(gx, gz, posX, posZ, 0.2);
+      this.registerLight(gx, gz, posX, fY + 2.35, posZ, 0xffb347, 1.9, 7.5);
+    }
+  }
+
+  /** The keypad's screen: what to count, as coloured swatches in code order. */
+  private garageKeypadScreen(): THREE.MeshBasicMaterial {
+    const order = this.garage!.colorOrder;
+    return this.sharedMat(`garage_keypad_screen_${order.join("_")}`, () => {
+      const c = document.createElement("canvas");
+      c.width = 512; c.height = 370;
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = "#03120a";
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.fillStyle = "#3cff7a";
+      ctx.font = "bold 30px Courier New, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(t("garage.keypad.screenTitle"), 256, 46);
+      ctx.font = "bold 20px Courier New, monospace";
+      ctx.fillText(t("garage.keypad.screenHint"), 256, 84);
+      order.forEach((color, i) => {
+        const x = 64 + i * 128;
+        ctx.fillStyle = `#${CAR_COLOR_HEX[color].toString(16).padStart(6, "0")}`;
+        ctx.fillRect(x - 40, 120, 80, 80);
+        ctx.fillStyle = "#3cff7a";
+        ctx.font = "bold 22px Courier New, monospace";
+        ctx.fillText(t(`garage.color.${color}`), x, 236);
+        ctx.font = "bold 46px Courier New, monospace";
+        ctx.fillText("?", x, 300);
+      });
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      this.sharedTextures.push(tex);
+      return new THREE.MeshBasicMaterial({ map: tex, toneMapped: false });
+    });
+  }
+
   /** World-space centre of a grid cell. */
   private cellCenter(gx: number, gz: number): [number, number] {
     return [gx * this.cellSize + this.cellSize / 2, gz * this.cellSize + this.cellSize / 2];
@@ -3024,6 +3176,9 @@ export class ProceduralMap {
       const k = Math.max(0, Math.min(this.poolStairSteps - 1, Math.floor(t * this.poolStairSteps)));
       pool = POOL_FLOOR_Y * (1 - (k + 1) / this.poolStairSteps);
     }
+    // Level 1's ramps are one continuous slope, not a staircase of flat cells.
+    const ramp = this.garage && this.rampCells.has(`${gx},${gz}`) ? rampAt(this.garage, gx, gz) : null;
+    if (ramp) return rampHeightAt(ramp, worldX / this.cellSize);
     return (this.floorHeight[gx][gz] || 0) + pool;
   }
 
@@ -3089,77 +3244,80 @@ export class ProceduralMap {
   }
 
   /**
-   * Level 1: carve the three-sector spine as three real, physically stacked
-   * storeys — each sector is a taller floor than the last (floorHeight), not
-   * just a different X band. Sector 1 (x < level1Sector2X) is ground level;
-   * sector 2 is one storey up, reached by climbing Ramp A; sector 3 (the
-   * sealed smiler hall holding the exit) is a second storey up, reached only
-   * by the long "extensive ramp" the player has to find. Both dividers are
-   * solid walls except at their one ramp mouth.
+   * Level 1: the parking garage of levels/garageLayout.ts — three storeys side
+   * by side along X, each a full floor higher than the last (floorHeight),
+   * joined only by the two enclosed ramps through the solid dividers.
    */
-  private partitionLevel1Sectors() {
-    const gs = this.gridSize;
-    const divX2 = this.level1Sector2X; // 17 — sector 1 -> sector 2
-    const divX3 = this.level1Sector3X; // 33 — sector 2 -> sector 3 (sealed)
-    const rampZ = gs - 4;              // 44 — ramp B runs along the south edge
-    const H1 = 0, H2 = 3.2, H3 = 6.4;  // storey heights, ~one real floor apart
-
-    // 0. Base elevation per sector (ramps overridden below).
-    for (let x = 2; x < gs - 2; x++) {
-      for (let z = 2; z < gs - 2; z++) {
-        this.floorHeight[x][z] = x < divX2 ? H1 : x < divX3 ? H2 : H3;
+  private carveGarage() {
+    const plan = garagePlan(this.seed);
+    this.garage = plan;
+    this.level1Sector2X = GARAGE_DIVIDERS[0];
+    this.level1Sector3X = GARAGE_DIVIDERS[1];
+    GARAGE_FLOORS.forEach((f, i) => {
+      for (let x = f.x1; x <= f.x2; x++) {
+        for (let z = f.z1; z <= f.z2; z++) {
+          this.grid[x][z] = CellType.OPEN_AREA;
+          this.floorHeight[x][z] = GARAGE_FLOOR_Y[i];
+        }
+      }
+    });
+    for (const c of plan.cores) {
+      for (let x = c.x1; x <= c.x2; x++) for (let z = c.z1; z <= c.z2; z++) this.grid[x][z] = CellType.SOLID;
+    }
+    for (const [x, z] of plan.partitions) this.grid[x][z] = CellType.SOLID;
+    for (const r of plan.ramps) {
+      for (let x = r.x1; x <= r.x2; x++) {
+        for (let z = r.z1; z <= r.z2; z++) {
+          this.grid[x][z] = CellType.CORRIDOR;
+          this.floorHeight[x][z] = rampHeightAt(r, x + 0.5); // the slope's height at the cell centre
+          this.rampCells.add(`${x},${z}`);
+        }
       }
     }
+    this.exitGridX = plan.exit.gx;
+    this.exitGridZ = plan.exit.gz;
+  }
 
-    // 1. Wall sector 1 off from sector 2 — only Ramp A's mouth (z 19-21) is open.
-    for (let z = 2; z < gs - 2; z++) {
-      if (z < 19 || z > 21) this.grid[divX2][z] = CellType.SOLID;
+  private checkGarageCollision(x: number, z: number, radius: number): boolean {
+    const plan = this.garage!;
+    const cs = this.cellSize;
+    for (const r of plan.ramps) {
+      if (x < r.x1 * cs || x > (r.x2 + 1) * cs) continue;
+      if (Math.abs(z - r.z1 * cs) < radius + 0.15 || Math.abs(z - (r.z2 + 1) * cs) < radius + 0.15) return true;
     }
-    // Ramp A: climbs H1 -> H2 over x 13..21, stepped one storey per cell.
-    for (let x = 13; x <= 21; x++) {
-      const t = (x - 13) / (21 - 13);
-      const h = H1 + (H2 - H1) * t;
-      for (let z = 19; z <= 21; z++) {
-        this.grid[x][z] = CellType.CORRIDOR;
-        this.floorHeight[x][z] = h;
-        this.rampCells.add(`${x},${z}`);
-      }
-    }
+    const g = plan.gate;
+    return !this.garageGateOpen && z > g.z1 * cs && z < (g.z2 + 1) * cs && Math.abs(x - g.gx * cs) < radius + 0.15;
+  }
 
-    // 2. Wall off sector 3, leaving only the Ramp B mouth open (z = rampZ-1..rampZ).
-    for (let z = 2; z < gs - 2; z++) {
-      if (z < rampZ - 1) this.grid[divX3][z] = CellType.SOLID;
-    }
+  /** Level 1's garage plan (null on every other level). */
+  public garage: GaragePlan | null = null;
+  /** Level 1: floor 2's shutter to the ramp up to floor 3. */
+  public garageGateOpen = false;
+  /** 0 = shut .. 1 = fully rolled up (animated by {@link updateGarageGate}). */
+  private garageGateLift = 0;
+  private garageGateMesh: THREE.Object3D | null = null;
 
-    // 3. Ramp B ("the extensive ramp"): a long narrow corridor hugging the south
-    //    wall, climbing H2 -> H3 over its full run from sector 2 into sector 3.
-    for (let x = 18; x <= gs - 4; x++) {
-      const t = Math.min(1, (x - 18) / (divX3 - 18));
-      const h = H2 + (H3 - H2) * t;
-      for (let z = rampZ - 1; z <= rampZ; z++) {
-        this.grid[x][z] = CellType.CORRIDOR;
-        this.floorHeight[x][z] = h;
-        this.rampCells.add(`${x},${z}`);
-      }
-    }
-    // a short spur so the ramp mouth is reachable from the central field's south edge —
-    // flat, at sector 2's own height (it isn't climbing, just leading to the ramp).
-    for (let z = 38; z <= rampZ; z++) {
-      this.grid[20][z] = CellType.CORRIDOR;
-      this.floorHeight[20][z] = H2;
-      this.rampCells.add(`${20},${z}`);
-    }
+  public openGarageGate() {
+    this.garageGateOpen = true;
+  }
 
-    // 4. Sector 3: an open hall for the smilers, with the exit at its far north end.
-    for (let x = divX3 + 1; x <= gs - 3; x++) {
-      for (let z = 4; z <= rampZ; z++) {
-        this.grid[x][z] = CellType.OPEN_AREA;
-        this.floorHeight[x][z] = H3;
-      }
-    }
-    this.exitGridX = gs - 4;
-    this.exitGridZ = 6;
-    this.grid[this.exitGridX][this.exitGridZ] = CellType.CORRIDOR;
+  /** Rolls the shutter up once it's open. */
+  public updateGarageGate(delta: number) {
+    if (!this.garageGateOpen || this.garageGateLift >= 1) return;
+    this.garageGateLift = Math.min(1, this.garageGateLift + delta * 0.5);
+    if (this.garageGateMesh) this.garageGateMesh.position.y = 2.7 * this.garageGateLift;
+  }
+
+  /** Whether a blackout reaches world x: everywhere, except on Level 1 where only floor 3 goes dark. */
+  public inGarageBlackoutZone(worldX: number): boolean {
+    return !this.garage || worldX >= GARAGE_FLOORS[2].x1 * this.cellSize;
+  }
+
+  /** Whether a world position is in one of floor 3's emergency-light circles. */
+  public inGarageSafeLight(x: number, z: number): boolean {
+    if (!this.garage) return false;
+    const cs = this.cellSize;
+    return this.garage.safeLights.some(([gx, gz]) => Math.hypot(x - (gx * cs + cs / 2), z - (gz * cs + cs / 2)) < GARAGE_SAFE_RADIUS);
   }
 
   /** Yellow-and-black diagonal hazard tape; the stripes repeat every ~0.4 m along the tape. */
@@ -3222,6 +3380,10 @@ export class ProceduralMap {
     if (minGridX < 0 || maxGridX >= this.gridSize || minGridZ < 0 || maxGridZ >= this.gridSize) {
       return true; // Wall collision on world perimeter
     }
+
+    // Level 1's ramps are walled along both sides (you get on at the foot or
+    // the top, never over the side), and floor 2's shutter seals the ramp up.
+    if (this.garage && this.checkGarageCollision(x, z, radius)) return true;
 
     // Evaluate cell occupants around the player boundaries
     for (let gx = minGridX; gx <= maxGridX; gx++) {
@@ -3311,6 +3473,7 @@ export class ProceduralMap {
    * gap wide enough for the player, making the run impossible to finish.
    */
   private isKeepClearCell(gx: number, gz: number): boolean {
+    if (this.garage && garageKeepClear(this.garage, gx, gz)) return true;
     if (Math.abs(gx - this.exitGridX) + Math.abs(gz - this.exitGridZ) <= 1) return true;
     if (this.officeDoorX >= 0 && gx === this.officeDoorX + this.officeDoorDir[0] && gz === this.officeDoorZ + this.officeDoorDir[1]) return true;
     return this.forcedDarkCells.has(`${gx},${gz}`);
@@ -3962,13 +4125,15 @@ export class ProceduralMap {
       if (cellType === CellType.WATER_ROOM) {
         this.buildPoolCell(group, gx, gz, posX, posZ, isToxicWater);
       } else {
-        const floorMesh = new THREE.Mesh(this.floorGeo, mat);
+        const floorMesh = new THREE.Mesh(isRamp && this.garage ? this.garageRampFloorGeo(gx, gz) : this.floorGeo, mat);
         floorMesh.position.set(posX, 0, posZ);
         floorMesh.receiveShadow = true;
         group.add(floorMesh);
       }
 
-      if (isRamp) {
+      if (isRamp && this.garage) {
+        this.buildGarageRampCell(group, gx, gz, posX, posZ, fY, height);
+      } else if (isRamp) {
         // Raised hazard-yellow lips at the cell's ends read as incline steps.
         const lipGeo = this.sharedGeo("ramp_lip", () => new THREE.BoxGeometry(this.cellSize, 0.13, 0.32));
         for (const oz of [-this.cellSize / 2 + 0.18, this.cellSize / 2 - 0.18]) {
@@ -4443,6 +4608,12 @@ export class ProceduralMap {
       const neighborH = this.floorHeight[nx]?.[nz] ?? 0;
       const delta = neighborH - fY;
       if (delta <= 0.05) return; // this cell is the higher (or equal) one — nothing to cover from here
+      // The garage's ramps are continuous slopes: along a ramp (and onto it)
+      // the floors meet, so only the ceiling step needs closing; a ramp's own
+      // side walls already close its sides (buildGarageRampCell).
+      const thisRamp = this.rampCells.has(`${gx},${gz}`);
+      const alongRamp = !!this.garage && axis === "x" && (thisRamp || this.rampCells.has(`${nx},${nz}`));
+      if (this.garage && thisRamp && axis === "z") return;
       const edgeOffset = hSize / 2 - 0.06;
       const riser = new THREE.Mesh(
         new THREE.BoxGeometry(axis === "z" ? hSize : 0.12, delta, axis === "z" ? 0.12 : hSize),
@@ -4450,7 +4621,7 @@ export class ProceduralMap {
       );
       if (axis === "z") riser.position.set(posX, delta / 2, posZ + sign * edgeOffset);
       else riser.position.set(posX + sign * edgeOffset, delta / 2, posZ);
-      group.add(riser);
+      if (!alongRamp) group.add(riser);
 
       const header = new THREE.Mesh(riser.geometry, this.wallMaterial);
       header.position.copy(riser.position);
@@ -4544,14 +4715,16 @@ export class ProceduralMap {
     // 4. OPEN AREA - Columns / Pillars
     if (cellType === CellType.OPEN_AREA) {
       const randomCol = new SeededRandom(this.seed + gx * 100 + gz);
-      if (this.level === 1 && !this.rampCells.has(`${gx},${gz}`) && (gx + gz) % 4 === 0) {
+      if (this.level === 1 && !this.rampCells.has(`${gx},${gz}`) && (gx + gz) % 4 === 0 && !(this.garage && garageKeepClear(this.garage, gx, gz))) {
         // Parking-bay paint establishes scale without adding collision.
         const paint = this.sharedMat("parking_bay_paint", () => new THREE.MeshBasicMaterial({ color: 0xc7c4ad, transparent: true, opacity: 0.48 }));
         const line = new THREE.Mesh(this.sharedGeo("parking_bay_line", () => new THREE.PlaneGeometry(0.07, this.cellSize * 0.9).rotateX(-Math.PI / 2)), paint);
         line.position.set(posX + (randomCol.next() < 0.5 ? -1.35 : 1.35), 0.012, posZ);
         group.add(line);
       }
-      if (randomCol.next() > 0.84 && !this.isKeepClearCell(gx, gz)) {
+      if (this.garage) {
+        if (garagePillarAt(this.garage, gx, gz)) this.buildGaragePillar(group, gx, gz, posX, posZ, height);
+      } else if (randomCol.next() > 0.84 && !this.isKeepClearCell(gx, gz)) {
         if (this.level === 1) {
           // Identify sectors on Level 1
           const isConstructionSect = (gx >= 18 && gx <= 30 && gz >= 18 && gz <= 30);
@@ -5093,7 +5266,7 @@ export class ProceduralMap {
             gridZ: gz,
           });
         }
-      } else if (this.level !== 8 && this.level !== 9 && propRng.next() < (this.level === 1 ? 0.075 : 0.22)) {
+      } else if (this.level !== 8 && this.level !== 9 && !(this.garage && (garageKeepClear(this.garage, gx, gz) || garageFloorAt(gx) === 1)) && propRng.next() < (this.level === 1 ? 0.075 : 0.22)) {
         const propRoll = propRng.next();
         
         if (this.level === 1) {
@@ -5641,6 +5814,7 @@ export class ProceduralMap {
     // Everything above was placed with world X/Z but locally-relative Y (0 at
     // this cell's own floor) — offsetting the whole group is what actually
     // puts Level 1's higher sectors and ramp steps at their real elevation.
+    if (this.garage) this.buildGarageSetPieces(group, gx, gz, posX, posZ, fY);
     if (fY !== 0) group.position.y = fY;
 
     return group;
@@ -6635,6 +6809,11 @@ export class ProceduralMap {
       
       if (this.globalEventTimer <= 0) {
         this.globalEventState = "normal";
+        // Lamps the event left dark come back on (only flickering ones restore themselves).
+        for (const f of this.lightFixtures) {
+          f.light.intensity = f.intensity;
+          f.mesh.material = this.fluorescentGlassOn;
+        }
         this.eventCooldown = 30.0 + Math.random() * 25.0; // Cooldown for 30-55 seconds
       }
     } else if (this.rollGlobalEvents && this.level !== 7) {
@@ -6668,7 +6847,8 @@ export class ProceduralMap {
     for (let i = 0; i < fixtures.length; i++) {
       const fixture = fixtures[i];
 
-      if (this.globalEventState === "blackout") {
+      // The garage's blackouts are floor 3's alone.
+      if (this.globalEventState === "blackout" && this.inGarageBlackoutZone(fixture.light.x)) {
         fixture.light.intensity = 0.0;
         fixture.mesh.material = this.fluorescentGlassOff;
       } else if (this.globalEventState === "flicker_storm") {

@@ -435,6 +435,11 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
                 colorStroke = "#78716c";
                 label = t("radar.vigia");
                 break;
+              case "ALIEN":
+                colorFill = `rgba(14, 116, 144, ${0.45 + pulse * 0.55})`; // deep teal sheen
+                colorStroke = "#22d3ee";
+                label = t("radar.alien");
+                break;
               default:
                 colorFill = `rgba(239, 68, 68, ${0.45 + pulse * 0.55})`;
                 colorStroke = "#f87171";

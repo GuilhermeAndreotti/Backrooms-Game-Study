@@ -397,17 +397,14 @@ export class PlayerController {
       this.footstepTimer = 0;
     }
 
-    // Dynamic, continuous visual 'breathing' sway
-    // Stamina level directly controls the speed (frequency) and breadth (amplitude) of the breathing movement
-    const staminaFactor = 1.0 - this.stamina; // 0.0 at full, 1.0 at depleted
-    const breatheFrequency = 1.8 + staminaFactor * 3.7; // From 1.8 rad/s (calm) up to 5.5 rad/s (panting)
-    this.breathingTime += dt * breatheFrequency;
-
-    // Amplitude scale based on exhaustion tension
-    const breatheAmpY = 0.012 + staminaFactor * 0.048; // vertical shift
-    const breatheAmpX = 0.006 + staminaFactor * 0.024; // horizontal shift
-    const breatheRoll = (0.003 + staminaFactor * 0.022) * Math.sin(this.breathingTime * 0.8); // local camera roll tilt
-    const breathePitch = (0.002 + staminaFactor * 0.012) * Math.sin(this.breathingTime); // local camera pitch tilt
+    // A calm, continuous 'breathing' sway. It no longer grows with exhaustion:
+    // the panting stays in the audio (AudioManager.updateBreathing), but an
+    // out-of-breath camera shook too hard to be comfortable to play with.
+    this.breathingTime += dt * 1.8;
+    const breatheAmpY = 0.012; // vertical shift
+    const breatheAmpX = 0.006; // horizontal shift
+    const breatheRoll = 0.003 * Math.sin(this.breathingTime * 0.8); // local camera roll tilt
+    const breathePitch = 0.002 * Math.sin(this.breathingTime); // local camera pitch tilt
 
     const breatheX = Math.cos(this.breathingTime * 0.5) * breatheAmpX;
     const breatheY = Math.sin(this.breathingTime) * breatheAmpY;

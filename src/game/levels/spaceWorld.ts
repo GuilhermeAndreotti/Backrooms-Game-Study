@@ -23,7 +23,7 @@ import type { DynamicLightSource } from "../LightPool";
 import type { LightFixture } from "../ProceduralMap";
 import { t } from "../../i18n";
 import {
-  ROOM_LABEL_KEY, SPACE_GRID, SPACE_SIGNS, SPACE_TERMINALS, SPACE_WALL_H, SpaceDoor, SpaceSide,
+  ROOM_LABEL_KEY, SPACE_DOOR_RANGE, SPACE_GRID, SPACE_SIGNS, SPACE_TERMINALS, SPACE_WALL_H, SpaceDoor, SpaceSide,
   SpaceTerminal, SpaceTerminalId, spaceDoorAt, spaceRegionAt, spaceRng, spaceWindowAt,
 } from "./spaceLayout";
 
@@ -204,10 +204,16 @@ export class SpaceWorld {
     }
   }
 
-  update(delta: number, px: number, pz: number, onDoor: (x: number, z: number, opening: boolean) => void) {
+  /** Whether `door` is open (or opening) right now. */
+  isDoorOpen(door: SpaceDoor): boolean {
+    return this.doors.find((d) => d.door === door)?.wantOpen ?? false;
+  }
+
+  /** `others`: anything else that walks through doors besides the local player (O Alien). */
+  update(delta: number, px: number, pz: number, onDoor: (x: number, z: number, opening: boolean) => void, others: readonly { x: number; z: number }[] = []) {
     this.clock += delta;
     for (const d of this.doors) {
-      const want = Math.hypot(px - d.x, pz - d.z) < 3.6;
+      const want = Math.hypot(px - d.x, pz - d.z) < SPACE_DOOR_RANGE || others.some((o) => Math.hypot(o.x - d.x, o.z - d.z) < SPACE_DOOR_RANGE);
       if (want !== d.wantOpen) {
         d.wantOpen = want;
         onDoor(d.x, d.z, want);

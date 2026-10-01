@@ -25,6 +25,10 @@
 
 export const SPACE_GRID = 32;
 export const SPACE_WALL_H = 3.4;
+/** Metres per grid cell. */
+export const SPACE_CELL = 4;
+/** How close (metres) someone has to be for an automatic door to open. */
+export const SPACE_DOOR_RANGE = 3.6;
 
 export type SpaceRectKind = "hall" | "room" | "corridor";
 
@@ -279,6 +283,43 @@ export function spaceWindowAt(gx: number, gz: number, side: SpaceSide): boolean 
   if (!region) return false;
   const along = side === "N" || side === "S" ? gx : gz;
   return SPACE_WINDOWS.some((w) => w.region === region.id && w.side === side && along >= (w.from ?? -Infinity) && along <= (w.to ?? Infinity));
+}
+
+// ---------------------------------------------------------------------------
+// O Alien: cabins and line of sight
+// ---------------------------------------------------------------------------
+
+/**
+ * The cabin a cell belongs to (any room or hall: navigation, engineering, the
+ * deck...), or null in a corridor. O Alien patrols into cabins freely, but
+ * never follows a chase into one: they are where the crew hides.
+ */
+export function spaceCabinAt(gx: number, gz: number): SpaceRect | null {
+  const region = spaceRegionAt(gx, gz);
+  return region && region.kind !== "corridor" ? region : null;
+}
+
+/** Where O Alien wanders between cabin visits: the spine's junctions and the deck's approach. */
+export const SPACE_PATROL_POINTS: readonly [number, number][] = [
+  [5, 15], [9, 15], [13, 15], [17, 15], [21, 15], [26, 15], [19, 8],
+];
+
+/**
+ * Whether there is a clear line of sight between two points (metres): it must
+ * stay inside the station's open cells, and only cross door cells whose door
+ * `isOpen` says is open (a shut door is opaque).
+ */
+export function spaceSightClear(ax: number, az: number, bx: number, bz: number, isOpen: (door: SpaceDoor) => boolean): boolean {
+  const dx = bx - ax, dz = bz - az;
+  const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / 0.5));
+  for (let i = 1; i < steps; i++) {
+    const gx = Math.floor((ax + (dx * i) / steps) / SPACE_CELL);
+    const gz = Math.floor((az + (dz * i) / steps) / SPACE_CELL);
+    if (!spaceRegionAt(gx, gz)) return false;
+    const door = spaceDoorAt(gx, gz);
+    if (door && !isOpen(door)) return false;
+  }
+  return true;
 }
 
 /** Tiny deterministic PRNG (mulberry32), layout-side only: never Math.random for anything cross-client. */

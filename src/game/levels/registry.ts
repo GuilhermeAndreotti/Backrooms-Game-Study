@@ -34,13 +34,16 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
   [LEVEL_1]: {
     id: LEVEL_1,
     displayLabel: "LEVEL 1",
+    // The garage's ground floor (x 2..14, see levels/garageLayout.ts) is the
+    // only floor with monsters; they never take the ramps.
     spawn: {
       kind: "static",
       roster: [
-        { type: EntityType.DULLER, targetCell: [10, 30] },
-        { type: EntityType.CLUMP, targetCell: [24, 12] },
-        { type: EntityType.ECO, targetCell: [8, 10] },
-        { type: EntityType.OBSERVADOR, targetCell: [26, 30] },
+        { type: EntityType.DULLER, targetCell: [8, 12] },
+        { type: EntityType.CLUMP, targetCell: [12, 26] },
+        { type: EntityType.ECO, targetCell: [5, 34] },
+        { type: EntityType.OBSERVADOR, targetCell: [10, 42] },
+        { type: EntityType.DULLER, targetCell: [4, 22] },
       ],
     },
   },
@@ -152,11 +155,16 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     spawn: { kind: "bespoke" },
   },
 
-  // Level 79 ("Space Station"): no mobs at all. It is exploration and a
-  // navigation puzzle (see levels/spaceDirector.ts), never a chase.
+  // Level 79 ("Space Station"): exploration and a navigation puzzle (see
+  // levels/spaceDirector.ts), stalked by O Alien. It starts at the east end of
+  // the spine, as far from the dock as the station goes; the cabins are where
+  // the crew hides from it (see mobs/alien.ts).
   [SPACE_LEVEL]: {
     id: SPACE_LEVEL,
     displayLabel: "LEVEL 79 · SPACE STATION",
-    spawn: { kind: "bespoke" },
+    spawn: {
+      kind: "static",
+      roster: [{ type: EntityType.ALIEN, targetCell: [26, 15] }],
+    },
   },
 };

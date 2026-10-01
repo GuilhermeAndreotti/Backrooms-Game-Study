@@ -253,6 +253,11 @@ export interface MobDefinition {
   stepWeight?: number;
   /** Always turns its whole body to face the player instead of its walking direction (watchers). */
   facesViewer?: boolean;
+  /**
+   * While calm (not chasing or agitated) it neither turns nor looks toward the
+   * player, so a patrol never reads as following anyone (O Alien).
+   */
+  calmIgnoresViewer?: boolean;
 
   /** Radar HUD identity. */
   radar: { color: string; strokeColor: string; labelKey: string };

@@ -9,7 +9,13 @@ import { t, useLanguage } from "../i18n";
 
 interface TerminalModalProps {
   /** Digits revealed by the documents found so far (null = not found yet). */
-  digits: (number | null)[];
+  digits?: (number | null)[];
+  /** Digits in the code (Level G: 3). */
+  length?: number;
+  title?: string;
+  prompt?: string;
+  /** Shown instead of the found-digits line (Level 1's keypad: the colours to count). */
+  hint?: React.ReactNode;
   /** Returns whether the code was accepted. */
   onSubmit: (code: string) => boolean;
   onClose: () => void;
@@ -20,7 +26,7 @@ interface TerminalModalProps {
  * documents to release the emergency door. The game keeps running behind it —
  * the Finger King doesn't wait while you type.
  */
-export const TerminalModal: React.FC<TerminalModalProps> = ({ digits, onSubmit, onClose }) => {
+export const TerminalModal: React.FC<TerminalModalProps> = ({ digits = [], length = 3, title, prompt, hint, onSubmit, onClose }) => {
   useLanguage();
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<"idle" | "denied">("idle");
@@ -37,7 +43,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({ digits, onSubmit, 
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (code.length !== 3) return;
+    if (code.length !== length) return;
     if (onSubmit(code)) {
       onClose();
     } else {
@@ -66,32 +72,36 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({ digits, onSubmit, 
 
         <div className="flex items-center gap-2 text-[#3cff7a] border-b border-[#1f7a3a]/60 pb-2">
           <Monitor className="w-4 h-4" />
-          <span className="text-xs font-bold uppercase tracking-widest">{t("term.title")}</span>
+          <span className="text-xs font-bold uppercase tracking-widest">{title ?? t("term.title")}</span>
         </div>
 
         <p className="mt-4 text-[11px] text-[#3cff7a]/80 uppercase leading-relaxed">
-          {t("term.prompt")}
+          {prompt ?? t("term.prompt")}
         </p>
 
         <div className="mt-4 text-[11px] text-[#3cff7a]/60 uppercase tracking-wider">
-          {t("term.found", { n: found })}{" "}
-          <span className="text-[#3cff7a] tracking-[0.4em] font-bold">
-            {digits.map((d) => (d === null ? "_" : d)).join("")}
-          </span>
+          {hint ?? (
+            <>
+              {t("term.found", { n: found })}{" "}
+              <span className="text-[#3cff7a] tracking-[0.4em] font-bold">
+                {digits.map((d) => (d === null ? "_" : d)).join("")}
+              </span>
+            </>
+          )}
         </div>
 
         <input
           ref={inputRef}
           value={code}
           onChange={(e) => {
-            setCode(e.target.value.replace(/\D/g, "").slice(0, 3));
+            setCode(e.target.value.replace(/\D/g, "").slice(0, length));
             setStatus("idle");
           }}
           inputMode="numeric"
           autoComplete="off"
           aria-label={t("term.codeAria")}
           className="mt-4 w-full bg-black border border-[#1f7a3a] text-[#3cff7a] text-3xl text-center tracking-[0.6em] py-3 rounded outline-none focus:border-[#3cff7a]"
-          placeholder="___"
+          placeholder={"_".repeat(length)}
         />
 
         <div className="h-5 mt-2 text-[11px] uppercase tracking-wider text-center">
@@ -100,7 +110,7 @@ export const TerminalModal: React.FC<TerminalModalProps> = ({ digits, onSubmit, 
 
         <button
           type="submit"
-          disabled={code.length !== 3}
+          disabled={code.length !== length}
           className="mt-2 w-full bg-[#1f7a3a] hover:bg-[#2a9b4b] disabled:opacity-40 disabled:cursor-not-allowed text-black font-extrabold uppercase tracking-widest py-2.5 rounded text-xs cursor-pointer"
         >
           {t("term.authorize")}

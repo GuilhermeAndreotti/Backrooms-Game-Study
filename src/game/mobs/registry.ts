@@ -23,6 +23,7 @@ import { imitador } from "./imitador";
 import { sombra } from "./sombra";
 import { vigia } from "./vigia";
 import { ceifador } from "./ceifador";
+import { alien } from "./alien";
 
 export const MOB_DEFS: Record<EntityType, MobDefinition> = {
   [EntityType.HOUND]: hound,
@@ -37,4 +38,5 @@ export const MOB_DEFS: Record<EntityType, MobDefinition> = {
   [EntityType.SOMBRA]: sombra,
   [EntityType.VIGIA]: vigia,
   [EntityType.CEIFADOR]: ceifador,
+  [EntityType.ALIEN]: alien,
 };

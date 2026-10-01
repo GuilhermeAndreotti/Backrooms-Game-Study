@@ -51,6 +51,8 @@ export interface SpaceHost {
   notify(text: string): void;
   /** Player position and horizontal look direction (unit vector). */
   player(): { x: number; z: number; lookX: number; lookZ: number };
+  /** Whatever else opens the automatic doors as it walks through them (O Alien). */
+  doorOpeners(): readonly { x: number; z: number }[];
   /** The camera's world position (the sky is centred on it). */
   viewer(out: THREE.Vector3): THREE.Vector3;
   send(kind: "power" | "set" | "exec" | "abort", index: number): void;
@@ -655,6 +657,6 @@ export class SpaceDirector {
       // Pan from the listener's point of view: the right-hand side of the look direction is (-lookZ, lookX).
       const pan = dist > 0.01 ? (dx * -p.lookZ + dz * p.lookX) / dist : 0;
       this.host.audio.playSpaceSound(opening ? "doorOpen" : "doorClose", pan, 1 - dist / 9);
-    });
+    }, this.host.doorOpeners());
   }
 }

@@ -4,6 +4,11 @@
  */
 
 import { GameSettings } from "../types/game";
+import { ABANDONED_OFFICE_LEVEL } from "./levels/constants";
+
+/** The level that has rain all the time, and how loud it is (scaled by the ambience volume). */
+const RAIN_LEVEL = ABANDONED_OFFICE_LEVEL;
+const RAIN_VOLUME = 0.32;
 
 export class AudioManager {
   private ctx: AudioContext | null = null;
@@ -234,6 +239,9 @@ export class AudioManager {
     if (this.musicGain && this.ctx) {
       this.musicGain.gain.linearRampToValueAtTime(settings.volumeHum * 0.15, this.ctx.currentTime + 0.1); // Scaled music volume
     }
+    if (this.rain && this.ctx) {
+      this.rain.out.gain.linearRampToValueAtTime(settings.volumeHum * RAIN_VOLUME, this.ctx.currentTime + 0.1);
+    }
   }
 
   /** Enables the level ambience while keeping lobby effects and controls audible. */
@@ -245,6 +253,7 @@ export class AudioManager {
       this.stopFluorescentHum();
       this.stopDistantAmbianceScheduler();
       this.stopBackgroundMusic();
+      this.stopRain();
       return;
     }
 
@@ -252,6 +261,73 @@ export class AudioManager {
     this.startFluorescentHum();
     this.startDistantAmbianceScheduler();
     this.startBackgroundMusic();
+    // Level 4 (the abandoned office): rain on the windows, the whole time.
+    if (this.level === RAIN_LEVEL) this.startRain();
+    else this.stopRain();
+  }
+
+  // ---------------------------------------------------------------------
+  // Level 4 — steady rain against the building, heard from inside.
+  // ---------------------------------------------------------------------
+  private rain: { nodes: AudioScheduledSourceNode[]; out: GainNode } | null = null;
+
+  private startRain() {
+    if (!this.ctx || !this.masterGain || this.rain) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.0001, t);
+    out.gain.linearRampToValueAtTime(this.settings.volumeHum * RAIN_VOLUME, t + 4);
+    out.connect(this.masterGain);
+
+    // The hiss of the downpour, muffled by the glass.
+    const hiss = ctx.createBufferSource();
+    hiss.buffer = this.noise();
+    hiss.loop = true;
+    const hissHp = ctx.createBiquadFilter();
+    hissHp.type = "highpass";
+    hissHp.frequency.value = 700;
+    const hissLp = ctx.createBiquadFilter();
+    hissLp.type = "lowpass";
+    hissLp.frequency.value = 4200;
+    const hissGain = ctx.createGain();
+    hissGain.gain.value = 0.55;
+    hiss.connect(hissHp); hissHp.connect(hissLp); hissLp.connect(hissGain); hissGain.connect(out);
+
+    // Heavier water on the roof and down the gutters.
+    const body = ctx.createBufferSource();
+    body.buffer = this.noise();
+    body.loop = true;
+    body.playbackRate.value = 0.7;
+    const bodyLp = ctx.createBiquadFilter();
+    bodyLp.type = "lowpass";
+    bodyLp.frequency.value = 380;
+    const bodyGain = ctx.createGain();
+    bodyGain.gain.value = 0.7;
+    body.connect(bodyLp); bodyLp.connect(bodyGain); bodyGain.connect(out);
+
+    // It swells and eases off slowly, as gusts push it against the windows.
+    const gust = ctx.createOscillator();
+    gust.frequency.value = 0.06;
+    const gustDepth = ctx.createGain();
+    gustDepth.gain.value = 0.18;
+    gust.connect(gustDepth);
+    gustDepth.connect(hissGain.gain);
+
+    for (const n of [hiss, body, gust]) n.start(t);
+    this.rain = { nodes: [hiss, body, gust], out };
+  }
+
+  private stopRain() {
+    if (!this.rain || !this.ctx) return;
+    const { nodes, out } = this.rain;
+    this.rain = null;
+    const t = this.ctx.currentTime;
+    out.gain.cancelScheduledValues(t);
+    out.gain.setValueAtTime(out.gain.value, t);
+    out.gain.linearRampToValueAtTime(0.0001, t + 1.5);
+    for (const n of nodes) { try { n.stop(t + 1.6); } catch { /* already stopped */ } }
+    setTimeout(() => { try { out.disconnect(); } catch { /* gone */ } }, 1800);
   }
 
   private stopFluorescentHum() {
@@ -710,8 +786,9 @@ export class AudioManager {
 
   /**
    * Loud dramatic synthesized analog tape distortion jumpscare when caught by the wandering parasite.
+   * `intensity` (0-1) scales it down for a teammate's jumpscare heard from a distance.
    */
-  public playEntityCatchSound() {
+  public playEntityCatchSound(intensity: number = 1) {
     if (!this.ctx || !this.masterGain) return;
     const t = this.ctx.currentTime;
 
@@ -734,7 +811,7 @@ export class AudioManager {
     filter.Q.setValueAtTime(8, t);
 
     const mainGain = this.ctx.createGain();
-    mainGain.gain.setValueAtTime(this.settings.volumeSfx * 1.2, t);
+    mainGain.gain.setValueAtTime(this.settings.volumeSfx * 1.2 * intensity, t);
     mainGain.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
 
     screamOsc.connect(filter);
@@ -1539,6 +1616,25 @@ export class AudioManager {
         const lfo = ctx.createOscillator(); lfo.frequency.value = 3;
         const lg = ctx.createGain(); lg.gain.value = 6;
         lfo.connect(lg); lg.connect(o.frequency); lfo.start(t); lfo.stop(t + dur + 0.05);
+        break;
+      }
+      case "ALIEN": {
+        if (alert) {
+          // A wet, rattling hiss that rises into a shriek.
+          dur = 1.1;
+          envelope(dur, 0.85);
+          noiseBurst(dur, "bandpass", 3200, 2.5, 0.8);
+          const o = osc("sawtooth", 260, 760, dur, out);
+          const lfo = ctx.createOscillator(); lfo.frequency.value = 23;
+          const lg = ctx.createGain(); lg.gain.value = 40;
+          lfo.connect(lg); lg.connect(o.frequency); lfo.start(t); lfo.stop(t + dur + 0.05);
+        } else {
+          // Slow breathing through teeth, and a low click in the throat.
+          dur = 1.8;
+          envelope(dur, 0.3);
+          noiseBurst(dur, "bandpass", 1800, 4, 0.35);
+          for (let i = 0; i < 3; i++) noiseBurst(0.03, "lowpass", 600, 1, 0.5, t + 0.5 + i * 0.11);
+        }
         break;
       }
       case "CEIFADOR": {
