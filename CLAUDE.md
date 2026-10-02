@@ -40,13 +40,13 @@ A player reaching an exit sends `level_transition_request`; the room only actual
 
 ### Level numbering
 
-Levels are plain numbers threaded through client and server (`GameEngine.level`, `PlayerState.level`, `RemotePlayer.level`):
-- `0`, `1`, `2` — the normal progression (Level 0 → Level 1 → Level 2 "Pipe Dreams"), each with different entities (`DULLER`, `HOUND`, `CLUMP`, `SKIN_STEALER`, `WRETCH`; see `EntityType` in `WanderingEntity.ts`).
-- `3` — secret Level 6 "Lights Out" (an unlit maze reached via a hidden corridor in Level 1).
-- `4` — secret LEVEL G "The Small Office" (reached via a hidden door on Level 0; the Finger King hunts the player; find 3 documents, enter the code, escape — a secret win condition).
-- `5` (`LOBBY_LEVEL`, exported from `src/game/Lobby.ts`) — the room lobby every game starts in; the host triggers `start_game` to move everyone to level 0.
+Levels are plain numbers threaded through client and server (`GameEngine.level`, `PlayerState.level`, `RemotePlayer.level`). The source of truth is `src/game/levels/constants.ts`; per-level guides live in `docs/levels/`.
 
-`ProceduralMap.gridSizeForLevel(level)` and the level-specific branches in `GameEngine.ts`/`ProceduralMap.ts` are the places that care about this numbering.
+- Main route (`MAIN_LEVELS`): `0` → `1` (garage) → `2` (Pipe Dreams) → `3` Electrical Room → `4` Abandoned Office → `5` Poolrooms → `12` Level 79 Space Station.
+- Secret/optional: `6` Lights Out (from Level 1), `7` Level G (from Level 4), `9` Level FUN (cake in Level 4), `8` Motion (lobby selector only).
+- `10` (`LOBBY_LEVEL`) — the room lobby every game starts in; the host triggers `start_game` (optionally picking a level).
+
+**Network id ≠ content id.** `ProceduralMap` generates from a *content* id; `contentLevelFor()` maps network ids to it (e.g. Electrical Room 3→8, Poolrooms 5→7, Lights Out 6→3, Level G 7→4, Motion 8→6, FUN 9→11). Comments/branches inside `ProceduralMap.ts` often use content ids. `ProceduralMap.gridSizeForLevel(level)` and the level branches in `GameEngine.ts`/`ProceduralMap.ts` care about this. See `docs/levels/README.md`.
 
 ### Procedural generation is deterministic and seed-driven
 
@@ -71,6 +71,7 @@ The client/server protocol is a flat `{ type: ... }` JSON message set (join, upd
 ### Other notable pieces
 
 - `src/game/Quality.ts` / `LightPool.ts` — graphics quality presets and a pooled-light system to bound the number of live dynamic lights (perf-critical given many rooms/props).
+- `docs/` — player/developer guides: `docs/levels/` (one README per level) and `docs/entities.md`.
 - `src/game/AudioManager.ts` — positional ambient/SFX audio, including procedural monster voice generation.
 - `src/utils/achievements.ts` / `src/types/achievements.ts` — achievement definitions/unlock tracking, localized via `t()`.
 - `src/utils/lore.ts` — procedural "Scrap of Note" journal-entry generation.
