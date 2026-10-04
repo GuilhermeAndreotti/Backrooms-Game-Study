@@ -22,7 +22,7 @@ import { SpaceTerminalModal } from "./components/SpaceTerminalModal";
 import { SpaceWiringModal } from "./components/SpaceWiringModal";
 import type { SpaceTerminalId, WireColor } from "./game/levels/spaceLayout";
 import { AdSlot } from "./components/AdSlot";
-import { LOBBY_LEVEL, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, MOTION_LEVEL, nextMainLevel } from "./game/levels/constants";
+import { LOBBY_LEVEL, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, OLD_TOWN_LEVEL, nextMainLevel } from "./game/levels/constants";
 import { addAchievementListener, removeAchievementListener, unlockAchievement } from "./utils/achievements";
 import { isTypingInField, lockGameInput } from "./utils/input";
 import { EMPTY_FACE } from "./utils/face";
@@ -43,7 +43,7 @@ function displayLabelForLevel(level: number): string {
   if (level === LOBBY_LEVEL) return "LOBBY";
   if (level === LIGHTS_OUT_LEVEL) return "6 · SECRET";
   if (level === LEVEL_G) return "LEVEL G · SECRET";
-  if (level === MOTION_LEVEL) return "MOTION";
+  if (level === OLD_TOWN_LEVEL) return "LEVEL 94 · THE OLD TOWN";
   if (level === FUN_LEVEL) return "LEVEL FUN";
   if (level === SPACE_LEVEL) return "LEVEL 79 · SPACE STATION";
   return String(level);
@@ -393,6 +393,9 @@ export default function App() {
         return true;
       case "fun_cake":
         // The transition itself already fired via onSecretLevelFound.
+        return true;
+      case "town":
+        // A clock part, the tower's hatch or a piece of the model (Level 94).
         return true;
       case "fun_panel":
         setIsFunPanelOpen(true);
@@ -875,14 +878,19 @@ export default function App() {
                        // is sent to the server so the convergence at Level 4
                        // remains synchronized.
                       const engine = engineRef.current;
-                        const from = targetLevel === LEVEL_G || targetLevel === FUN_LEVEL ? ABANDONED_OFFICE_LEVEL : 1;
-                      if (!engine || engine.level !== from) return;
+                        // Level 94 has two ways in: the Electrical Room's exit door and Level 79's UNKNOWN course.
+                        const from = targetLevel === LEVEL_G || targetLevel === FUN_LEVEL ? [ABANDONED_OFFICE_LEVEL]
+                          : targetLevel === OLD_TOWN_LEVEL ? [ELECTRICAL_ROOM_LEVEL, SPACE_LEVEL] : [1];
+                      if (!engine || !from.includes(engine.level)) return;
 
                         if (targetLevel === LEVEL_G) {
                         console.log("Found the office door that shouldn't exist... entering LEVEL G.");
                         unlockAchievement("level_g_found");
                       } else if (targetLevel === FUN_LEVEL) {
                         console.log("Ate the cake nobody was watching... entering LEVEL FUN.");
+                        unlockAchievement("secret_level_found");
+                      } else if (targetLevel === OLD_TOWN_LEVEL) {
+                        console.log("Left by the Electrical Room's exit door or the station's unknown course... entering Level 94: The Old Town.");
                         unlockAchievement("secret_level_found");
                       } else {
                          console.log("Found the dark corridor... entering Level 6: Lights Out.");
@@ -958,6 +966,7 @@ export default function App() {
                     },
                   }
                 );
+                engineRef.current.secretRoutesEnabled = () => roomConfigRef.current.secretRoutes !== false;
 
                 // The room had already moved past Level 0 by the time we joined
                 // (the rest of the group found an exit earlier) — catch up to that
@@ -1276,6 +1285,14 @@ export default function App() {
 
           else if (type === "space_event") {
             engineRef.current?.applySpaceEvent(data);
+          }
+
+          else if (type === "town_event") {
+            engineRef.current?.applyTownEvent(data);
+          }
+
+          else if (type === "town_state") {
+            engineRef.current?.applyTownState(data);
           }
 
           else if (type === "chat_message") {
@@ -2310,7 +2327,7 @@ export default function App() {
               <div className="space-y-4">
                 <h2 className="text-2xl font-black tracking-widest text-green-400 uppercase">{t("esc.doneTitle")}</h2>
                 <p className="text-sm text-green-300 uppercase leading-relaxed font-sans">
-                  {escapedFrom === FUN_LEVEL ? t("esc.funText") : escapedFrom === SPACE_LEVEL ? t("esc.spaceText") : t("esc.doneText2")}
+                  {escapedFrom === FUN_LEVEL ? t("esc.funText") : escapedFrom === SPACE_LEVEL ? t("esc.spaceText") : escapedFrom === OLD_TOWN_LEVEL ? t("esc.townText") : t("esc.doneText2")}
                 </p>
                 
                 <div className="p-4 bg-black/60 border border-green-950/60 rounded text-left space-y-1.5 text-xs text-[#a28e3b]/80">

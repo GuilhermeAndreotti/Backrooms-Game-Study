@@ -1645,6 +1645,26 @@ export class AudioManager {
         osc("sine", alert ? 70 : 50, alert ? 40 : 35, dur, out);
         break;
       }
+      case "ANIMATION": {
+        // A cartoon's voice played back wrong: a slide-whistle giggle, or a slowed-down hum.
+        dur = alert ? 0.7 : 1.1;
+        envelope(dur, alert ? 0.7 : 0.35);
+        if (alert) {
+          for (let i = 0; i < 4; i++) osc("sine", 900 + i * 140, 600 + i * 90, 0.14, out, t + i * 0.15);
+        } else {
+          osc("triangle", 330, 300, dur, out);
+          osc("sine", 333, 296, dur, out);
+        }
+        break;
+      }
+      case "TOWN_KING": {
+        // A slow, enormous breath through a smile.
+        dur = alert ? 1.2 : 2.0;
+        envelope(dur, alert ? 0.8 : 0.4);
+        noiseBurst(dur, "lowpass", alert ? 420 : 260, 1.2, alert ? 0.6 : 0.35);
+        osc("sine", alert ? 62 : 48, alert ? 44 : 40, dur, out);
+        break;
+      }
       default:
         return; // FINGER_KING has its own taps
     }
@@ -1761,7 +1781,7 @@ export class AudioManager {
   private funMusic: { gain: GainNode; timer: ReturnType<typeof setTimeout> | null; nodes: OscillatorNode[]; stopped: boolean } | null = null;
 
   /** Notes are [MIDI, beats]; a MIDI of 0 is a rest. */
-  private static readonly FUN_TUNES: Record<"party" | "birthday", [number, number][]> = {
+  private static readonly FUN_TUNES: Record<"party" | "birthday" | "town", [number, number][]> = {
     birthday: [
       [67, 0.75], [67, 0.25], [69, 1], [67, 1], [72, 1], [71, 2],
       [67, 0.75], [67, 0.25], [69, 1], [67, 1], [74, 1], [72, 2],
@@ -1774,13 +1794,20 @@ export class AudioManager {
       [74, 0.5], [77, 0.5], [79, 0.5], [77, 0.5], [74, 0.5], [71, 0.5], [67, 1],
       [72, 0.5], [76, 0.5], [79, 0.5], [84, 0.5], [79, 1], [72, 1],
     ],
+    // Level 94's town: a bouncy little 1930s two-step, the same eight bars forever.
+    town: [
+      [67, 0.5], [72, 0.5], [76, 0.5], [79, 0.5], [78, 0.25], [79, 0.75], [76, 1],
+      [74, 0.5], [77, 0.5], [81, 0.5], [79, 0.5], [77, 0.5], [74, 0.5], [71, 1],
+      [72, 0.5], [76, 0.5], [79, 0.5], [84, 0.5], [83, 0.25], [84, 0.75], [79, 1],
+      [77, 0.5], [76, 0.5], [74, 0.5], [71, 0.5], [72, 1], [0, 0.5], [67, 0.5],
+    ],
   };
 
   /**
    * Starts a music-box tune (looping by default). `distortion` (0..1) slows the
    * tempo, drags notes out of tune and adds a second, wrong voice.
    */
-  public startFunMusic(tune: "party" | "birthday", opts: { volume?: number; distortion?: number; loop?: boolean } = {}) {
+  public startFunMusic(tune: "party" | "birthday" | "town", opts: { volume?: number; distortion?: number; loop?: boolean } = {}) {
     if (!this.ctx || !this.masterGain) return;
     this.stopFunMusic(true);
     const ctx = this.ctx;
@@ -2092,12 +2119,243 @@ export class AudioManager {
     setTimeout(() => { try { out.disconnect(); panner.disconnect(); } catch { /* gone */ } }, life * 1000 + 500);
   }
 
+  // ---------------------------------------------------------------------
+  // Level 94 — a cartoon town's afternoon, its night, the wind on the
+  // hills and a hum under the castle; and the town's own small noises.
+  // ---------------------------------------------------------------------
+  private townAmbience: { nodes: AudioScheduledSourceNode[]; out: GainNode; wind: GainNode; crickets: GainNode; drone: GainNode; birds: number; timer: ReturnType<typeof setTimeout> | null } | null = null;
+
+  /** Starts the bed (all layers silent until setTownAmbience). Returns false until audio is ready. */
+  public startTownAmbience(): boolean {
+    if (!this.ctx || !this.masterGain) return false;
+    if (this.townAmbience) return true;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.0001, t);
+    out.gain.linearRampToValueAtTime(this.settings.volumeHum * 0.6, t + 2);
+    out.connect(this.masterGain);
+
+    const windSrc = ctx.createBufferSource();
+    windSrc.buffer = this.noise();
+    windSrc.loop = true;
+    const windFilter = ctx.createBiquadFilter();
+    windFilter.type = "bandpass";
+    windFilter.frequency.value = 380;
+    windFilter.Q.value = 0.4;
+    const gust = ctx.createOscillator();
+    gust.frequency.value = 0.09;
+    const gustDepth = ctx.createGain();
+    gustDepth.gain.value = 160;
+    gust.connect(gustDepth);
+    gustDepth.connect(windFilter.frequency);
+    const wind = ctx.createGain();
+    wind.gain.value = 0;
+    windSrc.connect(windFilter);
+    windFilter.connect(wind);
+    wind.connect(out);
+
+    // Crickets: a high tone chopped into chirps, swelling and fading.
+    const cricket = ctx.createOscillator();
+    cricket.type = "sine";
+    cricket.frequency.value = 4300;
+    const chop = ctx.createOscillator();
+    chop.type = "square";
+    chop.frequency.value = 22;
+    const chopGain = ctx.createGain();
+    chopGain.gain.value = 0.5;
+    const chirpAmp = ctx.createGain();
+    chirpAmp.gain.value = 0.5;
+    chop.connect(chopGain);
+    chopGain.connect(chirpAmp.gain);
+    const crickets = ctx.createGain();
+    crickets.gain.value = 0;
+    cricket.connect(chirpAmp);
+    chirpAmp.connect(crickets);
+    crickets.connect(out);
+
+    const droneA = ctx.createOscillator();
+    droneA.type = "sawtooth";
+    droneA.frequency.value = 55;
+    const droneB = ctx.createOscillator();
+    droneB.type = "sawtooth";
+    droneB.frequency.value = 55.6;
+    const droneFilter = ctx.createBiquadFilter();
+    droneFilter.type = "lowpass";
+    droneFilter.frequency.value = 220;
+    const drone = ctx.createGain();
+    drone.gain.value = 0;
+    droneA.connect(droneFilter);
+    droneB.connect(droneFilter);
+    droneFilter.connect(drone);
+    drone.connect(out);
+
+    const nodes = [windSrc, gust, cricket, chop, droneA, droneB];
+    for (const n of nodes) n.start(t);
+    const state = { nodes, out, wind, crickets, drone, birds: 0, timer: null as ReturnType<typeof setTimeout> | null };
+    this.townAmbience = state;
+    // Birdsong: a scheduler that only sings while `birds` is up.
+    const sing = () => {
+      if (this.townAmbience !== state || !this.ctx) return;
+      if (state.birds > 0.05) {
+        const at = this.ctx.currentTime;
+        const base = 2200 + Math.random() * 1800;
+        const notes = 2 + Math.floor(Math.random() * 4);
+        for (let i = 0; i < notes; i++) {
+          const o = this.ctx.createOscillator();
+          o.type = "sine";
+          const s0 = at + i * (0.07 + Math.random() * 0.05);
+          o.frequency.setValueAtTime(base * (1 + Math.random() * 0.2), s0);
+          o.frequency.exponentialRampToValueAtTime(base * (1.3 + Math.random() * 0.4), s0 + 0.06);
+          const g = this.ctx.createGain();
+          g.gain.setValueAtTime(0.0001, s0);
+          g.gain.linearRampToValueAtTime(0.05 * state.birds, s0 + 0.01);
+          g.gain.exponentialRampToValueAtTime(0.0001, s0 + 0.09);
+          const pan = this.ctx.createStereoPanner();
+          pan.pan.value = Math.random() * 2 - 1;
+          o.connect(g); g.connect(pan); pan.connect(out);
+          o.start(s0); o.stop(s0 + 0.12);
+        }
+      }
+      state.timer = setTimeout(sing, 600 + Math.random() * 2600);
+    };
+    sing();
+    return true;
+  }
+
+  /** Layer levels, 0..1 each (eased). */
+  public setTownAmbience(levels: { birds: number; crickets: number; wind: number; drone: number }) {
+    const a = this.townAmbience;
+    if (!a || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    a.birds = levels.birds;
+    a.wind.gain.setTargetAtTime(Math.max(0, levels.wind) * 0.22, t, 0.6);
+    a.crickets.gain.setTargetAtTime(Math.max(0, levels.crickets) * 0.018, t, 0.8);
+    a.drone.gain.setTargetAtTime(Math.max(0, levels.drone) * 0.07, t, 0.8);
+  }
+
+  public stopTownAmbience() {
+    const a = this.townAmbience;
+    this.townAmbience = null;
+    if (!a || !this.ctx) return;
+    if (a.timer) clearTimeout(a.timer);
+    const t = this.ctx.currentTime;
+    a.out.gain.cancelScheduledValues(t);
+    a.out.gain.setValueAtTime(a.out.gain.value, t);
+    a.out.gain.linearRampToValueAtTime(0.0001, t + 0.3);
+    setTimeout(() => a.nodes.forEach((n) => { try { n.stop(); n.disconnect(); } catch { /* already stopped */ } }), 400);
+  }
+
+  /** One-shot sounds for the Old Town. `pan` is -1..1, `volume` 0..1 (already attenuated by distance). */
+  public playTownSound(kind: "bell" | "tick" | "knock" | "click" | "pickup" | "place" | "slide" | "gate" | "shrink" | "door" | "white" | "stay", pan = 0, volume = 1) {
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.value = Math.max(0, Math.min(1, volume)) * this.settings.volumeSfx;
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, pan));
+    out.connect(panner);
+    panner.connect(this.masterGain);
+    this.toReverb(out, kind === "bell" ? 1.2 : 0.5);
+    const noise = (dur: number, type: BiquadFilterType, freq: number, q: number, amp: number, at: number) => {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise();
+      const f = ctx.createBiquadFilter();
+      f.type = type; f.frequency.value = freq; f.Q.value = q;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(amp, at);
+      g.gain.exponentialRampToValueAtTime(0.0005, at + dur);
+      src.connect(f); f.connect(g); g.connect(out);
+      src.start(at, Math.random());
+      src.stop(at + dur + 0.02);
+    };
+    const tone = (type: OscillatorType, f0: number, f1: number, dur: number, amp: number, at: number, attack = 0.01) => {
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(f0, at);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(20, f1), at + dur);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.linearRampToValueAtTime(amp, at + attack);
+      g.gain.exponentialRampToValueAtTime(0.0005, at + dur);
+      osc.connect(g); g.connect(out);
+      osc.start(at); osc.stop(at + dur + 0.02);
+    };
+    let life = 2;
+    switch (kind) {
+      case "bell":
+        // A big bronze bell: inharmonic partials, a long hum.
+        for (const [mult, amp, dur] of [[0.5, 0.35, 5], [1, 0.3, 4], [1.19, 0.18, 3], [1.5, 0.14, 2.6], [2, 0.12, 2.2], [2.67, 0.08, 1.6], [3.01, 0.05, 1.2]]) tone("sine", 196 * mult, 196 * mult * 0.998, dur, amp, t, 0.004);
+        noise(0.08, "bandpass", 1200, 1.2, 0.25, t);
+        life = 6;
+        break;
+      case "tick":
+        noise(0.03, "highpass", 3000, 0.8, 0.5, t);
+        tone("square", 1700, 1600, 0.025, 0.05, t, 0.002);
+        break;
+      case "knock":
+        for (let i = 0; i < 3; i++) {
+          noise(0.09, "lowpass", 380, 0.8, 0.9, t + i * 0.19);
+          tone("sine", 95, 60, 0.12, 0.6, t + i * 0.19, 0.003);
+        }
+        break;
+      case "click":
+        noise(0.025, "highpass", 2500, 0.8, 0.6, t);
+        tone("square", 900, 700, 0.02, 0.05, t, 0.002);
+        break;
+      case "pickup":
+        [523, 659, 784, 1047].forEach((f, i) => tone("sine", f, f, 0.4, 0.12, t + i * 0.07, 0.005));
+        break;
+      case "place":
+        // Parts seat with a clunk; then the mechanism catches and starts to whir.
+        noise(0.12, "lowpass", 600, 1, 0.9, t);
+        tone("sine", 120, 70, 0.2, 0.5, t, 0.003);
+        for (let i = 0; i < 8; i++) noise(0.03, "bandpass", 2200, 3, 0.35, t + 0.3 + i * 0.07);
+        tone("sawtooth", 60, 140, 1.4, 0.05, t + 0.5, 0.2);
+        life = 3;
+        break;
+      case "slide":
+        noise(0.25, "bandpass", 900, 2, 0.5, t);
+        break;
+      case "gate":
+        for (let i = 0; i < 22; i++) noise(0.05, "bandpass", 1500 + Math.random() * 900, 4, 0.3, t + i * 0.11);
+        tone("sawtooth", 50, 38, 2.5, 0.12, t, 0.3);
+        life = 4;
+        break;
+      case "shrink":
+        // A slide whistle, all the way down.
+        tone("sine", 1400, 140, 1.4, 0.35, t, 0.02);
+        tone("triangle", 2800, 280, 1.4, 0.05, t, 0.02);
+        noise(0.15, "highpass", 2000, 0.7, 0.3, t + 1.35);
+        life = 3;
+        break;
+      case "door":
+        tone("sawtooth", 70, 118, 1.8, 0.14, t, 0.2);
+        noise(1.8, "bandpass", 700, 5, 0.08, t);
+        tone("sine", 80, 50, 0.6, 0.5, t + 1.7, 0.01);
+        life = 3.5;
+        break;
+      case "white":
+        [523, 659, 784, 1047, 1319].forEach((f, i) => tone("sine", f, f, 3.4, 0.07, t + i * 0.04, 0.8));
+        life = 4.5;
+        break;
+      case "stay":
+        tone("sine", 55, 45, 3.5, 0.6, t, 0.4);
+        tone("sine", 622, 600, 2.5, 0.05, t + 0.6, 0.01);
+        life = 4.5;
+        break;
+    }
+    setTimeout(() => { try { out.disconnect(); panner.disconnect(); } catch { /* gone */ } }, life * 1000 + 500);
+  }
+
   /**
    * Destroys the audio engine.
    */
   public destroy() {
     try {
       this.stopSpaceAmbience();
+      this.stopTownAmbience();
       this.stopFunMusic(true);
       this.stopAlarm();
       this.stopDistantAmbianceScheduler();

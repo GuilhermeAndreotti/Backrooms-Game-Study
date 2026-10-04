@@ -10,7 +10,8 @@ export const ABANDONED_OFFICE_LEVEL = 4;
 export const POOLROOMS_LEVEL = 5;
 export const LIGHTS_OUT_LEVEL = 6;
 export const LEVEL_G = 7;
-export const MOTION_LEVEL = 8;
+/** Level 94 "The Old Town" (picked from the lobby): a 1930s cartoon town, its hills and the King's castle. */
+export const OLD_TOWN_LEVEL = 8;
 /** Level FUN: the abandoned children's party venue (secret, picked from the lobby). */
 export const FUN_LEVEL = 9;
 export const LOBBY_LEVEL = 10;
@@ -35,6 +36,8 @@ export const MAIN_LEVELS = [
 
 /** Content id ProceduralMap uses for Level FUN (9 is already the Abandoned Office's). */
 export const FUN_CONTENT_LEVEL = 11;
+/** Content id ProceduralMap uses for Level 94 (8 is already the Electrical Room's). */
+export const OLD_TOWN_CONTENT_LEVEL = 94;
 
 /** IDs used by the old procedural content while it is being re-themed. */
 export function contentLevelFor(level: number): number {
@@ -44,7 +47,7 @@ export function contentLevelFor(level: number): number {
     case POOLROOMS_LEVEL: return 7;
     case LIGHTS_OUT_LEVEL: return 3;
     case LEVEL_G: return 4;
-    case MOTION_LEVEL: return 6;
+    case OLD_TOWN_LEVEL: return OLD_TOWN_CONTENT_LEVEL;
     case FUN_LEVEL: return FUN_CONTENT_LEVEL;
     default: return level;
   }

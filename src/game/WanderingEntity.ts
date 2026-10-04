@@ -12,6 +12,7 @@ import { MobBuildCtx, MobJoints, MobSenseCtx, NO_SCRIPTED_POSE } from "./mobs/ty
 import { resetRig } from "./mobs/anim";
 import { ELECTRICAL_ROOM_LEVEL, LEVEL_2, LIGHTS_OUT_LEVEL, POOLROOMS_LEVEL } from "./levels/constants";
 import { SPACE_DOOR_RANGE, SPACE_PATROL_POINTS, SPACE_RECTS, SpaceRect, spaceCabinAt, spaceDoorAt, spaceSightClear } from "./levels/spaceLayout";
+import { townEntityMayEnter } from "./levels/townLayout";
 import {
   ALIEN_CABIN_BAN_SECONDS, ALIEN_CHASE_SPEED, ALIEN_FEEL_RANGE, ALIEN_HEAR_RANGE, ALIEN_LOSE_SECONDS, ALIEN_PATROL_SPEED,
   ALIEN_SEARCH_SECONDS, ALIEN_SEARCH_SPEED, ALIEN_SIGHT_HALF_ANGLE, ALIEN_SIGHT_RANGE,
@@ -804,6 +805,9 @@ export class WanderingEntity {
           ? (this.isChasing ? 0.03 : 0.3 + this.decisionRandom() * 0.9)
           // O Alien walks its routes in one smooth stride; it stops where it decides to (chooseAlienStep).
           : this.type === EntityType.ALIEN ? 0
+          // Level 94: the King never stops once he's up; the Animations stop and start like puppets.
+          : this.type === EntityType.TOWN_KING ? 0.02
+          : this.type === EntityType.ANIMATION ? (this.isChasing ? 0.05 : 0.3 + this.decisionRandom() * 0.8)
           : this.decisionRandom() * 0.4 + 0.2; // brief tension check
         this.syncWorldPosition();
       } else {
@@ -847,6 +851,11 @@ export class WanderingEntity {
     }
     if (this.type === EntityType.ALIEN) {
       this.chooseAlienStep();
+      return;
+    }
+    // The King doesn't wander the hall: he sits until something wakes him.
+    if (this.type === EntityType.TOWN_KING && !this.isChasing) {
+      this.pauseTimer = 0.3;
       return;
     }
 
@@ -951,6 +960,8 @@ export class WanderingEntity {
     if (this.map.checkCollision((cx + ox) / 2, (cz + oz) / 2, 0.35, crossesPoolGate)) return false;
     if (!this.hunting && this.targetHidden && this.map.hideCells.has(`${x},${z}`)) return false;
     if (this.type === EntityType.ALIEN && !this.alienMayStep(fx, fz, x, z)) return false;
+    // Level 94: the Animations keep to the town's streets, the King to his hall.
+    if (this.map.town && !townEntityMayEnter(this.type, x, z)) return false;
     return true;
   }
 

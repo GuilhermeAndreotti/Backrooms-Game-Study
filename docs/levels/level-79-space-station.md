@@ -37,6 +37,7 @@ Tudo são **fatos idempotentes** (energia restaurada, console ajustado, rota exe
 | **Corrida travada** (a real) | Luzes vermelhas, alarme, *TRAJETÓRIA TRAVADA*. Há **17 s** (`ARRIVAL_SECONDS`) para chegar ao **convés de observação** enquanto o buraco cresce no vidro. |
 | **Final** | Quem está **no convés** na chegada vê o planeta se apagar "como a imagem que sempre foi" e o buraco ocupar a visão; fade para o preto. A fuga é concluída como um final de jogo. |
 | **Colapso** | Se **ninguém** estiver observando na chegada, o curso desmorona e reinicia. |
+| **Rumo desconhecido** *(secreto)* | Os três consoles em **DESCONHECIDO** + EXECUTAR: com "Rotas secretas" ligada, em vez do erro *sem coordenadas* a estação parte sem alarme; as estrelas deslizam como cenário trocado, toca ao longe uma musiquinha, tudo fica branco e **todos a bordo** vão para o [Level 94 — The Old Town](level-94-old-town.md). Com a opção desligada, continua o erro. |
 
 ## O Alien
 

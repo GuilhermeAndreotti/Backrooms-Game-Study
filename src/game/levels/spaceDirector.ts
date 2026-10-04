@@ -43,7 +43,7 @@ import type { MessageKey } from "../../i18n";
 import { SpaceSky } from "./spaceSky";
 import type { ScreenPage, ScreenTone, SpaceWorld } from "./spaceWorld";
 
-export type SpaceAudio = Pick<AudioManager, "playTerminalBeep" | "startAlarm" | "stopAlarm" | "startSpaceAmbience" | "stopSpaceAmbience" | "setSpaceRumble" | "playSpaceSound">;
+export type SpaceAudio = Pick<AudioManager, "playTerminalBeep" | "startAlarm" | "stopAlarm" | "startSpaceAmbience" | "stopSpaceAmbience" | "setSpaceRumble" | "playSpaceSound" | "startFunMusic" | "stopFunMusic">;
 
 export interface SpaceHost {
   audio: SpaceAudio;
@@ -56,8 +56,12 @@ export interface SpaceHost {
   /** The camera's world position (the sky is centred on it). */
   viewer(out: THREE.Vector3): THREE.Vector3;
   send(kind: "power" | "set" | "exec" | "abort", index: number): void;
-  /** 0 = clear, 1 = black. */
-  setFade(alpha: number): void;
+  /** 0 = clear, 1 = solid `color` (black unless given). */
+  setFade(alpha: number, color?: number): void;
+  /** Whether the room allows secret routes (the UNKNOWN course is one). */
+  secretRoutes(): boolean;
+  /** The UNKNOWN course arrived: this explorer goes through to Level 94. */
+  enterTown(): void;
   /** Camera shake amplitude in metres for this frame (0 = none). */
   shake(amount: number): void;
   /** The level is won: leave it like any other exit. */
@@ -83,7 +87,10 @@ export interface SpaceTerminalView {
   wiring?: { left: WireColor[]; right: WireColor[] };
 }
 
-type Phase = "idle" | "planetRun" | "planetArrival" | "lockRun" | "final" | "collapse" | "done";
+type Phase = "idle" | "planetRun" | "planetArrival" | "lockRun" | "unknownRun" | "final" | "collapse" | "done";
+
+/** Seconds from the UNKNOWN course's acceptance to arriving... somewhere with a sky. */
+const UNKNOWN_SECONDS = 12;
 
 /** Seconds from SAFE DESTINATION CONFIRMED to reaching "the planet" (and dying there). */
 const PLANET_ARRIVAL_SECONDS = 26;
@@ -134,6 +141,7 @@ export class SpaceDirector {
 
   // Where the sky settles between sequences (the planet never quite recovers).
   private planetScaleRest = 1;
+  private unknownMusic = false;
   private planetDriftRest = 0;
 
   constructor(world: SpaceWorld, host: SpaceHost) {
@@ -147,6 +155,7 @@ export class SpaceDirector {
 
   dispose() {
     this.host.audio.stopAlarm();
+    if (this.unknownMusic) this.host.audio.stopFunMusic(true);
     this.host.audio.stopSpaceAmbience();
     this.host.setFade(0);
     this.host.shake(0);
@@ -165,6 +174,7 @@ export class SpaceDirector {
           : t("space.obj.planetRun", { t: clock(PLANET_ARRIVAL_SECONDS - this.phaseTime) });
       case "planetArrival": return null;
       case "lockRun": return t("space.obj.lockRun", { t: clock(ARRIVAL_SECONDS - this.phaseTime) });
+      case "unknownRun": return t("space.obj.unknownRun");
       case "final":
       case "done": return null;
       case "collapse": return t("space.obj.collapse");
@@ -186,6 +196,11 @@ export class SpaceDirector {
       case "lockRun": {
         const pulse = 0.5 + 0.5 * Math.sin(this.time * 6.2);
         return { color: 0xff5a48, intensity: 0.35 + 0.45 * pulse, fog: pulse > 0.5 ? 0x1c0404 : 0x0a0202 };
+      }
+      case "unknownRun": {
+        // Warm and still, like an afternoon coming in through the glass.
+        const k = Math.min(1, this.phaseTime / 6);
+        return { color: 0xfff0c0, intensity: 1.0 + 1.2 * k, fog: k > 0.5 ? 0xf4ecd0 : 0x0a0b10 };
       }
       case "final":
       case "done": {
@@ -273,6 +288,12 @@ export class SpaceDirector {
   execute() {
     if (this.busy() || !this.powered) { this.host.audio.playTerminalBeep(false); return; }
     const result = evaluateSpaceConfig(this.config);
+    // UNKNOWN on all three consoles: no coordinates... and yet, with secret routes on, the station goes.
+    if (result.ok === false && result.reason === "noCoordinates" && this.host.secretRoutes()) {
+      this.startRun("unknown");
+      this.host.send("exec", 2);
+      return;
+    }
     if (result.ok === false) {
       const keys: Record<typeof result.reason, MessageKey> = {
         incomplete: "space.err.incomplete",
@@ -318,8 +339,8 @@ export class SpaceDirector {
     } else if (kind === "set") {
       const s = decodeSetting(index);
       if (s && !this.busy() && this.powered) this.setConsole(s.console, s.target);
-    } else if (kind === "exec" && (index === 0 || index === 1) && !this.busy() && this.powered) {
-      this.startRun(index === 1 ? "blackhole" : "planet");
+    } else if (kind === "exec" && (index === 0 || index === 1 || index === 2) && !this.busy() && this.powered) {
+      this.startRun(index === 2 ? "unknown" : index === 1 ? "blackhole" : "planet");
     }
   }
 
@@ -371,6 +392,9 @@ export class SpaceDirector {
         }
         if (this.phase === "lockRun") {
           return { title: t("space.name.helm"), tone: "alert", lines: [...lines("space.scr.helm.locked"), clock(ARRIVAL_SECONDS - P), "", t("space.scr.helm.obsRequired")] };
+        }
+        if (this.phase === "unknownRun") {
+          return { title: t("space.name.helm"), tone: "warn", lines: [...lines("space.scr.helm.unknown"), clock(UNKNOWN_SECONDS - P)] };
         }
         if (this.phase === "planetArrival") {
           return { title: t("space.name.helm"), tone: "alert", lines: lines("space.scr.helm.arrivalObjB") };
@@ -458,9 +482,13 @@ export class SpaceDirector {
     }
   }
 
-  private startRun(target: "planet" | "blackhole") {
+  private startRun(target: "planet" | "blackhole" | "unknown") {
     this.helmMessage = null;
-    if (target === "planet") {
+    if (target === "unknown") {
+      this.setPhase("unknownRun");
+      this.host.notify(t("space.ntf.unknownRun"));
+      this.host.audio.playSpaceSound("confirm");
+    } else if (target === "planet") {
       this.setPhase("planetRun");
       this.host.notify(t("space.ntf.planetConfirmed"));
       this.host.audio.playSpaceSound("confirm");
@@ -599,6 +627,42 @@ export class SpaceDirector {
           this.refreshScreens();
         }
         break;
+      }
+
+      case "unknownRun": {
+        // No alarm, no lock. The stars slide sideways, the hole and the planet
+        // fade like slides being changed, a little tune plays somewhere, white.
+        const k = Math.min(1, P / UNKNOWN_SECONDS);
+        this.world.setMood(0xfff0c0, 0.8 + 0.6 * k);
+        sky.starDrift = ease(sky.starDrift, 0.05, 0.6, delta);
+        sky.holeScale = ease(sky.holeScale, 0.05, 0.35, delta);
+        sky.planetOpacity = Math.max(0, 1 - P / 6);
+        rumble = 0.15 + 0.2 * k;
+        shake = 0.002 + 0.006 * k;
+        this.beat(2.5, "tune", () => {
+          this.unknownMusic = true;
+          this.host.audio.startFunMusic("town", { volume: 0.45, loop: false });
+        });
+        this.beat(4.5, "sky", () => this.host.notify(t("space.ntf.unknownSky")));
+        this.beat(8, "town", () => this.host.notify(t("space.ntf.unknownTown")));
+        if (Math.floor(P) !== Math.floor(P - delta)) this.refreshScreens();
+        const white = Math.min(1, Math.max(0, (P - 7.5) / (UNKNOWN_SECONDS - 7.5)));
+        this.host.setFade(white, 0xffffff);
+        this.beat(UNKNOWN_SECONDS + 0.4, "arrive", () => this.host.enterTown());
+        // Still here (the room turned secret routes off meanwhile): the course just dissolves.
+        this.beat(UNKNOWN_SECONDS + 3, "fallback", () => {
+          this.host.setFade(0);
+          sky.planetOpacity = 1;
+          this.host.notify(t("space.ntf.resetCollapse"));
+          this.resetNavigation();
+        });
+        // The fade is driven above; skip the shared one below.
+        this.host.audio.setSpaceRumble(rumble);
+        this.host.shake(shake);
+        sky.update(delta, this.time, this.host.viewer(this.scratch));
+        const pu = this.host.player();
+        this.world.update(delta, pu.x, pu.z, () => {}, this.host.doorOpeners());
+        return;
       }
 
       case "final": {

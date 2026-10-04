@@ -18,7 +18,7 @@ import {
   LEVEL_2,
   LEVEL_G,
   LIGHTS_OUT_LEVEL,
-  MOTION_LEVEL,
+  OLD_TOWN_LEVEL,
   POOLROOMS_LEVEL,
   SPACE_LEVEL,
 } from "./constants";
@@ -95,13 +95,13 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     spawn: { kind: "bespoke" },
   },
 
-  // Level 6 ("LEVEL 4" display, theme: Level 94 "Motion"): no static/
-  // timedSummon roster — day is mob-free by design, and O Ceifador is
-  // spawned/despawned with the day/night cycle itself (GameEngine's
-  // updateLevel6/spawnCeifadorNightHunt), not through this table.
-  [MOTION_LEVEL]: {
-    id: MOTION_LEVEL,
-    displayLabel: "LEVEL 4",
+  // Level 94 ("The Old Town"): the King is spawned on his throne when the
+  // level loads and the Animations only when night falls, both by
+  // GameEngine (spawnTownKing / spawnTownAnimations) following the level's
+  // own timeline (levels/townDirector.ts) rather than a roster here.
+  [OLD_TOWN_LEVEL]: {
+    id: OLD_TOWN_LEVEL,
+    displayLabel: "LEVEL 94 · THE OLD TOWN",
     spawn: { kind: "bespoke" },
   },
 

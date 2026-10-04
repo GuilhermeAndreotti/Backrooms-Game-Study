@@ -19,7 +19,7 @@ Elencos de [levels/registry.ts](../src/game/levels/registry.ts). "Estático" = p
 | Level 79 | estático | `ALIEN` |
 | Lights Out | sob demanda | pool `DULLER`, `SKIN_STEALER`, `WRETCH`, `HOUND` |
 | Level G | bespoke | `FINGER_KING` |
-| Motion | bespoke (só à noite) | `CEIFADOR` |
+| Level 94 — The Old Town | bespoke | `TOWN_KING` (no trono desde o início), `ANIMATION` ×4 (só à noite) |
 | Level FUN | bespoke | nenhuma (cenas roteirizadas) |
 
 ## Entidades
@@ -36,13 +36,15 @@ Elencos de [levels/registry.ts](../src/game/levels/registry.ts). "Estático" = p
 | `IMITADOR` | [imitador.ts](../src/game/mobs/imitador.ts) | "Isso é o que parece?" | Humanoide genérico **imóvel**; revela-se (olhos abrem, escurece, corre) ao chegar perto | Dê a volta |
 | `SOMBRA` | [sombra.ts](../src/game/mobs/sombra.ts) | "Tenho luz suficiente?" | Massa negra quase invisível no escuro. **Fraca e fugitiva sob luz**; só perigosa para quem está no escuro | Fique em áreas iluminadas |
 | `VIGIA` | [vigia.ts](../src/game/mobs/vigia.ts) | — | Enorme, membros longuíssimos; **marca os jogadores desde o início das Poolrooms**, enxerga longe, anda em passo lento | Planeje a rota; não fique exposto |
-| `CEIFADOR` | [ceifador.ts](../src/game/mobs/ceifador.ts) | "Ele aprendeu meu padrão?" | Alto, encapuzado, **o mais rápido**; aparece perto das células mais visitadas pelo grupo (`VisitTracker`) | Varie rotas; esconda-se à noite |
+| `CEIFADOR` | [ceifador.ts](../src/game/mobs/ceifador.ts) | "Ele aprendeu meu padrão?" | Alto, encapuzado, **o mais rápido**; aparece perto das células mais visitadas pelo grupo (`VisitTracker`) | Varie rotas (hoje nenhum nível o invoca; segue disponível no cheat SKIN) |
+| `ANIMATION` | [animation.ts](../src/game/mobs/animation.ts) | "Eles me viram?" | Personagens de desenho antigo, em stop-motion. Veem quem está à frente com linha livre (mais longe se você corre ou usa a lanterna, bem menos agachado); desistem após ~3,5 s sem te ver; **nunca entram em casas** | Entre numa casa, use carros e becos, apague a lanterna |
+| `TOWN_KING` | [townKing.ts](../src/game/mobs/townKing.ts) | "Como passo por ele?" | Sentado no trono até alguém chegar perto ou passar por ele; então persegue sem parar, mais devagar que uma corrida, com alcance longo (2,4 m). Preso ao salão | Use colunas e mesas: ele contorna, você se espreme ao lado |
 | `ALIEN` | [alien.ts](../src/game/mobs/alien.ts) | — | Patrulha corredores e cabines, caça a quem vê; **nunca entra em cabine durante a perseguição** | Esconda-se em cabines |
 | `FINGER_KING` | [fingerKing.ts](../src/game/mobs/fingerKing.ts) | — | Exclusivo do Level G. Anuncia-se por **dedos arranhando paredes**; fica mais forte ao longo do nível, mas nunca passa de um corredor em disparada (a corrida final é vencível). Se você o encara de perto, ele **encara de volta** e então ataca | Esconda-se em armários, agachado |
 
 ## Notas técnicas
 
-- **Rádio**: algumas entidades (`FINGER_KING`, `CEIFADOR`) são **invisíveis ao radar** de propósito — "sem aviso" é a mecânica.
+- **Rádio**: algumas entidades (`FINGER_KING`, `CEIFADOR`, `TOWN_KING`) são **invisíveis ao radar** de propósito — "sem aviso" é a mecânica.
 - **Autoridade**: só o cliente-autoridade do nível simula as entidades e transmite `entities`; os demais renderizam. Veja o README principal.
 - **Falas/sons**: vozes procedurais em [AudioManager.ts](../src/game/AudioManager.ts); falas legendadas em `sp.*` no i18n.
 - **Perseguição direta**: hoje as entidades perseguem o jogador (BFS), não a posição de um ruído; "distrações" funcionam apenas porque ficar quieto esfria a perseguição. Isso e outras limitações conhecidas estão nos comentários de escopo no topo de cada arquivo de mob.

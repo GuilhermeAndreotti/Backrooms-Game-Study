@@ -30,13 +30,16 @@ import {
   FUN_LEVEL,
   LEVEL_G,
   LIGHTS_OUT_LEVEL,
-  MOTION_LEVEL,
+  OLD_TOWN_LEVEL,
   POOLROOMS_LEVEL,
   SPACE_LEVEL,
 } from "./levels/constants";
 import { POOL_VALVE_COUNT } from "./poolroomsPuzzle";
 import { FunDirector } from "./levels/funDirector";
 import { SpaceDirector, type SpaceTerminalView } from "./levels/spaceDirector";
+import { TownDirector } from "./levels/townDirector";
+import { ANIMATION_CELLS, KING_THRONE, townRelocationCells } from "./levels/townLayout";
+import { MOB_DEFS } from "./mobs/registry";
 import type { SpaceConsoleId, SpaceTarget, SpaceTerminalId } from "./levels/spaceLayout";
 import type { FunStage } from "./LevelFunModels";
 import {
@@ -167,8 +170,8 @@ function levelAtmosphere(level: number, funStage: FunStage = 0) {
       return { ambientColor: 0x8a4a2c, ambientIntensity: 1.4, fogColor: 0x3a1608, dimmedFogColor: 0x1a0902 };
     case 1: // warehouse: brighter industrial
       return { ambientColor: 0xaab5bd, ambientIntensity: 1.35, fogColor: 0x8a9299, dimmedFogColor: 0x24282c };
-    case MOTION_LEVEL: // "Motion": bright open-air field by day
-      return { ambientColor: 0xdff0ff, ambientIntensity: 2.2, fogColor: 0x9fd4f0, dimmedFogColor: 0x3a5a70 };
+    case OLD_TOWN_LEVEL: // Level 94: a sunny cartoon afternoon (its director takes over from the first frame)
+      return { ambientColor: 0xfff2dc, ambientIntensity: 0.95, fogColor: 0xbfe0f4, dimmedFogColor: 0x5a7080 };
     case POOLROOMS_LEVEL: // Classic Poolrooms: bright cyan tiles and clear water
       return { ambientColor: 0xfff8e6, ambientIntensity: 3.2, fogColor: 0xd9e8d2, dimmedFogColor: 0x5e7f78 };
     default: // Level 0: classic yellow
@@ -355,8 +358,6 @@ export class GameEngine {
   // --- Level G ("The Small Office") ----------------------------------------
   /** Seconds spent on Level G: drives the Finger King's aggression. */
   private levelGTime = 0;
-  // --- Level 6 ("LEVEL 4" display): day/night cycle -------------------------
-  private level6Time = 0;
   // --- Level 1 garage (see levels/garageLayout.ts and updateGarage) ---
   /** Authority only: seconds until floor 3's next blackout (counts down while anyone is there). */
   private garageBlackoutIn = 12;
@@ -367,11 +368,6 @@ export class GameEngine {
   private garageWarned = false;
   private garageLastX = 0;
   private garageLastZ = 0;
-  private level6IsNight = false;
-  private readonly LEVEL6_DAY_S = 90;
-  private readonly LEVEL6_NIGHT_S = 60;
-  /** The night hunter — spawned/despawned with the day/night cycle, not pooled like the rest of this.entities since there's only ever at most one. */
-  private ceifadorEntity: WanderingEntity | null = null;
   // --- Level 7 ("LEVEL 5" display): valve puzzle -----------------------------
   /** Indices into map.valvePositions that have been turned; each sector sequence drains its stage. */
   private valvesTurned = new Set<number>();
@@ -465,6 +461,14 @@ export class GameEngine {
   /** The Level 79 terminal E last opened, for the App's modal. */
   public spaceTerminal: SpaceTerminalId | null = null;
   private spaceShake = 0;
+  /** Level 94's day, night, castle and the King's vision; null on every other level. */
+  private townDirector: TownDirector | null = null;
+  private lastTownObjective: string | null = null;
+  /** The vision's camera roll (radians), field-of-view offset (degrees) and VHS distortion. */
+  private townWarp = { roll: 0, fov: 0 };
+  private townDread = 0;
+  /** Field of view from the settings (the vision bends it, then gives it back). */
+  private baseFov = 75;
   private fadeOverlay: THREE.Mesh | null = null;
   public onSectorChange?: (sector: string) => void;
   public onInventoryChange?: (items: string[]) => void;
@@ -498,6 +502,8 @@ export class GameEngine {
   private cheatLife = false;
   /** SETA: the radar points toward this level's secret entrance. */
   public cheatArrow = false;
+  /** The room's "secret routes" option (App keeps it current); Level 79's UNKNOWN course needs it. */
+  public secretRoutesEnabled: () => boolean = () => true;
   /** SKIN cheat: the monster/NPC body worn instead of the hazmat suit, replicated to teammates; "" for none. */
   public cheatSkin: SkinBodyChoice | null = null;
 
@@ -768,7 +774,7 @@ export class GameEngine {
    * preset hides its shorter view distance instead of showing cells pop in.
    */
   private fogDensityFor(level: number): number {
-    const authored = level === LOBBY_LEVEL ? 0.008 : level === LEVEL_G ? 0.06 : level === ABANDONED_OFFICE_LEVEL ? 0.016 : level === ELECTRICAL_ROOM_LEVEL ? 0.035 : level === POOLROOMS_LEVEL ? 0.006 : level === FUN_LEVEL ? 0.018 : level === SPACE_LEVEL ? 0.013 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
+    const authored = level === LOBBY_LEVEL ? 0.008 : level === LEVEL_G ? 0.06 : level === ABANDONED_OFFICE_LEVEL ? 0.016 : level === ELECTRICAL_ROOM_LEVEL ? 0.035 : level === POOLROOMS_LEVEL ? 0.006 : level === FUN_LEVEL ? 0.018 : level === SPACE_LEVEL ? 0.013 : level === OLD_TOWN_LEVEL ? 0.011 : (level === 2 ? 0.032 : (level === 1 ? 0.020 : 0.024));
     const referenceViewDistance = 24;
     const ratio = referenceViewDistance / Math.max(1, this.quality.viewDistance);
     return authored * ratio;
@@ -784,7 +790,7 @@ export class GameEngine {
 
     // Pass level to both map and audio
     this.audio.level = this.level;
-    this.audio.setBackgroundAmbienceEnabled(this.level !== LOBBY_LEVEL);
+    this.audio.setBackgroundAmbienceEnabled(this.level !== LOBBY_LEVEL && this.level !== OLD_TOWN_LEVEL);
 
     // Instantiate Procedural Level 0 or 1 Map
     this.map = new ProceduralMap(seed, this.level, this.quality);
@@ -811,6 +817,7 @@ export class GameEngine {
     this.setupOfficeWorkers();
     this.setupFun();
     this.setupSpace();
+    this.setupTown();
     this.requestLevelSync();
 
     // Spotlight representing local F key Flashlight
@@ -844,6 +851,7 @@ export class GameEngine {
       const def12 = LEVEL_DEFS[SPACE_LEVEL];
       if (def12.spawn.kind === "static") this.spawnStaticRoster(def12.spawn.roster, 4);
     }
+    if (this.level === OLD_TOWN_LEVEL) this.spawnTownKing();
 
     // Initial first-turn map culler tick
     this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z);
@@ -927,6 +935,7 @@ export class GameEngine {
     this.selfLook = { name: settings.name, suitColor: settings.suitColor, face: settings.face };
     if (this.player) {
       this.player.setMouseSensitivity(settings.mouseSensitivity);
+      this.baseFov = settings.fov;
       this.camera.fov = settings.fov;
       this.camera.updateProjectionMatrix();
     }
@@ -969,7 +978,11 @@ export class GameEngine {
       // Tick player controllers
       if (this.isDead || this.isWaitingForTransition) this.updateSpectator(delta);
       else if (this.kingGrab) this.updateKingGrab(delta);
-      else {
+      else if (this.townDirector?.cinematic && this.camera.parent) {
+        // Level 94's secret ending: the director has the camera.
+        this.player.isFlashlightOn = false;
+        this.townDirector.driveCamera(this.camera.parent, this.camera);
+      } else {
         this.player.update(delta);
         if (this.level === ELECTRICAL_ROOM_LEVEL && this.map) {
           const gx = Math.floor(this.player.position.x / this.map.cellSize);
@@ -983,6 +996,7 @@ export class GameEngine {
       this.updateOfficeWorkers(delta);
       this.updateFun(delta);
       this.updateSpace(delta);
+      this.updateTown(delta);
       this.updateInteractPrompt(delta);
       this.updateReadingRange();
       if (this.radarBoostTimer > 0) this.radarBoostTimer = Math.max(0, this.radarBoostTimer - delta);
@@ -1176,6 +1190,10 @@ export class GameEngine {
       const camDir = this.scratchCamDir;
       this.camera.getWorldDirection(camDir);
       const aiTargets = worldAuthority ? this.collectAiTargets(camDir) : null;
+      // Level 94: whoever is inside a house is out of the Animations' reach.
+      if (aiTargets && this.townDirector) {
+        for (const tgt of aiTargets) tgt.hidden = this.townDirector.isHidden(tgt.x, tgt.z);
+      }
       if (aiTargets) {
         const cs = this.map.cellSize;
         for (const tgt of aiTargets) {
@@ -1187,9 +1205,6 @@ export class GameEngine {
       // the final alarm. Runs before the AI so hidden explorers are marked.
       this.updateLevelG(delta, aiTargets);
 
-      // Level 6: day/night cycle, O Ceifador's night hunt.
-      this.updateLevel6(delta);
-
       // Level 1: floor 2's shutter, floor 3's blackouts.
       this.updateGarage(delta, aiTargets);
 
@@ -1198,12 +1213,12 @@ export class GameEngine {
         const pz = this.player.position.z;
         let caught = false;
         let caughtBy: WanderingEntity | null = null;
-        const canBeCaught = !this.isDead && !this.kingGrab;
+        const canBeCaught = !this.isDead && !this.kingGrab && !this.townDirector?.immune;
 
         this.entities.forEach(entity => {
           if (aiTargets) {
             // Hunt whichever explorer is closest (on Level G, visible ones first).
-            const { target, distSq: entityDistSq } = this.level === LEVEL_G
+            const { target, distSq: entityDistSq } = this.level === LEVEL_G || this.level === OLD_TOWN_LEVEL
               ? nearestHuntable(aiTargets, entity.mesh.position.x, entity.mesh.position.z)
               : entity.type === EntityType.ALIEN
                 ? nearestSeenByAlien(aiTargets, entity)
@@ -1219,17 +1234,25 @@ export class GameEngine {
 
             entity.update(entityDelta, target.x, target.z, target.state, target.dir, target.flashlight);
             // Billboard towards *our* camera, not the explorer it's hunting.
-            // O Alien faces where it walks: its facing is its sight cone.
-            if (entity.type !== EntityType.ALIEN) entity.mesh.lookAt(px, entity.mesh.position.y, pz);
+            // O Alien faces where it walks: its facing is its sight cone. Level 94's
+            // cartoons and their King turn like characters, not billboards.
+            if (entity.type !== EntityType.ALIEN && entity.type !== EntityType.ANIMATION && entity.type !== EntityType.TOWN_KING) {
+              entity.mesh.lookAt(px, entity.mesh.position.y, pz);
+            }
           } else {
             entity.updateReplica(delta, px, pz);
           }
 
+          // Level 94's vision: the King isn't there for whoever is having it.
+          if (entity.type === EntityType.TOWN_KING && this.townDirector) entity.mesh.visible = this.townDirector.kingVisible;
+
           // Catches are judged locally: each client only checks its own explorer.
-          // Trigger reset when distance is less than 1.45 meters (squared is ~2.1)
+          // Trigger reset when distance is less than 1.45 meters (squared is ~2.1),
+          // or the mob's own reach.
           const dx = entity.mesh.position.x - px;
           const dz = entity.mesh.position.z - pz;
-          if (canBeCaught && !caught && !this.cheatLife && dx * dx + dz * dz < 2.1) {
+          const reach = MOB_DEFS[entity.type].catchRadius ?? 1.45;
+          if (canBeCaught && !caught && !this.cheatLife && dx * dx + dz * dz < reach * reach) {
             caught = true;
             caughtBy = entity;
             console.warn(`[GameEngine] Explorer CAUGHT by ${entity.type}! Reseting state...`);
@@ -1244,6 +1267,8 @@ export class GameEngine {
         if (caught && !this.cheatLife) {
           const by = caughtBy as WanderingEntity | null;
           if (by?.type === EntityType.FINGER_KING) this.startKingGrab(by);
+          // Level 94 never ends a run for being caught: back to a checkpoint.
+          else if (this.townDirector && by) this.townDirector.caught(by.type);
           else this.die("caught");
         }
       }
@@ -1287,7 +1312,9 @@ export class GameEngine {
         // 3. Darkness check
         let darknessDepletion = 0;
         const isFlashlightOn = this.player.isFlashlightOn;
-        if (!isFlashlightOn && this.level !== LOBBY_LEVEL && this.level !== SPACE_LEVEL) {
+        // Level 94 is only dark in the town at night (its sunny day, hills and lit castle aren't).
+        const townLit = this.level === OLD_TOWN_LEVEL && !this.townDirector?.dark;
+        if (!isFlashlightOn && this.level !== LOBBY_LEVEL && this.level !== SPACE_LEVEL && !townLit) {
           if (this.map.globalEventState === "blackout" && this.map.inGarageBlackoutZone(this.player.position.x)) {
             darknessDepletion = 0.014; // completed blackout is terrifying (retuned ~3x slower)
           } else if (this.level === ELECTRICAL_ROOM_LEVEL) {
@@ -1332,6 +1359,11 @@ export class GameEngine {
         if (pgX === this.map.secretGridX && pgZ === this.map.secretGridZ) {
           this.onSecretLevelFound(LIGHTS_OUT_LEVEL);
         }
+      }
+
+      // The Electrical Room's door out of the building, onto the road to Level 94's town.
+      if (this.level === ELECTRICAL_ROOM_LEVEL && this.map && this.onSecretLevelFound && this.map.atTownExitDoor(this.player.position.x, this.player.position.z)) {
+        this.onSecretLevelFound(OLD_TOWN_LEVEL);
       }
 
       // The abandoned office contains a hidden route into Level G. The old
@@ -1385,7 +1417,8 @@ export class GameEngine {
       // Level FUN scripts its own blackouts; random ones would step on them.
       // Level 79's lighting belongs to its navigation sequences for the same reason.
       // Level 1's floor 3 schedules its own blackouts (updateGarage).
-      this.map.rollGlobalEvents = this.isWorldAuthority && this.level !== LOBBY_LEVEL && this.level !== FUN_LEVEL && this.level !== SPACE_LEVEL && this.level !== 1;
+      // Level 94's lights belong to its day/night timeline.
+      this.map.rollGlobalEvents = this.isWorldAuthority && this.level !== LOBBY_LEVEL && this.level !== FUN_LEVEL && this.level !== SPACE_LEVEL && this.level !== OLD_TOWN_LEVEL && this.level !== 1;
       const eventBefore = this.map.globalEventState;
       this.map.updateLights(
         delta,
@@ -1405,12 +1438,8 @@ export class GameEngine {
         // Per-level values: this runs every frame, so hardcoding Level 0/1
         // here used to override Level 2/3's darker setup from transitionToLevel.
         const atmosphere = levelAtmosphere(this.level, this.funDirector?.stage ?? 0);
-        // Level 6's day/night cycle overrides its own base (daylight) atmosphere
-        // live, rather than going through levelAtmosphere (which only knows the
-        // level id, not this runtime cycle state).
-      const isLevel6Night = this.level === LIGHTS_OUT_LEVEL && this.level6IsNight;
-        const baseInt = isLevel6Night ? 0.12 : atmosphere.ambientIntensity;
-        const defaultFog = isLevel6Night ? 0x040608 : atmosphere.fogColor;
+        const baseInt = atmosphere.ambientIntensity;
+        const defaultFog = atmosphere.fogColor;
 
         // The background colour is mutated in place. Allocating a THREE.Color
         // every frame produced ~3600 short-lived objects per minute and forced
@@ -1458,6 +1487,18 @@ export class GameEngine {
           this.ambientLight.color.setHex(a.color);
           this.ambientLight.intensity = a.intensity;
           if (fog) fog.color.setHex(a.fog);
+          background.setHex(a.fog);
+        }
+
+        // Level 94: the time of day and where you stand (town, hills, castle) own the light and the haze.
+        if (this.townDirector) {
+          const a = this.townDirector.atmosphere();
+          this.ambientLight.color.setHex(a.color);
+          this.ambientLight.intensity = a.intensity;
+          if (fog) {
+            fog.color.setHex(a.fog);
+            fog.density = a.density;
+          }
           background.setHex(a.fog);
         }
       }
@@ -1573,7 +1614,7 @@ export class GameEngine {
         this.vhsMaterial.uniforms.uTime.value = this.totalPlayTime;
         if (!this.kingGrab) this.kingFlash = Math.max(0, this.kingFlash - delta * 3);
         this.deathBlack = Math.max(0, this.deathBlack - delta * 0.7);
-        this.vhsMaterial.uniforms.uDread.value = this.level === LEVEL_G ? this.kingDread : 0;
+        this.vhsMaterial.uniforms.uDread.value = this.level === LEVEL_G ? this.kingDread : this.level === OLD_TOWN_LEVEL ? this.townDread : 0;
         this.vhsMaterial.uniforms.uFlash.value = this.kingFlash;
         this.vhsMaterial.uniforms.uBlack.value = Math.min(1, this.deathBlack * 1.6);
         this.vhsMaterial.uniforms.tDiffuse.value = this.vhsRenderTarget.texture;
@@ -2705,6 +2746,7 @@ export class GameEngine {
     console.log(`Transitioning to Level ${level} in backrooms...`);
     this.teardownFun();
     this.teardownSpace();
+    this.teardownTown();
     this.teardownLevelG();
     this.level = level;
     this.level4DoorOpen = false;
@@ -2749,7 +2791,7 @@ export class GameEngine {
 
     // 5. Enable ambience outside the lobby and select the new level's sound profile.
     this.audio.level = level;
-    this.audio.setBackgroundAmbienceEnabled(level !== LOBBY_LEVEL);
+    this.audio.setBackgroundAmbienceEnabled(level !== LOBBY_LEVEL && level !== OLD_TOWN_LEVEL);
     
     // 6. Spawn the player again safely at spawn coordinates (2,2) with preloaded map
     this.player = new PlayerController(this.camera, this.renderer.domElement, this.map, (speed) => this.onLocalFootstep(speed));
@@ -2762,6 +2804,7 @@ export class GameEngine {
     this.setupOfficeWorkers();
     this.setupFun();
     this.setupSpace();
+    this.setupTown();
     this.requestLevelSync();
 
     // Reset total play time for the new layout
@@ -2790,13 +2833,10 @@ export class GameEngine {
       this.onHUDNotification?.(t("eng.levelG"));
     }
 
-    // Level 6: fresh day/night cycle, no leftover night hunter.
-    this.level6Time = 0;
+    // Level 1's garage: fresh blackout schedule.
     this.garageBlackoutIn = 12;
     this.garageWasBlackout = false;
     this.garageExposure = 0;
-    this.level6IsNight = false;
-    this.ceifadorEntity = null; // already pooled by the blanket entities.forEach(returnToPool) above
 
     // Poolrooms: fresh local view; the authoritative state arrives in a snapshot.
     // The new map's own toxicWaterCells already
@@ -2831,6 +2871,9 @@ export class GameEngine {
       const def12 = LEVEL_DEFS[SPACE_LEVEL];
       if (def12.spawn.kind === "static") this.spawnStaticRoster(def12.spawn.roster, 4);
     }
+
+    // Level 94: the King on his throne from the start; the Animations come with the night.
+    if (level === OLD_TOWN_LEVEL) this.spawnTownKing();
 
     // Initial map cull
     this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z);
@@ -3504,10 +3547,13 @@ export class GameEngine {
       const [fx, fz] = this.lookDirectionXZ();
       const funPrompt = this.funDirector ? this.funDirector.interactionPrompt() : null;
       const spacePrompt = this.spaceDirector ? this.spaceDirector.interactionPrompt() : null;
+      const townPrompt = this.townDirector ? this.townDirector.interactionPrompt() : null;
       if (funPrompt) {
         text = funPrompt;
       } else if (spacePrompt) {
         text = spacePrompt;
+      } else if (townPrompt) {
+        text = townPrompt;
       } else if (this.nearExitDesk()) {
         text = t("act.readPaper");
       } else if (this.nearCheatTerminal()) {
@@ -3700,7 +3746,9 @@ export class GameEngine {
       viewer: (out) => this.camera.getWorldPosition(out),
       doorOpeners: () => this.entities.map((e) => e.mesh.position),
       send: (kind, index) => this.sendToServer({ type: "space_event", level: SPACE_LEVEL, kind, index }),
-      setFade: (alpha) => this.setFade(alpha),
+      setFade: (alpha, color) => this.setFade(alpha, color),
+      secretRoutes: () => this.secretRoutesEnabled(),
+      enterTown: () => this.onSecretLevelFound?.(OLD_TOWN_LEVEL),
       shake: (amount) => { this.spaceShake = amount; },
       escape: () => this.onEscapeTrigger?.(),
       kill: () => { if (!this.isDead) this.die("caught"); },
@@ -3725,8 +3773,96 @@ export class GameEngine {
     }
   }
 
-  /** A black card in front of the camera, for fades (Level 79's finale). 0 hides it. */
-  private setFade(alpha: number) {
+  // ---------------------------------------------------------------------
+  // Level 94
+  // ---------------------------------------------------------------------
+
+  private teardownTown() {
+    this.townDirector?.dispose();
+    this.townDirector = null;
+    this.townDread = 0;
+    this.townWarp = { roll: 0, fov: 0 };
+    if (this.camera && this.camera.fov !== this.baseFov) {
+      this.camera.fov = this.baseFov;
+      this.camera.updateProjectionMatrix();
+    }
+    if (this.lastTownObjective !== null) {
+      this.lastTownObjective = null;
+      this.onObjectiveChange?.(null);
+    }
+  }
+
+  private setupTown() {
+    this.teardownTown();
+    const world = this.level === OLD_TOWN_LEVEL ? this.map?.town : null;
+    if (!world) return;
+    this.townDirector = new TownDirector(world, {
+      audio: this.audio,
+      scene: this.scene,
+      camera: this.camera,
+      notify: (text) => this.onHUDNotification?.(text),
+      player: () => {
+        const [lookX, lookZ] = this.lookDirectionXZ();
+        return { x: this.player.position.x, z: this.player.position.z, lookX, lookZ, alive: !this.isDead && !this.isWaitingForTransition };
+      },
+      send: (kind, index) => this.sendToServer({ type: "town_event", level: OLD_TOWN_LEVEL, kind, index }),
+      setFade: (alpha) => this.setFade(alpha),
+      setDread: (amount) => { this.townDread = amount; },
+      warp: (roll, fov) => { this.townWarp = { roll, fov }; },
+      teleport: (x, z, yaw) => {
+        if (!this.map || !this.player) return;
+        this.player.position.set(x, this.map.getFloorHeightAt(x, z) + PLAYER_STANDING_HEIGHT, z);
+        this.player.rotation.set(0, yaw, 0);
+        this.map.performProximityCulling(this.scene, x, z, true);
+      },
+      relocateMonsters: (gx, gz) => this.relocateEntitiesAwayFrom(gx, gz),
+      nightFell: () => this.spawnTownAnimations(),
+      king: () => {
+        const king = this.entities.find((e) => e.type === EntityType.TOWN_KING);
+        return king ? { x: king.mesh.position.x, z: king.mesh.position.z, awake: king.alert } : null;
+      },
+      suitColor: () => this.selfLook.suitColor,
+      achievement: (id) => unlockAchievement(id),
+      escape: () => this.onEscapeTrigger?.(),
+    });
+  }
+
+  private updateTown(delta: number) {
+    const director = this.townDirector;
+    if (!director || !this.player) return;
+    director.update(delta);
+    // The vision bends the room: roll the head rig (re-seated on the player every frame) and widen the lens.
+    const rig = this.camera.parent;
+    if (rig && this.townWarp.roll !== 0 && !director.cinematic) rig.rotation.z += this.townWarp.roll;
+    const fov = this.baseFov + this.townWarp.fov;
+    if (Math.abs(this.camera.fov - fov) > 0.01) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
+    const objective = director.objective();
+    if (objective !== this.lastTownObjective) {
+      this.lastTownObjective = objective;
+      this.onObjectiveChange?.(objective);
+    }
+  }
+
+  /** A teammate found a clock part, started the clock or moved a model piece (relayed by the server). */
+  public applyTownEvent(msg: { level?: unknown; kind?: unknown; index?: unknown }) {
+    if (this.level !== OLD_TOWN_LEVEL || msg.level !== OLD_TOWN_LEVEL || !this.townDirector) return;
+    if (typeof msg.kind !== "string" || typeof msg.index !== "number") return;
+    this.townDirector.applyRemote(msg.kind, msg.index);
+  }
+
+  /** Level 94: catching up on arrival with everything the others already did. */
+  public applyTownState(msg: { level?: unknown; facts?: unknown }) {
+    if (this.level !== OLD_TOWN_LEVEL || msg.level !== OLD_TOWN_LEVEL || !this.townDirector || !Array.isArray(msg.facts)) return;
+    for (const f of msg.facts) {
+      if (Array.isArray(f) && typeof f[0] === "string" && typeof f[1] === "number") this.townDirector.applyRemote(f[0], f[1], true);
+    }
+  }
+
+  /** A card in front of the camera, for fades (Level 79's finale; white for its UNKNOWN course). 0 hides it. */
+  private setFade(alpha: number, color = 0x000000) {
     if (alpha <= 0) {
       if (this.fadeOverlay) this.fadeOverlay.visible = false;
       return;
@@ -3740,6 +3876,7 @@ export class GameEngine {
       this.camera.add(this.fadeOverlay);
     }
     this.fadeOverlay.visible = true;
+    (this.fadeOverlay.material as THREE.MeshBasicMaterial).color.setHex(color);
     (this.fadeOverlay.material as THREE.MeshBasicMaterial).opacity = Math.min(1, alpha);
   }
 
@@ -3790,6 +3927,7 @@ export class GameEngine {
     if (!this.map) return;
     this.sendToServer({ type: "consumables_sync", level: this.level });
     if (this.funDirector) this.sendToServer({ type: "fun_sync", level: FUN_LEVEL });
+    if (this.townDirector) this.sendToServer({ type: "town_sync", level: OLD_TOWN_LEVEL });
     if (this.level === 1) this.sendToServer({ type: "garage_sync", level: 1 });
   }
 
@@ -3874,7 +4012,7 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | null {
+  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | "town" | null {
     if (this.isDead) return null;
     if (this.funDirector) {
       const used = this.funDirector.interact();
@@ -3888,6 +4026,7 @@ export class GameEngine {
         return "space_terminal";
       }
     }
+    if (this.townDirector?.interact()) return "town";
     const switchIndex = this.nearUntouchedLevel3Switch();
     if (switchIndex >= 0) {
       this.handleLevel3Switch(switchIndex);
@@ -4051,6 +4190,7 @@ export class GameEngine {
     const cs = map.cellSize;
     const targets: { x: number; z: number; label: string }[] = [];
     if (this.level === 1 && map.secretGridX >= 0) targets.push({ x: (map.secretGridX + 0.5) * cs, z: (map.secretGridZ + 0.5) * cs, label: "6" });
+    if (this.level === ELECTRICAL_ROOM_LEVEL && map.townExitX >= 0) targets.push({ x: (map.townExitX + 0.5) * cs, z: (map.townExitZ + 0.5) * cs, label: "94" });
     if (this.level === ABANDONED_OFFICE_LEVEL && map.abandonedSecretX >= 0) targets.push({ x: (map.abandonedSecretX + 0.5) * cs, z: (map.abandonedSecretZ + 0.5) * cs, label: "G" });
     if (this.level === ABANDONED_OFFICE_LEVEL && map.funCakeX >= 0 && !this.funCakeEaten) targets.push({ x: (map.funCakeX + 0.5) * cs, z: (map.funCakeZ + 0.5) * cs, label: "FUN" });
     return targets;
@@ -4229,7 +4369,8 @@ export class GameEngine {
    */
   private relocateEntitiesAwayFrom(gx: number, gz: number) {
     if (this.isWorldAuthority) {
-      this.entities.forEach((ent) => ent.relocateFarAway(gx, gz));
+      if (this.level === OLD_TOWN_LEVEL) this.relocateTownEntities(gx, gz);
+      else this.entities.forEach((ent) => ent.relocateFarAway(gx, gz));
     } else {
       this.sendToServer({ type: "entities_relocate", gx, gz });
     }
@@ -4238,7 +4379,8 @@ export class GameEngine {
   /** A teammate got caught: relocate on their behalf (authority only). */
   public handleRelocateRequest(msg: { level: number; gx: number; gz: number }) {
     if (msg.level !== this.level || !this.isWorldAuthority) return;
-    this.entities.forEach((ent) => ent.relocateFarAway(msg.gx, msg.gz));
+    if (this.level === OLD_TOWN_LEVEL) this.relocateTownEntities(msg.gx, msg.gz);
+    else this.entities.forEach((ent) => ent.relocateFarAway(msg.gx, msg.gz));
   }
 
   /** Spawns a smiler 14-28 m from the explorer at (px, pz), if a spot exists. */
@@ -4471,14 +4613,10 @@ export class GameEngine {
     // elsewhere), judged against every explorer on the level; the gaze drain
     // below runs on every client for its own explorer.
     if (targets) {
-      // Smilers live in Level 1's sector 3 (the final hall) and, at night,
-      // all over Level 6 (see updateLevel6's day/night cycle) — everywhere
+      // Smilers live in Level 1's sector 3 (the final hall) — everywhere
       // else, clear them out.
-      const level6Night = this.level === LIGHTS_OUT_LEVEL && this.level6IsNight;
       const garageBlackout = this.level === 1 && this.map.globalEventState === "blackout";
-      const hunted = this.level === 1 ? (garageBlackout ? targets.filter((t) => inSector3(t.x, t.z)) : [])
-        : level6Night ? targets
-        : [];
+      const hunted = this.level === 1 ? (garageBlackout ? targets.filter((t) => inSector3(t.x, t.z)) : []) : [];
       if (hunted.length === 0) {
         if (this.smilers.length > 0) this.clearAllSmilers();
         return;
@@ -4654,54 +4792,32 @@ export class GameEngine {
     this.onHUDNotification?.(t("eng.garageOpen"));
   }
 
-  /**
-   * Level 6's day/night cycle. By day it's a safe, calm field/town — no
-   * mobs (LEVEL_DEFS has no static/timedSummon roster for it, see
-   * registry.ts's "bespoke" entry). At night O Ceifador is summoned to
-   * hunt, biased toward the group's most-visited cells if any exist yet
-   * (VisitTracker) — its presence doubles as the level's "boss": the exit
-   * sits inside the castle at the far end, so reaching it at night means
-   * reaching it while Ceifador is actively hunting, rather than a
-   * separately scripted boss encounter.
-   */
-  private updateLevel6(delta: number) {
-    if (this.level !== MOTION_LEVEL || !this.map || !this.player) return;
-    this.level6Time += delta;
-    const cycleLength = this.LEVEL6_DAY_S + this.LEVEL6_NIGHT_S;
-    const phase = this.level6Time % cycleLength;
-    const wasNight = this.level6IsNight;
-    this.level6IsNight = phase >= this.LEVEL6_DAY_S;
+  /** Level 94: the King, on his throne from the moment the level loads (static, like any roster). */
+  private spawnTownKing() {
+    this.spawnStaticRoster([{ type: EntityType.TOWN_KING, targetCell: [KING_THRONE.gx, KING_THRONE.gz] }], 1);
+  }
 
-    if (this.level6IsNight && !wasNight) {
-      this.onHUDNotification?.(t("eng.level6Night"));
-      if (this.isWorldAuthority) this.spawnCeifadorNightHunt();
-    } else if (!this.level6IsNight && wasNight) {
-      this.onHUDNotification?.(t("eng.level6Day"));
-      if (this.isWorldAuthority) this.despawnCeifadorNightHunt();
+  /** Level 94's night: the authority puts the Animations out on the streets (once). */
+  private spawnTownAnimations() {
+    if (!this.map || !this.isWorldAuthority || this.entities.some((e) => e.type === EntityType.ANIMATION)) return;
+    for (const [gx, gz] of ANIMATION_CELLS) {
+      const entity = WanderingEntity.getOrCreate(this.map, gx, gz, EntityType.ANIMATION, this.scene);
+      entity.netId = this.nextEntityNetId++;
+      this.entities.push(entity);
     }
   }
 
-  private spawnCeifadorNightHunt() {
-    if (!this.map || this.ceifadorEntity) return;
-    const px = Math.floor(this.player.position.x / this.map.cellSize);
-    const pz = Math.floor(this.player.position.z / this.map.cellSize);
-    // Bias toward the group's most-visited cells (route-memory — the whole
-    // point of this mob, see mobs/ceifador.ts), well clear of the player's
-    // own cell; falls back to a far corner if there's no visit data yet.
-    const visited = this.map.visitTracker?.mostVisited(1, px, pz, 6) ?? [];
-    const [gx, gz] = visited[0] ? [visited[0].gx, visited[0].gz] : [this.map.gridSize - 6, this.map.gridSize - 6];
-    const entity = WanderingEntity.getOrCreate(this.map, gx, gz, EntityType.CEIFADOR, this.scene);
-    entity.netId = this.nextEntityNetId++;
-    this.entities.push(entity);
-    this.ceifadorEntity = entity;
-  }
-
-  private despawnCeifadorNightHunt() {
-    if (!this.ceifadorEntity) return;
-    const idx = this.entities.indexOf(this.ceifadorEntity);
-    if (idx >= 0) this.entities.splice(idx, 1);
-    this.ceifadorEntity.returnToPool(this.scene);
-    this.ceifadorEntity = null;
+  /**
+   * Level 94's catch: each monster to the far side of the ground it's allowed
+   * on (the streets for the Animations, the hall for the King) — never into
+   * the hills, where relocateFarAway's whole-map search would put them.
+   */
+  private relocateTownEntities(gx: number, gz: number) {
+    for (const ent of this.entities) {
+      const cells = townRelocationCells(ent.type, gx, gz);
+      const pick = cells[Math.floor(Math.random() * Math.min(6, cells.length))];
+      if (pick) ent.teleportTo(pick[0], pick[1]);
+    }
   }
 
   /**
@@ -4845,6 +4961,7 @@ export class GameEngine {
     this.voip.dispose();
     this.teardownFun();
     this.teardownSpace();
+    this.teardownTown();
     if (this.fadeOverlay) {
       this.fadeOverlay.geometry.dispose();
       (this.fadeOverlay.material as THREE.Material).dispose();

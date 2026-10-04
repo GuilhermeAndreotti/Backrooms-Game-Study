@@ -10,8 +10,10 @@ import { DynamicLightSource } from "./LightPool";
 import { QualityProfile, getQualityProfile } from "./Quality";
 import { NoiseBus } from "./systems/noiseBus";
 import { VisitTracker } from "./systems/visitTracker";
-import { contentLevelFor, FUN_CONTENT_LEVEL, SPACE_LEVEL } from "./levels/constants";
+import { contentLevelFor, FUN_CONTENT_LEVEL, OLD_TOWN_CONTENT_LEVEL, SPACE_LEVEL } from "./levels/constants";
 import { SpaceWorld } from "./levels/spaceWorld";
+import { TownWorld } from "./levels/townWorld";
+import { TOWN_GRID, TOWN_SPAWN, townCellAt, townGroundHeight } from "./levels/townLayout";
 import { SPACE_GRID, SPACE_RECTS, SPACE_SPAWN } from "./levels/spaceLayout";
 import { CAR_COLOR_HEX, GARAGE_DIVIDERS, GARAGE_SAFE_RADIUS, GARAGE_FLOORS, GARAGE_FLOOR_Y, GaragePlan, garageFloorAt, garageKeepClear, garagePillarAt, garagePlan, rampAt, rampHeightAt } from "./levels/garageLayout";
 import { FunWorld } from "./levels/funWorld";
@@ -91,8 +93,9 @@ export function gridSizeForLevel(level: number): number {
   level = contentLevelFor(level);
   if (level === 4) return 18; // Level G: a small office, on purpose
   if (level === SPACE_LEVEL) return SPACE_GRID; // Level 79: a hand-laid station
+  if (level === OLD_TOWN_CONTENT_LEVEL) return TOWN_GRID; // Level 94: a town, its hills and a castle
   if (level === LOBBY_LEVEL) return 16; // the room lobby: small, open-air
-  if (level === 6 || level === 7) return 40; // the new main-progression levels — simpler layouts than 1/2, a smaller grid to match
+  if (level === 7) return 40; // the Poolrooms — a simpler layout than 1/2, a smaller grid to match
   if (level === 3 || level === 8 || level === 9) return 48;
   return level === 0 ? 64 : 48;
 }
@@ -290,6 +293,9 @@ export class ProceduralMap {
   /** Dead-end trigger cell at the end of the dark corridor; -1 if not Level 1. */
   public secretGridX = -1;
   public secretGridZ = -1;
+  /** The Electrical Room's way out: a nook in its north wall with a door to Level 94's town. -1 if none. */
+  public townExitX = -1;
+  public townExitZ = -1;
 
   // --- Level 0: secret office door leading to Level G ---------------------
   /** The dark one-cell nook behind the door; stepping into it enters Level G. -1 if none. */
@@ -552,6 +558,7 @@ export class ProceduralMap {
     this.initMaterials();
     if (this.level === FUN_CONTENT_LEVEL) this.fun = this.createFunWorld();
     if (this.level === SPACE_LEVEL) this.space = this.createSpaceWorld();
+    if (this.level === OLD_TOWN_CONTENT_LEVEL) this.town = this.createTownWorld();
     this.generateGrid();
     this.findExitPath();
   }
@@ -701,7 +708,7 @@ export class ProceduralMap {
 
     // Level G: no breadcrumbs, drafts or wet trails to the exit — finding the
     // emergency door (and earning it) is the level.
-    if (this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL || this.level === SPACE_LEVEL) foundPath = [];
+    if (this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL || this.level === SPACE_LEVEL || this.level === OLD_TOWN_CONTENT_LEVEL) foundPath = [];
 
     this.exitPath = foundPath;
     this.exitPathSet.clear();
@@ -1868,6 +1875,8 @@ export class ProceduralMap {
       this.carveFun();
     } else if (this.level === SPACE_LEVEL) {
       this.carveSpace();
+    } else if (this.level === OLD_TOWN_CONTENT_LEVEL) {
+      this.carveTown();
     } else if (this.level === LOBBY_LEVEL) {
       this.carveLobby();
     } else if (this.level === 3) {
@@ -1935,9 +1944,9 @@ export class ProceduralMap {
       // A cramped final service crawlspace leading to the barred exit.
       for (let x = 40; x <= 43; x++) this.level3LowCorridor.add(`${x},42`);
       for (let z = 42; z <= 44; z++) this.level3LowCorridor.add(`44,${z}`);
+      // A door out of the building, onto a sunny road (Level 94).
+      this.carveElectricalTownExit();
 
-    } else if (this.level === 6) {
-      this.carveLevel6();
     } else if (this.level === 7) {
       this.carveLevel7();
     } else {
@@ -2164,7 +2173,7 @@ export class ProceduralMap {
 
     // Level G is hand-laid; the generic spawn clearing below would punch
     // through its reception walls.
-    if (this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL || this.level === SPACE_LEVEL) return;
+    if (this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL || this.level === SPACE_LEVEL || this.level === OLD_TOWN_CONTENT_LEVEL) return;
 
     // Ensure spawn around (2,2) is safe, walkable, and fully cleared
     for (let dx = -1; dx <= 2; dx++) {
@@ -2327,6 +2336,34 @@ export class ProceduralMap {
   }
 
   /**
+   * The Electrical Room's way out to Level 94: a one-cell nook cut into the
+   * building's north wall from one of the top rooms, somewhere along it by
+   * seed, with an exit door standing open onto daylight at its end.
+   */
+  private carveElectricalTownExit() {
+    const z = 1;
+    const options: number[] = [];
+    for (let x = 5; x < this.gridSize - 3; x++) {
+      if (this.grid[x][z] !== CellType.SOLID || this.grid[x][z + 1] === CellType.SOLID) continue;
+      if (this.grid[x - 1][z + 1] === CellType.SOLID || this.grid[x + 1][z + 1] === CellType.SOLID) continue;
+      if (this.level3Switches.some(([sx, sz]) => Math.abs(sx - x) <= 1 && Math.abs(sz - (z + 1)) <= 1)) continue;
+      options.push(x);
+    }
+    if (options.length === 0) return;
+    const x = options[Math.floor(new SeededRandom(this.seed * 17 + 9494).next() * options.length)];
+    this.grid[x][z] = CellType.CORRIDOR;
+    this.townExitX = x;
+    this.townExitZ = z;
+  }
+
+  /** Whether a world position has reached the Electrical Room's exit door (the far end of its nook). */
+  public atTownExitDoor(x: number, z: number): boolean {
+    if (this.townExitX < 0) return false;
+    const cs = this.cellSize;
+    return Math.floor(x / cs) === this.townExitX && Math.floor(z / cs) === this.townExitZ && z < this.townExitZ * cs + 1.7;
+  }
+
+  /**
    * Level 0's secret way into Level G: a one-cell nook dug into a wall face
    * somewhere in the lobby, fronted by a small office door. The spot is drawn
    * from the seed (same for the whole room, different every run) and kept off
@@ -2458,63 +2495,6 @@ export class ProceduralMap {
       this.levelGDocCells.push(options[Math.floor(rng.next() * options.length)]);
     }
     this.levelGCode = [0, 1, 2].map(() => String(Math.floor(rng.next() * 10))).join("");
-  }
-
-  /**
-   * LEVEL 6 ("LEVEL 4" display — theme: a grassy clearing opening onto a
-   * small castle). Simpler, less densely hand-decorated than levels 0-2's
-   * maps (those got years of iterative tuning in this project's history;
-   * this is a first pass) — a real, fully walkable, thematically distinct
-   * layout: a central field ringed by "houses" (ROOM_LARGE, doubling as
-   * night hiding spots via hideCells — see GameEngine's day/night cycle),
-   * leading to an arched castle chamber around the exit.
-   */
-  private carveLevel6() {
-    const fieldMin = 6, fieldMax = this.gridSize - 10;
-    for (let x = fieldMin; x <= fieldMax; x++) {
-      for (let z = fieldMin; z <= fieldMax; z++) {
-        this.grid[x][z] = CellType.OPEN_AREA;
-      }
-    }
-
-    // Corridor from spawn into the field.
-    for (let x = 2; x <= fieldMin; x++) this.grid[x][2] = CellType.CORRIDOR;
-    for (let z = 2; z <= fieldMin; z++) this.grid[fieldMin][z] = CellType.CORRIDOR;
-
-    // A scatter of "houses" around the field's edge — ROOM_LARGE cells that
-    // double as night hiding spots (see GameEngine.inCloset/hideCells).
-    const houses: [number, number][] = [
-      [fieldMin - 3, fieldMin + 4], [fieldMin + 4, fieldMin - 3],
-      [fieldMax - 2, fieldMin + 8], [fieldMin + 8, fieldMax - 2],
-      [fieldMax - 6, fieldMax - 6],
-    ];
-    for (const [hx, hz] of houses) {
-      for (let dx = -1; dx <= 1; dx++) {
-        for (let dz = -1; dz <= 1; dz++) {
-          const nx = hx + dx, nz = hz + dz;
-          if (nx >= 2 && nx < this.gridSize - 2 && nz >= 2 && nz < this.gridSize - 2) {
-            this.grid[nx][nz] = CellType.ROOM_LARGE;
-            this.hideCells.add(`${nx},${nz}`);
-          }
-        }
-      }
-    }
-
-    // A corridor sweeping from the field to the castle at the far corner.
-    for (let x = fieldMax; x < this.gridSize - 2; x++) this.grid[x][fieldMax] = CellType.CORRIDOR;
-    for (let z = fieldMax; z < this.gridSize - 2; z++) this.grid[this.gridSize - 3][z] = CellType.CORRIDOR;
-
-    // The castle: an arched chamber around the exit.
-    for (let x = this.gridSize - 9; x < this.gridSize - 2; x++) {
-      for (let z = this.gridSize - 9; z < this.gridSize - 2; z++) {
-        this.grid[x][z] = CellType.ARCH_ROOM;
-      }
-    }
-
-    this.exitGridX = this.gridSize - 3;
-    this.exitGridZ = this.gridSize - 3;
-    this.grid[2][2] = CellType.CORRIDOR;
-    this.grid[this.exitGridX][this.exitGridZ] = CellType.ARCH_ROOM;
   }
 
   /**
@@ -2871,6 +2851,42 @@ export class ProceduralMap {
     });
   }
 
+  /**
+   * Level 94: the town, the hills and the castle of townLayout.ts. Like Level
+   * 79 there is no exit cell (exitGrid stays 0,0): the director ends the level
+   * past the throne room's door.
+   */
+  private carveTown() {
+    for (let x = 0; x < this.gridSize; x++) {
+      for (let z = 0; z < this.gridSize; z++) {
+        const cell = townCellAt(x, z);
+        if (!cell) continue;
+        this.grid[x][z] = cell.kind === "interior" || cell.kind === "room" ? CellType.ROOM_LARGE
+          : cell.kind === "plaza" || cell.kind === "hills" ? CellType.OPEN_AREA
+            : CellType.CORRIDOR;
+      }
+    }
+    this.spawnGridX = TOWN_SPAWN.gx;
+    this.spawnGridZ = TOWN_SPAWN.gz;
+    this.exitGridX = 0;
+    this.exitGridZ = 0;
+  }
+
+  private createTownWorld(): TownWorld {
+    this.decorKit ??= {
+      geo: (key, build) => this.sharedGeo(key, build),
+      mat: (key, build) => this.sharedMat(key, build),
+      wallTile: this.wallMaterial,
+      track: (texture) => { this.sharedTextures.push(texture); },
+    };
+    return new TownWorld({
+      kit: this.decorKit,
+      seed: this.seed,
+      registerLight: (gx, gz, x, y, z, color, intensity, distance, decay) => this.registerLight(gx, gz, x, y, z, color, intensity, distance, decay),
+      addObstacle: (gx, gz, x, z, radius) => this.addObstacle(gx, gz, x, z, radius),
+    });
+  }
+
   /** The room lobby: a small open-air plot, no exit; props are added by Lobby. */
   private carveLobby() {
     const h = LOBBY.hall;
@@ -2984,6 +3000,84 @@ export class ProceduralMap {
       sign.rotation.y = up ? -Math.PI / 2 : Math.PI / 2;
       group.add(sign);
     }
+  }
+
+  /**
+   * The Electrical Room's exit to Level 94, at the end of its nook in the
+   * north wall: a steel door frame, the door swung open into the nook, a green
+   * SAÍDA sign over it, and through the doorway (painted, lit like daylight) a
+   * road running off between green hills towards a little town.
+   */
+  private buildTownExitDoor(group: THREE.Group, gx: number, gz: number, posX: number) {
+    const cs = this.cellSize;
+    const wallZ = gz * cs;
+    const view = this.sharedMat("town_exit_view", () => {
+      const c = document.createElement("canvas");
+      c.width = 512; c.height = 384;
+      const g = c.getContext("2d")!;
+      const sky = g.createLinearGradient(0, 0, 0, 230);
+      sky.addColorStop(0, "#3f7fd0"); sky.addColorStop(1, "#cfe8f6");
+      g.fillStyle = sky; g.fillRect(0, 0, 512, 230);
+      g.fillStyle = "#fff6c8"; g.beginPath(); g.arc(400, 60, 26, 0, Math.PI * 2); g.fill();
+      g.fillStyle = "#ffffff";
+      for (const [x, y, r] of [[90, 70, 22], [120, 62, 28], [150, 72, 20], [300, 40, 18], [326, 34, 24]]) { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); }
+      g.fillStyle = "#7fae86"; g.beginPath(); g.ellipse(120, 240, 200, 70, 0, Math.PI, 0); g.fill();
+      g.fillStyle = "#6f9f4a"; g.beginPath(); g.ellipse(400, 250, 220, 80, 0, Math.PI, 0); g.fill();
+      g.fillStyle = "#62933f"; g.fillRect(0, 230, 512, 154);
+      // Little houses and the clock tower on the horizon.
+      const houses: [number, string, string][] = [[200, "#f2b8b5", "#8f3b3b"], [236, "#f3dc8c", "#6b4a32"], [300, "#a9d3e8", "#3c5a7a"], [334, "#b6d9a8", "#4d6b3a"]];
+      for (const [x, wall, roof] of houses) {
+        g.fillStyle = wall; g.fillRect(x, 206, 26, 22);
+        g.fillStyle = roof; g.beginPath(); g.moveTo(x - 3, 207); g.lineTo(x + 13, 194); g.lineTo(x + 29, 207); g.fill();
+      }
+      g.fillStyle = "#d8c8b0"; g.fillRect(266, 172, 14, 56);
+      g.fillStyle = "#2f5f4a"; g.beginPath(); g.moveTo(262, 173); g.lineTo(273, 156); g.lineTo(284, 173); g.fill();
+      g.fillStyle = "#f6efd8"; g.beginPath(); g.arc(273, 182, 4, 0, Math.PI * 2); g.fill();
+      // The road out, getting narrower towards the town.
+      g.fillStyle = "#55555a"; g.beginPath(); g.moveTo(140, 384); g.lineTo(372, 384); g.lineTo(262, 230); g.lineTo(250, 230); g.fill();
+      g.fillStyle = "#e8b830";
+      for (let i = 0; i < 6; i++) { const y = 240 + i * 24; const w = 1 + i * 1.4; g.fillRect(256 - w / 2, y, w, 10 + i * 2); }
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      // The doorway is tall and narrow: show the middle of the scene (the road and the town).
+      tex.repeat.set(0.47, 1);
+      tex.offset.set(0.265, 0);
+      this.sharedTextures.push(tex);
+      return new THREE.MeshBasicMaterial({ map: tex });
+    });
+    const doorW = 1.5, doorH = 2.4;
+    const outside = new THREE.Mesh(this.sharedGeo("town_exit_view", () => new THREE.PlaneGeometry(doorW, doorH)), view);
+    outside.position.set(posX, doorH / 2, wallZ + 0.07);
+    group.add(outside);
+    // Steel frame around the doorway.
+    const steel = this.sharedMat("town_exit_frame", () => new THREE.MeshStandardMaterial({ color: 0x4a5258, roughness: 0.45, metalness: 0.6 }));
+    for (const sx of [-1, 1]) {
+      const jamb = new THREE.Mesh(this.sharedGeo("town_exit_jamb", () => new THREE.BoxGeometry(0.14, doorH + 0.14, 0.16)), steel);
+      jamb.position.set(posX + sx * (doorW / 2 + 0.07), (doorH + 0.14) / 2, wallZ + 0.09);
+      group.add(jamb);
+    }
+    const lintel = new THREE.Mesh(this.sharedGeo("town_exit_lintel", () => new THREE.BoxGeometry(doorW + 0.28, 0.14, 0.16)), steel);
+    lintel.position.set(posX, doorH + 0.07, wallZ + 0.09);
+    group.add(lintel);
+    // The door itself, standing open into the nook on its left hinge.
+    const leafMat = this.sharedMat("town_exit_leaf", () => new THREE.MeshStandardMaterial({ color: 0x5a6a5a, roughness: 0.5, metalness: 0.5 }));
+    const hinge = new THREE.Group();
+    hinge.position.set(posX - doorW / 2, 0, wallZ + 0.14);
+    hinge.rotation.y = -1.75;
+    const leaf = new THREE.Mesh(this.sharedGeo("town_exit_leaf", () => new THREE.BoxGeometry(doorW - 0.05, doorH - 0.03, 0.06)), leafMat);
+    leaf.position.set((doorW - 0.05) / 2, (doorH - 0.03) / 2, 0);
+    hinge.add(leaf);
+    const bar = new THREE.Mesh(this.sharedGeo("town_exit_bar", () => new THREE.BoxGeometry(doorW * 0.7, 0.06, 0.08)), steel);
+    bar.position.set(doorW * 0.45, 1.05, 0.06);
+    hinge.add(bar);
+    group.add(hinge);
+    this.addObstacle(gx, gz, posX - doorW / 2 + 0.2, wallZ + 0.9, 0.22);
+    // Daylight spilling in through the doorway.
+    this.registerLight(gx, gz, posX, 2.2, wallZ + 1.0, 0xfff1d0, 2.4, 10, 1.0);
+    const sign = new THREE.Mesh(this.sharedGeo("town_exit_sign", () => new THREE.PlaneGeometry(1.2, 0.36)),
+      this.garageLabel(t("town.sign.exitDoor"), 1.2, 0.36, "#ffffff", "#1f7a3a"));
+    sign.position.set(posX, doorH + 0.42, wallZ + 0.08);
+    group.add(sign);
   }
 
   /** A parking-structure column with a hazard band and its storey number. */
@@ -3166,6 +3260,8 @@ export class ProceduralMap {
     const gx = Math.floor(worldX / this.cellSize);
     const gz = Math.floor(worldZ / this.cellSize);
     if (gx < 0 || gz < 0 || gx >= this.gridSize || gz >= this.gridSize) return 0;
+    // Level 94's valley rolls between the hills (flat in town and in the castle).
+    if (this.town) return townGroundHeight(worldX, worldZ);
     // Flooded pool cells are sunken: wading in is a step down, leaving is a step up.
     let pool = this.grid[gx][gz] === CellType.WATER_ROOM ? POOL_FLOOR_Y : 0;
     const stair = this.level === 7 ? this.poolStairCells.get(`${gx},${gz}`) : undefined;
@@ -3221,7 +3317,9 @@ export class ProceduralMap {
       : here === CellType.RED_ROOM ? -0.15
       : 0;
     // Poolrooms: tiled everywhere; Pipe Dreams: bare metal; the room lobby: kept dry.
-    const levelBoost = this.level === 7 ? 0.25 : this.level === 2 ? 0.2 : this.level === LOBBY_LEVEL ? -0.4 : 0;
+    // Level 94: dry in the open air, a ring to the castle's stone halls.
+    const levelBoost = this.level === 7 ? 0.25 : this.level === 2 ? 0.2 : this.level === LOBBY_LEVEL ? -0.4
+      : this.town ? (townCellAt(gx, gz)?.zone === "castle" ? 0.1 : -0.5) : 0;
     // Only genuinely wide-open surroundings ring; ordinary halls stay mostly dry.
     const space = THREE.MathUtils.smoothstep(openness, 0.6, 1.0) * 0.85;
     const echo = THREE.MathUtils.clamp(space * (1 - 0.6 * clutterFactor) + typeBoost + levelBoost, 0, 1);
@@ -3406,6 +3504,8 @@ export class ProceduralMap {
         }
         // Level FUN's doors: a shut one fills its whole cell.
         if (this.fun && this.fun.isGateClosed(gx, gz)) return true;
+        // Level 94's gates likewise (the barricade, the portcullis, the King's door).
+        if (this.town && this.town.isBlocked(gx, gz)) return true;
         if (!ignorePoolGate && this.isPoolCellBlocked(gx, gz)) return true;
         if (this.level === 8 && !this.level3GateOpen && gx === this.level3GateX && gz === this.level3GateZ) {
           const gateEdge = this.level3GateX * this.cellSize;
@@ -3869,6 +3969,8 @@ export class ProceduralMap {
 
   /** Level 79's station (geometry, doors, screens, lights); null on every other level. */
   public space: SpaceWorld | null = null;
+  /** Level 94's town, hills and castle; null on every other level. */
+  public town: TownWorld | null = null;
 
   /** Whether a Level 3/4 cell may take a thin wall divider without crowding anything. */
   private dividerAllowed(gx: number, gz: number, cellType: CellType): boolean {
@@ -4017,6 +4119,8 @@ export class ProceduralMap {
     if (this.fun && cellType !== CellType.SOLID) return this.fun.createCell(gx, gz);
     // Level 79 likewise (see levels/spaceWorld.ts).
     if (this.space && cellType !== CellType.SOLID) return this.space.createCell(gx, gz);
+    // Level 94 is built whole, not per cell (see levels/townWorld.ts): its cells stay empty.
+    if (this.town) return group;
 
     if (cellType === CellType.SOLID) {
       // Solid cells are wall blocks. We construct walls outward towards neighbors
@@ -5815,6 +5919,7 @@ export class ProceduralMap {
     // this cell's own floor) — offsetting the whole group is what actually
     // puts Level 1's higher sectors and ramp steps at their real elevation.
     if (this.garage) this.buildGarageSetPieces(group, gx, gz, posX, posZ, fY);
+    if (gx === this.townExitX && gz === this.townExitZ) this.buildTownExitDoor(group, gx, gz, posX);
     if (fY !== 0) group.position.y = fY;
 
     return group;
@@ -7286,6 +7391,7 @@ export class ProceduralMap {
   public clearAll(scene: THREE.Scene) {
     this.fun = null;
     this.space = null;
+    this.town = null;
     this.lastCulledX = -9999;
     this.lastCulledZ = -9999;
     this.visibleCellKeys.clear();

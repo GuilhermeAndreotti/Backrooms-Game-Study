@@ -52,6 +52,20 @@ export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
     unlocked: false,
   },
   {
+    id: "old_town_complete",
+    title: "",
+    description: "",
+    iconName: "Trophy",
+    unlocked: false,
+  },
+  {
+    id: "old_town_stay",
+    title: "",
+    description: "",
+    iconName: "Lock",
+    unlocked: false,
+  },
+  {
     id: "secret_level_found",
     title: "",
     description: "",

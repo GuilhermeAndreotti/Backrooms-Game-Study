@@ -7,7 +7,7 @@ interface LevelSelectorModalProps {
 const LEVELS = [
   [LEVEL_0, "Level 0"], [LEVEL_1, "Level 1"], [LEVEL_2, "Level 2"],
   [ELECTRICAL_ROOM_LEVEL, "Level 3 · Electrical Room"], [ABANDONED_OFFICE_LEVEL, "Level 4 · Abandoned Office"], [POOLROOMS_LEVEL, "Poolrooms"],
-  [LIGHTS_OUT_LEVEL, "Level 6 · secreto"], [LEVEL_G, "Level G · secreto"], [MOTION_LEVEL, "Motion"], [FUN_LEVEL, "Level FUN · secreto"],
+  [LIGHTS_OUT_LEVEL, "Level 6 · secreto"], [LEVEL_G, "Level G · secreto"], [OLD_TOWN_LEVEL, "Level 94 · The Old Town"], [FUN_LEVEL, "Level FUN · secreto"],
   [SPACE_LEVEL, "Level 79 · Space Station"],
 ] as const;
 
@@ -31,4 +31,4 @@ export function LevelSelectorModal({ isHost, onStart, onClose }: LevelSelectorMo
     </div>
   );
 }
-import { ABANDONED_OFFICE_LEVEL, ELECTRICAL_ROOM_LEVEL, LEVEL_0, LEVEL_1, LEVEL_2, FUN_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, SPACE_LEVEL } from "../game/levels/constants";
+import { ABANDONED_OFFICE_LEVEL, ELECTRICAL_ROOM_LEVEL, LEVEL_0, LEVEL_1, LEVEL_2, FUN_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, OLD_TOWN_LEVEL, POOLROOMS_LEVEL, SPACE_LEVEL } from "../game/levels/constants";

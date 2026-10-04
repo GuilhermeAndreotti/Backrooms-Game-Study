@@ -17,7 +17,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { ALL_ENTITY_TYPES } from "./src/shared/entityTypes";
 import { GIVE_RANGE_SERVER, isInventoryItemId, isQuickChatId } from "./src/shared/items";
 import { ROOM_CHEATS, SUDO_CHEAT, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
-import { LOBBY_LEVEL, LEVEL_1, MAIN_LEVELS, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, MOTION_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
+import { LOBBY_LEVEL, LEVEL_1, MAIN_LEVELS, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, OLD_TOWN_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
 import { POOL_ROOM_COUNT, POOL_VALVE_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./src/game/poolroomsPuzzle";
 
 // ---------------------------------------------------------------------------
@@ -169,6 +169,12 @@ interface Room {
   poolVigiaIntellect: number;
   /** Level FUN puzzle facts announced so far ("kind:index"), replayed to explorers who arrive later. */
   funFacts: Set<string>;
+  /**
+   * Level 94 facts, replayed to explorers who arrive later: a clock part found,
+   * the clock started, where each model piece stands (last move wins), the
+   * model solved. Keyed so a piece moved twice keeps only its latest place.
+   */
+  townFacts: Map<string, [string, number]>;
   /**
    * Map pickups (almond water, notes, Level G documents...) already taken,
    * per level: consumable id -> Level G document index (-1 for anything
@@ -360,8 +366,10 @@ const FUN_ITEM = /^p[13]:[0-7]$/;
 /** Map pickup id: "<gx>,<gz>#<ordinal within the cell>" (see ProceduralMap.assignConsumableIds). */
 const CONSUMABLE_ID = /^\d{1,3},\d{1,3}#\d{1,2}$/;
 const MAX_CONSUMED_PER_LEVEL = 4000;
-/** Level 79 facts a client may announce (see spaceDirector.ts): power restored (0), a console set (0-8), a course executed (0 planet, 1 black hole), the planet course aborted (0). */
-const SPACE_EVENT_MAX_INDEX: Record<string, number> = { power: 0, set: 8, exec: 1, abort: 0 };
+/** Level 79 facts a client may announce (see spaceDirector.ts): power restored (0), a console set (0-8), a course executed (0 planet, 1 black hole, 2 the UNKNOWN course to Level 94), the planet course aborted (0). */
+const SPACE_EVENT_MAX_INDEX: Record<string, number> = { power: 0, set: 8, exec: 2, abort: 0 };
+/** Level 94 facts a client may announce (see townDirector.ts): a clock part found (0-2), the clock started (0), a model piece moved (piece * 3 + slot, 0-8), the model solved (0). */
+const TOWN_EVENT_MAX_INDEX: Record<string, number> = { part: 2, clock: 0, model: 8, solved: 0 };
 
 function gridInt(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < 256 ? value : null;
@@ -509,12 +517,14 @@ function sweepSharedLevelState(room: Room) {
     if (p.held && (p.dead || p.level !== FUN_LEVEL)) releaseFunHeld(room, p);
   });
   if (!occupied.has(FUN_LEVEL)) room.funFacts.clear();
+  if (!occupied.has(OLD_TOWN_LEVEL)) room.townFacts.clear();
   if (!occupied.has(LEVEL_1)) room.garageGateOpen = false;
   room.consumed.forEach((_ids, level) => { if (!occupied.has(level)) room.consumed.delete(level); });
 }
 
 function resetSharedLevelState(room: Room) {
   room.funFacts.clear();
+  room.townFacts.clear();
   room.consumed.clear();
   room.garageGateOpen = false;
   room.players.forEach((p) => { if (p.held) { p.held = ""; room.dirty.add(p.id); } });
@@ -621,6 +631,7 @@ async function startServer() {
             poolValvesTurned: new Set(),
             poolValveRevision: 0,
             funFacts: new Set(),
+            townFacts: new Map(),
             consumed: new Map(),
             garageGateOpen: false,
             poolVigiaIntellect: 0,
@@ -724,7 +735,7 @@ async function startServer() {
         p.flashlight = typeof data.flashlight === "boolean" ? data.flashlight : p.flashlight;
         p.state = typeof data.state === "string" ? data.state.slice(0, 16) : p.state;
         const requestedPlayerLevel = finiteNumber(data.level, p.level);
-        const isPrivateLevel = requestedPlayerLevel === LIGHTS_OUT_LEVEL || requestedPlayerLevel === LEVEL_G || requestedPlayerLevel === MOTION_LEVEL || requestedPlayerLevel === FUN_LEVEL || requestedPlayerLevel === SPACE_LEVEL;
+        const isPrivateLevel = requestedPlayerLevel === LIGHTS_OUT_LEVEL || requestedPlayerLevel === LEVEL_G || requestedPlayerLevel === OLD_TOWN_LEVEL || requestedPlayerLevel === FUN_LEVEL || requestedPlayerLevel === SPACE_LEVEL;
         const isAllowedMainLevel = (MAIN_LEVELS as readonly number[]).includes(requestedPlayerLevel) || requestedPlayerLevel === LOBBY_LEVEL;
         if (Number.isInteger(requestedPlayerLevel) && (isPrivateLevel || (isAllowedMainLevel && requestedPlayerLevel === room.level))) {
           p.level = requestedPlayerLevel;
@@ -891,6 +902,28 @@ async function startServer() {
         return;
       }
 
+      // Level 94: same idea, but the facts are kept for whoever arrives later
+      // (a model piece only keeps its latest place).
+      if (type === "town_event") {
+        const level = conn.player.level;
+        const kind = data.kind;
+        const index = data.index;
+        if (level !== OLD_TOWN_LEVEL || data.level !== level || conn.player.dead || typeof kind !== "string" || !Object.hasOwn(TOWN_EVENT_MAX_INDEX, kind)) return;
+        if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > TOWN_EVENT_MAX_INDEX[kind]) return;
+        // Once the model is solved its pieces stay put.
+        if (kind === "model" && room.townFacts.has("solved")) return;
+        const key = kind === "part" ? `part:${index}` : kind === "model" ? `model:${Math.floor(index / 3)}` : kind;
+        room.townFacts.set(key, [kind, index]);
+        broadcastToLevel(room, level, { type: "town_event", level, kind, index }, conn);
+        return;
+      }
+
+      if (type === "town_sync") {
+        if (data.level !== OLD_TOWN_LEVEL) return;
+        send(ws, { type: "town_state", level: OLD_TOWN_LEVEL, facts: [...room.townFacts.values()] });
+        return;
+      }
+
       // Level G: a non-authority player typed a code into the terminal. The
       // authority decides (alarm for everyone, or sets the monster on them).
       if (type === "levelg_code") {
@@ -1004,7 +1037,7 @@ async function startServer() {
       if (type === "start_game") {
         if (room.level !== LOBBY_LEVEL || room.hostId !== conn.player.id) return;
         const requestedLevel = data.level === undefined ? 0 : data.level;
-        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || (requestedLevel > MOTION_LEVEL && requestedLevel !== FUN_LEVEL && requestedLevel !== SPACE_LEVEL) || requestedLevel === LOBBY_LEVEL) return;
+        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || (requestedLevel > OLD_TOWN_LEVEL && requestedLevel !== FUN_LEVEL && requestedLevel !== SPACE_LEVEL) || requestedLevel === LOBBY_LEVEL) return;
         room.level = requestedLevel;
         resetPoolroomsState(room);
         reviveAll(room);

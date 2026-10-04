@@ -34,6 +34,10 @@ export enum EntityType {
   CEIFADOR = "CEIFADOR",
   /** O Alien: Level 79's stalker. Patrols anywhere, but never follows a chase into a cabin. */
   ALIEN = "ALIEN",
+  /** Level 94's night patrol: old cartoon characters. Never follow anyone into a house. */
+  ANIMATION = "ANIMATION",
+  /** Level 94's boss: sits on his throne until someone comes close, then never stops. */
+  TOWN_KING = "TOWN_KING",
 }
 
 /** Every known entity type, in enum declaration order. The single source of truth for server/client whitelists. */

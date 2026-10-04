@@ -365,8 +365,8 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
       // 6.2 Draw Wandering Stalker Entities (High Danger Anomalies)
       if (engine.entities && engine.entities.length > 0) {
         engine.entities.forEach(entity => {
-          // The Finger King and O Ceifador jam the radar: you have to listen/watch for them instead.
-          if (entity.type === "FINGER_KING" || entity.type === "CEIFADOR") return;
+          // The Finger King, O Ceifador and the Old Town's King jam the radar: you have to listen/watch for them instead.
+          if (entity.type === "FINGER_KING" || entity.type === "CEIFADOR" || entity.type === "TOWN_KING") return;
           const entX = entity.mesh.position.x;
           const entZ = entity.mesh.position.z;
           const rx = entX - px;
@@ -439,6 +439,11 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
                 colorFill = `rgba(14, 116, 144, ${0.45 + pulse * 0.55})`; // deep teal sheen
                 colorStroke = "#22d3ee";
                 label = t("radar.alien");
+                break;
+              case "ANIMATION":
+                colorFill = `rgba(245, 245, 245, ${0.35 + pulse * 0.5})`; // old film white
+                colorStroke = "#fafafa";
+                label = t("radar.animation");
                 break;
               default:
                 colorFill = `rgba(239, 68, 68, ${0.45 + pulse * 0.55})`;

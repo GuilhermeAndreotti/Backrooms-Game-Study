@@ -258,6 +258,8 @@ export interface MobDefinition {
    * player, so a patrol never reads as following anyone (O Alien).
    */
   calmIgnoresViewer?: boolean;
+  /** How close (metres) it has to get to catch someone; 1.45 when unset. */
+  catchRadius?: number;
 
   /** Radar HUD identity. */
   radar: { color: string; strokeColor: string; labelKey: string };

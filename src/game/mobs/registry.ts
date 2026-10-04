@@ -24,6 +24,8 @@ import { sombra } from "./sombra";
 import { vigia } from "./vigia";
 import { ceifador } from "./ceifador";
 import { alien } from "./alien";
+import { animation } from "./animation";
+import { townKing } from "./townKing";
 
 export const MOB_DEFS: Record<EntityType, MobDefinition> = {
   [EntityType.HOUND]: hound,
@@ -39,4 +41,6 @@ export const MOB_DEFS: Record<EntityType, MobDefinition> = {
   [EntityType.VIGIA]: vigia,
   [EntityType.CEIFADOR]: ceifador,
   [EntityType.ALIEN]: alien,
+  [EntityType.ANIMATION]: animation,
+  [EntityType.TOWN_KING]: townKing,
 };

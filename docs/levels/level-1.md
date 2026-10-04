@@ -50,3 +50,4 @@ Existe um corredor lateral **sem luz** com um beco sem saída. Chegar ao fim del
 - Mapa/andares: `garageLayout.ts` (puro dado, função da seed); sincronia do código: mensagem `garage_sync`.
 - Lógica: `GameEngine.updateGarage`, `updateSmilers`; HUD de setor (`sector.1`–`sector.3`).
 - Textos: chaves `garage.*` e `eng.garage*` em [pt-BR.ts](../../src/i18n/pt-BR.ts).
+
