@@ -95,13 +95,13 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     spawn: { kind: "bespoke" },
   },
 
-  // Level 94 ("The Old Town"): the King is spawned on his throne when the
+  // Level 94 ("Motion"): the King is spawned on his throne when the
   // level loads and the Animations only when night falls, both by
   // GameEngine (spawnTownKing / spawnTownAnimations) following the level's
   // own timeline (levels/townDirector.ts) rather than a roster here.
   [OLD_TOWN_LEVEL]: {
     id: OLD_TOWN_LEVEL,
-    displayLabel: "LEVEL 94 · THE OLD TOWN",
+    displayLabel: "LEVEL 94 · MOTION",
     spawn: { kind: "bespoke" },
   },
 

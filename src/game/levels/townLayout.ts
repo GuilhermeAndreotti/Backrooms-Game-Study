@@ -13,16 +13,16 @@
  *   │   corridor      │   a short corridor behind the puzzle gate
  *   │ ANIMATION ROOM  │   the model of the town
  *   │   ENTRANCE      │   toys, paintings
- *   └──── gate ───────┘
- *      GRASS HILLS        a winding valley, empty but for furniture
+ *   └──── gate ───────┘   all of it on top of a tall, steep hill
+ *      GRASS HILLS        a winding valley, empty but for furniture, climbing
  *         road            the barricade (35,50) only opens at night
- *   ┌──── OLD TOWN ────┐  ring streets, a plaza with the clock tower in
- *   │  ▢ ▢  │  ▢ ▢     │  the middle, four blocks of houses (six of them
- *   │  ▢ ▢  ┼  ▢ ▢     │  can be entered), and the bus stop at (35,68)
- *   └──── bus stop ────┘  where everyone arrives
+ *   ┌──── OLD TOWN ────┐  houses on hilltops (six can be entered), roads
+ *   │ ⌂   ⌂    ⌂  ⌂    │  winding between the hills, the clock tower on the
+ *   │   ⌂  ~~ ♜ ~~  ⌂  │  highest one, and the bus stop at (35,69) where
+ *   └──── bus stop ────┘  everyone arrives
  *
  * Map layout is fixed. The room seed only picks where each clock part lies
- * (out of two spots each) and how the model starts out of place, through
+ * (out of two spots each), through
  * {@link townRng} — never Math.random, which would desync clients.
  */
 
@@ -32,7 +32,7 @@ export const TOWN_GRID = 72;
 /** Metres per grid cell. */
 export const TOWN_CELL = 4;
 
-export type TownKind = "street" | "alley" | "plaza" | "interior" | "road" | "hills" | "room" | "door" | "exit";
+export type TownKind = "street" | "lawn" | "plaza" | "interior" | "road" | "hills" | "room" | "door" | "exit";
 export type TownZone = "town" | "road" | "hills" | "castle";
 export type TownSide = "N" | "S" | "W" | "E";
 
@@ -48,38 +48,45 @@ const rect = (id: string, kind: TownKind, x1: number, z1: number, x2: number, z2
 export const cellCenter = (g: number) => g * TOWN_CELL + TOWN_CELL / 2;
 
 // ---------------------------------------------------------------------------
-// The town
+// The town: houses on hilltops, roads winding between them
 // ---------------------------------------------------------------------------
 
-/** Everything a player can walk on in town, apart from the house interiors. */
-export const TOWN_STREETS: readonly TownRect[] = [
-  rect("northSt", "street", 25, 51, 45, 51),
-  rect("midSt", "street", 25, 57, 45, 57),
-  rect("southSt", "street", 25, 67, 45, 67),
-  rect("westSt", "street", 25, 51, 25, 67),
-  rect("eastSt", "street", 45, 51, 45, 67),
-  rect("mainSt", "street", 35, 51, 35, 57),
-  rect("busStop", "street", 35, 68, 35, 68),
-  rect("alleyNW", "alley", 30, 52, 30, 56),
-  rect("alleyNE", "alley", 40, 52, 40, 56),
-  rect("alleySW", "alley", 26, 62, 30, 62),
-  rect("alleySE", "alley", 40, 62, 44, 62),
-  rect("plaza", "plaza", 31, 58, 39, 66),
-];
+/** The town's ground: every cell in here is walkable grass (houses and the tower aside). */
+export const TOWN_AREA = { x1: 14, z1: 49, x2: 57, z2: 70 };
+/** Kept for older call sites: the town's rectangle on the grid. */
+export const TOWN_FOOTPRINT = TOWN_AREA;
+/** World z of the town's north edge (its last fence): past it, the hills. */
+export const TOWN_EDGE_Z = TOWN_AREA.z1 * 4;
 
-/** The town square's clock tower (one solid cell in the middle of the plaza). */
-export const TOWN_TOWER = { gx: 35, gz: 62 };
-/** Where everyone arrives: the bus stop south of the town. */
-export const TOWN_SPAWN = { gx: 35, gz: 68 };
-/** The only way out of town: a road north, barricaded until night falls. */
-export const TOWN_BARRICADE = { gx: 35, gz: 50 };
-/** Cells of the road out (barricade included). */
-export const TOWN_ROAD = rect("road", "road", 35, 46, 35, 50);
-/** The town's flat footprint (houses and all); beyond it the hills begin. */
-export const TOWN_FOOTPRINT = { x1: 22, z1: 50, x2: 48, z2: 71 };
+/** The clock tower: one solid cell on top of the town's highest hill. */
+export const TOWN_TOWER = { gx: 42, gz: 60 };
+/** The little square around the tower (the hilltop's flat top). */
+export const TOWER_PLAZA = { x1: 41, z1: 59, x2: 43, z2: 61 };
+/** Where everyone arrives: the bus stop at the bottom of the main road. */
+export const TOWN_SPAWN = { gx: 35, gz: 69 };
+/** The only way out of town: the main road north, barricaded until night falls. */
+export const TOWN_BARRICADE = { gx: 35, gz: 48 };
+/** Cells of the road out (just the barricade: past it is the valley). */
+export const TOWN_ROAD = rect("road", "road", 35, 48, 35, 48);
 /** Centre of the town in world metres (the model in the castle is built around it). */
-export const TOWN_CENTER_X = (TOWN_FOOTPRINT.x1 + TOWN_FOOTPRINT.x2 + 1) * TOWN_CELL / 2;
-export const TOWN_CENTER_Z = (TOWN_FOOTPRINT.z1 + TOWN_FOOTPRINT.z2 + 1) * TOWN_CELL / 2;
+export const TOWN_CENTER_X = (TOWN_AREA.x1 + TOWN_AREA.x2 + 1) * 4 / 2;
+export const TOWN_CENTER_Z = (TOWN_AREA.z1 + TOWN_AREA.z2 + 1) * 4 / 2;
+
+/**
+ * The town's roads (cell coordinates), winding through the valleys between
+ * the hills and riding up and down over their feet. Purely visual: the grass
+ * around them is just as walkable.
+ */
+export const TOWN_ROADS: readonly (readonly [number, number])[][] = [
+  // Main road: bus stop -> past the chapel -> under the tower hill -> the barricade.
+  [[35, 70], [35, 66], [34, 61], [33, 56], [35, 52], [35, 48]],
+  // East loop: round the tower hill, between the houses on the east side.
+  [[35, 66], [43, 67], [48, 61], [51, 56], [47, 54], [41, 55], [35, 54]],
+  // West road: out past the garage and the blue house to the pink cottage.
+  [[34, 61], [27, 61], [21, 59], [19, 56], [21, 50]],
+];
+/** Half-width of the asphalt (metres). */
+export const TOWN_ROAD_HALF = 1.9;
 
 export type LotStyle = "cottage" | "house" | "tall" | "shop" | "garage" | "chapel" | "cinema" | "hotel";
 
@@ -91,60 +98,66 @@ export interface TownLot {
   wall: number;
   roof: number;
   floors: number;
+  /** Height of the hill the house stands on (metres above the town's base ground). */
+  hill: number;
   /** Enterable houses: the cell and side of their door. Their whole lot is the interior. */
   door?: { gx: number; gz: number; side: TownSide };
   /** i18n key of a shop sign over the front. */
   sign?: string;
 }
 
-const lot = (id: string, x1: number, z1: number, x2: number, z2: number, style: LotStyle, wall: number, roof: number, floors: number, extra: Partial<TownLot> = {}): TownLot =>
-  ({ id, x1, z1, x2, z2, style, wall, roof, floors, ...extra });
+const lot = (id: string, x1: number, z1: number, x2: number, z2: number, style: LotStyle, wall: number, roof: number, floors: number, hill: number, extra: Partial<TownLot> = {}): TownLot =>
+  ({ id, x1, z1, x2, z2, style, wall, roof, floors, hill, ...extra });
 
 /**
- * Every building in town. The four blocks between the streets are tiled
- * exactly (alleys aside); the ring outside the ring streets is dotted with
- * more houses whose backs sink into the hills.
+ * Every building in town, each on its own hill (like a model railway's
+ * village): the lot is the hill's flat top. Six of them can be entered.
  */
 export const TOWN_LOTS: readonly TownLot[] = [
-  // NW block (west of the alley, then east of it)
-  lot("houseA", 26, 52, 29, 53, "cottage", 0xf2b8b5, 0x8f3b3b, 1, { door: { gx: 27, gz: 52, side: "N" } }),
-  lot("nw2", 26, 54, 29, 56, "house", 0xf3dc8c, 0x6b4a32, 2),
-  lot("garage", 31, 52, 34, 53, "garage", 0xc9c2b2, 0x5b5f66, 1, { door: { gx: 34, gz: 53, side: "E" }, sign: "town.sign.garage" }),
-  lot("hotel", 31, 54, 34, 56, "hotel", 0xd9a6c8, 0x5a3d6b, 3, { sign: "town.sign.hotel" }),
-  // NE block
-  lot("bakery", 36, 52, 39, 53, "shop", 0xf6e7c8, 0xb5523b, 1, { door: { gx: 36, gz: 52, side: "W" }, sign: "town.sign.bakery" }),
-  lot("ne2", 36, 54, 39, 56, "house", 0xa9d3e8, 0x3c5a7a, 2),
-  lot("ne3", 41, 52, 44, 54, "house", 0xb6d9a8, 0x4d6b3a, 2),
-  lot("houseB", 41, 55, 44, 56, "cottage", 0xf0c99a, 0x7a4a2a, 1, { door: { gx: 43, gz: 56, side: "S" } }),
-  // SW block (north of the alley, then south of it)
-  lot("chapel", 26, 58, 30, 61, "chapel", 0xeeeae0, 0x4a4f5a, 1),
-  lot("houseC", 26, 63, 27, 65, "cottage", 0xc8d8f0, 0x40527a, 1, { door: { gx: 26, gz: 64, side: "W" } }),
-  lot("sw3", 28, 63, 30, 66, "house", 0xf2c6a0, 0x8a4b2f, 2),
-  lot("sw4", 26, 66, 27, 66, "shop", 0xe8d0e8, 0x6b3a5a, 1, { sign: "town.sign.barber" }),
-  // SE block
-  lot("seShops", 40, 58, 40, 61, "shop", 0xf7d9a0, 0x7a5a2a, 1, { sign: "town.sign.grocer" }),
-  lot("houseD", 41, 58, 44, 60, "house", 0xd0e6c8, 0x5a6b3a, 1, { door: { gx: 44, gz: 59, side: "E" } }),
-  lot("se2", 41, 61, 44, 61, "shop", 0xe6c3c3, 0x6b3434, 1, { sign: "town.sign.tailor" }),
-  lot("cinema", 40, 63, 44, 66, "cinema", 0xe9b44c, 0x7a2e2e, 2, { sign: "town.sign.cinema" }),
-  // Outer ring
-  lot("w1", 22, 52, 24, 55, "house", 0xe8c4d8, 0x6b3a52, 2),
-  lot("w2", 22, 57, 24, 60, "cottage", 0xf5e2a8, 0x7a5a2a, 1),
-  lot("w3", 22, 62, 24, 66, "tall", 0xc4d4e8, 0x3a4a6b, 3),
-  lot("e1", 46, 52, 48, 56, "tall", 0xf0b8a0, 0x7a3a2a, 3),
-  lot("e2", 46, 58, 48, 61, "house", 0xc8e8d8, 0x3a6b5a, 2),
-  lot("e3", 46, 63, 48, 66, "cottage", 0xf8d8c0, 0x8a5a3a, 1),
-  lot("s1", 28, 68, 33, 70, "house", 0xd8d0f0, 0x4a3a7a, 2),
-  lot("s2", 37, 68, 42, 70, "house", 0xf0e0b0, 0x7a6a3a, 2),
+  // The six houses you can walk into (the clock parts are in three of them).
+  lot("houseA", 17, 52, 20, 53, "cottage", 0xf2b8b5, 0x8f3b3b, 1, 3.5, { door: { gx: 18, gz: 52, side: "N" } }),
+  lot("garage", 24, 54, 27, 55, "garage", 0xc9c2b2, 0x5b5f66, 1, 2.5, { door: { gx: 27, gz: 55, side: "E" }, sign: "town.sign.garage" }),
+  lot("bakery", 38, 51, 41, 52, "shop", 0xf6e7c8, 0xb5523b, 1, 2.0, { door: { gx: 38, gz: 51, side: "W" }, sign: "town.sign.bakery" }),
+  lot("houseB", 46, 57, 49, 58, "cottage", 0xf0c99a, 0x7a4a2a, 1, 4.0, { door: { gx: 48, gz: 58, side: "S" } }),
+  lot("houseC", 21, 62, 22, 64, "cottage", 0xc8d8f0, 0x40527a, 1, 3.0, { door: { gx: 21, gz: 63, side: "W" } }),
+  lot("houseD", 51, 62, 54, 64, "house", 0xd0e6c8, 0x5a6b3a, 1, 5.0, { door: { gx: 54, gz: 63, side: "E" } }),
+  // The rest of the village.
+  lot("chapel", 28, 63, 30, 65, "chapel", 0xeeeae0, 0x4a4f5a, 1, 4.5),
+  lot("n2", 44, 50, 45, 51, "house", 0xa9d3e8, 0x3c5a7a, 2, 3.0),
+  lot("n3", 53, 51, 54, 52, "tall", 0xf0b8a0, 0x7a3a2a, 2, 6.0),
+  lot("n4", 55, 57, 56, 58, "house", 0xb6d9a8, 0x4d6b3a, 2, 6.5),
+  lot("n5", 15, 58, 16, 59, "cottage", 0xf5e2a8, 0x7a5a2a, 1, 5.0),
+  lot("n6", 29, 50, 30, 51, "house", 0xe8c4d8, 0x6b3a52, 2, 4.0),
+  lot("n7", 46, 64, 47, 65, "cottage", 0xf8d8c0, 0x8a5a3a, 1, 2.5),
+  lot("n8", 16, 66, 17, 67, "tall", 0xc4d4e8, 0x3a4a6b, 2, 6.0),
+  lot("n9", 25, 67, 26, 68, "house", 0xd8d0f0, 0x4a3a7a, 2, 3.5),
+  lot("n10", 47, 68, 48, 69, "cottage", 0xc8e8d8, 0x3a6b5a, 1, 2.0),
+  lot("n11", 29, 57, 30, 58, "house", 0xf2c6a0, 0x8a4b2f, 2, 2.0),
+  lot("n12", 51, 67, 52, 68, "house", 0xf0e0b0, 0x7a6a3a, 2, 3.5),
+  lot("barber", 31, 68, 32, 69, "shop", 0xe8d0e8, 0x6b3a5a, 1, 0.6, { sign: "town.sign.barber" }),
+  lot("grocer", 38, 68, 39, 69, "shop", 0xf7d9a0, 0x7a5a2a, 1, 0.6, { sign: "town.sign.grocer" }),
 ];
 
 export function townLot(id: string): TownLot {
   return TOWN_LOTS.find((l) => l.id === id)!;
 }
 
+/** The tower's hill: the highest in town, its top flattened into a little square. */
+export const TOWER_HILL = 9;
+
 /** The house with the chair facing the open door (the secret ending ends there). */
 export const STAY_HOUSE = "houseC";
-/** The chair itself (world metres); it faces west, out of the door. */
-export const STAY_CHAIR = { x: 109.0, z: 258.0 };
+
+/** Lot-relative spot (metres from the lot's north-west corner) -> world metres, on the lot's floor. */
+export function lotPoint(lotId: string, u: number, v: number): { x: number; y: number; z: number } {
+  const l = townLot(lotId);
+  return { x: l.x1 * 4 + u, y: lotFloor(l), z: l.z1 * 4 + v };
+}
+
+/** The chair itself (world metres, on the house's floor); it faces west, out of the door. */
+export function stayChair(): { x: number; y: number; z: number } {
+  return lotPoint(STAY_HOUSE, 5, 6);
+}
 
 // ---------------------------------------------------------------------------
 // The hills
@@ -163,6 +176,12 @@ export const VALLEY_RADIUS = 3.2;
 
 /** Solid outline the castle's outer walls stand on. */
 export const CASTLE_FOOTPRINT = { x1: 31, z1: 1, x2: 39, z2: 26 };
+/** The castle stands on top of a tall, steep hill: its floor is this high (metres). */
+export const CASTLE_FLOOR = 38;
+/** How far (metres) from the castle's walls its hill runs before it meets the valley floor. */
+export const CASTLE_HILL_RADIUS = 100;
+/** Its slopes are walkable this far out (the rest of the hill is scenery). */
+const CASTLE_SLOPE_WALK = 64;
 
 export const CASTLE_ROOMS: readonly TownRect[] = [
   rect("entrance", "room", 32, 22, 38, 25),
@@ -197,25 +216,26 @@ export type ClockPart = "key" | "gear" | "hand";
 export const CLOCK_PARTS: readonly ClockPart[] = ["key", "gear", "hand"];
 
 export interface PartSpot {
-  /** World metres; y is the height of the surface it lies on. */
-  x: number; y: number; z: number;
-  /** The lot (house) it is in. */
+  /** The lot (house) it is in, and where in it (metres from the lot's north-west corner). */
   lot: string;
+  u: number; v: number;
+  /** Height of the surface it lies on, above the house's floor. */
+  y: number;
 }
 
-/** Two candidate spots per part, each on a table, bench or counter the world builds. */
+/** Two candidate spots per part, each on a table, workbench or counter the world builds. */
 export const PART_SPOTS: Record<ClockPart, readonly PartSpot[]> = {
   key: [
-    { x: 105.2, y: 0.78, z: 255.4, lot: "houseC" },
-    { x: 116.0, y: 0.78, z: 210.0, lot: "houseA" },
+    { lot: "houseC", u: 1.2, v: 3.4, y: 0.78 },
+    { lot: "houseA", u: 12, v: 2, y: 0.78 },
   ],
   gear: [
-    { x: 129.0, y: 0.95, z: 209.0, lot: "garage" },
-    { x: 177.5, y: 0.78, z: 242.0, lot: "houseD" },
+    { lot: "garage", u: 5, v: 1, y: 0.95 },
+    { lot: "houseD", u: 13.5, v: 10, y: 0.78 },
   ],
   hand: [
-    { x: 153.0, y: 1.02, z: 213.2, lot: "bakery" },
-    { x: 176.0, y: 0.78, z: 225.5, lot: "houseB" },
+    { lot: "bakery", u: 9, v: 5.2, y: 1.02 },
+    { lot: "houseB", u: 12, v: 5.5, y: 0.78 },
   ],
 };
 
@@ -224,6 +244,12 @@ export function partSpot(part: ClockPart, seed: number): PartSpot {
   const rng = townRng((seed ^ 0x94c10c) >>> 0);
   const picks = CLOCK_PARTS.map(() => (rng() < 0.5 ? 0 : 1));
   return PART_SPOTS[part][picks[CLOCK_PARTS.indexOf(part)]];
+}
+
+/** A part spot in world metres (y on the surface it lies on). */
+export function partSpotWorld(spot: PartSpot): { x: number; y: number; z: number } {
+  const p = lotPoint(spot.lot, spot.u, spot.v);
+  return { x: p.x, y: p.y + spot.y, z: p.z };
 }
 
 /** The clock's mechanism hatch, on the tower's south face (world metres; the player stands south of it). */
@@ -238,43 +264,34 @@ export const CLOCK_FACE_Y = 17.5;
 /** Table the model sits on, in the middle of the Animation Room (world metres). */
 export const MODEL_TABLE = { x: cellCenter(35), z: 72, y: 0.92 };
 /** Model metres per real metre. */
-export const MODEL_SCALE = 0.04;
-
-export type ModelPieceId = "house" | "car" | "clock";
-export const MODEL_PIECES: readonly ModelPieceId[] = ["house", "car", "clock"];
+export const MODEL_SCALE = 0.025;
 
 /**
- * Where each piece may stand, in REAL town metres (the model maps them onto
- * the table). Slot 0 is always where the thing really is: the clock in the
- * plaza, the red car outside the garage, the house with the chair on its lot.
+ * The model is missing five buildings: their plots stand empty on it, and
+ * the buildings wait in a tray (the assembly panel, TownModelModal). Each one
+ * goes back on the plot where the real one stands. `lot` is the real
+ * building's lot; the tower's is its hilltop square.
  */
-export const MODEL_SLOTS: Record<ModelPieceId, readonly [number, number][]> = {
-  house: [[108, 258], [158, 236], [118, 278]],
-  car: [[143.4, 214], [174, 270], [122, 246]],
-  clock: [[142, 250], [162, 230], [106, 206]],
-};
+export type ModelPieceId = "tower" | "houseC" | "bakery" | "chapel" | "houseD";
+export const MODEL_PIECES: readonly ModelPieceId[] = ["tower", "houseC", "bakery", "chapel", "houseD"];
 
-/** How the model starts: every piece off its true spot (slot 1 or 2), picked by the room seed. */
-export function modelStart(seed: number): Record<ModelPieceId, number> {
-  const rng = townRng((seed ^ 0x3a0de1) >>> 0);
-  const out = {} as Record<ModelPieceId, number>;
-  for (const id of MODEL_PIECES) out[id] = rng() < 0.5 ? 1 : 2;
-  return out;
+export interface ModelPiece {
+  id: ModelPieceId;
+  /** Lot rectangle (cells) of the real building. */
+  x1: number; z1: number; x2: number; z2: number;
+  wall: number;
+  roof: number;
 }
+
+export const MODEL_PIECE_DATA: readonly ModelPiece[] = MODEL_PIECES.map((id) => {
+  if (id === "tower") return { id, ...TOWER_PLAZA, wall: 0xd8c8b0, roof: 0x2f5f4a };
+  const l = townLot(id);
+  return { id, x1: l.x1, z1: l.z1, x2: l.x2, z2: l.z2, wall: l.wall, roof: l.roof };
+});
 
 /** Real-town metres -> world metres on the model table. */
 export function modelPoint(x: number, z: number): [number, number] {
   return [MODEL_TABLE.x + (x - TOWN_CENTER_X) * MODEL_SCALE, MODEL_TABLE.z + (z - TOWN_CENTER_Z) * MODEL_SCALE];
-}
-
-/** Network encoding of a model move: piece * 3 + slot. */
-export function encodeModel(piece: ModelPieceId, slot: number): number {
-  return MODEL_PIECES.indexOf(piece) * 3 + slot;
-}
-
-export function decodeModel(index: number): { piece: ModelPieceId; slot: number } | null {
-  const piece = MODEL_PIECES[Math.floor(index / 3)];
-  return piece ? { piece, slot: index % 3 } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,24 +313,24 @@ export interface TownsfolkSpot {
 
 /** The daytime townsfolk: harmless, looping the same few motions forever. */
 export const TOWNSFOLK: readonly TownsfolkSpot[] = [
-  { role: "sweeper", x: 150, z: 205.5, yaw: 0.4, coat: 0x6b8fbf, hat: 0x2b2b2b },
-  { role: "reader", x: 129.5, z: 238.5, yaw: Math.PI / 2, coat: 0x8a6b4a, hat: 0x3a2a1a },
-  { role: "postman", x: 110, z: 229, yaw: Math.PI / 2, coat: 0x2f4f8f, hat: 0x2f4f8f },
-  { role: "kid", x: 153, z: 261, yaw: -2.4, coat: 0xd94f4f, hat: 0xf2d24b },
-  { role: "lady", x: 144.2, z: 272.6, yaw: Math.PI, coat: 0x9a5fa8, hat: 0xd9a6c8 },
-  { role: "waver", x: 157.5, z: 257, yaw: -Math.PI / 2, coat: 0xe9b44c, hat: 0x7a2e2e },
-  { role: "painter", x: 182.6, z: 247, yaw: -Math.PI / 2, coat: 0xf2f2f2, hat: 0xf2f2f2 },
-  { role: "dancer", x: 136.5, z: 245, yaw: 0.6, coat: 0x4fa87a, hat: 0x2b2b2b },
-  { role: "dancer", x: 147.5, z: 245, yaw: -0.6, coat: 0xd98fb5, hat: 0x2b2b2b },
-  { role: "hatman", x: 102, z: 222, yaw: -Math.PI / 2, coat: 0x4a4a4a, hat: 0x1a1a1a },
+  { role: "sweeper", x: 149, z: 201.5, yaw: 0.4, coat: 0x6b8fbf, hat: 0x2b2b2b },
+  { role: "reader", x: 165.2, z: 246.5, yaw: Math.PI / 2, coat: 0x8a6b4a, hat: 0x3a2a1a },
+  { role: "postman", x: 133, z: 226, yaw: Math.PI / 2, coat: 0x2f4f8f, hat: 0x2f4f8f },
+  { role: "kid", x: 126, z: 270, yaw: -2.4, coat: 0xd94f4f, hat: 0xf2d24b },
+  { role: "lady", x: 143.4, z: 278.6, yaw: Math.PI, coat: 0x9a5fa8, hat: 0xd9a6c8 },
+  { role: "waver", x: 190, z: 241, yaw: 0, coat: 0xe9b44c, hat: 0x7a2e2e },
+  { role: "painter", x: 203.6, z: 271, yaw: -Math.PI / 2, coat: 0xf2f2f2, hat: 0xf2f2f2 },
+  { role: "dancer", x: 165.5, z: 237.5, yaw: 0.6, coat: 0x4fa87a, hat: 0x2b2b2b },
+  { role: "dancer", x: 174.5, z: 237.5, yaw: -0.6, coat: 0xd98fb5, hat: 0x2b2b2b },
+  { role: "hatman", x: 78, z: 203, yaw: Math.PI, coat: 0x4a4a4a, hat: 0x1a1a1a },
 ];
 
 /** Where the night's Animations stand when the lights go out (cells). Some townsfolk never left. */
-export const ANIMATION_CELLS: readonly [number, number][] = [[33, 60], [40, 57], [30, 54], [35, 51]];
+export const ANIMATION_CELLS: readonly [number, number][] = [[34, 59], [46, 54], [24, 60], [35, 51]];
 
 /** Houses that make noises behind their doors by day (world metres of the sound). */
 export const NOISY_HOUSES: readonly { x: number; z: number }[] = [
-  { x: 100, z: 216 }, { x: 186, z: 236 }, { x: 140, z: 222 }, { x: 116, z: 278 },
+  { x: 180, z: 204 }, { x: 64, z: 236 }, { x: 236, z: 232 }, { x: 104, z: 270 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -323,7 +340,7 @@ export const NOISY_HOUSES: readonly { x: number; z: number }[] = [
 export interface TownCell {
   kind: TownKind;
   zone: TownZone;
-  /** Street, lot, castle room or "valley". */
+  /** "town", "road", "plaza", a lot, a castle room or "valley". */
   region: string;
 }
 
@@ -348,25 +365,59 @@ export function valleyDistance(gx: number, gz: number): number {
 
 const inRect = (gx: number, gz: number, r: { x1: number; z1: number; x2: number; z2: number }) => gx >= r.x1 && gx <= r.x2 && gz >= r.z1 && gz <= r.z2;
 
+/** Cells a road's centre line runs through. */
+function roadCells(road: readonly (readonly [number, number])[]): [number, number][] {
+  const out: [number, number][] = [];
+  for (let i = 0; i < road.length - 1; i++) {
+    const [ax, az] = road[i], [bx, bz] = road[i + 1];
+    const n = Math.ceil(Math.hypot(bx - ax, bz - az) * 3);
+    for (let k = 0; k <= n; k++) out.push([Math.round(ax + ((bx - ax) * k) / n), Math.round(az + ((bz - az) * k) / n)]);
+  }
+  return out;
+}
+
+/** Distance (metres) from a world point to the nearest town road's centre line. */
+export function townRoadDistance(x: number, z: number): number {
+  let best = Infinity;
+  for (const road of TOWN_ROADS) {
+    for (let i = 0; i < road.length - 1; i++) {
+      const [ax, az] = road[i], [bx, bz] = road[i + 1];
+      best = Math.min(best, distToSegment(x, z, cellCenter(ax), cellCenter(az), cellCenter(bx), cellCenter(bz)));
+    }
+  }
+  return best;
+}
+
 (function buildGrid() {
   // 1. The valley, clipped off the town and the castle.
   for (let x = 2; x < TOWN_GRID - 2; x++) {
     for (let z = 2; z < TOWN_GRID - 2; z++) {
-      if (inRect(x, z, TOWN_FOOTPRINT) || inRect(x, z, CASTLE_FOOTPRINT)) continue;
+      if (z >= TOWN_BARRICADE.gz || inRect(x, z, CASTLE_FOOTPRINT)) continue;
       if (valleyDistance(x, z) <= VALLEY_RADIUS) grid[x][z] = { kind: "hills", zone: "hills", region: "valley" };
     }
   }
-  // 2. The road out of town (it runs through the valley's first cells).
-  for (let z = TOWN_ROAD.z1; z <= TOWN_ROAD.z2; z++) grid[TOWN_ROAD.x1][z] = { kind: "road", zone: "road", region: "road" };
-  // 3. Streets, alleys and the plaza; the tower stays solid.
-  for (const r of TOWN_STREETS) {
-    for (let x = r.x1; x <= r.x2; x++) for (let z = r.z1; z <= r.z2; z++) grid[x][z] = { kind: r.kind, zone: "town", region: r.id };
+  // 1b. The castle's hill: its upper slopes are open all round (the valley road climbs them to the gate).
+  for (let x = 2; x < TOWN_GRID - 2; x++) {
+    for (let z = 2; z < TOWN_BARRICADE.gz; z++) {
+      if (inRect(x, z, CASTLE_FOOTPRINT) || grid[x][z]) continue;
+      if (rectDistance(cellCenter(x), cellCenter(z), CASTLE_FOOTPRINT) < CASTLE_SLOPE_WALK) grid[x][z] = { kind: "hills", zone: "hills", region: "valley" };
+    }
   }
+  // 2. The town: all grass, the tower and the houses aside; the barricade north.
+  for (let x = TOWN_AREA.x1; x <= TOWN_AREA.x2; x++) {
+    for (let z = TOWN_AREA.z1; z <= TOWN_AREA.z2; z++) grid[x][z] = { kind: "lawn", zone: "town", region: "town" };
+  }
+  for (const [x, z] of TOWN_ROADS.flatMap((r) => roadCells(r))) {
+    if (grid[x]?.[z]?.region === "town") grid[x][z] = { kind: "street", zone: "town", region: "road" };
+  }
+  for (let x = TOWER_PLAZA.x1; x <= TOWER_PLAZA.x2; x++) for (let z = TOWER_PLAZA.z1; z <= TOWER_PLAZA.z2; z++) grid[x][z] = { kind: "plaza", zone: "town", region: "plaza" };
   grid[TOWN_TOWER.gx][TOWN_TOWER.gz] = null;
-  // 4. Houses that can be entered: their whole lot.
+  for (let z = TOWN_ROAD.z1; z <= TOWN_ROAD.z2; z++) grid[TOWN_ROAD.x1][z] = { kind: "road", zone: "road", region: "road" };
+  // 3. Houses: solid, except the ones you can walk into (their whole lot).
   for (const l of TOWN_LOTS) {
-    if (!l.door) continue;
-    for (let x = l.x1; x <= l.x2; x++) for (let z = l.z1; z <= l.z2; z++) grid[x][z] = { kind: "interior", zone: "town", region: l.id };
+    for (let x = l.x1; x <= l.x2; x++) for (let z = l.z1; z <= l.z2; z++) {
+      grid[x][z] = l.door ? { kind: "interior", zone: "town", region: l.id } : null;
+    }
   }
   // 5. The castle.
   for (const r of CASTLE_ROOMS) {
@@ -397,8 +448,8 @@ export function townRegionAt(x: number, z: number): string | null {
 }
 
 /**
- * Where each monster may go: the Animations keep to the town's streets
- * (never a house, never the road out); the King never leaves his hall.
+ * Where each monster may go: the Animations keep to the town (never a house,
+ * never the road out); the King never leaves his hall.
  */
 export function townEntityMayEnter(type: EntityType, gx: number, gz: number): boolean {
   const cell = grid[gx]?.[gz];
@@ -418,13 +469,18 @@ export function townRelocationCells(type: EntityType, gx: number, gz: number): [
 /**
  * Whether there is a clear line between two points (metres). `blocked` is
  * the map's collision test: walls, house fronts and parked cars all hide
- * someone; a lamp post mostly doesn't (it's thinner than the step).
+ * someone; a lamp post mostly doesn't (it's thinner than the step). With
+ * `ground`, a hill between the two eyes (1.5 m up) hides them too.
  */
-export function townSightClear(ax: number, az: number, bx: number, bz: number, blocked: (x: number, z: number) => boolean): boolean {
+export function townSightClear(ax: number, az: number, bx: number, bz: number, blocked: (x: number, z: number) => boolean, ground?: (x: number, z: number) => number): boolean {
   const dx = bx - ax, dz = bz - az;
   const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / 0.3));
+  const ya = ground ? ground(ax, az) + 1.5 : 0, yb = ground ? ground(bx, bz) + 1.5 : 0;
   for (let i = 2; i < steps - 1; i++) {
-    if (blocked(ax + (dx * i) / steps, az + (dz * i) / steps)) return false;
+    const k = i / steps;
+    const x = ax + dx * k, z = az + dz * k;
+    if (blocked(x, z)) return false;
+    if (ground && i % 3 === 0 && ground(x, z) > ya + (yb - ya) * k - 0.15) return false;
   }
   return true;
 }
@@ -440,7 +496,7 @@ const openDistance: Float32Array = (() => {
   for (let x = 0; x < n; x++) {
     for (let z = 0; z < n; z++) {
       const g = grid[x][z];
-      if ((g && g.zone !== "castle") || inRect(x, z, TOWN_FOOTPRINT) || inRect(x, z, CASTLE_FOOTPRINT)) d[x * n + z] = 0;
+      if ((g && g.zone !== "castle") || inRect(x, z, TOWN_AREA) || inRect(x, z, CASTLE_FOOTPRINT)) d[x * n + z] = 0;
     }
   }
   // Two-pass chamfer distance transform (1 / sqrt 2 weights).
@@ -481,22 +537,101 @@ function rectDistance(x: number, z: number, r: { x1: number; z1: number; x2: num
   return Math.hypot(Math.max(0, x1 - x, x - x2), Math.max(0, z1 - z, z - z2));
 }
 
+/** The castle's hill at `d` metres from its walls: a steep cone, rounded a little at the top. */
+function castleRise(d: number): number {
+  if (d >= CASTLE_HILL_RADIUS) return 0;
+  return CASTLE_FLOOR * Math.pow(1 - d / CASTLE_HILL_RADIUS, 1.3);
+}
+
+/** The gentle roll everything sits on (town, valley, hills alike). */
+function baseRoll(x: number, z: number): number {
+  return Math.sin(x * 0.045 + 1.3) * Math.cos(z * 0.038 - 0.7) * 1.1 + Math.sin(x * 0.09 + z * 0.07) * 0.45;
+}
+
+/** A town hill: flat on top over its rect, falling away around it like a dome. */
+interface Hill { r: { x1: number; z1: number; x2: number; z2: number }; h: number; radius: number }
+/** Height of a hill's shoulder at `d` metres out from its flat top. */
+const shoulder = (h: number, radius: number, d: number) => {
+  if (d >= radius) return 0;
+  const k = Math.cos((d / radius) * Math.PI * 0.5);
+  return h * k * k;
+};
+
+/** Gap (metres) between two cell rectangles. */
+function rectGap(a: { x1: number; z1: number; x2: number; z2: number }, b: { x1: number; z1: number; x2: number; z2: number }): number {
+  const dx = Math.max(0, a.x1 - b.x2 - 1, b.x1 - a.x2 - 1) * TOWN_CELL;
+  const dz = Math.max(0, a.z1 - b.z2 - 1, b.z1 - a.z2 - 1) * TOWN_CELL;
+  return Math.hypot(dx, dz);
+}
+
+const HILLS: Hill[] = (() => {
+  const hills: Hill[] = [
+    ...TOWN_LOTS.map((l) => ({ r: l, h: l.hill, radius: 9 + l.hill * 1.6 })),
+    { r: TOWER_PLAZA, h: TOWER_HILL, radius: 22 },
+  ];
+  // A house standing on a neighbour's slope sits as high as that slope reaches
+  // its lot: hills merge into one another instead of meeting at a cliff.
+  for (let pass = 0; pass < 4; pass++) {
+    for (const a of hills) {
+      for (const b of hills) {
+        if (a !== b) a.h = Math.max(a.h, shoulder(b.h, b.radius, rectGap(a.r, b.r)));
+      }
+    }
+  }
+  return hills;
+})();
+
+/** The town's own ground before the roads are cut in: the roll, plus every hill (the tallest wins where they meet). */
+function townRaw(x: number, z: number): number {
+  let top = 0;
+  for (const hill of HILLS) top = Math.max(top, shoulder(hill.h, hill.radius, rectDistance(x, z, hill.r)));
+  return baseRoll(x, z) * 0.6 + top;
+}
+
+/** Floor height of a lot (the flat top of its hill). */
+export function lotFloor(l: { x1: number; z1: number; x2: number; z2: number }): number {
+  const cx = (l.x1 + l.x2 + 1) * TOWN_CELL / 2, cz = (l.z1 + l.z2 + 1) * TOWN_CELL / 2;
+  return townRaw(cx, cz);
+}
+
+/** The tower's square, on top of its hill. */
+export const TOWER_FLOOR = lotFloor(TOWER_PLAZA);
+
+/** Pads: the lots' flat tops (blended out over a couple of metres so a doorstep never becomes a cliff). */
+const PADS = [...TOWN_LOTS.map((l) => ({ r: l as { x1: number; z1: number; x2: number; z2: number }, y: lotFloor(l) })), { r: TOWER_PLAZA, y: TOWER_FLOOR }];
+
 /**
- * Ground height (metres) at a world position. Flat in town and inside the
- * castle; a gentle roll along the valley floor; and outside the walkable
- * ground, hills that rise from the edge of it (never under anyone's feet:
- * the slope starts beyond the last walkable cell's border).
+ * Ground height (metres) at a world position. In town: hills under every
+ * house, flat on top, the roads winding over the ground between them. Along the valley:
+ * a gentle roll. Flat inside the castle. And outside the walkable ground, big
+ * hills that rise from its edge (the slope starts beyond the last walkable
+ * cell's border, never under anyone's feet).
  */
 export function townGroundHeight(x: number, z: number): number {
-  const flat = Math.min(rectDistance(x, z, TOWN_FOOTPRINT), rectDistance(x, z, CASTLE_FOOTPRINT));
-  if (flat <= 0) return 0;
-  const fade = smoothstep(4, 18, flat);
-  const roll = (Math.sin(x * 0.045 + 1.3) * Math.cos(z * 0.038 - 0.7) * 1.1 + Math.sin(x * 0.09 + z * 0.07) * 0.45) * fade;
+  const castle = rectDistance(x, z, CASTLE_FOOTPRINT);
+  if (castle <= 0) return CASTLE_FLOOR;
+  const inTown = rectDistance(x, z, TOWN_AREA);
+  let h: number;
+  if (inTown < 40) {
+    // The town (and a blend out of it): the hills, the roads riding over their feet.
+    let town = townRaw(x, z);
+    for (const pad of PADS) {
+      const d = rectDistance(x, z, pad.r);
+      if (d < 2.5) town += (pad.y - town) * (1 - smoothstep(0, 2.5, d));
+    }
+    const valley = baseRoll(x, z) * smoothstep(4, 18, castle) + castleRise(castle);
+    h = town + (valley - town) * smoothstep(0, 40, inTown);
+  } else {
+    h = baseRoll(x, z) * smoothstep(4, 18, castle) + castleRise(castle);
+  }
+  // The valley's walls: big hills beyond the walkable ground, fading out on the castle's
+  // own hill so it stands alone above everything else.
   const d = openDistanceAt(x / TOWN_CELL - 0.5, z / TOWN_CELL - 0.5);
-  if (d <= 0.7) return roll;
+  const walls = smoothstep(CASTLE_SLOPE_WALK * 0.7, CASTLE_HILL_RADIUS * 1.2, castle);
+  if (d <= 0.7 || walls <= 0) return h;
   const lumps = 0.62 + 0.38 * (0.5 + 0.5 * Math.sin(x * 0.031 - z * 0.017) * Math.cos(z * 0.027 + x * 0.011));
   const cap = 15 + 9 * (0.5 + 0.5 * Math.sin(x * 0.013 + 2.1) * Math.sin(z * 0.019 - 0.4));
-  return roll + Math.min(cap, 6.5 * Math.pow(d - 0.7, 1.12)) * lumps;
+  return h + Math.min(cap, 6.5 * Math.pow(d - 0.7, 1.12)) * lumps * walls;
 }
 
 /** Tiny deterministic PRNG (mulberry32): never Math.random for anything cross-client. */

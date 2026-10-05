@@ -22,7 +22,7 @@ A sala avança **junta**: o jogador que chega à saída envia `level_transition_
 | Poolrooms | `5` | Rota principal / lobby | [poolrooms.md](poolrooms.md) |
 | Level 6 — Lights Out *(secreto)* | `6` | Corredor escuro no Level 1 / lobby | [level-6-lights-out.md](level-6-lights-out.md) |
 | Level G — The Small Office *(secreto)* | `7` | Passagem escondida no Level 4 / lobby | [level-g.md](level-g.md) |
-| Level 94 — The Old Town *(secreto)* | `8` | Porta de saída na Electrical Room / rumo DESCONHECIDO no Level 79 / lobby | [level-94-old-town.md](level-94-old-town.md) |
+| Level 94 — Motion *(secreto)* | `8` | Porta de saída na Electrical Room / rumo DESCONHECIDO no Level 79 / lobby | [level-94-motion.md](level-94-motion.md) |
 | Level FUN *(secreto)* | `9` | Bolo escondido no Level 4 / lobby | [level-fun.md](level-fun.md) |
 | Lobby | `10` | Início de toda sala | [lobby.md](lobby.md) |
 | Level 79 — Space Station | `12` | Saída das Poolrooms / lobby | [level-79-space-station.md](level-79-space-station.md) |
@@ -43,7 +43,7 @@ Existem **dois** conjuntos de números, e confundi-los é a armadilha mais comum
 | Poolrooms | 5 | 7 |
 | Lights Out | 6 | 3 |
 | Level G | 7 | 4 |
-| Level 94 — The Old Town | 8 | 94 |
+| Level 94 — Motion | 8 | 94 |
 | Level FUN | 9 | 11 |
 | Level 79 | 12 | 12 |
 | 0, 1, 2, Lobby | igual | igual |
@@ -58,7 +58,7 @@ Controlados pela opção de sala **Rotas secretas** (anfitrião, no lobby).
 |---|---|---|
 | Lights Out | Beco sem saída de um corredor sem luz no Level 1 | Volta à Electrical Room (convergência) |
 | Level G | Passagem escondida no Abandoned Office | Volta ao Abandoned Office |
-| Level 94 — The Old Town | Porta "SAÍDA" num nicho da parede norte da Electrical Room (individual), ou os três consoles do Level 79 em DESCONHECIDO (todos a bordo) | Final da própria fase (volta ao lobby) |
+| Level 94 — Motion | Porta "SAÍDA" num nicho da parede norte da Electrical Room (individual), ou os três consoles do Level 79 em DESCONHECIDO (todos a bordo) | Final da própria fase (volta ao lobby) |
 | Level FUN | Comer o bolo que ninguém está vigiando (Abandoned Office), ou escolher no lobby | Final da própria fase (final alternativo) |
 
 Detours são **individuais**: quem entra deixa a sala principal por um tempo; o servidor reúne os jogadores quando a sala chega ao ponto de convergência (nível 4 em diante).

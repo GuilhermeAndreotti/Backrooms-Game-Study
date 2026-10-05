@@ -20,6 +20,9 @@ import { MegDoorModal } from "./components/MegDoorModal";
 import { FunPanelModal } from "./components/FunPanelModal";
 import { SpaceTerminalModal } from "./components/SpaceTerminalModal";
 import { SpaceWiringModal } from "./components/SpaceWiringModal";
+import { TownModelModal } from "./components/TownModelModal";
+import { KingDialogueModal } from "./components/KingDialogueModal";
+import type { TownDialogueView } from "./game/levels/townDirector";
 import type { SpaceTerminalId, WireColor } from "./game/levels/spaceLayout";
 import { AdSlot } from "./components/AdSlot";
 import { LOBBY_LEVEL, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, OLD_TOWN_LEVEL, nextMainLevel } from "./game/levels/constants";
@@ -43,7 +46,7 @@ function displayLabelForLevel(level: number): string {
   if (level === LOBBY_LEVEL) return "LOBBY";
   if (level === LIGHTS_OUT_LEVEL) return "6 · SECRET";
   if (level === LEVEL_G) return "LEVEL G · SECRET";
-  if (level === OLD_TOWN_LEVEL) return "LEVEL 94 · THE OLD TOWN";
+  if (level === OLD_TOWN_LEVEL) return "LEVEL 94 · MOTION";
   if (level === FUN_LEVEL) return "LEVEL FUN";
   if (level === SPACE_LEVEL) return "LEVEL 79 · SPACE STATION";
   return String(level);
@@ -165,6 +168,10 @@ export default function App() {
   const [spaceTerminal, setSpaceTerminal] = useState<SpaceTerminalId | null>(null);
   /** Level 79: the power bus's wiring panel, open (with its layout) while the bus is still down. */
   const [spaceWiring, setSpaceWiring] = useState<{ left: WireColor[]; right: WireColor[] } | null>(null);
+  /** Level 94: the model of the town's assembly panel is open. */
+  const [townModelOpen, setTownModelOpen] = useState(false);
+  /** Level 94: the King's offer, while it's on screen. */
+  const [townDialogue, setTownDialogue] = useState<TownDialogueView | null>(null);
   /** Level the explorer last escaped from, so the report can tell FUN's ending apart. */
   const [escapedFrom, setEscapedFrom] = useState<number | null>(null);
   const [megDialogue, setMegDialogue] = useState<{ name: string; grade: string; dialogue: string } | null>(null);
@@ -258,15 +265,23 @@ export default function App() {
   }, []);
   const getGiveTarget = useCallback(() => engineRef.current?.nearestTeammateInRange(GIVE_RANGE) ?? null, []);
   const spacePowered = useCallback(() => engineRef.current?.spacePowered() ?? true, []);
+  const closeTownModel = useCallback(() => {
+    setTownModelOpen(false);
+    const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+    if (canvasEl) lockGameInput(canvasEl);
+  }, []);
+  const townModelPlaced = useCallback(() => engineRef.current?.townModelPlaced() ?? [], []);
+  const townModelSolved = useCallback(() => engineRef.current?.townModelSolved() ?? true, []);
   /**
    * An in-game panel (terminal, door panel, wiring...) is open. They release
    * the pointer lock on purpose so the mouse can be used, which must not
    * count as "the player left the game": no pause menu behind them.
    */
   const interfaceOpen = isTerminalOpen || isMegDoorOpen || isFunPanelOpen || isCheatTerminalOpen || isLevelSelectorOpen
-    || isAchievementsOpen || spaceTerminal !== null || spaceWiring !== null;
+    || isAchievementsOpen || spaceTerminal !== null || spaceWiring !== null || townModelOpen || townDialogue !== null;
   useEffect(() => {
     if (currentLevel !== SPACE_LEVEL) { setSpaceTerminal(null); setSpaceWiring(null); }
+    if (currentLevel !== OLD_TOWN_LEVEL) { setTownModelOpen(false); setTownDialogue(null); }
   }, [currentLevel]);
   /** Read by the (rarely re-bound) global key handler: hotbar keys do nothing behind a panel. */
   const panelOpenRef = useRef(false);
@@ -395,7 +410,13 @@ export default function App() {
         // The transition itself already fired via onSecretLevelFound.
         return true;
       case "town":
-        // A clock part, the tower's hatch or a piece of the model (Level 94).
+        // A clock part or the tower's hatch (Level 94).
+        return true;
+      case "town_model":
+        setIsInventoryOpen(false);
+        setIsAchievementsOpen(false);
+        setTownModelOpen(true);
+        document.exitPointerLock?.();
         return true;
       case "fun_panel":
         setIsFunPanelOpen(true);
@@ -811,6 +832,14 @@ export default function App() {
                     onFlashlightChange: (fl) => setIsFlashlightOn(fl),
                     onPerformanceSample: (fps, scale) => setPerf({ fps, scale }),
                     onNoclipChange: (active) => setIsNoclipActive(active),
+                    onTownDialogue: (view) => {
+                      setTownDialogue(view);
+                      if (view) {
+                        setIsInventoryOpen(false);
+                        setIsAchievementsOpen(false);
+                        document.exitPointerLock?.();
+                      }
+                    },
                     onVoipStateChange: (enabled) => setVoipEnabled(enabled),
                     onVoipSpeakingChange: (speaking) => setVoipSpeaking(speaking),
                     onEscapeTrigger: () => {
@@ -890,7 +919,7 @@ export default function App() {
                         console.log("Ate the cake nobody was watching... entering LEVEL FUN.");
                         unlockAchievement("secret_level_found");
                       } else if (targetLevel === OLD_TOWN_LEVEL) {
-                        console.log("Left by the Electrical Room's exit door or the station's unknown course... entering Level 94: The Old Town.");
+                        console.log("Left by the Electrical Room's exit door or the station's unknown course... entering Level 94: Motion.");
                         unlockAchievement("secret_level_found");
                       } else {
                          console.log("Found the dark corridor... entering Level 6: Lights Out.");
@@ -2016,6 +2045,27 @@ export default function App() {
                 const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
                 if (canvasEl) lockGameInput(canvasEl);
               }}
+            />
+          )}
+          {townDialogue && currentLevel === OLD_TOWN_LEVEL && (
+            <KingDialogueModal
+              view={townDialogue}
+              onChoose={(choice) => {
+                const next = engineRef.current?.townDialogueChoose(choice) ?? null;
+                setTownDialogue(next);
+                if (!next) {
+                  const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+                  if (canvasEl) lockGameInput(canvasEl);
+                }
+              }}
+            />
+          )}
+          {townModelOpen && currentLevel === OLD_TOWN_LEVEL && (
+            <TownModelModal
+              getPlaced={townModelPlaced}
+              isSolved={townModelSolved}
+              onPlace={(piece, plot) => engineRef.current?.townPlacePiece(piece, plot) ?? false}
+              onClose={closeTownModel}
             />
           )}
           {spaceWiring && currentLevel === SPACE_LEVEL && (

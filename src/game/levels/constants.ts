@@ -10,7 +10,7 @@ export const ABANDONED_OFFICE_LEVEL = 4;
 export const POOLROOMS_LEVEL = 5;
 export const LIGHTS_OUT_LEVEL = 6;
 export const LEVEL_G = 7;
-/** Level 94 "The Old Town" (picked from the lobby): a 1930s cartoon town, its hills and the King's castle. */
+/** Level 94 "Motion" (an exit door in the Electrical Room, Level 79's UNKNOWN course, or the lobby): a 1930s cartoon town, its hills and the King's castle. */
 export const OLD_TOWN_LEVEL = 8;
 /** Level FUN: the abandoned children's party venue (secret, picked from the lobby). */
 export const FUN_LEVEL = 9;

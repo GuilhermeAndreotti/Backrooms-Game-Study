@@ -37,7 +37,7 @@ import {
 import { POOL_VALVE_COUNT } from "./poolroomsPuzzle";
 import { FunDirector } from "./levels/funDirector";
 import { SpaceDirector, type SpaceTerminalView } from "./levels/spaceDirector";
-import { TownDirector } from "./levels/townDirector";
+import { TownDirector, type TownDialogueChoice, type TownDialogueView } from "./levels/townDirector";
 import { ANIMATION_CELLS, KING_THRONE, townRelocationCells } from "./levels/townLayout";
 import { MOB_DEFS } from "./mobs/registry";
 import type { SpaceConsoleId, SpaceTarget, SpaceTerminalId } from "./levels/spaceLayout";
@@ -92,6 +92,8 @@ export interface GameEngineCallbacks {
   onNoclipChange?: (active: boolean) => void;
   /** Proximity VOIP: enable()/disable() actually took effect. */
   onVoipStateChange?: (enabled: boolean) => void;
+  /** Level 94: the King's dialogue panel opens (a view) or closes (null). */
+  onTownDialogue?: (view: TownDialogueView | null) => void;
   /** Proximity VOIP: local mic activity crossed the speaking threshold. */
   onVoipSpeakingChange?: (speaking: boolean) => void;
 }
@@ -478,6 +480,7 @@ export class GameEngine {
   public onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   private onPerformanceSample?: (fps: number, renderScale: number) => void;
   private onNoclipChange?: (active: boolean) => void;
+  private onTownDialogue?: (view: TownDialogueView | null) => void;
   private lastReportedNoclip = false;
 
   // Proximity voice chat — see Voip.ts. Instantiated once; enable()/disable()
@@ -548,6 +551,7 @@ export class GameEngine {
     this.onScrapOfNoteCollected = callbacks.onScrapOfNoteCollected;
     this.onPerformanceSample = callbacks.onPerformanceSample;
     this.onNoclipChange = callbacks.onNoclipChange;
+    this.onTownDialogue = callbacks.onTownDialogue;
 
     this.voip = new Voip((peerId, payload) => this.sendToServer({ type: "voip_signal", to: peerId, data: payload }));
     this.voip.onStateChange = callbacks.onVoipStateChange;
@@ -3824,13 +3828,21 @@ export class GameEngine {
       suitColor: () => this.selfLook.suitColor,
       achievement: (id) => unlockAchievement(id),
       escape: () => this.onEscapeTrigger?.(),
+      dialogue: (view) => this.onTownDialogue?.(view),
     });
+  }
+
+  /** An answer picked in the King's dialogue panel: what he says next, or null once it closes. */
+  public townDialogueChoose(choice: TownDialogueChoice): TownDialogueView | null {
+    return this.townDirector?.chooseDialogue(choice) ?? null;
   }
 
   private updateTown(delta: number) {
     const director = this.townDirector;
     if (!director || !this.player) return;
     director.update(delta);
+    // Once someone turns down his offer, the King is up for good (the authority's AI reads this).
+    if (director.kingWoken) for (const e of this.entities) if (e.type === EntityType.TOWN_KING) e.hunting = true;
     // The vision bends the room: roll the head rig (re-seated on the player every frame) and widen the lens.
     const rig = this.camera.parent;
     if (rig && this.townWarp.roll !== 0 && !director.cinematic) rig.rotation.z += this.townWarp.roll;
@@ -3846,7 +3858,21 @@ export class GameEngine {
     }
   }
 
-  /** A teammate found a clock part, started the clock or moved a model piece (relayed by the server). */
+  /** Level 94's model: which of its missing buildings are already back (teammates assemble it too). */
+  public townModelPlaced(): boolean[] {
+    return this.townDirector?.modelPlaced() ?? [];
+  }
+
+  public townModelSolved(): boolean {
+    return this.townDirector?.isSolved ?? true;
+  }
+
+  /** A building dropped on a plot of the model: whether it belongs there. */
+  public townPlacePiece(piece: number, plot: number): boolean {
+    return this.townDirector?.placePiece(piece, plot) ?? false;
+  }
+
+  /** A teammate found a clock part, started the clock or placed a model building (relayed by the server). */
   public applyTownEvent(msg: { level?: unknown; kind?: unknown; index?: unknown }) {
     if (this.level !== OLD_TOWN_LEVEL || msg.level !== OLD_TOWN_LEVEL || !this.townDirector) return;
     if (typeof msg.kind !== "string" || typeof msg.index !== "number") return;
@@ -4012,7 +4038,7 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | "town" | null {
+  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | "town" | "town_model" | null {
     if (this.isDead) return null;
     if (this.funDirector) {
       const used = this.funDirector.interact();
@@ -4026,7 +4052,9 @@ export class GameEngine {
         return "space_terminal";
       }
     }
-    if (this.townDirector?.interact()) return "town";
+    const townUsed = this.townDirector?.interact();
+    if (townUsed === "model") return "town_model";
+    if (townUsed) return "town";
     const switchIndex = this.nearUntouchedLevel3Switch();
     if (switchIndex >= 0) {
       this.handleLevel3Switch(switchIndex);

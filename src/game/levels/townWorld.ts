@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Level 94's geometry. Unlike the station or the party venue, nothing here is
- * built per cell: the level is mostly open air with long views (the town
- * square, the hills, a castle on the horizon), so streaming cells in and out
+ * built per cell: the level is mostly open air with long views (houses on
+ * hilltops, the valley, a castle on the horizon), so streaming cells in and out
  * at 20 m would show. Instead everything is built once, up front and
  * deterministically, and every static piece is merged into one mesh per
  * material per area (town, hills, castle) — a few dozen draw calls for the
@@ -12,8 +12,8 @@
  *
  * What the director needs to change later stays a separate object and is
  * exposed directly: the three gates, the street lamps and lit windows, the
- * clock's hands and hatch, the clock parts lying around town, the pieces of
- * the town's model, and the throne room's door.
+ * clock's hands and hatch, the clock parts lying around town, the buildings
+ * missing from the town's model, and the throne room's door.
  *
  * Collision is the map's: solid cells for buildings and hillsides, and
  * obstacle circles for everything thinner (house walls with their doorways,
@@ -30,14 +30,25 @@ import type { DecorKit } from "../LevelDecor";
 import type { DynamicLightSource } from "../LightPool";
 import { t } from "../../i18n";
 import {
-  CASTLE_FOOTPRINT, CASTLE_ROOMS, CLOCK_FACE_Y, CLOCK_HATCH, CLOCK_PARTS, ClockPart, KING_THRONE, MODEL_PIECES, MODEL_SCALE, MODEL_SLOTS, MODEL_TABLE,
-  ModelPieceId, PART_SPOTS, PUZZLE_GATE, STAY_CHAIR, STAY_HOUSE, TOWN_BARRICADE, TOWN_CELL, TOWN_EXIT, TOWN_FOOTPRINT, TOWN_GRID, TOWN_LOTS, TOWN_STREETS, TOWN_TOWER,
-  TownLot, TownSide, VALLEY_PATH, cellCenter, modelPoint, partSpot, townCellAt, townGroundHeight, townLot, townRng,
+  CASTLE_FLOOR, CASTLE_FOOTPRINT, CLOCK_FACE_Y, CLOCK_HATCH, CLOCK_PARTS, ClockPart, KING_THRONE, MODEL_PIECES, MODEL_PIECE_DATA, MODEL_SCALE, MODEL_TABLE,
+  PART_SPOTS, PUZZLE_GATE, STAY_HOUSE, TOWER_FLOOR, TOWER_PLAZA, TOWN_AREA, TOWN_BARRICADE, TOWN_CELL, TOWN_EDGE_Z, TOWN_EXIT, TOWN_GRID, TOWN_LOTS,
+  TOWN_ROADS, TOWN_ROAD_HALF, TOWN_SPAWN, TOWN_TOWER, TownLot, TownSide, VALLEY_PATH, cellCenter, lotFloor, modelPoint, partSpot, partSpotWorld,
+  townCellAt, townGroundHeight, townRng, townRoadDistance,
 } from "./townLayout";
+import { drawTownPlan, drawTownView } from "./townPlan";
 
 const CELL = TOWN_CELL;
 const Z_AXIS = new THREE.Vector3(0, 0, 1);
 const FLOOR_H = 3.2;
+/**
+ * Where each enterable house's furniture was first laid out (world metres of
+ * its lot's north-west corner). furnish() still speaks in those numbers; the
+ * room is shifted wholesale to wherever the lot stands now.
+ */
+const FURNISH_ORIGIN: Record<string, { x: number; z: number }> = {
+  houseA: { x: 104, z: 208 }, garage: { x: 124, z: 208 }, bakery: { x: 144, z: 208 },
+  houseB: { x: 164, z: 220 }, houseC: { x: 104, z: 252 }, houseD: { x: 164, z: 232 },
+};
 const ROOM_H: Record<string, number> = { entrance: 7, animRoom: 6, corridor: 4, throne: 11, gate: 5.2, inner: 4.6, exit: 6.2 };
 
 export interface TownBuildEnv {
@@ -148,10 +159,11 @@ export class TownWorld {
   private clockGlow!: THREE.MeshStandardMaterial;
   private readonly spin = new THREE.Quaternion();
 
-  // The model
-  private readonly modelPieces = new Map<ModelPieceId, THREE.Object3D>();
-  private readonly modelSlot: Record<ModelPieceId, number> = { house: 0, car: 0, clock: 0 };
+  // The model: the five buildings missing from it, shown once placed.
+  private readonly modelMinis: THREE.Object3D[] = [];
   private readonly gateBulbs: THREE.Mesh[] = [];
+  /** Where furnish() is putting things (see FURNISH_ORIGIN): obstacles follow the room. */
+  private shift = { x: 0, z: 0 };
   private bulbOn!: THREE.Material;
   private bulbOff!: THREE.Material;
 
@@ -159,6 +171,8 @@ export class TownWorld {
   private projector!: { canvas: HTMLCanvasElement; tex: THREE.CanvasTexture; next: number; frame: number };
   private readonly flags: THREE.Object3D[] = [];
   private readonly glows: THREE.Sprite[] = [];
+  /** A paper crown left on the armchair out in the hills (one of the King's secret's three conditions). */
+  crown!: THREE.Group;
   private clock = 0;
 
   constructor(env: TownBuildEnv) {
@@ -169,7 +183,7 @@ export class TownWorld {
     this.initShared();
 
     const town = new THREE.Group();
-    this.buildTownGround(town);
+    this.buildTownRoads(town);
     for (const l of TOWN_LOTS) this.buildLot(town, l);
     this.buildTower(town);
     this.buildStreetFurniture(town);
@@ -180,7 +194,9 @@ export class TownWorld {
     this.buildValley(hills);
     this.flush(hills, "hills");
 
+    // The whole castle stands on top of its hill.
     const castle = new THREE.Group();
+    castle.position.y = CASTLE_FLOOR;
     this.buildCastleShell(castle);
     this.buildCastleRooms(castle);
     this.buildEntrance(castle);
@@ -282,19 +298,13 @@ export class TownWorld {
     this.clockGlow.emissiveIntensity = 0.05 + 0.9 * level;
   }
 
-  /** World position of a model piece (for picking it with E). */
-  modelPiece(id: ModelPieceId): THREE.Object3D {
-    return this.modelPieces.get(id)!;
+  /** Shows (or hides) one of the model's five missing buildings on its plot. */
+  setModelPlaced(index: number, placed: boolean) {
+    const mini = this.modelMinis[index];
+    if (mini) mini.visible = placed;
   }
 
-  setModelSlot(id: ModelPieceId, slot: number) {
-    this.modelSlot[id] = slot;
-    const piece = this.modelPieces.get(id)!;
-    const [x, z] = modelPoint(MODEL_SLOTS[id][slot][0], MODEL_SLOTS[id][slot][1]);
-    piece.position.set(x, MODEL_TABLE.y + 0.06, z);
-  }
-
-  /** How many of the puzzle gate's three bulbs are lit. */
+  /** How many of the puzzle gate's bulbs (one per missing building) are lit. */
   setGateBulbs(count: number) {
     this.gateBulbs.forEach((b, i) => { b.material = i < count ? this.bulbOn : this.bulbOff; });
   }
@@ -310,8 +320,8 @@ export class TownWorld {
     }
     const b = this.gateAnim.barricade;
     this.barricade.visible = b < 0.99;
-    this.barricade.position.y = -b * 2.5;
-    this.portcullis.position.y = this.gateAnim.puzzle * 3.7;
+    this.barricade.position.y = (this.barricade.userData.baseY as number) - b * 2.5;
+    this.portcullis.position.y = CASTLE_FLOOR + this.gateAnim.puzzle * 3.7;
     const e = this.gateAnim.exit;
     this.exitLeaves.forEach((leaf, i) => { leaf.rotation.y = (i === 0 ? 1 : -1) * e * 1.75; });
     this.exitLight.intensity = this.exitLight.baseIntensity * (0.15 + 0.85 * e);
@@ -484,6 +494,8 @@ export class TownWorld {
 
   /** Obstacle circle registered in every cell it overlaps. */
   private solid(x: number, z: number, r: number): { radius: number } {
+    x += this.shift.x;
+    z += this.shift.z;
     let first: { radius: number } | null = null;
     const shared = { x, z, radius: r };
     for (let gx = Math.floor((x - r) / CELL); gx <= Math.floor((x + r) / CELL); gx++) {
@@ -498,6 +510,7 @@ export class TownWorld {
 
   /** A wall line of obstacle circles from (x1,z1) to (x2,z2), leaving gaps (centre, half-width). */
   private wallLine(x1: number, z1: number, x2: number, z2: number, gaps: [number, number, number][] = []) {
+    // solid() adds the shift; the gaps are given in the same (unshifted) frame as the line.
     const len = Math.hypot(x2 - x1, z2 - z1);
     const n = Math.max(1, Math.ceil(len / 0.4));
     for (let i = 0; i <= n; i++) {
@@ -717,92 +730,92 @@ export class TownWorld {
   // The town
   // -------------------------------------------------------------------------
 
-  private buildTownGround(g: THREE.Group) {
-    const asphalt = this.asphaltMat();
-    const cobble = this.cobbleMat();
-    const walk = this.sidewalkMat();
-    const dirt = this.mat("alley_dirt", { color: 0x7a6650, roughness: 1 });
-    const curb = this.mat("curb", { color: 0xb4ada0, roughness: 0.9 });
-    for (const r of TOWN_STREETS) {
-      for (let x = r.x1; x <= r.x2; x++) {
-        for (let z = r.z1; z <= r.z2; z++) {
-          const x0 = x * CELL, z0 = z * CELL;
-          const mat = r.kind === "plaza" ? cobble : r.kind === "alley" ? dirt : asphalt;
-          if (r.kind === "plaza" && x === TOWN_TOWER.gx && z === TOWN_TOWER.gz) continue;
-          this.ground(g, x0, z0, x0 + CELL, z0 + CELL, 0.02, mat);
-          if (r.kind !== "street") continue;
-          // Sidewalks along every edge that faces a building or a hillside.
-          for (const side of ["N", "S", "W", "E"] as TownSide[]) {
-            const s = SIDES[side];
-            const n = townCellAt(x + s.dx, z + s.dz);
-            if (n && n.kind !== "interior") continue;
-            const w = 1.1;
-            const [ax1, az1, ax2, az2] = side === "N" ? [x0, z0, x0 + CELL, z0 + w] : side === "S" ? [x0, z0 + CELL - w, x0 + CELL, z0 + CELL]
-              : side === "W" ? [x0, z0, x0 + w, z0 + CELL] : [x0 + CELL - w, z0, x0 + CELL, z0 + CELL];
-            this.ground(g, ax1, az1, ax2, az2, 0.14, walk);
-            const cx = (ax1 + ax2) / 2, cz = (az1 + az2) / 2;
-            if (side === "N" || side === "S") this.box(g, CELL, 0.14, 0.12, curb, cx, 0.07, side === "N" ? az2 : az1);
-            else this.box(g, 0.12, 0.14, CELL, curb, side === "W" ? ax2 : ax1, 0.07, cz);
-          }
-        }
+  /**
+   * An asphalt road with a dashed yellow centre line, laid over the ground
+   * along a smooth curve through `pts` (world x/z). Returns the curve.
+   */
+  private roadRibbon(g: THREE.Group, pts: THREE.Vector3[], half = TOWN_ROAD_HALF): THREE.CatmullRomCurve3 {
+    const curve = new THREE.CatmullRomCurve3(pts, false, "centripetal");
+    const samples = Math.max(8, Math.ceil(curve.getLength() / 1.5));
+    const ribbon = (w: number, y: number, dashed: boolean) => {
+      const out: number[] = [], outUv: number[] = [];
+      let dist = 0;
+      for (let i = 0; i < samples; i++) {
+        const a = curve.getPoint(i / samples), b = curve.getPoint((i + 1) / samples);
+        const ta = curve.getTangent(i / samples), tb = curve.getTangent((i + 1) / samples);
+        const na = new THREE.Vector3(-ta.z, 0, ta.x).normalize().multiplyScalar(w);
+        const nb = new THREE.Vector3(-tb.z, 0, tb.x).normalize().multiplyScalar(w);
+        const seg = a.distanceTo(b);
+        if (dashed && Math.floor(dist / 1.5) % 2 === 1) { dist += seg; continue; }
+        // Lies on the ground across its whole width (never floating over a slope).
+        const a1 = a.clone().add(na), a2 = a.clone().sub(na), b1 = b.clone().add(nb), b2 = b.clone().sub(nb);
+        for (const v of [a1, a2, b1, b2]) v.y = townGroundHeight(v.x, v.z) + y;
+        // Wound so the asphalt faces up (a1 is the left edge, a2 the right, b the next row).
+        out.push(a1.x, a1.y, a1.z, b1.x, b1.y, b1.z, a2.x, a2.y, a2.z, a2.x, a2.y, a2.z, b1.x, b1.y, b1.z, b2.x, b2.y, b2.z);
+        outUv.push(0, dist, 0, dist + seg, w * 2, dist, w * 2, dist, 0, dist + seg, w * 2, dist + seg);
+        dist += seg;
       }
-    }
-    // The road out: asphalt to the town's edge, then nothing but grass.
-    this.ground(g, TOWN_BARRICADE.gx * CELL, TOWN_BARRICADE.gz * CELL, (TOWN_BARRICADE.gx + 1) * CELL, (TOWN_BARRICADE.gz + 1) * CELL, 0.02, asphalt);
-    // Painted centre lines on the long streets.
-    const paint = this.mat("paint", { color: 0xf2ead2, roughness: 0.8 });
-    for (const r of TOWN_STREETS) {
-      if (r.kind !== "street" || r.id === "busStop") continue;
-      const horizontal = r.x2 > r.x1;
-      const len = horizontal ? (r.x2 - r.x1 + 1) * CELL : (r.z2 - r.z1 + 1) * CELL;
-      for (let d = 1; d < len - 1; d += 3) {
-        if (horizontal) this.box(g, 1.4, 0.01, 0.12, paint, r.x1 * CELL + d + 0.7, 0.03, cellCenter(r.z1));
-        else this.box(g, 0.12, 0.01, 1.4, paint, cellCenter(r.x1), 0.03, r.z1 * CELL + d + 0.7);
-      }
-    }
-    // The town's flat green, under the houses and around the edge.
-    const grass = this.grassMat();
-    const f = TOWN_FOOTPRINT;
-    this.ground(g, f.x1 * CELL, f.z1 * CELL, (f.x2 + 1) * CELL, (f.z2 + 1) * CELL, 0.0, grass);
-
-    // The town ends at a picket fence; the road goes through it.
-    const white = this.mat("picket", { color: 0xf6f3ea, roughness: 0.7 });
-    const fenceZ = (TOWN_BARRICADE.gz + 1) * CELL - 0.3;
-    for (let x = 100.5; x < 184; x += 0.5) {
-      if (x > 139.5 && x < 144.5) continue;
-      this.box(g, 0.1, 1.0, 0.05, white, x, 0.5, fenceZ);
-    }
-    this.box(g, 39.5, 0.08, 0.06, white, 120, 0.75, fenceZ + 0.04);
-    this.box(g, 39.5, 0.08, 0.06, white, 164, 0.75, fenceZ + 0.04);
-    this.box(g, 39.5, 0.08, 0.06, white, 120, 0.35, fenceZ + 0.04);
-    this.box(g, 39.5, 0.08, 0.06, white, 164, 0.35, fenceZ + 0.04);
+      return [out, outUv];
+    };
+    const mk = ([pos, uvs]: number[][], mat: THREE.Material) => {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+      geo.computeVertexNormals();
+      g.add(new THREE.Mesh(geo, mat));
+    };
+    // Lifted a little: the terrain mesh is coarser than the road and can bulge above the true ground.
+    mk(ribbon(half, 0.14, false), this.asphaltMat());
+    mk(ribbon(0.08, 0.16, true), this.mat("road_line", { color: 0xe8b830, roughness: 0.7 }));
+    return curve;
   }
 
+  /** The town's roads, the bus stop at the bottom of the main one, and the fence where the town ends. */
+  private buildTownRoads(g: THREE.Group) {
+    for (const road of TOWN_ROADS) this.roadRibbon(g, road.map(([x, z]) => new THREE.Vector3(cellCenter(x), 0, cellCenter(z))));
+    // The town ends at a picket fence along its north edge; the main road goes through it.
+    const white = this.mat("picket", { color: 0xf6f3ea, roughness: 0.7 });
+    const fenceZ = TOWN_EDGE_Z + 0.3;
+    const gapX = cellCenter(TOWN_BARRICADE.gx);
+    for (let x = TOWN_AREA.x1 * CELL + 0.5; x < (TOWN_AREA.x2 + 1) * CELL; x += 0.5) {
+      if (Math.abs(x - gapX) < 2.6) continue;
+      this.box(g, 0.1, 1.0, 0.05, white, x, townGroundHeight(x, fenceZ) + 0.5, fenceZ);
+    }
+    for (let x = TOWN_AREA.x1 * CELL; x < (TOWN_AREA.x2 + 1) * CELL; x += 2) {
+      if (Math.abs(x + 1 - gapX) < 3) continue;
+      const y = townGroundHeight(x + 1, fenceZ);
+      this.box(g, 2.02, 0.08, 0.06, white, x + 1, y + 0.75, fenceZ + 0.04);
+      this.box(g, 2.02, 0.08, 0.06, white, x + 1, y + 0.35, fenceZ + 0.04);
+    }
+  }
+
+  /** The side of a lot that faces the nearest road (or its door). */
   private frontSide(l: TownLot): TownSide {
     if (l.door) return l.door.side;
+    const x0 = l.x1 * CELL, x1 = (l.x2 + 1) * CELL, z0 = l.z1 * CELL, z1 = (l.z2 + 1) * CELL;
+    const mids: [TownSide, number, number][] = [["S", (x0 + x1) / 2, z1 + 2], ["N", (x0 + x1) / 2, z0 - 2], ["E", x1 + 2, (z0 + z1) / 2], ["W", x0 - 2, (z0 + z1) / 2]];
     let best: TownSide = "S";
-    let bestN = -1;
-    for (const side of ["S", "N", "E", "W"] as TownSide[]) {
-      let n = 0;
-      if (side === "N" || side === "S") {
-        const z = side === "N" ? l.z1 - 1 : l.z2 + 1;
-        for (let x = l.x1; x <= l.x2; x++) { const c = townCellAt(x, z); if (c && c.zone === "town" && c.kind !== "interior") n++; }
-      } else {
-        const x = side === "W" ? l.x1 - 1 : l.x2 + 1;
-        for (let z = l.z1; z <= l.z2; z++) { const c = townCellAt(x, z); if (c && c.zone === "town" && c.kind !== "interior") n++; }
-      }
-      if (n > bestN) { bestN = n; best = side; }
+    let bestD = Infinity;
+    for (const [side, x, z] of mids) {
+      const d = townRoadDistance(x, z);
+      if (d < bestD) { bestD = d; best = side; }
     }
     return best;
   }
 
-  private buildLot(g: THREE.Group, l: TownLot) {
+  private buildLot(root: THREE.Group, l: TownLot) {
     const x0 = l.x1 * CELL, x1 = (l.x2 + 1) * CELL, z0 = l.z1 * CELL, z1 = (l.z2 + 1) * CELL;
     const W = x1 - x0, D = z1 - z0, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+    // Each house stands on the flat top of its own hill, on a stone foundation
+    // that runs down into the slope so no gap ever shows under it.
+    const g = new THREE.Group();
+    g.position.y = lotFloor(l);
+    root.add(g);
+    this.box(g, W + 1.2, 5, D + 1.2, this.mat("foundation", { color: 0x8a8274, roughness: 0.95 }), cx, -2.56, cz);
     const floors = l.floors;
     const H = floors * FLOOR_H + (l.style === "cinema" ? 1.2 : 0);
     const wall = this.facadeMat(l);
-    const roof = this.mat(`roof_${l.roof}`, { color: l.roof, roughness: 0.7 });
+    const roof = this.mat(`roof_${l.roof}`, { color: l.roof, roughness: 0.7, side: THREE.DoubleSide });
     const trim = this.mat("trim", { color: 0xf4efe2, roughness: 0.7 });
     const front = this.frontSide(l);
     const lights: HouseLights = { mat: wall, light: null };
@@ -821,8 +834,6 @@ export class TownWorld {
       const roofMesh = new THREE.Mesh(this.gableGeo(ridgeAlongX ? W - 0.2 : D - 0.2, ridgeAlongX ? D - 0.2 : W - 0.2, rh, 0.35), roof);
       roofMesh.position.set(cx, H, cz);
       if (!ridgeAlongX) roofMesh.rotation.y = Math.PI / 2;
-      // A little crooked, like a hand-made set.
-      roofMesh.rotation.z = (townRng(l.x1 * 31 + l.z1)() - 0.5) * 0.05;
       g.add(roofMesh);
       // Chimney.
       if (l.style !== "chapel") {
@@ -971,10 +982,17 @@ export class TownWorld {
     ceil.scale.set(x1 - x0, 1, z1 - z0);
     g.add(ceil);
     // A lamp, so houses glow at dusk (the director dims it at night).
-    const light = this.env.registerLight(Math.floor((x0 + x1) / 2 / CELL), Math.floor((z0 + z1) / 2 / CELL), (x0 + x1) / 2, inH - 0.4, (z0 + z1) / 2, 0xffc890, 1.1, 9, 1.2);
+    const light = this.env.registerLight(Math.floor((x0 + x1) / 2 / CELL), Math.floor((z0 + z1) / 2 / CELL), (x0 + x1) / 2, lotFloor(l) + inH - 0.4, (z0 + z1) / 2, 0xffc890, 1.1, 9, 1.2);
     this.houses.get(l.id)!.light = light;
     this.sphere(g, 0.18, this.lampOn, (x0 + x1) / 2, inH - 0.35, (z0 + z1) / 2);
-    this.furnish(g, l);
+    // The room's furniture, laid out where the lot first stood and moved over with it.
+    const origin = FURNISH_ORIGIN[l.id] ?? { x: x0, z: z0 };
+    const room = new THREE.Group();
+    room.position.set(x0 - origin.x, 0, z0 - origin.z);
+    g.add(room);
+    this.shift = { x: x0 - origin.x, z: z0 - origin.z };
+    this.furnish(room, l);
+    this.shift = { x: 0, z: 0 };
   }
 
   // -------------------------------------------------------------------------
@@ -1056,7 +1074,11 @@ export class TownWorld {
   /** Each enterable house's room, built around its clock-part spot (both candidates get the furniture). */
   private furnish(g: THREE.Group, l: TownLot) {
     const rug = this.mat("rug", { color: 0x9a3a3a, roughness: 1 });
-    const spot = (part: ClockPart) => PART_SPOTS[part].find((s) => s.lot === l.id);
+    const origin = FURNISH_ORIGIN[l.id];
+    const spot = (part: ClockPart) => {
+      const s = PART_SPOTS[part].find((c) => c.lot === l.id);
+      return s && { x: origin.x + s.u, z: origin.z + s.v, y: s.y };
+    };
     switch (l.id) {
       case "houseA": {
         const s = spot("key")!;
@@ -1109,7 +1131,7 @@ export class TownWorld {
         const s = spot("key")!;
         this.table(g, s.x, s.z, 0.6, 0.6, s.y);
         // The chair in the middle of the room, facing the open door.
-        this.chair(g, STAY_CHAIR.x, STAY_CHAIR.z, -Math.PI / 2, this.mat("stay_chair", { color: 0x6b2a2a, roughness: 0.7 }));
+        this.chair(g, origin.x + 5, origin.z + 6, -Math.PI / 2, this.mat("stay_chair", { color: 0x6b2a2a, roughness: 0.7 }));
         this.ground(g, 106.5, 256, 111, 260, 0.04, rug);
         this.shelf(g, 111.6, 262, -Math.PI / 2);
         this.frame(g, 108, 1.8, 252.25, 0, 1.1, 0.8, (c, w, h) => {
@@ -1137,8 +1159,15 @@ export class TownWorld {
     }
   }
 
-  private buildTower(g: THREE.Group) {
+  private buildTower(root: THREE.Group) {
     const x = cellCenter(TOWN_TOWER.gx), z = cellCenter(TOWN_TOWER.gz);
+    // On top of the highest hill in town, in its own little cobbled square.
+    const g = new THREE.Group();
+    g.position.y = TOWER_FLOOR;
+    root.add(g);
+    const p = TOWER_PLAZA;
+    this.ground(g, p.x1 * CELL, p.z1 * CELL, (p.x2 + 1) * CELL, (p.z2 + 1) * CELL, 0.03, this.cobbleMat());
+    this.box(g, (p.x2 - p.x1 + 1) * CELL + 0.6, 4, (p.z2 - p.z1 + 1) * CELL + 0.6, this.mat("foundation", { color: 0x8a8274, roughness: 0.95 }), (p.x1 + p.x2 + 1) * CELL / 2, -2.08, (p.z1 + p.z2 + 1) * CELL / 2);
     const stone = this.mat("tower_stone", {
       map: this.tex("tower_stone", 128, 128, [2, 2], (c, w, h) => {
         c.fillStyle = "#d8c8b0"; c.fillRect(0, 0, w, h);
@@ -1245,7 +1274,7 @@ export class TownWorld {
     const brass = this.mat("brass", { color: 0xd9a830, roughness: 0.3, metalness: 0.8 });
     const dark = this.mat("clock_hand", { color: 0x111111, roughness: 0.4 });
     for (const part of CLOCK_PARTS) {
-      const spot = partSpot(part, this.seed);
+      const spot = partSpotWorld(partSpot(part, this.seed));
       const holder = new THREE.Group();
       holder.position.set(spot.x, spot.y + 0.16, spot.z);
       const model = this.partModel(part, brass, dark);
@@ -1259,17 +1288,17 @@ export class TownWorld {
     }
   }
 
-  private lamp(g: THREE.Group, x: number, z: number, bent = 0) {
+  private lamp(g: THREE.Group, x: number, z: number, bent = 0, y = townGroundHeight(x, z)) {
     const iron = this.mat("iron", { color: 0x223a2a, roughness: 0.5, metalness: 0.4 });
     const pole = new THREE.Group();
-    pole.position.set(x, 0, z);
+    pole.position.set(x, y, z);
     pole.rotation.z = bent;
     this.cyl(pole, 0.08, 0.12, 4.2, iron, 0, 2.1, 0, 8);
     this.cyl(pole, 0.22, 0.26, 0.3, iron, 0, 0.15, 0, 8);
     this.box(pole, 0.5, 0.08, 0.5, iron, 0, 4.25, 0);
     g.add(pole);
     const head = new THREE.Mesh(this.boxGeo(0.36, 0.5, 0.36), this.lampOff);
-    head.position.set(x - Math.sin(bent) * 4.45, Math.cos(bent) * 4.45, z);
+    head.position.set(x - Math.sin(bent) * 4.45, y + Math.cos(bent) * 4.45, z);
     head.userData.dynamic = true;
     g.add(head);
     const cap = new THREE.Mesh(this.kit.geo("town_lamp_cap", () => new THREE.ConeGeometry(0.34, 0.3, 4)), iron);
@@ -1284,7 +1313,8 @@ export class TownWorld {
 
   private car(g: THREE.Group, x: number, z: number, yaw: number, color: number, scale = 1, tilt = 0, solid = true): THREE.Group {
     const c = new THREE.Group();
-    c.position.set(x, 0, z);
+    // Real cars sit on the ground; the model's tiny one sits wherever its holder is.
+    c.position.set(x, solid ? townGroundHeight(x, z) : 0, z);
     c.rotation.set(0, yaw, tilt);
     c.scale.setScalar(scale);
     const paint = this.mat(`car_${color}`, { color, roughness: 0.35, metalness: 0.3 });
@@ -1311,9 +1341,9 @@ export class TownWorld {
     return c;
   }
 
-  private bench(g: THREE.Group, x: number, z: number, yaw: number) {
+  private bench(g: THREE.Group, x: number, z: number, yaw: number, y = townGroundHeight(x, z)) {
     const b = new THREE.Group();
-    b.position.set(x, 0, z);
+    b.position.set(x, y, z);
     b.rotation.y = yaw;
     const wood = this.mat("bench_wood", { color: 0x8a5a32, roughness: 0.8 });
     const iron = this.mat("iron", { color: 0x223a2a, roughness: 0.5, metalness: 0.4 });
@@ -1336,53 +1366,67 @@ export class TownWorld {
   private hedge(g: THREE.Group, x1: number, z1: number, x2: number, z2: number) {
     const leaves = this.mat("hedge", { color: 0x3a6a2a, roughness: 0.9 });
     const len = Math.hypot(x2 - x1, z2 - z1);
-    const m = this.box(g, len, 1.1, 0.8, leaves, (x1 + x2) / 2, 0.55, (z1 + z2) / 2);
+    const m = this.box(g, len, 1.1, 0.8, leaves, (x1 + x2) / 2, townGroundHeight((x1 + x2) / 2, (z1 + z2) / 2) + 0.55, (z1 + z2) / 2);
     m.rotation.y = -Math.atan2(z2 - z1, x2 - x1);
   }
 
   private buildStreetFurniture(g: THREE.Group) {
-    // Street lamps: on every corner of the plaza and along the ring.
-    const lampSpots: [number, number, number?][] = [
-      [124.5, 233.5], [159.5, 233.5], [124.5, 266.5], [159.5, 266.5],
-      [139.2, 207.0], [104.6, 206.5], [179.4, 206.5], [104.6, 230.5], [179.4, 230.5],
-      [104.6, 270.6], [179.4, 270.6], [139.2, 270.6], [116, 206.5], [168, 230.6, 0.18],
-    ];
-    for (const [x, z, bent] of lampSpots) this.lamp(g, x, z, bent ?? 0);
+    const at = (x: number, z: number) => townGroundHeight(x, z);
+    const curves = TOWN_ROADS.map((road) => new THREE.CatmullRomCurve3(road.map(([x, z]) => new THREE.Vector3(cellCenter(x), 0, cellCenter(z))), false, "centripetal"));
+    /** A point beside a road, `side` metres off its centre line, and the road's heading there. */
+    const beside = (curve: THREE.CatmullRomCurve3, t: number, side: number) => {
+      const q = curve.getPoint(t), tg = curve.getTangent(t);
+      return { x: q.x - tg.z * side, z: q.z + tg.x * side, yaw: Math.atan2(tg.x, tg.z) };
+    };
+    const onLot = (x: number, z: number, margin: number) => TOWN_LOTS.some((l) => x > l.x1 * CELL - margin && x < (l.x2 + 1) * CELL + margin && z > l.z1 * CELL - margin && z < (l.z2 + 1) * CELL + margin);
 
-    // Cars. The red one outside the garage is the one the model remembers.
-    this.car(g, 143.4, 214, 0, 0xc0282e);
-    this.car(g, 127.5, 263.5, Math.PI / 2, 0x2e6fc0);
-    this.car(g, 156.6, 240, Math.PI, 0xe8c040);
-    this.car(g, 101.4, 246, 0, 0x3a8a4a);
-    this.car(g, 182.6, 218, Math.PI, 0x7a4ab0);
-    this.car(g, 170, 269.4, Math.PI / 2, 0xe8e2d0, 1, 0.06);
+    // The tower's square first (the night keeps these four lit), then lamps down the roads.
+    const ps = TOWER_PLAZA;
+    for (const [lx, lz] of [[ps.x1 * CELL + 0.8, ps.z1 * CELL + 0.8], [(ps.x2 + 1) * CELL - 0.8, (ps.z2 + 1) * CELL - 0.8], [ps.x1 * CELL + 0.8, (ps.z2 + 1) * CELL - 0.8], [(ps.x2 + 1) * CELL - 0.8, ps.z1 * CELL + 0.8]]) {
+      this.lamp(g, lx, lz, 0, TOWER_FLOOR);
+    }
+    curves.forEach((curve, ci) => {
+      const len = curve.getLength();
+      const n = Math.max(1, Math.floor(len / 26));
+      for (let i = 0; i < n; i++) {
+        const b = beside(curve, (i + 0.5) / n, (i + ci) % 2 ? 3.1 : -3.1);
+        if (onLot(b.x, b.z, 1.5)) continue;
+        this.lamp(g, b.x, b.z, ci === 1 && i === 1 ? 0.18 : 0);
+      }
+    });
 
-    // The plaza: benches, flower beds, a little hedge round the tower.
-    this.bench(g, 129.5, 238.4, Math.PI / 2);
-    this.bench(g, 154.5, 238.4, -Math.PI / 2);
-    this.bench(g, 129.5, 262, Math.PI / 2);
-    this.bench(g, 136, 265.6, Math.PI);
-    const bed = this.mat("flower_bed", { color: 0x5a3a20, roughness: 1 });
-    const flowers = [0xe04a5a, 0xf2d24b, 0xffffff, 0xd98fb5];
-    for (const [fx, fz] of [[134, 236], [150, 236], [134, 260], [150, 260]]) {
-      this.box(g, 2.4, 0.35, 1.2, bed, fx, 0.17, fz);
-      for (let i = 0; i < 10; i++) this.sphere(g, 0.12, this.mat(`flower_${flowers[i % 4]}`, { color: flowers[i % 4], roughness: 0.7 }), fx - 1.0 + (i % 5) * 0.5, 0.45, fz - 0.3 + Math.floor(i / 5) * 0.6);
-      this.solid(fx - 0.6, fz, 0.6); this.solid(fx + 0.6, fz, 0.6);
+    // Cars. The red one waits outside the garage; the rest are parked along the roads.
+    this.car(g, 116.5, 221, 0, 0xc0282e);
+    const parked: [number, number, number][] = [[0, 0.28, 0x2e6fc0], [1, 0.45, 0xe8c040], [2, 0.6, 0x3a8a4a], [1, 0.82, 0x7a4ab0], [0, 0.75, 0xe8e2d0]];
+    for (const [ci, tt, color] of parked) {
+      const b = beside(curves[ci], tt, 2.9);
+      if (!onLot(b.x, b.z, 2)) this.car(g, b.x, b.z, b.yaw, color);
     }
 
+    // The tower's square: a bench (and its reader), a flower bed.
+    this.bench(g, 165.2, 246.5, Math.PI / 2, TOWER_FLOOR);
+    const bed = this.mat("flower_bed", { color: 0x5a3a20, roughness: 1 });
+    const flowers = [0xe04a5a, 0xf2d24b, 0xffffff, 0xd98fb5];
+    const [fx, fz] = [174.4, 246.6];
+    this.box(g, 2.4, 0.35, 1.2, bed, fx, TOWER_FLOOR + 0.17, fz);
+    for (let i = 0; i < 10; i++) this.sphere(g, 0.12, this.mat(`flower_${flowers[i % 4]}`, { color: flowers[i % 4], roughness: 0.7 }), fx - 1.0 + (i % 5) * 0.5, TOWER_FLOOR + 0.45, fz - 0.3 + Math.floor(i / 5) * 0.6);
+    this.solid(fx - 0.6, fz, 0.6); this.solid(fx + 0.6, fz, 0.6);
+
     // Things slightly out of place.
-    this.chair(g, 126, 229.2, 0.4);
+    const chair = this.chair(g, 134, 230, 0.4);
+    chair.position.y = at(134, 230);
     const mailbox = new THREE.Group();
     // A mailbox, leaning like it's listening at a door.
-    mailbox.position.set(148.6, 0, 228.6);
+    mailbox.position.set(147.5, at(147.5, 200), 200);
     mailbox.rotation.z = 0.35;
     this.box(mailbox, 0.12, 1.0, 0.12, this.mat("iron", { color: 0x223a2a, roughness: 0.5, metalness: 0.4 }), 0, 0.5, 0);
     this.box(mailbox, 0.5, 0.7, 0.4, this.mat("mailbox", { color: 0x2a4aa0, roughness: 0.5 }), 0, 1.35, 0);
     g.add(mailbox);
-    this.solid(148.6, 228.6, 0.3);
-    // A bicycle on the bakery roof, a lone shoe in the square, a door leaning on nothing.
+    this.solid(147.5, 200, 0.3);
+    // A bicycle on the bakery's roof, a lone shoe in the tower's square, a door leaning on nothing.
+    const bakery = TOWN_LOTS.find((l) => l.id === "bakery")!;
     const bike = new THREE.Group();
-    bike.position.set(150, FLOOR_H + 0.35, 210);
+    bike.position.set(bakery.x1 * CELL + 6, lotFloor(bakery) + FLOOR_H + 0.35, bakery.z1 * CELL + 2);
     const tyre = this.mat("car_black", { color: 0x141414, roughness: 0.5 });
     for (const bx of [-0.55, 0.55]) {
       const w = new THREE.Mesh(this.kit.geo("town_bike_wheel", () => new THREE.TorusGeometry(0.33, 0.03, 6, 20)), tyre);
@@ -1391,31 +1435,38 @@ export class TownWorld {
     }
     this.box(bike, 1.1, 0.05, 0.05, this.mat("bike_frame", { color: 0xc0282e, roughness: 0.4 }), 0, 0.55, 0);
     g.add(bike);
-    this.sphere(g, 0.14, this.mat("shoe", { color: 0x2a1a10, roughness: 0.4 }), 145.2, 0.08, 255.2, 1.6, 0.6, 0.9);
+    this.sphere(g, 0.14, this.mat("shoe", { color: 0x2a1a10, roughness: 0.4 }), 170.6, TOWER_FLOOR + 0.08, 246.9, 1.6, 0.6, 0.9);
     const lone = new THREE.Group();
-    lone.position.set(103.2, 0, 238);
+    lone.position.set(98, at(98, 238), 238);
     lone.rotation.set(0, Math.PI / 2, -0.12);
     this.box(lone, 1.0, 2.2, 0.08, this.mat("door_lone", { color: 0x6b2a2a, roughness: 0.6 }), 0, 1.1, 0);
     g.add(lone);
-    this.solid(103.2, 238, 0.4);
+    this.solid(98, 238, 0.4);
 
-    // Bus stop: a sign and a bench where everyone arrives.
-    this.bench(g, 141.0, 275.4, Math.PI);
+    // Bus stop: a sign and a bench at the bottom of the main road, where everyone arrives.
+    const sx = cellCenter(TOWN_SPAWN.gx), sz = cellCenter(TOWN_SPAWN.gz);
+    this.bench(g, sx - 1.0, sz + 1.4, Math.PI);
     const post = this.mat("iron", { color: 0x223a2a, roughness: 0.5, metalness: 0.4 });
-    this.cyl(g, 0.05, 0.05, 2.6, post, 143.8, 1.3, 275.6, 8);
-    this.plane(g, 0.7, 0.7, this.label(t("town.sign.bus"), 0.7, 0.7, "#ffffff", "#2a4aa0"), 143.8, 2.5, 275.55, Math.PI);
-    this.solid(143.8, 275.6, 0.15);
+    this.cyl(g, 0.05, 0.05, 2.6, post, sx + 1.8, at(sx + 1.8, sz + 1.6) + 1.3, sz + 1.6, 8);
+    this.plane(g, 0.7, 0.7, this.label(t("town.sign.bus"), 0.7, 0.7, "#ffffff", "#2a4aa0"), sx + 1.8, at(sx + 1.8, sz + 1.6) + 2.5, sz + 1.55, Math.PI);
+    this.solid(sx + 1.8, sz + 1.6, 0.15);
 
-    // Hedges and trees in the gaps between the outer houses.
-    this.hedge(g, 89, 226, 99.5, 226);
-    this.hedge(g, 89, 246, 99.5, 246);
-    this.hedge(g, 184.5, 230, 195, 230);
-    this.hedge(g, 184.5, 250, 195, 250);
-    for (const [tx, tz, s] of [[94, 226, 1.0], [190, 228, 1.1], [94, 246, 0.9], [190, 248, 1.0], [118, 283, 1.2], [166, 283, 1.1], [136, 281, 0.8]] as [number, number, number][]) this.tree(g, tx, tz, s, 0, false);
+    // Round cartoon trees on the slopes between the houses, clear of the roads.
+    const rng = townRng(9494);
+    for (let i = 0; i < 70; i++) {
+      const x = TOWN_AREA.x1 * CELL + 3 + rng() * ((TOWN_AREA.x2 - TOWN_AREA.x1 + 1) * CELL - 6);
+      const z = TOWN_AREA.z1 * CELL + 3 + rng() * ((TOWN_AREA.z2 - TOWN_AREA.z1 + 1) * CELL - 6);
+      const size = 0.8 + rng() * 0.6;
+      if (townRoadDistance(x, z) < 6 || onLot(x, z, 3.5) || Math.hypot(x - sx, z - sz) < 10) continue;
+      const tp = TOWER_PLAZA;
+      if (x > tp.x1 * CELL - 4 && x < (tp.x2 + 1) * CELL + 4 && z > tp.z1 * CELL - 4 && z < (tp.z2 + 1) * CELL + 4) continue;
+      if (Math.abs(z - TOWN_EDGE_Z) < 3) continue;
+      this.tree(g, x, z, size, at(x, z) - 0.15);
+    }
 
-    // The painter's fence on East St.
+    // The painter's fence, by the house at the end of the east loop.
     const white = this.mat("picket", { color: 0xf6f3ea, roughness: 0.7 });
-    for (let zz = 242; zz < 252; zz += 0.5) this.box(g, 0.05, 1.0, 0.1, white, 183.6, 0.5, zz);
+    for (let zz = 266; zz < 276; zz += 0.5) this.box(g, 0.05, 1.0, 0.1, white, 202, at(202, zz) + 0.5, zz);
   }
 
   // -------------------------------------------------------------------------
@@ -1427,11 +1478,16 @@ export class TownWorld {
     const min = -72, max = TOWN_GRID * CELL + 72;
     const n = Math.round((max - min) / step) + 1;
     const pos = new Float32Array(n * n * 3);
+    // Under a house (and a little around it) the grass is sunk below the floor:
+    // the mesh is coarser than a lot, and must never poke up through one.
+    const pads = [...TOWN_LOTS, TOWER_PLAZA].map((r) => ({ x1: r.x1 * CELL - 0.3, z1: r.z1 * CELL - 0.3, x2: (r.x2 + 1) * CELL + 0.3, z2: (r.z2 + 1) * CELL + 0.3, y: lotFloor(r) }));
     for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
       const x = min + i * step, z = min + j * step;
       const k = (i * n + j) * 3;
+      let y = townGroundHeight(x, z) - 0.03;
+      for (const p of pads) if (x >= p.x1 && x <= p.x2 && z >= p.z1 && z <= p.z2) y = Math.min(y, p.y - 0.2);
       pos[k] = x;
-      pos[k + 1] = townGroundHeight(x, z) - 0.03;
+      pos[k + 1] = y;
       pos[k + 2] = z;
     }
     const index: number[] = [];
@@ -1450,19 +1506,19 @@ export class TownWorld {
     // A few cartoon trees and lone houses up on the hills, like a postcard.
     const hilltop = (x: number, z: number) => townGroundHeight(x, z);
     const scatter: [number, number, number][] = [
-      [70, 150, 1.4], [218, 140, 1.6], [60, 100, 1.2], [220, 70, 1.5], [96, 60, 1.3], [200, 196, 1.2], [80, 196, 1.4], [240, 120, 1.7],
-      [56, 40, 1.3], [230, 30, 1.4], [108, 172, 1.0], [186, 104, 1.2], [70, 236, 1.3], [214, 246, 1.4], [140, 296, 1.6], [40, 160, 1.5],
+      [70, 150, 1.4], [218, 140, 1.6], [60, 100, 1.2], [220, 70, 1.5], [96, 60, 1.3], [240, 120, 1.7],
+      [56, 40, 1.3], [230, 30, 1.4], [108, 172, 1.0], [186, 104, 1.2], [140, 300, 1.6], [40, 160, 1.5], [36, 240, 1.4], [252, 250, 1.5],
     ];
     for (const [x, z, s] of scatter) this.tree(g, x, z, s, hilltop(x, z) - 0.2, false);
     const lone: [number, number, number, number][] = [[214, 160, 0xf2b8b5, 0x8f3b3b], [64, 120, 0xf3dc8c, 0x6b4a32], [222, 92, 0xa9d3e8, 0x3c5a7a], [84, 72, 0xc8d8f0, 0x40527a]];
     lone.forEach(([x, z, wall, roof], i) => {
       const y = hilltop(x, z) - 0.4;
-      const fake: TownLot = { id: `hill${i}`, x1: 0, z1: 0, x2: 0, z2: 0, style: "cottage", wall, roof, floors: 1 };
+      const fake: TownLot = { id: `hill${i}`, x1: 0, z1: 0, x2: 0, z2: 0, style: "cottage", wall, roof, floors: 1, hill: 0 };
       const house = new THREE.Group();
       house.position.set(x, y, z);
       house.rotation.y = i * 0.9;
       this.box(house, 6, 3.4, 5, this.facadeMat(fake), 0, 1.7, 0);
-      const r = new THREE.Mesh(this.gableGeo(6, 5, 2.2, 0.35), this.mat(`roof_${roof}`, { color: roof, roughness: 0.7 }));
+      const r = new THREE.Mesh(this.gableGeo(6, 5, 2.2, 0.35), this.mat(`roof_${roof}`, { color: roof, roughness: 0.7, side: THREE.DoubleSide }));
       r.position.y = 3.4;
       house.add(r);
       g.add(house);
@@ -1482,40 +1538,9 @@ export class TownWorld {
   /** The road through the valley, and the abandoned furniture left on the grass. */
   private buildValley(g: THREE.Group) {
     const pts = VALLEY_PATH.map(([x, z]) => new THREE.Vector3(cellCenter(x), 0, cellCenter(z)));
-    pts.unshift(new THREE.Vector3(cellCenter(35), 0, 203.5));
-    const curve = new THREE.CatmullRomCurve3(pts, false, "centripetal");
+    pts.unshift(new THREE.Vector3(cellCenter(TOWN_BARRICADE.gx), 0, cellCenter(TOWN_BARRICADE.gz)));
+    const curve = this.roadRibbon(g, pts);
     const samples = 160;
-    const half = 1.9;
-    const p: number[] = [], uv: number[] = [], line: number[] = [], lineUv: number[] = [];
-    let dist = 0;
-    const ribbon = (out: number[], outUv: number[], w: number, y: number, dashed: boolean) => {
-      dist = 0;
-      for (let i = 0; i < samples; i++) {
-        const a = curve.getPoint(i / samples), b = curve.getPoint((i + 1) / samples);
-        const ta = curve.getTangent(i / samples), tb = curve.getTangent((i + 1) / samples);
-        const na = new THREE.Vector3(-ta.z, 0, ta.x).normalize().multiplyScalar(w);
-        const nb = new THREE.Vector3(-tb.z, 0, tb.x).normalize().multiplyScalar(w);
-        const seg = a.distanceTo(b);
-        if (dashed && Math.floor(dist / 1.5) % 2 === 1) { dist += seg; continue; }
-        const ya = (q: THREE.Vector3) => townGroundHeight(q.x, q.z) + y;
-        const a1 = a.clone().add(na), a2 = a.clone().sub(na), b1 = b.clone().add(nb), b2 = b.clone().sub(nb);
-        for (const v of [a1, a2, b1, b2]) v.y = ya(v);
-        out.push(a1.x, a1.y, a1.z, a2.x, a2.y, a2.z, b1.x, b1.y, b1.z, a2.x, a2.y, a2.z, b2.x, b2.y, b2.z, b1.x, b1.y, b1.z);
-        outUv.push(0, dist, w * 2, dist, 0, dist + seg, w * 2, dist, w * 2, dist + seg, 0, dist + seg);
-        dist += seg;
-      }
-    };
-    ribbon(p, uv, half, 0.06, false);
-    ribbon(line, lineUv, 0.08, 0.075, true);
-    const mk = (pos: number[], uvs: number[], mat: THREE.Material) => {
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-      geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-      geo.computeVertexNormals();
-      g.add(new THREE.Mesh(geo, mat));
-    };
-    mk(p, uv, this.asphaltMat());
-    mk(line, lineUv, this.mat("road_line", { color: 0xe8b830, roughness: 0.7 }));
 
     // Telephone poles along the road.
     const poleMat = this.mat("pole_wood", { color: 0x5a4030, roughness: 0.9 });
@@ -1540,6 +1565,21 @@ export class TownWorld {
     };
     const wood = this.mat("furn_wood", { color: 0x7a4a28, roughness: 0.7 });
     this.armchair(g, 151, 172, 2.6, 0x4a7a5a, at(151, 172));
+    // On its seat, a gold paper crown, the kind from a party. Nothing marks it.
+    const crown = new THREE.Group();
+    crown.position.set(151, at(151, 172) + 0.47, 172);
+    crown.rotation.set(0.25, 0.7, 0.1);
+    const paper = this.mat("paper_crown", { color: 0xe8c040, roughness: 0.45, metalness: 0.3, side: THREE.DoubleSide });
+    this.cyl(crown, 0.16, 0.16, 0.09, paper, 0, 0.045, 0, 14);
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2;
+      const spike = new THREE.Mesh(this.kit.geo("town_paper_spike", () => new THREE.ConeGeometry(0.045, 0.1, 4)), paper);
+      spike.position.set(Math.sin(a) * 0.15, 0.14, Math.cos(a) * 0.15);
+      crown.add(spike);
+    }
+    crown.traverse((o) => { o.userData.dynamic = true; });
+    this.root.add(crown);
+    this.crown = crown;
     place(166, 158, 0.3, (h) => {
       this.box(h, 1.4, 2.3, 0.7, this.mat("wardrobe", { color: 0x5a3a20, roughness: 0.7 }), 0, 1.15, 0);
       this.box(h, 0.04, 2.1, 0.02, this.mat("trim", { color: 0xf4efe2, roughness: 0.7 }), 0, 1.15, 0.36);
@@ -1652,6 +1692,8 @@ export class TownWorld {
       }), roughness: 0.8,
     });
     this.cyl(t, r, r * 1.05, h, stripes, 0, h / 2, 0, 18);
+    // Towers at the castle's edge stand on the slope: their stone runs down into it.
+    if (y0 === 0) this.cyl(t, r * 1.05, r * 1.2, 20, this.castleStone(), 0, -10.02, 0, 18);
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2;
       this.box(t, 0.8, 1.0, 0.8, stripes, Math.sin(a) * r, h + 0.5, Math.cos(a) * r, a);
@@ -1676,6 +1718,9 @@ export class TownWorld {
     const x0 = f.x1 * CELL, x1 = (f.x2 + 1) * CELL, z0 = f.z1 * CELL, z1 = (f.z2 + 1) * CELL;
     const H = 15;
     const gateX = cellCenter(35);
+    // The rock the castle is built on, running down into its hill.
+    const rock = this.mat("castle_rock", { color: 0x7a7468, roughness: 1 });
+    this.box(g, x1 - x0 + 0.6, 30, z1 - z0 + 0.6, rock, (x0 + x1) / 2, -15.05, (z0 + z1) / 2);
     // South wall with the gate opening (4 m wide, 5.2 m high).
     this.box(g, gateX - 2 - x0, H, 1.0, stone, (x0 + gateX - 2) / 2, H / 2, z1 - 0.5);
     this.box(g, x1 - gateX - 2, H, 1.0, stone, (gateX + 2 + x1) / 2, H / 2, z1 - 0.5);
@@ -1808,7 +1853,7 @@ export class TownWorld {
     }
     // Room lights: odd, saturated colours in the entrance, warm lamps elsewhere.
     const light = (x: number, y: number, z: number, color: number, intensity: number, dist: number) => {
-      const src = this.env.registerLight(Math.floor(x / CELL), Math.floor(z / CELL), x, y, z, color, intensity, dist, 1.1);
+      const src = this.env.registerLight(Math.floor(x / CELL), Math.floor(z / CELL), x, CASTLE_FLOOR + y, z, color, intensity, dist, 1.1);
       this.castleLights.push({ src, base: intensity });
       return src;
     };
@@ -1822,8 +1867,8 @@ export class TownWorld {
     light(154, 6, 44, 0xff3a2a, 1.6, 14);
     light(130, 6, 20, 0xff3a2a, 1.6, 14);
     light(154, 6, 20, 0xff3a2a, 1.6, 14);
-    this.kingLight = this.env.registerLight(KING_THRONE.gx, KING_THRONE.gz, cellCenter(KING_THRONE.gx), 8.5, cellCenter(KING_THRONE.gz) + 1, 0xffd090, 3.4, 16, 1.0);
-    this.exitLight = this.env.registerLight(TOWN_EXIT.gx, TOWN_EXIT.gz, cellCenter(TOWN_EXIT.gx), 2.5, cellCenter(TOWN_EXIT.gz), 0xffffff, 3.0, 12, 1.0);
+    this.kingLight = this.env.registerLight(KING_THRONE.gx, KING_THRONE.gz, cellCenter(KING_THRONE.gx), CASTLE_FLOOR + 8.5, cellCenter(KING_THRONE.gz) + 1, 0xffd090, 3.4, 16, 1.0);
+    this.exitLight = this.env.registerLight(TOWN_EXIT.gx, TOWN_EXIT.gz, cellCenter(TOWN_EXIT.gx), CASTLE_FLOOR + 2.5, cellCenter(TOWN_EXIT.gz), 0xffffff, 3.0, 12, 1.0);
   }
 
   /** The entrance hall: toys, paintings, strange light. */
@@ -1878,7 +1923,7 @@ export class TownWorld {
       c.beginPath(); c.moveTo(w * 0.36, h * 0.55); c.quadraticCurveTo(w / 2, h * 0.68, w * 0.64, h * 0.55); c.quadraticCurveTo(w / 2, h * 0.6, w * 0.36, h * 0.55); c.fill();
       c.fillStyle = "#7a1424"; c.fillRect(w * 0.15, h * 0.72, w * 0.7, h * 0.3);
     }, "king");
-    this.frame(g, 155.88, 3.4, 94, -Math.PI / 2, 3.4, 2.4, (c, w, h) => this.paintTownPlan(c, w, h, true), "plan");
+    this.frame(g, 155.88, 3.4, 94, -Math.PI / 2, 3.4, 2.4, (c, w, h) => drawTownView(c, w, h), "view");
     const plaque = this.label(t("town.sign.plan"), 2.6, 0.32, "#2b1a10", "#e9d8a8", "italic");
     this.plane(g, 2.6, 0.32, plaque, 155.86, 1.85, 94, -Math.PI / 2);
     this.frame(g, 134, 3.6, 88.12, 0, 1.6, 2.0, (c, w, h) => {
@@ -1898,37 +1943,16 @@ export class TownWorld {
     this.plane(g, 3.4, 0.6, this.label(t("town.sign.animRoom"), 3.4, 0.6, "#f6e2a0", "#5a0f1c"), 142, 5.2, 88.1);
   }
 
-  /** The town plan, as the painting in the entrance (and the model's base) draws it. */
-  private paintTownPlan(c: CanvasRenderingContext2D, w: number, h: number, painting: boolean) {
-    const f = TOWN_FOOTPRINT;
-    const sx = w / ((f.x2 - f.x1 + 1) * CELL), sz = h / ((f.z2 - f.z1 + 1) * CELL);
-    c.fillStyle = "#6fa04a"; c.fillRect(0, 0, w, h);
-    const rect = (x0: number, z0: number, x1: number, z1: number, col: string) => {
-      c.fillStyle = col;
-      c.fillRect((x0 - f.x1 * CELL) * sx, (z0 - f.z1 * CELL) * sz, (x1 - x0) * sx, (z1 - z0) * sz);
-    };
-    for (const r of TOWN_STREETS) rect(r.x1 * CELL, r.z1 * CELL, (r.x2 + 1) * CELL, (r.z2 + 1) * CELL, r.kind === "plaza" ? "#b8a890" : r.kind === "alley" ? "#8a7660" : "#6a6a6e");
-    rect(140, 200, 144, 204, "#6a6a6e");
-    if (!painting) return;
-    // The painting shows every house, the tower, and the red car where it belongs.
-    for (const l of TOWN_LOTS) rect(l.x1 * CELL + 0.6, l.z1 * CELL + 0.6, (l.x2 + 1) * CELL - 0.6, (l.z2 + 1) * CELL - 0.6, hex(l.roof));
-    const lc = townLot(STAY_HOUSE);
-    rect(lc.x1 * CELL + 0.6, lc.z1 * CELL + 0.6, (lc.x2 + 1) * CELL - 0.6, (lc.z2 + 1) * CELL - 0.6, "#40527a");
-    rect(140, 248, 144, 252, "#e9d8a8");
-    c.fillStyle = "#1a1a1a"; c.beginPath(); c.arc((142 - f.x1 * CELL) * sx, (250 - f.z1 * CELL) * sz, 2.2 * sx, 0, Math.PI * 2); c.fill();
-    rect(142.6, 212.2, 144.2, 215.8, "#c0282e");
-  }
-
   /** The Animation Room: the model of the town, the projector, the gate north. */
   private buildAnimationRoom(g: THREE.Group) {
     const T = MODEL_TABLE;
-    const f = TOWN_FOOTPRINT;
+    const f = TOWN_AREA;
     const mw = (f.x2 - f.x1 + 1) * CELL * MODEL_SCALE, md = (f.z2 - f.z1 + 1) * CELL * MODEL_SCALE;
-    // The table and the model's base, painted with the streets.
+    // The table and the model's base, painted with the roads, the hills and five empty plots.
     const wood = this.mat("model_table", { color: 0x5a3a20, roughness: 0.6 });
     this.box(g, mw + 0.6, 0.12, md + 0.6, wood, T.x, T.y - 0.06, T.z);
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) this.box(g, 0.15, T.y - 0.12, 0.15, wood, T.x + sx * (mw / 2 + 0.15), (T.y - 0.12) / 2, T.z + sz * (md / 2 + 0.15));
-    const base = this.tex("model_base", 512, 400, null, (c, w, h) => this.paintTownPlan(c, w, h, false));
+    const base = this.tex("model_base", 1024, 512, null, (c, w, h) => drawTownPlan(c, w, h, { missing: true, houses: false }));
     const baseMesh = new THREE.Mesh(this.kit.geo("town_model_base", () => new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2)), this.mat("model_base", { map: base, roughness: 0.8 }));
     baseMesh.position.set(T.x, T.y + 0.005, T.z);
     baseMesh.scale.set(mw, 1, md);
@@ -1937,47 +1961,50 @@ export class TownWorld {
     this.wallLine(T.x - mw / 2 - 0.2, T.z + md / 2 + 0.2, T.x + mw / 2 + 0.2, T.z + md / 2 + 0.2);
     this.wallLine(T.x - mw / 2 - 0.2, T.z - md / 2 - 0.2, T.x - mw / 2 - 0.2, T.z + md / 2 + 0.2);
     this.wallLine(T.x + mw / 2 + 0.2, T.z - md / 2 - 0.2, T.x + mw / 2 + 0.2, T.z + md / 2 + 0.2);
-    // Every house in miniature, except the one whose lot stands empty (but for a tiny chair).
+    // Felt hills under the houses (heights exaggerated, so they read at this size).
+    const lift = MODEL_SCALE * 2.2;
+    const felt = this.mat("model_felt", { color: 0x6a9c46, roughness: 1 });
+    const hillMini = (r: { x1: number; z1: number; x2: number; z2: number }) => {
+      const floor = lotFloor(r);
+      const [cx, cz] = modelPoint((r.x1 + r.x2 + 1) * CELL / 2, (r.z1 + r.z2 + 1) * CELL / 2);
+      const rad = ((Math.max(r.x2 - r.x1, r.z2 - r.z1) + 1) * CELL / 2 + 5) * MODEL_SCALE;
+      if (floor > 0.3) this.sphere(g, 1, felt, cx, T.y, cz, rad, floor * lift, rad);
+      return T.y + floor * lift;
+    };
+    const mini = (parent: THREE.Object3D, r: { x1: number; z1: number; x2: number; z2: number }, wall: number, roof: number, floors: number, y: number) => {
+      const [ax, az] = modelPoint(r.x1 * CELL + 0.6, r.z1 * CELL + 0.6);
+      const [bx, bz] = modelPoint((r.x2 + 1) * CELL - 0.6, (r.z2 + 1) * CELL - 0.6);
+      const hh = floors * FLOOR_H * MODEL_SCALE * 1.6;
+      this.box(parent, bx - ax, hh, bz - az, this.mat(`model_wall_${wall}`, { color: wall, roughness: 0.7 }), (ax + bx) / 2, y + hh / 2, (az + bz) / 2);
+      const rf = new THREE.Mesh(this.gableGeo(bx - ax, bz - az, Math.min(bx - ax, bz - az) * 0.45, 0.01), this.mat(`roof_${roof}`, { color: roof, roughness: 0.7, side: THREE.DoubleSide }));
+      rf.position.set((ax + bx) / 2, y + hh, (az + bz) / 2);
+      parent.add(rf);
+    };
+    const missing = new Set<string>(MODEL_PIECES);
     for (const l of TOWN_LOTS) {
-      if (l.id === STAY_HOUSE) continue;
-      const [ax, az] = modelPoint(l.x1 * CELL + 0.4, l.z1 * CELL + 0.4);
-      const [bx, bz] = modelPoint((l.x2 + 1) * CELL - 0.4, (l.z2 + 1) * CELL - 0.4);
-      const hh = (l.floors * FLOOR_H) * MODEL_SCALE * 1.4;
-      this.box(g, bx - ax, hh, bz - az, this.mat(`model_wall_${l.wall}`, { color: l.wall, roughness: 0.7 }), (ax + bx) / 2, T.y + hh / 2, (az + bz) / 2);
-      this.box(g, bx - ax + 0.02, 0.025, bz - az + 0.02, this.mat(`roof_${l.roof}`, { color: l.roof, roughness: 0.7 }), (ax + bx) / 2, T.y + hh + 0.012, (az + bz) / 2);
+      const y = hillMini(l);
+      if (!missing.has(l.id)) mini(g, l, l.wall, l.roof, l.floors, y);
     }
-    const lc = townLot(STAY_HOUSE);
-    const [cx, cz] = modelPoint((lc.x1 + lc.x2 + 1) * CELL / 2, (lc.z1 + lc.z2 + 1) * CELL / 2);
-    const tiny = this.chair(new THREE.Group(), 0, 0, Math.PI, this.mat("stay_chair", { color: 0x6b2a2a, roughness: 0.7 }), false);
-    tiny.position.set(cx, T.y, cz);
-    tiny.scale.setScalar(0.12);
-    g.add(tiny);
-
-    // The three pieces that are out of place.
-    const house = new THREE.Group();
-    this.box(house, (lc.x2 - lc.x1 + 1) * CELL * MODEL_SCALE * 0.9, 0.18, (lc.z2 - lc.z1 + 1) * CELL * MODEL_SCALE * 0.9, this.mat(`model_wall_${lc.wall}`, { color: lc.wall, roughness: 0.7 }), 0, 0.09 - 0.06, 0);
-    const hr = new THREE.Mesh(this.gableGeo(0.32, 0.45, 0.12, 0.02), this.mat(`roof_${lc.roof}`, { color: lc.roof, roughness: 0.7 }));
-    hr.rotation.y = Math.PI / 2;
-    hr.position.y = 0.12;
-    house.add(hr);
-    const car = new THREE.Group();
-    this.car(car, 0, 0, 0, 0xc0282e, 0.06, 0, false);
-    car.position.y = -0.06;
-    const clock = new THREE.Group();
-    this.box(clock, 0.16, 0.95, 0.16, this.mat("tower_model", { color: 0xd8c8b0, roughness: 0.8 }), 0, 0.475 - 0.06, 0);
-    const sp = new THREE.Mesh(this.kit.geo("town_model_spire", () => new THREE.ConeGeometry(0.13, 0.28, 4)), this.mat("tower_roof", { color: 0x2f5f4a, roughness: 0.6 }));
-    sp.position.y = 0.95 + 0.14 - 0.06;
-    sp.rotation.y = Math.PI / 4;
-    clock.add(sp);
-    const pieces: Record<ModelPieceId, THREE.Group> = { house, car, clock };
-    for (const id of MODEL_PIECES) {
+    const towerY = hillMini(TOWER_PLAZA);
+    // The five missing buildings, hidden until someone puts them back (see setModelPlaced).
+    for (const piece of MODEL_PIECE_DATA) {
       const holder = new THREE.Group();
-      holder.add(pieces[id]);
-      holder.userData.dynamic = true;
+      if (piece.id === "tower") {
+        const [cx, cz] = modelPoint(cellCenter(TOWN_TOWER.gx), cellCenter(TOWN_TOWER.gz));
+        this.box(holder, 0.1, 0.62, 0.1, this.mat("tower_model", { color: 0xd8c8b0, roughness: 0.8 }), cx, towerY + 0.31, cz);
+        const sp = new THREE.Mesh(this.kit.geo("town_model_spire", () => new THREE.ConeGeometry(0.09, 0.18, 4)), this.mat("tower_roof", { color: 0x2f5f4a, roughness: 0.6 }));
+        sp.position.set(cx, towerY + 0.71, cz);
+        sp.rotation.y = Math.PI / 4;
+        holder.add(sp);
+      } else {
+        const l = TOWN_LOTS.find((lt) => lt.id === piece.id)!;
+        mini(holder, l, l.wall, l.roof, l.floors, T.y + lotFloor(l) * lift);
+      }
+      holder.visible = false;
+      holder.position.y = CASTLE_FLOOR;
       holder.traverse((o) => { o.userData.dynamic = true; });
       this.root.add(holder);
-      this.modelPieces.set(id, holder);
-      this.setModelSlot(id, 0);
+      this.modelMinis.push(holder);
     }
 
     // Drawing desks with animation cels, film cans, shelves of reels.
@@ -2124,7 +2151,8 @@ export class TownWorld {
   private buildGates() {
     // The barricade on the road out: two sawhorses, striped planks, a sign.
     const b = new THREE.Group();
-    b.position.set(cellCenter(TOWN_BARRICADE.gx), 0, TOWN_BARRICADE.gz * CELL + 2.6);
+    const bz = TOWN_BARRICADE.gz * CELL + 2.6;
+    b.position.set(cellCenter(TOWN_BARRICADE.gx), townGroundHeight(cellCenter(TOWN_BARRICADE.gx), bz), bz);
     const stripes = this.mat("barricade", {
       map: this.tex("barricade", 128, 32, [1, 0.25], (c, w, h) => {
         for (let i = 0; i < 8; i++) { c.fillStyle = i % 2 ? "#f4efe2" : "#d02a2a"; c.beginPath(); c.moveTo(i * 16, 0); c.lineTo(i * 16 + 16, 0); c.lineTo(i * 16, h); c.lineTo(i * 16 - 16, h); c.fill(); }
@@ -2136,6 +2164,7 @@ export class TownWorld {
     this.box(b, 3.8, 0.28, 0.06, stripes, 0, 0.55, 0.25);
     this.plane(b, 1.8, 0.5, this.label(t("town.sign.closed"), 1.8, 0.5, "#1a1a1a", "#f2d24b"), 0, 1.5, 0.3);
     b.traverse((o) => { o.userData.dynamic = true; });
+    b.userData.baseY = b.position.y;
     this.root.add(b);
     this.barricade = b;
 
@@ -2151,13 +2180,13 @@ export class TownWorld {
       spike.rotation.x = Math.PI;
       p.add(spike);
     }
-    p.position.set(gx, 0, gz);
+    p.position.set(gx, CASTLE_FLOOR, gz);
     p.traverse((o) => { o.userData.dynamic = true; });
     this.root.add(p);
     this.portcullis = p;
-    for (let i = 0; i < 3; i++) {
-      const bulb = new THREE.Mesh(this.kit.geo("town_bulb", () => new THREE.SphereGeometry(0.16, 12, 10)), this.bulbOff);
-      bulb.position.set(gx - 0.9 + i * 0.9, 4.35, gz + 0.3);
+    for (let i = 0; i < MODEL_PIECES.length; i++) {
+      const bulb = new THREE.Mesh(this.kit.geo("town_bulb", () => new THREE.SphereGeometry(0.14, 12, 10)), this.bulbOff);
+      bulb.position.set(gx + (i - (MODEL_PIECES.length - 1) / 2) * 0.62, CASTLE_FLOOR + 4.35, gz + 0.3);
       bulb.userData.dynamic = true;
       this.root.add(bulb);
       this.gateBulbs.push(bulb);

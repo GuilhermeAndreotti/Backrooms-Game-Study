@@ -74,6 +74,8 @@ export const townKing: MobDefinition = {
   sense(ctx) {
     const d = ctx.distanceMeters;
     const awake = ctx.isAgitated
+      // Someone turned down his offer (GameEngine sets it from the level's shared fact).
+      || ctx.hunting
       || d < WAKE_RANGE
       || (ctx.playerState === "running" && d < WAKE_RUN_RANGE)
       // Someone got past him: nobody leaves.

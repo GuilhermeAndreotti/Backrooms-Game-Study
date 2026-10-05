@@ -7,7 +7,7 @@
  * wide, moving like a puppet shot one frame at a time.
  *
  * Simple to read on purpose: they see whoever is in front of them with a
- * clear line (walls, house fronts and parked cars hide you), further if you
+ * clear line (walls, house fronts, parked cars and the crest of a hill hide you), further if you
  * run or carry a lit flashlight, much closer if you crouch. They keep after
  * you for a few seconds once they lose sight of you, and never follow
  * anyone into a house (townLayout's townEntityMayEnter keeps them on the
@@ -61,7 +61,7 @@ export const animation: MobDefinition = {
     if (ctx.targetHidden) return { chasing: false, speed: PATROL_SPEED, agitated: false, scratch: 0 };
     const d = ctx.distanceMeters;
     const seen = d < FEEL_RANGE || (d < sightRange(ctx.playerState, !!ctx.isFlashlightOn)
-      && townSightClear(ctx.entityPos.x, ctx.entityPos.z, ctx.playerX, ctx.playerZ, (x, z) => ctx.map.checkCollision(x, z, 0.08)));
+      && townSightClear(ctx.entityPos.x, ctx.entityPos.z, ctx.playerX, ctx.playerZ, (x, z) => ctx.map.checkCollision(x, z, 0.08), (x, z) => ctx.map.getFloorHeightAt(x, z)));
     let scratch = ctx.scratch;
     if (seen) scratch = 1;
     else if (scratch > 0) scratch += ctx.delta;

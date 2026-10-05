@@ -172,7 +172,7 @@ const FRAG = /* glsl */ `
   }
 `;
 
-const SKY_RADIUS = 150;
+const SKY_RADIUS = 300;
 
 export class TownSky {
   readonly root = new THREE.Group();

@@ -59,6 +59,13 @@ export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
     unlocked: false,
   },
   {
+    id: "old_town_king",
+    title: "",
+    description: "",
+    iconName: "Sparkles",
+    unlocked: false,
+  },
+  {
     id: "old_town_stay",
     title: "",
     description: "",

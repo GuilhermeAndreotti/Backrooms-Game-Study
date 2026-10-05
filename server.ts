@@ -171,8 +171,7 @@ interface Room {
   funFacts: Set<string>;
   /**
    * Level 94 facts, replayed to explorers who arrive later: a clock part found,
-   * the clock started, where each model piece stands (last move wins), the
-   * model solved. Keyed so a piece moved twice keeps only its latest place.
+   * the clock started, a building put back on the model, the model solved.
    */
   townFacts: Map<string, [string, number]>;
   /**
@@ -368,8 +367,8 @@ const CONSUMABLE_ID = /^\d{1,3},\d{1,3}#\d{1,2}$/;
 const MAX_CONSUMED_PER_LEVEL = 4000;
 /** Level 79 facts a client may announce (see spaceDirector.ts): power restored (0), a console set (0-8), a course executed (0 planet, 1 black hole, 2 the UNKNOWN course to Level 94), the planet course aborted (0). */
 const SPACE_EVENT_MAX_INDEX: Record<string, number> = { power: 0, set: 8, exec: 2, abort: 0 };
-/** Level 94 facts a client may announce (see townDirector.ts): a clock part found (0-2), the clock started (0), a model piece moved (piece * 3 + slot, 0-8), the model solved (0). */
-const TOWN_EVENT_MAX_INDEX: Record<string, number> = { part: 2, clock: 0, model: 8, solved: 0 };
+/** Level 94 facts a client may announce (see townDirector.ts): a clock part found (0-2), the clock started (0), a building put back on the model (0-4), the model solved (0), the King's offer turned down (0). */
+const TOWN_EVENT_MAX_INDEX: Record<string, number> = { part: 2, clock: 0, model: 4, solved: 0, kingWake: 0 };
 
 function gridInt(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < 256 ? value : null;
@@ -902,17 +901,14 @@ async function startServer() {
         return;
       }
 
-      // Level 94: same idea, but the facts are kept for whoever arrives later
-      // (a model piece only keeps its latest place).
+      // Level 94: same idea, but the facts are kept for whoever arrives later.
       if (type === "town_event") {
         const level = conn.player.level;
         const kind = data.kind;
         const index = data.index;
         if (level !== OLD_TOWN_LEVEL || data.level !== level || conn.player.dead || typeof kind !== "string" || !Object.hasOwn(TOWN_EVENT_MAX_INDEX, kind)) return;
         if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > TOWN_EVENT_MAX_INDEX[kind]) return;
-        // Once the model is solved its pieces stay put.
-        if (kind === "model" && room.townFacts.has("solved")) return;
-        const key = kind === "part" ? `part:${index}` : kind === "model" ? `model:${Math.floor(index / 3)}` : kind;
+        const key = kind === "part" || kind === "model" ? `${kind}:${index}` : kind;
         room.townFacts.set(key, [kind, index]);
         broadcastToLevel(room, level, { type: "town_event", level, kind, index }, conn);
         return;

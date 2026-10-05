@@ -21,7 +21,7 @@ import type { DecorKit } from "../LevelDecor";
 import { animateBiped, rot, rx } from "../mobs/anim";
 import type { MobAnimCtx, MobBuildCtx, MobJoints } from "../mobs/types";
 import { NO_SCRIPTED_POSE } from "../mobs/types";
-import type { TownsfolkRole, TownsfolkSpot } from "./townLayout";
+import { townGroundHeight, type TownsfolkRole, type TownsfolkSpot } from "./townLayout";
 
 export type ToonBuild = Pick<MobBuildCtx, "joint" | "limbIn" | "put" | "sgeo" | "smat" | "V">;
 
@@ -410,7 +410,7 @@ export class Townsfolk {
     this.group = built.group;
     this.body = built.body;
     this.joints = built.joints;
-    this.group.position.set(spot.x, 0, spot.z);
+    this.group.position.set(spot.x, townGroundHeight(spot.x, spot.z), spot.z);
     this.group.rotation.y = spot.yaw;
     this.baseYaw = spot.yaw;
     this.time = index * 1.7;
@@ -508,6 +508,7 @@ export class Townsfolk {
       this.paceX += v * Math.min(1, delta * 2);
       move = Math.min(1, Math.abs(v) * 0.9);
       g.position.x = this.spot.x + this.paceX;
+      g.position.y = townGroundHeight(g.position.x, g.position.z);
       g.rotation.y = this.baseYaw + (Math.cos(t * 0.55) >= 0 ? 0 : Math.PI);
     }
 

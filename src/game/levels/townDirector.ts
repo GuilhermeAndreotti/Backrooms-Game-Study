@@ -40,9 +40,9 @@ import { KING_LOOK } from "../mobs/townKing";
 import { NO_SCRIPTED_POSE } from "../mobs/types";
 import { animateToon, buildStandaloneToon, poseSeated, Townsfolk } from "./townFigures";
 import {
-  CLOCK_HATCH, CLOCK_PARTS, ClockPart, KING_CHECKPOINT, MODEL_PIECES, ModelPieceId, NOISY_HOUSES, STAY_CHAIR,
-  THRONE_DOOR_X, THRONE_DOOR_Z, TOWNSFOLK, TOWN_CELL, TOWN_EXIT, TOWN_SPAWN, TOWN_TOWER, TownZone, cellCenter, decodeModel,
-  encodeModel, modelStart, townCellAt, townIsIndoors, townRng,
+  CASTLE_FLOOR, CLOCK_HATCH, CLOCK_PARTS, ClockPart, KING_CHECKPOINT, KING_THRONE, MODEL_PIECES, MODEL_SCALE, MODEL_TABLE, ModelPieceId, NOISY_HOUSES,
+  THRONE_DOOR_X, THRONE_DOOR_Z, TOWNSFOLK, TOWN_AREA, TOWN_CELL, TOWN_EDGE_Z, TOWN_EXIT, TOWN_SPAWN, TOWN_TOWER, TownZone, cellCenter,
+  stayChair, townCellAt, townIsIndoors, townRng,
 } from "./townLayout";
 import { SKY_DAY, SKY_HILLS, SKY_NIGHT, SKY_SUNSET, SkyLook, TownSky, cloneSky, mixSky } from "./townSky";
 import type { TownWorld } from "./townWorld";
@@ -52,7 +52,7 @@ export type TownAudio = Pick<AudioManager,
   "startFunMusic" | "stopFunMusic" | "funMusicPlaying" | "playFunSound" | "playKingBreath" | "playKingWhisper" | "playKingStinger" |
   "playKingThud" | "playTerminalBeep" | "startTownAmbience" | "setTownAmbience" | "stopTownAmbience" | "playTownSound">;
 
-export type TownEventKind = "part" | "clock" | "model" | "solved";
+export type TownEventKind = "part" | "clock" | "model" | "solved" | "kingWake";
 
 export interface TownHost {
   audio: TownAudio;
@@ -81,10 +81,24 @@ export interface TownHost {
   achievement(id: string): void;
   /** The level is over for this explorer: leave it like any other exit. */
   escape(): void;
+  /** Opens (a view) or closes (null) the King's dialogue panel. */
+  dialogue(view: TownDialogueView | null): void;
 }
 
 type Phase = "day" | "dusk" | "night";
-type Vision = "none" | "confront" | "shrinking" | "open" | "white" | "stay" | "chair" | "done";
+type Vision = "none" | "dialogue" | "confront" | "shrinking" | "open" | "white" | "stay" | "chair" | "crown" | "throne" | "done";
+
+/** What the King's dialogue panel shows: his words, and what you can answer. */
+export interface TownDialogueView {
+  lines: string[];
+  options: { id: TownDialogueChoice; label: string; secret: boolean }[];
+}
+export type TownDialogueChoice = "how" | "who" | "accept" | "refuse" | "crown";
+
+/** How close (metres) to the throne the King speaks to you, if he's still sitting. */
+const DIALOGUE_RANGE = 15;
+/** You, crowned, on the throne. */
+const NEW_KING_SCALE = 1.35;
 
 /** Seconds from the clock starting to full night. */
 const DUSK_SECONDS = 19;
@@ -94,7 +108,10 @@ const STAY_SECONDS = 6;
 const NIGHT_LAMPS = new Set([0, 3, 6, 11]);
 
 const PART_NAME: Record<ClockPart, MessageKey> = { key: "town.part.key", gear: "town.part.gear", hand: "town.part.hand" };
-const PIECE_NAME: Record<ModelPieceId, MessageKey> = { house: "town.piece.house", car: "town.piece.car", clock: "town.piece.clock" };
+/** The model's missing buildings, as the assembly panel names them. */
+export const PIECE_NAME: Record<ModelPieceId, MessageKey> = {
+  tower: "town.piece.tower", houseC: "town.piece.houseC", bakery: "town.piece.bakery", chapel: "town.piece.chapel", houseD: "town.piece.houseD",
+};
 
 const smooth = (a: number, b: number, v: number) => {
   const k = Math.max(0, Math.min(1, (v - a) / (b - a)));
@@ -201,7 +218,8 @@ export class TownDirector {
   // Shared facts
   private readonly found = new Set<ClockPart>();
   private clockStarted = false;
-  private readonly model: Record<ModelPieceId, number>;
+  /** Which of the model's missing buildings are back on their plots. */
+  private readonly placed: boolean[] = MODEL_PIECES.map(() => false);
   private solved = false;
 
   // The shared timeline
@@ -224,6 +242,8 @@ export class TownDirector {
   private tickTimer = 0;
   private distantTune = 30;
   private caughtFade = 0;
+  /** A building dropped on the wrong plot: seconds left of the castle's lights stuttering. */
+  private wrongFlash = 0;
 
   // The vision and the endings
   private vision: Vision = "none";
@@ -241,6 +261,20 @@ export class TownDirector {
   /** While set, GameEngine hands the camera to {@link driveCamera}. */
   cinematic = false;
 
+  // The King's offer, and what unlocks the secret answer to it.
+  /** Someone turned the King down: he's up, for everyone (a shared fact). */
+  kingWoken = false;
+  private dialogueDone = false;
+  private dialogueNode: "intro" | "how" | "who" = "intro";
+  private asked = new Set<TownDialogueChoice>();
+  /** The paper crown in the hills (each explorer finds their own). */
+  private crownFound = false;
+  /** Times a monster caught this explorer on this level. */
+  private timesCaught = 0;
+  /** Buildings this explorer dropped on the wrong plot of the model. */
+  private wrongPlacements = 0;
+  private throneFigure: { group: THREE.Group; body: THREE.Group; joints: Record<string, THREE.Group> } | null = null;
+
   constructor(world: TownWorld, host: TownHost) {
     this.world = world;
     this.host = host;
@@ -248,7 +282,7 @@ export class TownDirector {
     host.scene.add(this.sky.root);
     this.card = new TitleCard(host.camera);
     // Long views outside: the hills and the castle are meant to be seen from afar.
-    host.camera.far = 170;
+    host.camera.far = 320;
     host.camera.updateProjectionMatrix();
 
     TOWNSFOLK.forEach((spot, i) => {
@@ -257,9 +291,7 @@ export class TownDirector {
       world.root.add(f.group);
     });
 
-    this.model = modelStart(world.seed);
-    for (const id of MODEL_PIECES) world.setModelSlot(id, this.model[id]);
-    world.setGateBulbs(this.correctPieces());
+    world.setGateBulbs(0);
     const rng = townRng((world.seed ^ 0x11947) >>> 0);
     this.lightsOut = [...world.houses.keys()];
     for (let i = this.lightsOut.length - 1; i > 0; i--) {
@@ -294,9 +326,14 @@ export class TownDirector {
     return this.vision !== "none" || this.caughtFade > 0;
   }
 
-  /** The replicated King is hidden for whoever is having the vision. */
+  /** The replicated King is hidden for whoever is having the vision (or sits on his throne now). */
   get kingVisible(): boolean {
-    return this.vision === "none";
+    return this.vision === "none" || this.vision === "dialogue";
+  }
+
+  /** The secret answer: the crown from the hills, never caught, and the model put right without a single mistake. */
+  private get crownWorthy(): boolean {
+    return this.crownFound && this.timesCaught === 0 && this.wrongPlacements === 0;
   }
 
   /** Indoors: the Animations never follow anyone into a house. */
@@ -319,7 +356,7 @@ export class TownDirector {
         return t(k?.awake ? "town.obj.run" : "town.obj.throne");
       }
       if (region === "animRoom" || (region === "entrance" && !this.solved)) {
-        return this.solved ? t("town.obj.gateOpen") : t("town.obj.model", { n: this.correctPieces() });
+        return this.solved ? t("town.obj.gateOpen") : t("town.obj.model", { n: this.placedCount(), total: MODEL_PIECES.length });
       }
       return t("town.obj.castle");
     }
@@ -340,7 +377,8 @@ export class TownDirector {
     const amb = this.ambColor.setHex(0xfff2dc).lerp(this.tmpColor.setHex(0x5a6a9a), night).lerp(this.tmpColor.setHex(0xe6ece2), this.hillsK);
     const townInt = 0.95 - 0.72 * night;
     let intensity = townInt + (0.9 - townInt) * this.hillsK;
-    let density = 0.011 + 0.02 * night * (1 - this.hillsK) + 0.006 * this.hillsK;
+    // Clear air over the hills, so the castle on its hill shows from far down the valley.
+    let density = (0.011 + 0.02 * night) * (1 - this.hillsK) + 0.0055 * this.hillsK;
     const fog = this.fogColor.copy(this.look.horizon);
     if (this.indoorK > 0.01) {
       const room = this.region();
@@ -366,7 +404,7 @@ export class TownDirector {
   // Interaction
   // -------------------------------------------------------------------------
 
-  private pick(): { kind: "part"; part: ClockPart } | { kind: "hatch" } | { kind: "piece"; piece: ModelPieceId } | null {
+  private pick(): { kind: "part"; part: ClockPart } | { kind: "hatch" } | { kind: "model" } | { kind: "crown" } | null {
     if (this.vision !== "none") return null;
     const p = this.host.player();
     if (!p.alive) return null;
@@ -391,11 +429,20 @@ export class TownDirector {
         if (s >= 0 && s < bestScore) { bestScore = s; best = { kind: "hatch" }; }
       }
     }
+    if (!this.crownFound) {
+      const c = this.world.crown.position;
+      const s = facing(c.x, c.z, 2.2, 0.3);
+      if (s >= 0 && s < bestScore) { bestScore = s; best = { kind: "crown" }; }
+    }
     if (!this.solved && this.zone === "castle") {
-      for (const piece of MODEL_PIECES) {
-        const o = this.world.modelPiece(piece).position;
-        const s = facing(o.x, o.z, 3.0, 0.75);
-        if (s >= 0 && s < bestScore) { bestScore = s; best = { kind: "piece", piece }; }
+      // Anywhere around the model's table, looking at it.
+      const halfW = (TOWN_AREA.x2 - TOWN_AREA.x1 + 1) * TOWN_CELL * MODEL_SCALE / 2 + 0.3;
+      const halfD = (TOWN_AREA.z2 - TOWN_AREA.z1 + 1) * TOWN_CELL * MODEL_SCALE / 2 + 0.3;
+      const nx = Math.max(MODEL_TABLE.x - halfW, Math.min(p.x, MODEL_TABLE.x + halfW));
+      const nz = Math.max(MODEL_TABLE.z - halfD, Math.min(p.z, MODEL_TABLE.z + halfD));
+      if (Math.hypot(p.x - nx, p.z - nz) < 1.8) {
+        const s = facing(MODEL_TABLE.x, MODEL_TABLE.z, 6, 0.2);
+        if (s >= 0 && s < bestScore) { bestScore = s; best = { kind: "model" }; }
       }
     }
     return best;
@@ -406,13 +453,25 @@ export class TownDirector {
     if (!target) return null;
     if (target.kind === "part") return t("town.act.take", { name: t(PART_NAME[target.part]) });
     if (target.kind === "hatch") return this.found.size >= 3 ? t("town.act.fitParts") : t("town.act.hatch", { n: this.found.size });
-    return t("town.act.movePiece", { name: t(PIECE_NAME[target.piece]) });
+    if (target.kind === "crown") return t("town.act.crown");
+    return t("town.act.model");
   }
 
-  /** E pressed: whether something was used. */
-  interact(): boolean {
+  /** E pressed: what was used ("model" opens the assembly panel), or null. */
+  interact(): "used" | "model" | null {
     const target = this.pick();
-    if (!target) return false;
+    if (!target) return null;
+    if (target.kind === "model") {
+      this.host.audio.playTownSound("slide");
+      return "model";
+    }
+    if (target.kind === "crown") {
+      this.crownFound = true;
+      this.world.crown.visible = false;
+      this.host.audio.playTownSound("pickup");
+      this.host.notify(t("town.ntf.crown"));
+      return "used";
+    }
     if (target.kind === "part") {
       this.takePart(target.part, false);
       this.host.send("part", CLOCK_PARTS.indexOf(target.part));
@@ -424,11 +483,37 @@ export class TownDirector {
         this.startClock(false);
         this.host.send("clock", 0);
       }
-    } else {
-      const next = (this.model[target.piece] + 1) % 3;
-      this.setPiece(target.piece, next, false);
-      this.host.send("model", encodeModel(target.piece, next));
     }
+    return "used";
+  }
+
+  // -------------------------------------------------------------------------
+  // The model's assembly panel
+  // -------------------------------------------------------------------------
+
+  /** Which buildings are already back on the model (the panel polls this: teammates assemble too). */
+  modelPlaced(): boolean[] {
+    return [...this.placed];
+  }
+
+  get isSolved(): boolean {
+    return this.solved;
+  }
+
+  /** A building dropped on a plot in the panel: whether it belongs there. */
+  placePiece(piece: number, plot: number): boolean {
+    if (this.solved || this.placed[piece] === undefined || this.placed[piece]) return false;
+    if (piece !== plot) {
+      // Wrong plot: the castle's lights stutter, something giggles in the walls.
+      this.host.audio.playTerminalBeep(false);
+      this.host.audio.playFunSound("giggle", (Math.random() - 0.5) * 1.6, 0.5);
+      this.world.setCastleMood(0.25);
+      this.wrongFlash = 0.35;
+      this.wrongPlacements++;
+      return false;
+    }
+    this.setPlaced(piece, false);
+    this.host.send("model", piece);
     return true;
   }
 
@@ -444,10 +529,11 @@ export class TownDirector {
     } else if (kind === "clock") {
       this.startClock(quiet);
     } else if (kind === "model") {
-      const m = decodeModel(index);
-      if (m && m.slot >= 0 && m.slot < 3) this.setPiece(m.piece, m.slot, true);
+      if (index >= 0 && index < MODEL_PIECES.length) this.setPlaced(index, quiet, true);
     } else if (kind === "solved") {
       this.solve(quiet);
+    } else if (kind === "kingWake") {
+      this.kingWoken = true;
     }
   }
 
@@ -485,19 +571,18 @@ export class TownDirector {
     this.host.audio.playTownSound("place");
   }
 
-  private correctPieces(): number {
-    return MODEL_PIECES.filter((id) => this.model[id] === 0).length;
+  private placedCount(): number {
+    return this.placed.filter(Boolean).length;
   }
 
-  private setPiece(piece: ModelPieceId, slot: number, remote: boolean) {
-    if (this.solved) return;
-    this.model[piece] = slot;
-    this.world.setModelSlot(piece, slot);
-    const correct = this.correctPieces();
-    this.world.setGateBulbs(correct);
-    this.host.audio.playTownSound(slot === 0 ? "click" : "slide");
-    if (correct === 3 && !remote) {
-      this.solve(false);
+  private setPlaced(piece: number, quiet: boolean, remote = false) {
+    if (this.placed[piece]) return;
+    this.placed[piece] = true;
+    this.world.setModelPlaced(piece, true);
+    this.world.setGateBulbs(this.placedCount());
+    if (!quiet) this.host.audio.playTownSound("click");
+    if (this.placedCount() === MODEL_PIECES.length && !remote) {
+      this.solve(quiet);
       this.host.send("solved", 0);
     }
   }
@@ -505,8 +590,8 @@ export class TownDirector {
   private solve(quiet: boolean) {
     if (this.solved) return;
     this.solved = true;
-    for (const id of MODEL_PIECES) { this.model[id] = 0; this.world.setModelSlot(id, 0); }
-    this.world.setGateBulbs(3);
+    MODEL_PIECES.forEach((_id, i) => { this.placed[i] = true; this.world.setModelPlaced(i, true); });
+    this.world.setGateBulbs(MODEL_PIECES.length);
     this.world.setGate("puzzle", true);
     if (quiet) return;
     this.host.audio.playTownSound("gate");
@@ -520,6 +605,7 @@ export class TownDirector {
   /** A monster caught the local explorer. Level 94 never ends a run for it: back to a checkpoint. */
   caught(type: EntityType) {
     if (this.immune) return;
+    this.timesCaught++;
     this.caughtFade = 1.4;
     this.host.setFade(1);
     this.host.audio.playKingThud(1, 0);
@@ -558,7 +644,7 @@ export class TownDirector {
     this.trackPlaces(cell?.region ?? null);
 
     // Outdoors in the hills (the town's last fence is the line) and under a roof.
-    const hillsTarget = this.eternalDay ? 0 : smooth(204, 196, p.z);
+    const hillsTarget = this.eternalDay ? 0 : smooth(TOWN_EDGE_Z, TOWN_EDGE_Z - 8, p.z);
     this.hillsK = hillsTarget;
     const indoorTarget = this.zone === "castle" && cell?.region !== "gate" ? 1 : 0;
     this.indoorK = THREE.MathUtils.damp(this.indoorK, indoorTarget, 3, delta);
@@ -575,6 +661,10 @@ export class TownDirector {
     this.updateVision(delta, p);
     this.world.update(delta);
 
+    if (this.wrongFlash > 0) {
+      this.wrongFlash = Math.max(0, this.wrongFlash - delta);
+      if (this.vision === "none") this.world.setCastleMood(this.wrongFlash > 0 ? 0.25 + Math.random() * 0.5 : 1);
+    }
     if (this.caughtFade > 0) {
       this.caughtFade = Math.max(0, this.caughtFade - delta);
       if (this.vision === "none") this.host.setFade(Math.min(1, this.caughtFade));
@@ -777,7 +867,40 @@ export class TownDirector {
     switch (this.vision) {
       case "none": {
         if (this.region() !== "throne" || this.caughtFade > 0) break;
+        // Still on his throne the first time you walk up: he has an offer.
+        const king = this.host.king();
+        if (!this.dialogueDone && !this.kingWoken && king && !king.awake
+          && Math.hypot(p.x - cellCenter(KING_THRONE.gx), p.z - cellCenter(KING_THRONE.gz)) < DIALOGUE_RANGE) {
+          this.beginDialogue();
+          break;
+        }
         if (Math.hypot(p.x - THRONE_DOOR_X, p.z - THRONE_DOOR_Z) < 9) this.beginConfront(p);
+        break;
+      }
+      case "dialogue":
+        break;
+      case "crown": {
+        // "...The crown knows you." Black. Then the throne.
+        this.card.show([t("town.king.crown")], null, "#f6e2a0", smooth(0.2, 0.9, T) * (1 - smooth(2.2, 2.8, T)), [56]);
+        this.host.setFade(smooth(1.6, 2.8, T));
+        if (T > 3.4) this.beginThrone();
+        break;
+      }
+      case "throne": {
+        // You on the throne, crowned; the camera leaves you there, down the length of the hall.
+        const fadeIn = 1 - smooth(0, 2.2, T);
+        const fadeOut = smooth(13, 15.5, T);
+        this.host.setFade(Math.max(fadeIn, fadeOut));
+        if (this.throneFigure) {
+          poseSeated(this.throneFigure.joints, this.throneFigure.body, NEW_KING_SCALE, this.time, 0.6);
+          this.throneFigure.body.position.z = -0.12 * NEW_KING_SCALE;
+        }
+        if (T > 15.5) this.card.show(["LEVEL 94", "MOTION", "", t("town.end.king")], "#000000", "#f6e2a0", smooth(15.5, 16.5, T), [70, 60, 24, 44]);
+        if (T > 21) {
+          this.setVision("done");
+          this.host.achievement("old_town_king");
+          this.host.escape();
+        }
         break;
       }
       case "confront":
@@ -841,7 +964,7 @@ export class TownDirector {
       }
       case "white": {
         const a = smooth(0, 1.2, T);
-        this.card.show(["LEVEL 94", "THE OLD TOWN", "", t("town.end.complete")], "#ffffff", "#141414", a, [76, 64, 30, 46]);
+        this.card.show(["LEVEL 94", "MOTION", "", t("town.end.complete")], "#ffffff", "#141414", a, [76, 64, 30, 46]);
         if (T > 6.5) {
           this.setVision("done");
           this.host.achievement("old_town_complete");
@@ -851,9 +974,11 @@ export class TownDirector {
       }
       case "stay": {
         // He leans down. "Stay." Then nothing.
-        const k = this.ensureKing();
-        k.group.scale.setScalar(Math.max(0.001, this.kingScale));
-        this.animateFigure(k, KING_LOOK.scale, delta, 1, 0);
+        const k = this.king;
+        if (k?.group.visible) {
+          k.group.scale.setScalar(Math.max(0.001, this.kingScale));
+          this.animateFigure(k, KING_LOOK.scale, delta, 1, 0);
+        }
         this.card.show([t("town.end.stay")], null, "#f4efe2", smooth(0.3, 1.0, T) * (1 - smooth(2.6, 3.2, T)), [64]);
         this.host.setFade(smooth(2.2, 3.6, T));
         this.host.setDread(this.dread * (1 - smooth(2.5, 3.6, T)));
@@ -883,7 +1008,7 @@ export class TownDirector {
   private beginConfront(p: { x: number; z: number }) {
     const k = this.ensureKing();
     // He's in the doorway, a few metres in front of it, facing you.
-    k.group.position.set(THRONE_DOOR_X, 0, THRONE_DOOR_Z + 3.2);
+    k.group.position.set(THRONE_DOOR_X, CASTLE_FLOOR, THRONE_DOOR_Z + 3.2);
     k.group.visible = true;
     this.kingScale = 1;
     this.minDist = Math.hypot(p.x - THRONE_DOOR_X, p.z - (THRONE_DOOR_Z + 3.2));
@@ -920,12 +1045,80 @@ export class TownDirector {
     // You, in the chair: an Animation wearing your colours.
     const coat = new THREE.Color(this.host.suitColor()).getHex();
     const fig = buildStandaloneToon(this.world.kitRef, { key: "stayFigure", scale: 1, body: 0x0d0d0d, face: "animation", coat, hat: "none", hatColor: 0, limbs: 0.9 });
-    const lot = STAY_CHAIR;
-    fig.group.position.set(lot.x, 0, lot.z);
+    const lot = stayChair();
+    fig.group.position.set(lot.x, lot.y, lot.z);
     fig.group.rotation.y = -Math.PI / 2;
     this.world.root.add(fig.group);
     this.chair = fig;
     this.host.teleport(lot.x + 1.4, lot.z, -Math.PI / 2);
+    this.cinematic = true;
+  }
+
+  // -------------------------------------------------------------------------
+  // The King's offer
+  // -------------------------------------------------------------------------
+
+  private beginDialogue() {
+    this.setVision("dialogue");
+    this.dialogueNode = "intro";
+    this.host.audio.playKingWhisper(0.7, 0, false);
+    this.host.dialogue(this.dialogueView());
+  }
+
+  /** What the panel shows right now. */
+  dialogueView(): TownDialogueView {
+    const lines = t(`town.king.${this.dialogueNode}`).split("|");
+    const options: TownDialogueView["options"] = [];
+    for (const id of ["how", "who"] as const) if (!this.asked.has(id)) options.push({ id, label: t(`town.king.opt.${id}`), secret: false });
+    options.push({ id: "accept", label: t("town.king.opt.accept"), secret: false });
+    options.push({ id: "refuse", label: t("town.king.opt.refuse"), secret: false });
+    if (this.crownWorthy) options.push({ id: "crown", label: t("town.king.opt.crown"), secret: true });
+    return { lines, options };
+  }
+
+  /** An answer picked in the panel: the next thing he says, or null once the panel closes. */
+  chooseDialogue(choice: TownDialogueChoice): TownDialogueView | null {
+    if (this.vision !== "dialogue") return null;
+    if (choice === "how" || choice === "who") {
+      this.asked.add(choice);
+      this.dialogueNode = choice;
+      this.host.audio.playKingBreath(0.5, 0, true);
+      return this.dialogueView();
+    }
+    this.dialogueDone = true;
+    this.host.dialogue(null);
+    if (choice === "accept") {
+      // He keeps his word, in his own way: you stay.
+      this.beginStay();
+    } else if (choice === "crown" && this.crownWorthy) {
+      this.setVision("crown");
+      this.host.audio.playKingWhisper(1, 0, true);
+      this.host.audio.playTownSound("bell");
+    } else {
+      // Turned down, he gets up. For everyone.
+      this.setVision("none");
+      this.kingWoken = true;
+      this.host.send("kingWake", 0);
+      this.host.audio.playKingStinger();
+      this.host.notify(t("town.ntf.kingRefused"));
+    }
+    return null;
+  }
+
+  /** You on the throne: an Animation in your colours, with the King's crown and robe. */
+  private beginThrone() {
+    this.setVision("throne");
+    this.card.hide();
+    if (this.king) this.king.group.visible = false;
+    this.host.audio.stopTownAmbience();
+    this.ambienceOn = false;
+    this.host.audio.startFunMusic("town", { volume: 0.45, distortion: 0.25 });
+    const coat = new THREE.Color(this.host.suitColor()).getHex();
+    const fig = buildStandaloneToon(this.world.kitRef, { ...KING_LOOK, key: "newKing", scale: NEW_KING_SCALE, face: "animation", coat });
+    fig.group.position.set(cellCenter(KING_THRONE.gx), CASTLE_FLOOR, cellCenter(KING_THRONE.gz));
+    this.world.root.add(fig.group);
+    this.throneFigure = fig;
+    this.host.teleport(cellCenter(KING_THRONE.gx), cellCenter(KING_THRONE.gz) + 2, 0);
     this.cinematic = true;
   }
 
@@ -937,20 +1130,34 @@ export class TownDirector {
     this.world.setCastleMood(1);
     this.world.setKingLight(1);
     this.card.hide();
+    if (this.vision === "dialogue") this.host.dialogue(null);
     this.setVision("none");
   }
 
   /** The secret ending's camera: from the figure's eyes, slowly back across the room. */
   driveCamera(rig: THREE.Object3D, camera: THREE.Camera) {
+    if (this.vision === "throne") {
+      // From right in front of your face on the throne, back down the carpet and up.
+      const T = this.visionTime;
+      const k = smooth(0.5, 14, T);
+      const kx = cellCenter(KING_THRONE.gx), kz = cellCenter(KING_THRONE.gz), fy = CASTLE_FLOOR;
+      rig.position.copy(new THREE.Vector3(kx, fy + 1.9, kz + 1.8)).lerp(new THREE.Vector3(kx, fy + 5.5, kz + 24), k);
+      rig.lookAt(new THREE.Vector3(kx, fy + 1.7, kz));
+      rig.rotateY(Math.PI);
+      camera.position.set(0, 0, 0);
+      camera.rotation.set(0, 0, 0);
+      return;
+    }
     if (!this.chair) return;
     const T = this.visionTime;
     const k = smooth(0.5, 14, T);
     const cx = this.chair.group.position.x, cz = this.chair.group.position.z;
     // Eye level in the chair, looking out of the open door (west), then back and up to the far corner.
-    const eye = new THREE.Vector3(cx - 0.1, 1.2, cz);
-    const end = new THREE.Vector3(cx + 2.6, 2.75, cz + 2.4);
+    const fy = this.chair.group.position.y;
+    const eye = new THREE.Vector3(cx - 0.1, fy + 1.2, cz);
+    const end = new THREE.Vector3(cx + 2.6, fy + 2.75, cz + 2.4);
     rig.position.copy(eye).lerp(end, k);
-    const lookAt = new THREE.Vector3(cx - 6, 1.1, cz).lerp(new THREE.Vector3(cx - 0.2, 0.9, cz - 0.1), smooth(1, 9, T));
+    const lookAt = new THREE.Vector3(cx - 6, fy + 1.1, cz).lerp(new THREE.Vector3(cx - 0.2, fy + 0.9, cz - 0.1), smooth(1, 9, T));
     rig.lookAt(lookAt);
     rig.rotateY(Math.PI);
     camera.position.set(0, 0, 0);

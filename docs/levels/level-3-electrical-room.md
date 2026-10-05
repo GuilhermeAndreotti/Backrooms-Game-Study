@@ -2,7 +2,7 @@
 
 - **Id de rede:** `3` (conteúdo `8`) — **Grid:** 48×48
 - **Entidades:** matilha de **8 `HOUND`** patrulhando a rota
-- **Próximo nível:** Abandoned Office · **Recebe:** a saída do [Lights Out](level-6-lights-out.md) · **Secreto:** porta de saída → [Level 94 (The Old Town)](level-94-old-town.md)
+- **Próximo nível:** Abandoned Office · **Recebe:** a saída do [Lights Out](level-6-lights-out.md) · **Secreto:** porta de saída → [Level 94 (Motion)](level-94-motion.md)
 
 ## Ambientação
 
@@ -32,7 +32,7 @@ Posições (células): `(17,8)`, `(35,8)`, `(11,25)`, `(26,25)`, `(32,41)`.
 
 ## Secreto: a porta de saída
 
-Numa das salas do topo do mapa, um **nicho** na parede norte termina numa **porta de metal aberta** com uma placa verde **"SAÍDA"**; pelo vão entra luz do dia e vê-se uma estrada indo para uma cidadezinha entre colinas. A posição ao longo da parede muda com a seed. Chegar à porta leva **só você** ao [Level 94 — The Old Town](level-94-old-town.md) (desvio individual; desligado se a sala desativar "Rotas secretas"). O cheat SETA aponta para ela com o rótulo "94".
+Numa das salas do topo do mapa, um **nicho** na parede norte termina numa **porta de metal aberta** com uma placa verde **"SAÍDA"**; pelo vão entra luz do dia e vê-se uma estrada indo para uma cidadezinha entre colinas. A posição ao longo da parede muda com a seed. Chegar à porta leva **só você** ao [Level 94 — Motion](level-94-motion.md) (desvio individual; desligado se a sala desativar "Rotas secretas"). O cheat SETA aponta para ela com o rótulo "94".
 
 ## Referências no código
 

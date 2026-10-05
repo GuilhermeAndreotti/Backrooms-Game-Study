@@ -19,7 +19,7 @@ Elencos de [levels/registry.ts](../src/game/levels/registry.ts). "Estático" = p
 | Level 79 | estático | `ALIEN` |
 | Lights Out | sob demanda | pool `DULLER`, `SKIN_STEALER`, `WRETCH`, `HOUND` |
 | Level G | bespoke | `FINGER_KING` |
-| Level 94 — The Old Town | bespoke | `TOWN_KING` (no trono desde o início), `ANIMATION` ×4 (só à noite) |
+| Level 94 — Motion | bespoke | `TOWN_KING` (no trono desde o início), `ANIMATION` ×4 (só à noite) |
 | Level FUN | bespoke | nenhuma (cenas roteirizadas) |
 
 ## Entidades
