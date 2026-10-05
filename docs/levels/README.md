@@ -59,9 +59,9 @@ Controlados pela opção de sala **Rotas secretas** (anfitrião, no lobby).
 | Lights Out | Beco sem saída de um corredor sem luz no Level 1 | Volta à Electrical Room (convergência) |
 | Level G | Passagem escondida no Abandoned Office | Volta ao Abandoned Office |
 | Level 94 — Motion | Porta "SAÍDA" num nicho da parede norte da Electrical Room (individual), ou os três consoles do Level 79 em DESCONHECIDO (todos a bordo) | Final da própria fase (volta ao lobby) |
-| Level FUN | Comer o bolo que ninguém está vigiando (Abandoned Office), ou escolher no lobby | Final da própria fase (final alternativo) |
+| Level FUN | Comer o bolo que ninguém está vigiando (Abandoned Office), ou escolher no lobby | **Segue para o Level 79** (pula as Poolrooms) — não encerra a expedição |
 
-Detours são **individuais**: quem entra deixa a sala principal por um tempo; o servidor reúne os jogadores quando a sala chega ao ponto de convergência (nível 4 em diante).
+Detours são **individuais**: quem entra deixa a sala principal por um tempo; o servidor reúne os jogadores quando a sala chega ao ponto de convergência (nível 4 em diante). O **Level FUN** é um atalho para frente: quem sai dele chega à estação do Level 79 **antes** do grupo e permanece lá quando a sala avança (as transições da rota principal não o puxam de volta); a estação não guarda estado compartilhado para quem chega depois (energia, consoles).
 
 ## Anatomia de um nível
 

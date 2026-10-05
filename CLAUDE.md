@@ -43,7 +43,7 @@ A player reaching an exit sends `level_transition_request`; the room only actual
 Levels are plain numbers threaded through client and server (`GameEngine.level`, `PlayerState.level`, `RemotePlayer.level`). The source of truth is `src/game/levels/constants.ts`; per-level guides live in `docs/levels/`.
 
 - Main route (`MAIN_LEVELS`): `0` → `1` (garage) → `2` (Pipe Dreams) → `3` Electrical Room → `4` Abandoned Office → `5` Poolrooms → `12` Level 79 Space Station.
-- Secret/optional: `6` Lights Out (from Level 1), `7` Level G (from Level 4), `9` Level FUN (cake in Level 4), `8` Level 94 "Motion" (exit door in the Electrical Room, or Level 79's UNKNOWN course).
+- Secret/optional: `6` Lights Out (from Level 1), `7` Level G (from Level 4), `9` Level FUN (cake in Level 4; its exit leads on to Level 79, skipping the Poolrooms), `8` Level 94 "Motion" (exit door in the Electrical Room, or Level 79's UNKNOWN course).
 - `10` (`LOBBY_LEVEL`) — the room lobby every game starts in; the host triggers `start_game` (optionally picking a level).
 
 **Network id ≠ content id.** `ProceduralMap` generates from a *content* id; `contentLevelFor()` maps network ids to it (e.g. Electrical Room 3→8, Poolrooms 5→7, Lights Out 6→3, Level G 7→4, Motion 8→94, FUN 9→11). Comments/branches inside `ProceduralMap.ts` often use content ids. `ProceduralMap.gridSizeForLevel(level)` and the level branches in `GameEngine.ts`/`ProceduralMap.ts` care about this. See `docs/levels/README.md`.
@@ -66,7 +66,7 @@ Each client simulates its own physics/collision (`PlayerController.ts`) and send
 
 ### Networking message types
 
-The client/server protocol is a flat `{ type: ... }` JSON message set (join, update, players_snapshot, entities, world_event, box_push, levelg_code, entities_relocate, level_transition_request/level_transition, start_game, ball/ball_kick, died, room_reset, ping/pong, chat). When adding a new message type, add server-side validation/sanitization for every field the client controls (see the existing `sanitize*`/`gridInt`/`finiteNumber` helpers in `server.ts`) — the server trusts nothing from a client message body.
+The client/server protocol is a flat `{ type: ... }` JSON message set (join, update, players_snapshot, entities, world_event, box_push, levelg_code, entities_relocate, level_transition_request/level_transition, start_game, ball/ball_kick, chess_sit/chess_stand/chess_move/chess_resign/chess_new/chess_sync (server-validated lobby chess, `src/shared/chess.ts`), died, room_reset, ping/pong, chat). When adding a new message type, add server-side validation/sanitization for every field the client controls (see the existing `sanitize*`/`gridInt`/`finiteNumber` helpers in `server.ts`) — the server trusts nothing from a client message body.
 
 ### Other notable pieces
 

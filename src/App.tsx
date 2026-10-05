@@ -22,6 +22,8 @@ import { SpaceTerminalModal } from "./components/SpaceTerminalModal";
 import { SpaceWiringModal } from "./components/SpaceWiringModal";
 import { TownModelModal } from "./components/TownModelModal";
 import { KingDialogueModal } from "./components/KingDialogueModal";
+import { ChessModal } from "./components/ChessModal";
+import { EMPTY_CHESS, type ChessNetState } from "./shared/chess";
 import type { TownDialogueView } from "./game/levels/townDirector";
 import type { SpaceTerminalId, WireColor } from "./game/levels/spaceLayout";
 import { AdSlot } from "./components/AdSlot";
@@ -172,6 +174,9 @@ export default function App() {
   const [townModelOpen, setTownModelOpen] = useState(false);
   /** Level 94: the King's offer, while it's on screen. */
   const [townDialogue, setTownDialogue] = useState<TownDialogueView | null>(null);
+  /** The lobby's chess table: the server's latest description of it, and whether its board panel is open. */
+  const [chessState, setChessState] = useState<ChessNetState>(EMPTY_CHESS);
+  const [chessOpen, setChessOpen] = useState(false);
   /** Level the explorer last escaped from, so the report can tell FUN's ending apart. */
   const [escapedFrom, setEscapedFrom] = useState<number | null>(null);
   const [megDialogue, setMegDialogue] = useState<{ name: string; grade: string; dialogue: string } | null>(null);
@@ -278,10 +283,11 @@ export default function App() {
    * count as "the player left the game": no pause menu behind them.
    */
   const interfaceOpen = isTerminalOpen || isMegDoorOpen || isFunPanelOpen || isCheatTerminalOpen || isLevelSelectorOpen
-    || isAchievementsOpen || spaceTerminal !== null || spaceWiring !== null || townModelOpen || townDialogue !== null;
+    || isAchievementsOpen || spaceTerminal !== null || spaceWiring !== null || townModelOpen || townDialogue !== null || chessOpen;
   useEffect(() => {
     if (currentLevel !== SPACE_LEVEL) { setSpaceTerminal(null); setSpaceWiring(null); }
     if (currentLevel !== OLD_TOWN_LEVEL) { setTownModelOpen(false); setTownDialogue(null); }
+    if (currentLevel !== LOBBY_LEVEL) setChessOpen(false);
   }, [currentLevel]);
   /** Read by the (rarely re-bound) global key handler: hotbar keys do nothing behind a panel. */
   const panelOpenRef = useRef(false);
@@ -411,6 +417,12 @@ export default function App() {
         return true;
       case "town":
         // A clock part or the tower's hatch (Level 94).
+        return true;
+      case "chess":
+        setIsInventoryOpen(false);
+        setIsAchievementsOpen(false);
+        setChessOpen(true);
+        document.exitPointerLock?.();
         return true;
       case "town_model":
         setIsInventoryOpen(false);
@@ -867,9 +879,16 @@ export default function App() {
                         socketRef.current.send(JSON.stringify({ type: "level_transition_request", level: ELECTRICAL_ROOM_LEVEL, secret: true }));
                       } else if (engine.level === LEVEL_G && socketRef.current?.readyState === WebSocket.OPEN) {
                         socketRef.current.send(JSON.stringify({ type: "level_transition_request", level: ABANDONED_OFFICE_LEVEL, secret: true }));
+                      } else if (engine.level === FUN_LEVEL && socketRef.current?.readyState === WebSocket.OPEN) {
+                        // Level FUN isn't an ending: its way out leads to Level 79's station.
+                        unlockAchievement("level_fun_escaped");
+                        socketRef.current.send(JSON.stringify({ type: "level_transition_request", level: SPACE_LEVEL, secret: true }));
                       } else {
                         console.log("Explorer successfully escaped the Backrooms!");
-                        unlockAchievement("absolute_survivor");
+                        // Only the main route's end (Level 79) is the way out of the Backrooms; the
+                        // secret levels have their own endings below.
+                        if (engine.level === SPACE_LEVEL) unlockAchievement("absolute_survivor");
+                        if (engine.level === FUN_LEVEL) unlockAchievement("level_fun_escaped");
                         // Level G's emergency door is its own, secret ending
                            if (engine.level === LEVEL_G) {
                           unlockAchievement("level_g_escaped");
@@ -917,10 +936,10 @@ export default function App() {
                         unlockAchievement("level_g_found");
                       } else if (targetLevel === FUN_LEVEL) {
                         console.log("Ate the cake nobody was watching... entering LEVEL FUN.");
-                        unlockAchievement("secret_level_found");
+                        unlockAchievement("level_fun_found");
                       } else if (targetLevel === OLD_TOWN_LEVEL) {
                         console.log("Left by the Electrical Room's exit door or the station's unknown course... entering Level 94: Motion.");
-                        unlockAchievement("secret_level_found");
+                        unlockAchievement("motion_found");
                       } else {
                          console.log("Found the dark corridor... entering Level 6: Lights Out.");
                         unlockAchievement("secret_level_found");
@@ -1314,6 +1333,11 @@ export default function App() {
 
           else if (type === "space_event") {
             engineRef.current?.applySpaceEvent(data);
+          }
+
+          else if (type === "chess_state") {
+            setChessState(data as ChessNetState);
+            engineRef.current?.applyChessState(data as ChessNetState);
           }
 
           else if (type === "town_event") {
@@ -2042,6 +2066,18 @@ export default function App() {
               onPress={(index) => engineRef.current?.funPressButton(index) ?? { result: "wrong", progress: 0 }}
               onClose={() => {
                 setIsFunPanelOpen(false);
+                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+                if (canvasEl) lockGameInput(canvasEl);
+              }}
+            />
+          )}
+          {chessOpen && currentLevel === LOBBY_LEVEL && (
+            <ChessModal
+              state={chessState}
+              myId={clientIdRef.current ?? ""}
+              send={(message) => socketRef.current?.send(JSON.stringify(message))}
+              onClose={() => {
+                setChessOpen(false);
                 const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
                 if (canvasEl) lockGameInput(canvasEl);
               }}

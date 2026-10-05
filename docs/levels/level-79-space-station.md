@@ -2,7 +2,7 @@
 
 - **Id de rede:** `12` (também é o id de conteúdo) — **Grid:** 32×32, **desenhado à mão** — **Layout:** [levels/spaceLayout.ts](../../src/game/levels/spaceLayout.ts)
 - **Entidades:** `O ALIEN` (começa na extremidade leste da espinha, o mais longe possível da doca)
-- **Acesso:** saída das [Poolrooms](poolrooms.md) (uma porta de estação) ou seletor do lobby — **Final:** é o último nível da rota principal; escapar encerra o jogo
+- **Acesso:** saída das [Poolrooms](poolrooms.md) (uma porta de estação), a porta de serviço do [Level FUN](level-fun.md) (rota alternativa que pula as Poolrooms) ou seletor do lobby — **Final:** é o último nível da rota principal; escapar encerra o jogo
 
 ## Ambientação
 

@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Lobby, LOBBY, LOBBY_LEVEL, BallNetState } from "./Lobby";
+import { Lobby, LOBBY, CHESS, LOBBY_LEVEL, BallNetState } from "./Lobby";
+import { EMPTY_CHESS, type ChessNetState } from "../shared/chess";
 import { Voip } from "./Voip";
 import { t, type MessageKey } from "../i18n";
 import { OfficeWorker } from "./npc/OfficeWorker";
@@ -2012,6 +2013,7 @@ export class GameEngine {
     if (this.level === LOBBY_LEVEL) {
       this.lobby = new Lobby(this.scene);
       this.setupMirror();
+      this.setupChessTable();
     }
   }
 
@@ -3562,6 +3564,8 @@ export class GameEngine {
         text = t("act.readPaper");
       } else if (this.nearCheatTerminal()) {
         text = t("act.cheatTerminal");
+      } else if (this.nearChessTable()) {
+        text = t("chess.act.open");
       } else if (this.nearGarageKeypad()) {
         text = t("act.garageKeypad");
       } else if (this.map.findPushable(this.player.position.x, this.player.position.z, fx, fz)) {
@@ -3954,6 +3958,7 @@ export class GameEngine {
     this.sendToServer({ type: "consumables_sync", level: this.level });
     if (this.funDirector) this.sendToServer({ type: "fun_sync", level: FUN_LEVEL });
     if (this.townDirector) this.sendToServer({ type: "town_sync", level: OLD_TOWN_LEVEL });
+    if (this.level === LOBBY_LEVEL) this.sendToServer({ type: "chess_sync" });
     if (this.level === 1) this.sendToServer({ type: "garage_sync", level: 1 });
   }
 
@@ -4038,7 +4043,7 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | "town" | "town_model" | null {
+  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | "town" | "town_model" | "chess" | null {
     if (this.isDead) return null;
     if (this.funDirector) {
       const used = this.funDirector.interact();
@@ -4088,6 +4093,7 @@ export class GameEngine {
       return "paper";
     }
     if (this.nearCheatTerminal()) return "cheat";
+    if (this.nearChessTable()) return "chess";
     if (this.nearGarageKeypad()) return "garage_keypad";
     if (this.level !== LEVEL_G || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
     const cs = this.map.cellSize;
@@ -4152,6 +4158,38 @@ export class GameEngine {
     if (msg.level !== LEVEL_G || this.level !== LEVEL_G || !this.isWorldAuthority) return;
     if (msg.ok) this.startLevelGAlarm(true);
     else this.levelGAlertTimer = 10;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lobby chess table
+  // ---------------------------------------------------------------------------
+
+  /** The table as the server last described it (shown by the 3D table, and by the board panel via App). */
+  public chessState: ChessNetState = EMPTY_CHESS;
+
+  /** The table and its two chairs are solid, so nobody walks through them. */
+  private setupChessTable() {
+    if (!this.map || !this.lobby) return;
+    const cs = this.map.cellSize;
+    const { x, z } = LOBBY.chess;
+    const add = (ox: number, oz: number, r: number) => this.map.addObstacle(Math.floor((x + ox) / cs), Math.floor((z + oz) / cs), x + ox, z + oz, r);
+    for (const ox of [-0.5, 0.5]) for (const oz of [-0.5, 0.5]) add(ox, oz, 0.5);
+    for (const side of [-1, 1]) add(0, side * CHESS.seatDist, 0.3);
+    this.lobby.setChess(this.chessState);
+  }
+
+  /** Within reach of the chess table (anywhere around it, not just at a seat). */
+  private nearChessTable(): boolean {
+    if (this.level !== LOBBY_LEVEL || !this.player) return false;
+    const dx = Math.abs(this.player.position.x - LOBBY.chess.x), dz = Math.abs(this.player.position.z - LOBBY.chess.z);
+    return Math.hypot(Math.max(0, dx - CHESS.size / 2), Math.max(0, dz - CHESS.seatDist)) < 1.7;
+  }
+
+  /** A `chess_state` frame from the server. */
+  public applyChessState(msg: ChessNetState) {
+    if (typeof msg.fen !== "string" || typeof msg.rev !== "number" || msg.rev < this.chessState.rev) return;
+    this.chessState = msg;
+    this.lobby?.setChess(msg);
   }
 
   // ---------------------------------------------------------------------------

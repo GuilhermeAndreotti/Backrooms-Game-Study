@@ -17,6 +17,9 @@ import { WebSocketServer, WebSocket } from "ws";
 import { ALL_ENTITY_TYPES } from "./src/shared/entityTypes";
 import { GIVE_RANGE_SERVER, isInventoryItemId, isQuickChatId } from "./src/shared/items";
 import { ROOM_CHEATS, SUDO_CHEAT, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
+import { ChessGame, initialPosition, toFen, type Color, type Promotion } from "./src/shared/chess";
+
+const INITIAL_FEN = toFen(initialPosition());
 import { LOBBY_LEVEL, LEVEL_1, MAIN_LEVELS, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, OLD_TOWN_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
 import { POOL_ROOM_COUNT, POOL_VALVE_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./src/game/poolroomsPuzzle";
 
@@ -182,6 +185,8 @@ interface Room {
   consumed: Map<number, Map<string, number>>;
   /** Level 1: someone typed floor 2's car code, so the shutter to floor 3 is up. */
   garageGateOpen: boolean;
+  /** The lobby's chess table: who sits where, and the game they're playing. */
+  chess: ChessTable;
 }
 
 const rooms = new Map<string, Room>();
@@ -472,8 +477,16 @@ function tryAdvanceRoom(room: Room) {
   if (expected === null) return;
   room.level = expected;
   if (room.level === POOLROOMS_LEVEL) resetPoolroomsState(room);
+  // Explorers who took Level FUN's way out are already in Level 79, ahead of the
+  // group: the transition leaves them where they are (and as they are, dead or alive).
+  const ahead = new Map<string, boolean>();
+  room.players.forEach((p) => { if (p.level === SPACE_LEVEL) ahead.set(p.id, p.dead); });
   reviveAll(room);
   room.players.forEach((p) => {
+    if (ahead.has(p.id)) {
+      p.dead = ahead.get(p.id)!;
+      return;
+    }
     // Secret players may finish their detour independently. They join
     // the main room once it reaches their convergence point. Players who
     // went back to the lobby rejoin the group here.
@@ -486,12 +499,16 @@ function tryAdvanceRoom(room: Room) {
     room.dirty.add(p.id);
   });
   refreshAuthority(room);
-  broadcastToRoom(room, {
+  const transition = JSON.stringify({
     type: "level_transition",
     level: room.level,
     seed: room.seed,
     convergence: room.level >= 4,
     poolroomsState: room.level === POOLROOMS_LEVEL ? poolroomsSnapshot(room) : null,
+  });
+  room.connections.forEach((conn) => {
+    if (ahead.has(conn.player.id) || conn.ws.readyState !== WebSocket.OPEN) return;
+    conn.ws.send(transition);
   });
 }
 
@@ -509,7 +526,79 @@ function releaseFunHeld(room: Room, p: PlayerState) {
  * shared level state is dropped once the last explorer has left that level
  * (whoever comes next starts it fresh, like their own map does).
  */
+// ---------------------------------------------------------------------------
+// The lobby's chess table
+// ---------------------------------------------------------------------------
+//
+// Two seats; a game starts the moment both are taken. The server owns the game
+// (src/shared/chess.ts is the same rules engine the clients use to show legal
+// moves) and only ever broadcasts the result: spectators in the lobby see it
+// too. Standing up or leaving the lobby mid-game forfeits it.
+
+interface ChessTable {
+  seats: Record<Color, string>;
+  game: ChessGame | null;
+  /** Bumped on every change, so clients can ignore a stale frame. */
+  rev: number;
+}
+
+function chessSeatOf(room: Room, playerId: string): Color | null {
+  return room.chess.seats.w === playerId ? "w" : room.chess.seats.b === playerId ? "b" : null;
+}
+
+function chessState(room: Room) {
+  const t = room.chess;
+  const g = t.game;
+  const name = (c: Color) => room.players.get(t.seats[c])?.name ?? "";
+  return {
+    type: "chess_state",
+    rev: t.rev,
+    white: t.seats.w, black: t.seats.b,
+    whiteName: name("w"), blackName: name("b"),
+    fen: g ? toFen(g.pos) : INITIAL_FEN,
+    moves: g ? g.moves : [],
+    last: g ? g.last : null,
+    status: !g ? "waiting" : g.over ? "over" : "playing",
+    result: g?.result ?? null,
+  };
+}
+
+function broadcastChess(room: Room) {
+  room.chess.rev++;
+  broadcastToLevel(room, LOBBY_LEVEL, chessState(room));
+}
+
+/** Both seats taken and no game running: a new one starts, white to move. */
+function startChessIfReady(room: Room) {
+  const t = room.chess;
+  if (t.seats.w && t.seats.b && !t.game) t.game = new ChessGame();
+}
+
+function standFromChess(room: Room, playerId: string) {
+  const t = room.chess;
+  const color = chessSeatOf(room, playerId);
+  if (!color) return;
+  const wasOver = !!t.game?.over;
+  // Getting up mid-game forfeits it; the opponent stays seated to read the result.
+  if (t.game && !t.game.over) t.game.end(color, "abandon");
+  t.seats[color] = "";
+  // A game that had already ended is cleared when someone gets up, and so is an empty table.
+  if (wasOver || (!t.seats.w && !t.seats.b)) t.game = null;
+  broadcastChess(room);
+}
+
+/** Per tick: whoever sits at the table must still be in the room's lobby. */
+function sweepChess(room: Room) {
+  for (const c of ["w", "b"] as Color[]) {
+    const id = room.chess.seats[c];
+    if (!id) continue;
+    const p = room.players.get(id);
+    if (!p || p.level !== LOBBY_LEVEL || room.level !== LOBBY_LEVEL) standFromChess(room, id);
+  }
+}
+
 function sweepSharedLevelState(room: Room) {
+  sweepChess(room);
   const occupied = new Set<number>();
   room.players.forEach((p) => {
     occupied.add(p.level);
@@ -633,6 +722,7 @@ async function startServer() {
             townFacts: new Map(),
             consumed: new Map(),
             garageGateOpen: false,
+            chess: { seats: { w: "", b: "" }, game: null, rev: 0 },
             poolVigiaIntellect: 0,
           };
           rooms.set(roomKey, room);
@@ -881,6 +971,52 @@ async function startServer() {
         return;
       }
 
+      // --- the lobby's chess table ---------------------------------------------
+      // Everything below only applies while the room is in the lobby and the
+      // sender is standing in it; the board itself is never trusted from a client.
+      if (type === "chess_sync") {
+        send(ws, chessState(room));
+        return;
+      }
+      if (type === "chess_sit" || type === "chess_stand" || type === "chess_move" || type === "chess_resign" || type === "chess_new") {
+        if (room.level !== LOBBY_LEVEL || conn.player.level !== LOBBY_LEVEL) return;
+        const t = room.chess;
+        const me = conn.player.id;
+        const mine = chessSeatOf(room, me);
+        if (type === "chess_sit") {
+          const color = data.color === "w" ? "w" : data.color === "b" ? "b" : null;
+          if (!color || t.seats[color]) return;
+          if (mine) standFromChess(room, me); // moving to the other side of the board
+          // The last game's result (an opponent who left, say) has been seen: a new pair starts fresh.
+          if (t.game?.over) t.game = null;
+          t.seats[color] = me;
+          startChessIfReady(room);
+          broadcastChess(room);
+        } else if (type === "chess_stand") {
+          standFromChess(room, me);
+        } else if (type === "chess_move") {
+          const g = t.game;
+          const from = data.from, to = data.to;
+          if (!g || g.over || !mine || g.pos.turn !== mine) return;
+          if (typeof from !== "number" || typeof to !== "number" || !Number.isInteger(from) || !Number.isInteger(to) || from < 0 || from > 63 || to < 0 || to > 63) return;
+          const promo = typeof data.promo === "string" && "qrbn".includes(data.promo) && data.promo.length === 1 ? (data.promo as Promotion) : undefined;
+          if (!g.play(from, to, promo)) return;
+          broadcastChess(room);
+        } else if (type === "chess_resign") {
+          const g = t.game;
+          if (!g || g.over || !mine) return;
+          g.end(mine, "resign");
+          broadcastChess(room);
+        } else if (type === "chess_new") {
+          // A rematch between the two still seated, colours swapped.
+          if (!mine || !t.game?.over || !t.seats.w || !t.seats.b) return;
+          [t.seats.w, t.seats.b] = [t.seats.b, t.seats.w];
+          t.game = new ChessGame();
+          broadcastChess(room);
+        }
+        return;
+      }
+
       if (type === "consumables_sync") {
         const level = data.level;
         if (typeof level !== "number" || !Number.isInteger(level)) return;
@@ -954,7 +1090,33 @@ async function startServer() {
         if (typeof requestedLevel !== "number" || !Number.isFinite(requestedLevel)) return;
         if (conn.player.dead || conn.player.exitReady) return;
         const requested = Math.floor(requestedLevel);
-        if (data.secret === true && room.config.secretRoutes === false) return;
+        // (A room that started on Level FUN from the lobby isn't taking a secret route: it may leave.)
+        if (data.secret === true && room.config.secretRoutes === false && !(conn.player.level === FUN_LEVEL && room.level === FUN_LEVEL)) return;
+
+        // Level FUN is a detour, not an ending: its exit is a service door onto Level 79's
+        // station, skipping the Poolrooms. A room that started there from the lobby moves
+        // on together (like Lights Out's exit); an explorer who came in from the Abandoned
+        // Office goes alone, ahead of the group (see tryAdvanceRoom).
+        if (conn.player.level === FUN_LEVEL && requested === SPACE_LEVEL) {
+          if (room.level === FUN_LEVEL) {
+            room.level = SPACE_LEVEL;
+            reviveAll(room);
+            room.players.forEach((p) => {
+              p.level = SPACE_LEVEL;
+              p.exitReady = false;
+              room.dirty.add(p.id);
+            });
+            refreshAuthority(room);
+            broadcastToRoom(room, { type: "level_transition", level: SPACE_LEVEL, seed: room.seed, secret: true });
+          } else {
+            conn.player.level = SPACE_LEVEL;
+            conn.player.exitReady = false;
+            room.dirty.add(conn.player.id);
+            send(conn.ws, { type: "level_transition", level: SPACE_LEVEL, seed: room.seed, secret: true });
+            refreshAuthority(room);
+          }
+          return;
+        }
 
         // Escaping Lights Out takes the whole room to Electrical Room. Unlike
         // Level G, this is a shared route rather than a private convergence.

@@ -569,6 +569,7 @@ export class TownDirector {
     this.duskTime = 0;
     this.beats.clear();
     this.host.audio.playTownSound("place");
+    this.host.achievement("old_town_clock");
   }
 
   private placedCount(): number {
@@ -596,6 +597,7 @@ export class TownDirector {
     if (quiet) return;
     this.host.audio.playTownSound("gate");
     this.host.notify(t("town.ntf.solved"));
+    this.host.achievement("old_town_model");
   }
 
   // -------------------------------------------------------------------------

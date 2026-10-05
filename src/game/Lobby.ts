@@ -12,6 +12,7 @@
 
 import * as THREE from "three";
 import { Reflector } from "three/examples/jsm/objects/Reflector.js";
+import { EMPTY_CHESS, fromFen, type ChessNetState, type PieceType } from "../shared/chess";
 export { LOBBY_LEVEL } from "./levels/constants";
 
 /** Layout in world metres (the hall itself is grid cells 2..21 x 2..15, 4 m each). */
@@ -25,7 +26,15 @@ export const LOBBY = {
   terminal: { x: 44, z: 34 },
   /** A big standing mirror right beside the cheat terminal; its glass faces -X (toward the pitch). */
   mirror: { x: 44, z: 30, width: 2.2, height: 3.2 },
+  /**
+   * The chess table, in the hall's north-east corner. White sits on its south
+   * side (+z), black on the north; the board spans CHESS.board metres.
+   */
+  chess: { x: 40, z: 13 },
 };
+
+/** The chess table's dimensions (metres). */
+export const CHESS = { top: 0.78, size: 1.7, board: 1.36, seatDist: 1.35 };
 
 const BALL_RADIUS = 0.35;
 const FRICTION = 1.25; // 1/s exponential slow-down
@@ -77,6 +86,7 @@ export class Lobby {
     this.buildBenches();
     this.buildCheatTerminal();
     this.buildMirror();
+    this.buildChessTable();
     this.ball = this.buildBall();
     scene.add(this.group);
   }
@@ -283,6 +293,230 @@ export class Lobby {
     const glow = new THREE.PointLight(0xffb703, 1.6, 4.5, 1.3);
     glow.position.set(x, 1.1, z);
     this.group.add(glow);
+  }
+
+  // --- chess table ---------------------------------------------------------
+
+  private chessPieces = new THREE.Group();
+  private chessLast: THREE.Mesh[] = [];
+  private chessGeo = new Map<string, THREE.BufferGeometry>();
+  private chessMat!: Record<"w" | "b", THREE.MeshStandardMaterial>;
+  private chessLabels: Record<"w" | "b", { ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture; key: string }> | null = null;
+  private chessRev = -2;
+
+  /** Centre of a square of the board, in world metres (white's side is +z; file a is on white's left). */
+  public chessSquareCenter(sq: number): { x: number; z: number } {
+    const s = CHESS.board / 8;
+    return { x: LOBBY.chess.x + ((sq & 7) - 3.5) * s, z: LOBBY.chess.z + ((sq >> 3) - 3.5) * s };
+  }
+
+  /** A turned piece: a profile (radius, height pairs, in units of one square) spun round the Y axis. */
+  private chessLathe(key: string, profile: [number, number][]): THREE.BufferGeometry {
+    let g = this.chessGeo.get(key);
+    if (!g) {
+      const s = CHESS.board / 8;
+      g = this.track(new THREE.LatheGeometry(profile.map(([r, h]) => new THREE.Vector2(r * s, h * s)), 20));
+      this.chessGeo.set(key, g);
+    }
+    return g;
+  }
+
+  private chessPiece(type: PieceType, color: "w" | "b"): THREE.Group {
+    const s = CHESS.board / 8;
+    const mat = this.chessMat[color];
+    const base: [number, number][] = [[0, 0], [0.36, 0], [0.37, 0.05], [0.3, 0.1], [0.24, 0.16]];
+    const g = new THREE.Group();
+    const add = (geo: THREE.BufferGeometry, x = 0, y = 0, z = 0) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      m.castShadow = true;
+      g.add(m);
+      return m;
+    };
+    const ball = (key: string, r: number) => this.chessGeo.get(key) ?? (this.chessGeo.set(key, this.track(new THREE.SphereGeometry(r * s, 14, 10))), this.chessGeo.get(key)!);
+    const box = (key: string, w: number, h: number, d: number) => this.chessGeo.get(key) ?? (this.chessGeo.set(key, this.track(new THREE.BoxGeometry(w * s, h * s, d * s))), this.chessGeo.get(key)!);
+    switch (type) {
+      case "p":
+        add(this.chessLathe("p", [...base, [0.17, 0.3], [0.22, 0.34], [0.14, 0.38], [0.1, 0.42], [0, 0.42]]));
+        add(ball("p_head", 0.17), 0, 0.5 * s);
+        break;
+      case "r":
+        add(this.chessLathe("r", [...base, [0.22, 0.4], [0.3, 0.46], [0.3, 0.62], [0.24, 0.62], [0.24, 0.56], [0, 0.56]]));
+        for (let i = 0; i < 4; i++) {
+          const a = (i * Math.PI) / 2;
+          add(box("r_cren", 0.12, 0.1, 0.12), Math.sin(a) * 0.23 * s, 0.67 * s, Math.cos(a) * 0.23 * s);
+        }
+        break;
+      case "n": {
+        add(this.chessLathe("n", [...base, [0.2, 0.28], [0.26, 0.34], [0.2, 0.4], [0, 0.4]]));
+        // The horse's head: a leaning block with a muzzle and ears, facing the opponent's side.
+        const dir = color === "w" ? -1 : 1;
+        const head = add(box("n_head", 0.26, 0.46, 0.5), 0, 0.64 * s, 0.02 * dir * s);
+        head.rotation.x = 0.35 * dir;
+        add(box("n_muzzle", 0.2, 0.2, 0.3), 0, 0.72 * s, 0.3 * dir * s).rotation.x = -0.3 * dir;
+        add(box("n_ear", 0.07, 0.14, 0.07), -0.07 * s, 0.9 * s, -0.04 * dir * s);
+        add(box("n_ear", 0.07, 0.14, 0.07), 0.07 * s, 0.9 * s, -0.04 * dir * s);
+        break;
+      }
+      case "b":
+        add(this.chessLathe("b", [...base, [0.17, 0.34], [0.26, 0.42], [0.2, 0.62], [0.12, 0.76], [0, 0.78]]));
+        add(ball("b_top", 0.07), 0, 0.84 * s);
+        break;
+      case "q":
+        add(this.chessLathe("q", [...base, [0.18, 0.4], [0.3, 0.52], [0.24, 0.72], [0.3, 0.84], [0.26, 0.88], [0, 0.88]]));
+        add(ball("q_top", 0.11), 0, 0.97 * s);
+        break;
+      case "k":
+        add(this.chessLathe("k", [...base, [0.18, 0.42], [0.3, 0.55], [0.24, 0.78], [0.28, 0.9], [0.22, 0.94], [0, 0.94]]));
+        add(box("k_v", 0.09, 0.3, 0.09), 0, 1.1 * s);
+        add(box("k_h", 0.26, 0.09, 0.09), 0, 1.12 * s);
+        break;
+    }
+    return g;
+  }
+
+  private buildChessTable() {
+    const { x, z } = LOBBY.chess;
+    const { top, size, board, seatDist } = CHESS;
+    const wood = this.track(new THREE.MeshStandardMaterial({ color: 0x6b4a2b, roughness: 0.7 }));
+    const dark = this.track(new THREE.MeshStandardMaterial({ color: 0x3e2a18, roughness: 0.6 }));
+    this.chessMat = {
+      w: this.track(new THREE.MeshStandardMaterial({ color: 0xf2e8d0, roughness: 0.35 })),
+      b: this.track(new THREE.MeshStandardMaterial({ color: 0x2a211c, roughness: 0.3 })),
+    };
+    const root = new THREE.Group();
+    root.position.set(x, 0, z);
+    this.group.add(root);
+    const slab = new THREE.Mesh(this.track(new THREE.BoxGeometry(size, 0.07, size)), wood);
+    slab.position.y = top - 0.035;
+    root.add(slab);
+    const leg = this.track(new THREE.BoxGeometry(0.1, top - 0.07, 0.1));
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      const l = new THREE.Mesh(leg, dark);
+      l.position.set(sx * (size / 2 - 0.12), (top - 0.07) / 2, sz * (size / 2 - 0.12));
+      root.add(l);
+    }
+    // The board: an inlaid 8x8 with a little rank/file lettering on its border.
+    const c = document.createElement("canvas");
+    c.width = c.height = 1024;
+    const g = c.getContext("2d")!;
+    const border = 64, cell = (1024 - border * 2) / 8;
+    g.fillStyle = "#3e2a18"; g.fillRect(0, 0, 1024, 1024);
+    for (let r = 0; r < 8; r++) for (let f = 0; f < 8; f++) {
+      g.fillStyle = (f + r) % 2 ? "#a8744a" : "#ecd9b0";
+      g.fillRect(border + f * cell, border + r * cell, cell, cell);
+    }
+    g.fillStyle = "#d9b87a";
+    g.font = "bold 40px Georgia, serif";
+    g.textAlign = "center"; g.textBaseline = "middle";
+    for (let i = 0; i < 8; i++) {
+      const lbl = "abcdefgh"[i], num = String(8 - i);
+      g.fillText(lbl, border + (i + 0.5) * cell, 1024 - border / 2);
+      g.fillText(lbl, border + (i + 0.5) * cell, border / 2);
+      g.fillText(num, border / 2, border + (i + 0.5) * cell);
+      g.fillText(num, 1024 - border / 2, border + (i + 0.5) * cell);
+    }
+    const tex = this.track(new THREE.CanvasTexture(c));
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    const boardMesh = new THREE.Mesh(this.track(new THREE.PlaneGeometry(board * (1024 / (1024 - border * 2)), board * (1024 / (1024 - border * 2)))), this.track(new THREE.MeshStandardMaterial({ map: tex, roughness: 0.55 })));
+    boardMesh.rotation.x = -Math.PI / 2;
+    boardMesh.position.y = top + 0.004;
+    root.add(boardMesh);
+    // Last move: two squares glowing under the pieces.
+    const glow = this.track(new THREE.MeshBasicMaterial({ color: 0xffd95a, transparent: true, opacity: 0.55, depthWrite: false }));
+    const glowGeo = this.track(new THREE.PlaneGeometry(board / 8, board / 8));
+    for (let i = 0; i < 2; i++) {
+      const m = new THREE.Mesh(glowGeo, glow);
+      m.rotation.x = -Math.PI / 2;
+      m.position.y = top + 0.009;
+      m.visible = false;
+      root.add(m);
+      this.chessLast.push(m);
+    }
+    // The pieces live in world coordinates inside the lobby group (not the table's root).
+    this.group.add(this.chessPieces);
+    // A chair on each side, and a name plate on the table's edge facing it.
+    const seatMat = this.track(new THREE.MeshStandardMaterial({ color: 0x4a2f1a, roughness: 0.8 }));
+    const cushion = this.track(new THREE.MeshStandardMaterial({ color: 0x8a2a2a, roughness: 0.95 }));
+    const chairBase = this.track(new THREE.BoxGeometry(0.5, 0.06, 0.5));
+    const chairBack = this.track(new THREE.BoxGeometry(0.5, 0.55, 0.06));
+    const chairLeg = this.track(new THREE.BoxGeometry(0.06, 0.45, 0.06));
+    const cushionGeo = this.track(new THREE.BoxGeometry(0.42, 0.05, 0.42));
+    const labels: Partial<NonNullable<typeof this.chessLabels>> = {};
+    for (const color of ["w", "b"] as const) {
+      const side = color === "w" ? 1 : -1;
+      const chair = new THREE.Group();
+      chair.position.set(0, 0, side * seatDist);
+      // Chairs face the table; the back is on the far side.
+      const seat = new THREE.Mesh(chairBase, seatMat); seat.position.y = 0.45; chair.add(seat);
+      const pad = new THREE.Mesh(cushionGeo, cushion); pad.position.y = 0.5; chair.add(pad);
+      const back = new THREE.Mesh(chairBack, seatMat); back.position.set(0, 0.75, side * 0.22); chair.add(back);
+      for (const lx of [-0.21, 0.21]) for (const lz of [-0.21, 0.21]) {
+        const l = new THREE.Mesh(chairLeg, seatMat); l.position.set(lx, 0.225, lz); chair.add(l);
+      }
+      root.add(chair);
+      const lc = document.createElement("canvas");
+      lc.width = 256; lc.height = 64;
+      const lctx = lc.getContext("2d")!;
+      const ltex = this.track(new THREE.CanvasTexture(lc));
+      ltex.colorSpace = THREE.SRGBColorSpace;
+      const plate = new THREE.Mesh(this.track(new THREE.PlaneGeometry(0.5, 0.125)), this.track(new THREE.MeshBasicMaterial({ map: ltex })));
+      plate.position.set(0, top + 0.006, side * (size / 2 - 0.085));
+      plate.rotation.x = -Math.PI / 2;
+      plate.rotation.z = color === "w" ? 0 : Math.PI;
+      root.add(plate);
+      labels[color] = { ctx: lctx, tex: ltex, key: "" };
+    }
+    this.chessLabels = labels as NonNullable<typeof this.chessLabels>;
+    this.setChess(EMPTY_CHESS);
+  }
+
+  /** Name plates for the two seats: "WHITE · name" / "BLACK · free". */
+  private drawChessLabel(color: "w" | "b", text: string, active: boolean) {
+    const l = this.chessLabels?.[color];
+    if (!l) return;
+    const key = `${text}|${active}`;
+    if (l.key === key) return;
+    l.key = key;
+    const { ctx } = l;
+    ctx.fillStyle = color === "w" ? "#efe4c8" : "#1f1814";
+    ctx.fillRect(0, 0, 256, 64);
+    ctx.strokeStyle = active ? "#ffd95a" : color === "w" ? "#3e2a18" : "#8a6a3a";
+    ctx.lineWidth = active ? 8 : 4;
+    ctx.strokeRect(3, 3, 250, 58);
+    ctx.fillStyle = color === "w" ? "#2a1e12" : "#efe4c8";
+    ctx.font = "bold 28px Georgia, serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(text.slice(0, 16), 128, 34);
+    l.tex.needsUpdate = true;
+  }
+
+  /** Puts the pieces where the server says they are. */
+  public setChess(state: ChessNetState) {
+    if (state.rev === this.chessRev && state.rev >= 0) return;
+    this.chessRev = state.rev;
+    this.chessPieces.clear();
+    const pos = fromFen(state.fen);
+    pos.board.forEach((p, sq) => {
+      if (!p) return;
+      const piece = this.chessPiece(p.t, p.c);
+      const c = this.chessSquareCenter(sq);
+      piece.position.set(c.x, CHESS.top + 0.004, c.z);
+      this.chessPieces.add(piece);
+    });
+    this.chessLast.forEach((m, i) => {
+      const sq = state.last?.[i];
+      m.visible = sq !== undefined;
+      if (sq !== undefined) {
+        const c = this.chessSquareCenter(sq);
+        m.position.x = c.x - LOBBY.chess.x;
+        m.position.z = c.z - LOBBY.chess.z;
+      }
+    });
+    const turn = state.status === "playing" ? pos.turn : null;
+    this.drawChessLabel("w", `♙ ${state.whiteName || "—"}`, turn === "w");
+    this.drawChessLabel("b", `♟ ${state.blackName || "—"}`, turn === "b");
   }
 
   private buildBall(): THREE.Mesh {
