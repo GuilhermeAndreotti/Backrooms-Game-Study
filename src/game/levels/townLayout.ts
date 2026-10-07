@@ -180,7 +180,7 @@ export const CASTLE_FOOTPRINT = { x1: 31, z1: 1, x2: 39, z2: 26 };
 export const CASTLE_FLOOR = 38;
 /** How far (metres) from the castle's walls its hill runs before it meets the valley floor. */
 export const CASTLE_HILL_RADIUS = 100;
-/** Its slopes are walkable this far out (the rest of the hill is scenery). */
+/** The terrain around the castle stays open (no side hills) this far out from its walls. */
 const CASTLE_SLOPE_WALK = 64;
 
 export const CASTLE_ROOMS: readonly TownRect[] = [
@@ -389,18 +389,14 @@ export function townRoadDistance(x: number, z: number): number {
 }
 
 (function buildGrid() {
-  // 1. The valley, clipped off the town and the castle.
+  // 1. Everything north of the town's fence is open hillside, up to the castle's walls.
+  //    No grid wall stops you out there: only ground too steep to climb does (see
+  //    townSlope / TOWN_MAX_SLOPE, enforced by ProceduralMap.checkCollision), so every
+  //    limit is something you can see.
   for (let x = 2; x < TOWN_GRID - 2; x++) {
-    for (let z = 2; z < TOWN_GRID - 2; z++) {
-      if (z >= TOWN_BARRICADE.gz || inRect(x, z, CASTLE_FOOTPRINT)) continue;
-      if (valleyDistance(x, z) <= VALLEY_RADIUS) grid[x][z] = { kind: "hills", zone: "hills", region: "valley" };
-    }
-  }
-  // 1b. The castle's hill: its upper slopes are open all round (the valley road climbs them to the gate).
-  for (let x = 2; x < TOWN_GRID - 2; x++) {
-    for (let z = 2; z < TOWN_BARRICADE.gz; z++) {
-      if (inRect(x, z, CASTLE_FOOTPRINT) || grid[x][z]) continue;
-      if (rectDistance(cellCenter(x), cellCenter(z), CASTLE_FOOTPRINT) < CASTLE_SLOPE_WALK) grid[x][z] = { kind: "hills", zone: "hills", region: "valley" };
+    for (let z = 2; z <= TOWN_BARRICADE.gz; z++) {
+      if (inRect(x, z, CASTLE_FOOTPRINT)) continue;
+      grid[x][z] = { kind: "hills", zone: "hills", region: "valley" };
     }
   }
   // 2. The town: all grass, the tower and the houses aside; the barricade north.
@@ -490,13 +486,24 @@ export function townSightClear(ax: number, az: number, bx: number, bz: number, b
 // ---------------------------------------------------------------------------
 
 /** Distance (cells) from each cell to the nearest open ground: the valley, the town or the castle. */
+/**
+ * Cells the terrain keeps open (flat, valley-like): the town, the castle, the
+ * road corridor and the castle's own slopes. Everything else rises into hills
+ * around them. (The grid used to double as this; now it only says where walls are.)
+ */
+function isOpenSource(x: number, z: number): boolean {
+  if (inRect(x, z, TOWN_AREA) || inRect(x, z, CASTLE_FOOTPRINT)) return true;
+  if (z >= TOWN_BARRICADE.gz) return x === TOWN_BARRICADE.gx && z === TOWN_BARRICADE.gz;
+  if (valleyDistance(x, z) <= VALLEY_RADIUS) return true;
+  return rectDistance(cellCenter(x), cellCenter(z), CASTLE_FOOTPRINT) < CASTLE_SLOPE_WALK;
+}
+
 const openDistance: Float32Array = (() => {
   const n = TOWN_GRID;
   const d = new Float32Array(n * n).fill(1e6);
   for (let x = 0; x < n; x++) {
     for (let z = 0; z < n; z++) {
-      const g = grid[x][z];
-      if ((g && g.zone !== "castle") || inRect(x, z, TOWN_AREA) || inRect(x, z, CASTLE_FOOTPRINT)) d[x * n + z] = 0;
+      if (isOpenSource(x, z)) d[x * n + z] = 0;
     }
   }
   // Two-pass chamfer distance transform (1 / sqrt 2 weights).
@@ -536,6 +543,18 @@ function rectDistance(x: number, z: number, r: { x1: number; z1: number; x2: num
   const x1 = r.x1 * TOWN_CELL, x2 = (r.x2 + 1) * TOWN_CELL, z1 = r.z1 * TOWN_CELL, z2 = (r.z2 + 1) * TOWN_CELL;
   return Math.hypot(Math.max(0, x1 - x, x - x2), Math.max(0, z1 - z, z - z2));
 }
+
+/**
+ * How steep the ground is at a world position (rise over run; 1 = 45 degrees),
+ * measured over about 1.5 m. On open hillside, anything steeper than
+ * {@link TOWN_MAX_SLOPE} can't be walked: that is the hills' only wall.
+ */
+export function townSlope(x: number, z: number): number {
+  const h = 0.75;
+  return Math.hypot(townGroundHeight(x + h, z) - townGroundHeight(x - h, z), townGroundHeight(x, z + h) - townGroundHeight(x, z - h)) / (2 * h);
+}
+/** About 38 degrees: the castle's own slopes (up to ~35) and its road are walkable, the valley's sides are not. */
+export const TOWN_MAX_SLOPE = 0.8;
 
 /** The castle's hill at `d` metres from its walls: a steep cone, rounded a little at the top. */
 function castleRise(d: number): number {

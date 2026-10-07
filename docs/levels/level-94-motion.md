@@ -28,6 +28,10 @@ CIDADE (dia) ─▶ CIDADE (noite) ─▶ GRASS HILLS ─▶ CASTLE ─▶ THE K
 
 Ser pego **não mata**: Animations te levam de volta ao ponto de ônibus; o Rei te devolve à entrada do salão. (Sanidade zerada ainda mata normalmente.)
 
+### Limites do terreno
+
+Ao norte da cerca da cidade não há paredes invisíveis: toda a colina é andável e só o que é **íngreme demais para subir** (mais de ~38°, `TOWN_MAX_SLOPE`) bloqueia, então cada limite é algo que se vê. A estrada e as encostas do morro do castelo (até ~35°) ficam abaixo desse limite. A cidade continua fechada: de dia só a barricada (aberta à noite) liga a cidade às colinas, e a cerca tem colisão.
+
 ## Multiplayer
 
 - Fatos compartilhados (`town_event`, guardados no servidor para quem chega depois via `town_sync`/`town_state`): peça achada, relógio ligado, prédio recolocado na maquete, maquete resolvida, oferta do Rei recusada (ele acorda para todos). Os três fatores do final secreto são de cada jogador.

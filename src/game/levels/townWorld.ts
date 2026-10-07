@@ -777,12 +777,16 @@ export class TownWorld {
     const white = this.mat("picket", { color: 0xf6f3ea, roughness: 0.7 });
     const fenceZ = TOWN_EDGE_Z + 0.3;
     const gapX = cellCenter(TOWN_BARRICADE.gx);
+    // The gap is exactly the barricade's cell (4 m): the barricade shuts it, the fence closes the rest.
+    const gapHalf = CELL / 2;
     for (let x = TOWN_AREA.x1 * CELL + 0.5; x < (TOWN_AREA.x2 + 1) * CELL; x += 0.5) {
-      if (Math.abs(x - gapX) < 2.6) continue;
+      if (Math.abs(x - gapX) < gapHalf) continue;
       this.box(g, 0.1, 1.0, 0.05, white, x, townGroundHeight(x, fenceZ) + 0.5, fenceZ);
     }
+    this.wallLine(TOWN_AREA.x1 * CELL, fenceZ, gapX - gapHalf, fenceZ);
+    this.wallLine(gapX + gapHalf, fenceZ, (TOWN_AREA.x2 + 1) * CELL, fenceZ);
     for (let x = TOWN_AREA.x1 * CELL; x < (TOWN_AREA.x2 + 1) * CELL; x += 2) {
-      if (Math.abs(x + 1 - gapX) < 3) continue;
+      if (Math.abs(x + 1 - gapX) < gapHalf + 1) continue;
       const y = townGroundHeight(x + 1, fenceZ);
       this.box(g, 2.02, 0.08, 0.06, white, x + 1, y + 0.75, fenceZ + 0.04);
       this.box(g, 2.02, 0.08, 0.06, white, x + 1, y + 0.35, fenceZ + 0.04);
@@ -1654,11 +1658,6 @@ export class TownWorld {
       this.box(h, 0.7, 0.6, 0.55, this.mat("tv", { color: 0x5a3a20, roughness: 0.6 }), 0, 0.3, 0);
       this.box(h, 0.5, 0.4, 0.02, this.mat("tv_screen", { color: 0x2a3a3a, emissive: 0x405a5a, emissiveIntensity: 0.4, roughness: 0.2 }), -0.05, 0.32, 0.28);
     }, 0.4);
-    // The castle's courtyard: two hedges flanking the approach.
-    this.hedge(g, 132, 114, 132, 124);
-    this.hedge(g, 152, 114, 152, 124);
-    this.wallLine(132, 114, 132, 124);
-    this.wallLine(152, 114, 152, 124);
   }
 
   // -------------------------------------------------------------------------

@@ -27,10 +27,12 @@ Estacionamento aberto com divisórias. É o **único andar com monstros** e eles
 | `OBSERVADOR` | Reage ao **olhar** — contato visual sustentado o faz atacar |
 
 ### Andar 2 — Garagem trancada
-A rampa para o andar 3 está atrás de um portão de enrolar. Um **teclado de acesso** pede o número de carros de cada cor estacionados **neste andar**, na ordem que o próprio teclado mostra (vermelho, verde, amarelo, azul — a ordem varia com a seed). São 4 dígitos. **Carros cinza não contam.** Tanto a ordem quanto as contagens vêm da seed, então todos os jogadores veem o mesmo andar e o mesmo código. Dica de cooperação: dividam o andar para contar.
+A rampa para o andar 3 está atrás de um portão de enrolar. Um **teclado de acesso** pede o número de carros de cada cor estacionados **neste andar**, na ordem que o próprio teclado mostra (vermelho, verde, amarelo, azul — a ordem varia com a seed). São 4 dígitos, **um campo por cor**. **Carros cinza não contam.** Tanto a ordem quanto as contagens vêm da seed, então todos os jogadores veem o mesmo andar e o mesmo código. Os carros ficam **todos juntos numa faixa do andar**, no caminho entre a rampa por onde você chega e o teclado, então contar é uma caminhada curta. Dica de cooperação: dividam a faixa para contar.
+
+Cada dígito **certo fica travado** (em verde) e continua assim mesmo que você feche o painel; ao autorizar, só os errados são apagados e o painel diz quantos já estão certos. Com os 4 travados, o portão abre para todos.
 
 - Acerto: *"CÓDIGO ACEITO. A PORTA DE ENROLAR DA RAMPA ESTÁ SUBINDO."*
-- Erro: *"CÓDIGO RECUSADO. CONTE OS CARROS DE NOVO."*
+- Nenhum dígito novo certo: *"CÓDIGO RECUSADO. CONTE OS CARROS DE NOVO."*
 
 ### Andar 3 — Apagões
 O andar agenda seus próprios **blackouts** forçados. No escuro:
@@ -40,6 +42,10 @@ O andar agenda seus próprios **blackouts** forçados. No escuro:
 - Quando as luzes voltam, os Smilers recuam.
 
 A saída fica na outra ponta do andar.
+
+### No radar
+
+Além das paredes da grade, o radar mostra o que o mapa não guarda como parede: as **laterais das rampas** e o **portão de enrolar** do andar 2 (em laranja enquanto fechado). No andar 2, os **carros estacionados** aparecem na cor que têm (os cinza, que não contam para o código, em tom apagado) e na direção em que estão parados, dentro do alcance do radar — a fita cassete aumenta esse alcance.
 
 ## Secreto: Lights Out
 

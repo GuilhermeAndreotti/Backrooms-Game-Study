@@ -21,7 +21,10 @@
  *   (and only it).
  * - Floor 2: the ramp up to floor 3 is shut behind a shutter. The keypad asks
  *   for the number of cars of each colour parked on this floor, in an order
- *   the keypad shows. Both the order and the counts come from the seed.
+ *   the keypad shows, one digit per colour (right digits lock in, see
+ *   GarageKeypadModal). The cars are all parked in one band of the floor, on
+ *   the way from the ramp you arrive by to the keypad. Both the order and the
+ *   counts come from the seed.
  * - Floor 3: forced blackouts. In the dark, moving outside an emergency
  *   light's circle draws the Smilers; standing still (or reaching a light) is
  *   safe. The exit is at the far end.
@@ -214,8 +217,13 @@ export function garagePlan(seed: number): GaragePlan {
   const counts = new Map<CarColor, number>(CAR_COLORS.map((c) => [c, pick(1, 4)]));
   const f2 = GARAGE_FLOORS[1];
   const bays: [number, number][] = [];
+  // The cars are parked close together, in a band across the floor midway between
+  // where the first ramp lets you out and the keypad: counting them is a short walk,
+  // not a tour of the whole 44-cell floor.
+  const midZ = Math.round((zA + keypadGz) / 2);
+  const zLo = Math.max(f2.z1 + 1, midZ - 9), zHi = Math.min(f2.z2 - 1, midZ + 9);
   for (let x = f2.x1; x <= f2.x2; x++) {
-    for (let z = f2.z1 + 1; z <= f2.z2 - 1; z++) {
+    for (let z = zLo; z <= zHi; z++) {
       if (garageKeepClear(plan, x, z) || inCore(x, z)) continue;
       const f = GARAGE_FLOORS[1];
       if ((x - f.x1) % 4 === 2 && (z - f.z1) % 4 === 2) continue; // a column stands there

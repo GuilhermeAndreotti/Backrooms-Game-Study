@@ -23,6 +23,10 @@ Cada funcionário diz seu ID e, às vezes, a regra da ordem ("*Digite este prime
 
 Os IDs vêm da seed, logo são iguais para todos.
 
+## Água de amêndoas
+
+O escritório é abastecido de água de amêndoas, mas com **menos garrafas** (7% das células, antes 14%) e cada uma **vale menos aqui**: beber no Abandoned Office devolve +8% de sanidade e +6% de stamina (40% do efeito normal, +20%/+15%). Ajuste em `LEVEL4_WATER_CHANCE` ([ProceduralMap.ts](../../src/game/ProceduralMap.ts)) e `ALMOND_LEVEL4_FACTOR` ([GameEngine.ts](../../src/game/GameEngine.ts)).
+
 ## Quebras de personagem
 
 Cerca de 30% das falas, o funcionário "sai do personagem" e revela que **ninguém ali é real** — são ecos de quem trabalhava no escritório, que está abandonado há muito tempo. Às vezes aproveitam e repetem o próprio ID. É lore e dica ao mesmo tempo.

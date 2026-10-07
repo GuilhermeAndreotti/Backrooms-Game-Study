@@ -18,6 +18,7 @@ import { WanderingEntity, EntityType, EntityNetState, type SkinBodyChoice } from
 import { ALL_ENTITY_TYPES } from "../shared/entityTypes";
 import { USABLE_ITEMS } from "../shared/items";
 import { KingScratches } from "./KingScratches";
+import { garageFloorAt } from "./levels/garageLayout";
 import { KING_POSE_STARE } from "./mobs/fingerKing";
 import { GameSettings, RemotePlayer, RoomCheat } from "../types/game";
 import { unlockAchievement } from "../utils/achievements";
@@ -101,6 +102,12 @@ export interface GameEngineCallbacks {
 
 /** Multiplier on every sanity drain source: sanity falls slower than the raw tuning. */
 const SANITY_DRAIN_SCALE = 0.6;
+/**
+ * The Abandoned Office is stocked with almond water (see LEVEL4_WATER_CHANCE in
+ * ProceduralMap), so a bottle drunk there restores only this share of its usual
+ * sanity (+20%) and stamina (+15%).
+ */
+const ALMOND_LEVEL4_FACTOR = 0.4;
 /** Strange Crystal: while carried, every sanity drain is cut by this factor. */
 const CRYSTAL_DRAIN_FACTOR = 0.65;
 /** Cassette Tape: radar range while the recording plays, and for how long. */
@@ -1284,15 +1291,29 @@ export class GameEngine {
       // Stream monsters/smilers to the rest of the level (authority only).
       this.sendWorldState(delta);
 
-      // Sanity system depletion & recovery calculation (the dead don't lose any more)
-      if (this.player && this.map && !this.isDead) {
+      // Sanity system depletion & recovery calculation (the dead don't lose any more, and
+      // neither do explorers waiting at the exit: they spectate a teammate, so their body
+      // is wherever *that* teammate is, and used to bleed sanity from the teammate's
+      // surroundings — even dying of it while safe at the door).
+      if (this.player && this.map && !this.isDead && !this.isWaitingForTransition) {
         const px = this.player.position.x;
         const pz = this.player.position.z;
         let nearMonster = false;
         let monsterDepletionSum = 0;
 
+        // Level 1's three floors sit side by side: a monster on another floor, a wall's
+        // width away, is not near you.
+        const cellSize = this.map.cellSize;
+        const myFloor = this.level === 1 ? garageFloorAt(Math.floor(px / cellSize)) : null;
+        const sameFloor = (x: number) => {
+          if (myFloor === null) return true;
+          const f = garageFloorAt(Math.floor(x / cellSize));
+          return f === null || f === myFloor;
+        };
+
         // 1. Distance check to active entities (hostile monsters)
         this.entities.forEach(ent => {
+          if (!sameFloor(ent.mesh.position.x)) return;
           const dx = ent.mesh.position.x - px;
           const dz = ent.mesh.position.z - pz;
           const dist = Math.sqrt(dx * dx + dz * dz);
@@ -1305,6 +1326,7 @@ export class GameEngine {
         // 2. Distance check to active smilers (ambient dread from mere proximity,
         //    separate from and stacking with the sustained-gaze drain in updateSmilers)
         this.smilers.forEach(s => {
+          if (!sameFloor(s.mesh.position.x)) return;
           const dx = s.mesh.position.x - px;
           const dz = s.mesh.position.z - pz;
           const dist = Math.sqrt(dx * dx + dz * dz);
@@ -4831,19 +4853,32 @@ export class GameEngine {
     return this.map?.garage ? [...this.map.garage.colorOrder] : null;
   }
 
-  /** Checks a code typed at floor 2's keypad; right opens the shutter for everyone. */
-  public submitGarageCode(code: string): boolean {
+  /** The keypad's digits already locked in (null = open), so the panel can pick up where it left off. */
+  public garageKeypadLocked(): (string | null)[] {
+    return this.map?.garage ? [...this.map.garageLocked] : [];
+  }
+
+  /**
+   * Checks the digits typed at floor 2's keypad, one per colour. Each right
+   * digit locks in and stays; once all four are, the shutter goes up for everyone.
+   */
+  public submitGarageDigits(entered: string[]): { locked: (string | null)[]; ok: boolean } {
     const plan = this.map?.garage;
-    if (this.level !== 1 || !plan) return false;
-    const ok = code === plan.code;
-    this.audio.playTerminalBeep(ok);
+    if (this.level !== 1 || !plan) return { locked: [], ok: false };
+    const locked = this.map.garageLocked;
+    let gained = 0;
+    entered.forEach((d, i) => {
+      if (locked[i] === null && d === plan.code[i]) { locked[i] = d; gained++; }
+    });
+    const ok = plan.code.length === locked.length && locked.every((d) => d !== null);
+    this.audio.playTerminalBeep(ok || gained > 0);
     if (ok) {
       this.openGarageGate();
       this.sendToServer({ type: "garage_gate", level: 1 });
-    } else {
+    } else if (gained === 0) {
       this.onHUDNotification?.(t("eng.garageDenied"));
     }
-    return ok;
+    return { locked: [...locked], ok };
   }
 
   /** A teammate opened the shutter (or it was already open when we arrived). */
@@ -4909,10 +4944,13 @@ export class GameEngine {
     switch (itemId) {
       case "almond_water":
         if (this.sanity >= SANITY_FULL && this.player.stamina >= this.player.maxStamina) return refuse("eng.itemBlocked.sanityFull");
-        this.sanity = Math.min(1.0, this.sanity + 0.20);
-        this.player.stamina = Math.min(this.player.maxStamina, this.player.stamina + 0.15); // restores physical stamina too
+        {
+          const k = this.level === ABANDONED_OFFICE_LEVEL ? ALMOND_LEVEL4_FACTOR : 1;
+          this.sanity = Math.min(1.0, this.sanity + 0.20 * k);
+          this.player.stamina = Math.min(this.player.maxStamina, this.player.stamina + 0.15 * k); // restores physical stamina too
+          this.onHUDNotification?.(t("eng.almondUsed", { s: Math.round(20 * k), st: Math.round(15 * k) }));
+        }
         this.audio.playGlitchNoclipSound();
-        this.onHUDNotification?.(t("eng.almondUsed"));
         unlockAchievement("restored_mind");
         break;
       case "old_photo":

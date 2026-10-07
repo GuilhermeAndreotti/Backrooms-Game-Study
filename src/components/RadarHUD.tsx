@@ -9,6 +9,7 @@ import { GameEngine } from "../game/GameEngine";
 import { RemotePlayer } from "../types/game";
 import { Radio, Crosshair, Compass } from "lucide-react";
 import { LOBBY_LEVEL, LEVEL_G } from "../game/levels/constants";
+import { CAR_COLOR_HEX, garageFloorAt } from "../game/levels/garageLayout";
 
 interface RadarHUDProps {
   engineRef: React.MutableRefObject<GameEngine | null>;
@@ -218,6 +219,58 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
               ctx.fillRect(rx * scale - drawSize / 2, rz * scale - drawSize / 2, drawSize - 1, drawSize - 1);
               ctx.strokeRect(rx * scale - drawSize / 2, rz * scale - drawSize / 2, drawSize - 1, drawSize - 1);
             }
+          }
+        }
+      }
+
+      // 3b. Level 1's garage has walls the grid doesn't know about: the ramps' side
+      // walls and floor 2's shutter (they're built as meshes and checked by
+      // checkGarageCollision), so draw them here; and floor 2's parked cars, each in
+      // its own colour (grey wrecks dim: they don't count for the keypad's code).
+      const garage = level === 1 ? map.garage : null;
+      if (garage) {
+        const cs = map.cellSize;
+        const near = (x1: number, z1: number, x2: number, z2: number) => {
+          const nx = Math.max(Math.min(x1, x2), Math.min(px, Math.max(x1, x2)));
+          const nz = Math.max(Math.min(z1, z2), Math.min(pz, Math.max(z1, z2)));
+          return Math.hypot(nx - px, nz - pz) < maxRange + 3;
+        };
+        const segment = (x1: number, z1: number, x2: number, z2: number) => {
+          if (!near(x1, z1, x2, z2)) return;
+          ctx.beginPath();
+          ctx.moveTo((x1 - px) * scale, (z1 - pz) * scale);
+          ctx.lineTo((x2 - px) * scale, (z2 - pz) * scale);
+          ctx.stroke();
+        };
+        ctx.lineCap = "butt";
+        ctx.strokeStyle = "rgba(222, 184, 29, 0.7)";
+        ctx.lineWidth = Math.max(1.6, 0.5 * scale);
+        for (const r of garage.ramps) {
+          segment(r.x1 * cs, r.z1 * cs, (r.x2 + 1) * cs, r.z1 * cs);
+          segment(r.x1 * cs, (r.z2 + 1) * cs, (r.x2 + 1) * cs, (r.z2 + 1) * cs);
+        }
+        if (!map.garageGateOpen) {
+          ctx.strokeStyle = "rgba(251, 146, 60, 0.95)";
+          ctx.lineWidth = Math.max(2.5, 0.8 * scale);
+          const g = garage.gate;
+          segment(g.gx * cs, g.z1 * cs, g.gx * cs, (g.z2 + 1) * cs);
+        }
+        if (garageFloorAt(pCellX) === 1) {
+          for (const car of garage.cars) {
+            const rx = car.x - px, rz = car.z - pz;
+            if (Math.hypot(rx, rz) >= maxRange) continue;
+            const grey = car.color === "grey";
+            const w = 1.7 * scale, l = 3.9 * scale;
+            ctx.save();
+            ctx.translate(rx * scale, rz * scale);
+            ctx.rotate(-car.yaw);
+            ctx.globalAlpha = grey ? 0.55 : 1;
+            ctx.fillStyle = `#${CAR_COLOR_HEX[car.color].toString(16).padStart(6, "0")}`;
+            ctx.fillRect(-w / 2, -l / 2, w, l);
+            ctx.strokeStyle = grey ? "rgba(160,170,172,0.7)" : "rgba(255,255,255,0.85)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(-w / 2, -l / 2, w, l);
+            ctx.restore();
           }
         }
       }

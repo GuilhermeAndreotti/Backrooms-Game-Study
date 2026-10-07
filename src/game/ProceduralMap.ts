@@ -13,7 +13,7 @@ import { VisitTracker } from "./systems/visitTracker";
 import { contentLevelFor, FUN_CONTENT_LEVEL, OLD_TOWN_CONTENT_LEVEL, SPACE_LEVEL } from "./levels/constants";
 import { SpaceWorld } from "./levels/spaceWorld";
 import { TownWorld } from "./levels/townWorld";
-import { TOWN_GRID, TOWN_SPAWN, townCellAt, townGroundHeight } from "./levels/townLayout";
+import { TOWN_GRID, TOWN_MAX_SLOPE, TOWN_SPAWN, townCellAt, townGroundHeight, townSlope } from "./levels/townLayout";
 import { SPACE_GRID, SPACE_RECTS, SPACE_SPAWN } from "./levels/spaceLayout";
 import { CAR_COLOR_HEX, GARAGE_DIVIDERS, GARAGE_SAFE_RADIUS, GARAGE_FLOORS, GARAGE_FLOOR_Y, GaragePlan, garageFloorAt, garageKeepClear, garagePillarAt, garagePlan, rampAt, rampHeightAt } from "./levels/garageLayout";
 import { FunWorld } from "./levels/funWorld";
@@ -88,6 +88,13 @@ function mixSeed(seed: number, salt: number): number {
 
 /** Hinge angle of Level G's emergency door when fully open (swings outward). */
 export const LEVEL_G_DOOR_OPEN_ANGLE = -Math.PI * 0.55;
+
+/**
+ * Chance that a cell of the Abandoned Office holds a bottle of almond water
+ * (it was 14%: far too many, with each one worth +20% sanity). The decoration
+ * pass skips the same cells, so both read this one number.
+ */
+const LEVEL4_WATER_CHANCE = 0.07;
 
 export function gridSizeForLevel(level: number): number {
   level = contentLevelFor(level);
@@ -3391,6 +3398,8 @@ export class ProceduralMap {
   public garage: GaragePlan | null = null;
   /** Level 1: floor 2's shutter to the ramp up to floor 3. */
   public garageGateOpen = false;
+  /** Level 1: the keypad's digits typed right so far (they stay locked in); null while still open. */
+  public garageLocked: (string | null)[] = [null, null, null, null];
   /** 0 = shut .. 1 = fully rolled up (animated by {@link updateGarageGate}). */
   private garageGateLift = 0;
   private garageGateMesh: THREE.Object3D | null = null;
@@ -3478,6 +3487,9 @@ export class ProceduralMap {
     if (minGridX < 0 || maxGridX >= this.gridSize || minGridZ < 0 || maxGridZ >= this.gridSize) {
       return true; // Wall collision on world perimeter
     }
+
+    // Level 94's open hillside has no grid walls: only ground too steep to climb stops you.
+    if (this.town && townCellAt(Math.floor(x / this.cellSize), Math.floor(z / this.cellSize))?.zone === "hills" && townSlope(x, z) > TOWN_MAX_SLOPE) return true;
 
     // Level 1's ramps are walled along both sides (you get on at the foot or
     // the top, never over the side), and floor 2's shutter seals the ramp up.
@@ -4094,7 +4106,7 @@ export class ProceduralMap {
     if (this.level4DeskCells.some((d) => d.gx === gx && d.gz === gz)) return;
     if (this.level4Employees.some((e) => Math.abs(e.gx - gx) <= 1 && Math.abs(e.gz - gz) <= 1)) return;
     if ((gx === 5 && gz === 5) || (gx === 18 && gz === 5) || (gx === 31 && gz === 5)) return; // meeting tables
-    if (new SeededRandom(this.seed + gx * 149 + gz * 211).next() < 0.14) return; // an almond water bottle lies here
+    if (new SeededRandom(this.seed + gx * 149 + gz * 211).next() < LEVEL4_WATER_CHANCE) return; // an almond water bottle lies here
     const side = pickSide((dx, dz) => isSolid(gx + dx, gz + dz));
     if (side === null) {
       if (!corridor && rng.next() < 0.14) {
@@ -5817,14 +5829,15 @@ export class ProceduralMap {
       });
     }
 
-    // Level 4 is a stable MEG outpost: almond water is intentionally common,
-    // but never placed inside a workstation, under an employee, or at the exit.
+    // Level 4 is a stable MEG outpost: almond water is common (but no longer a bottle
+    // in every seventh cell: LEVEL4_WATER_CHANCE), never placed inside a workstation,
+    // under an employee, or at the exit.
     if (this.level === 9 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx < 5 && gz < 5)) {
       const isWorkstation = this.level4DeskCells.some((desk) => desk.gx === gx && desk.gz === gz)
         || this.level4Employees.some((employee) => employee.gx === gx && employee.gz === gz)
         || this.funPartyCells.some((c) => c.gx === gx && c.gz === gz);
       const waterRng = new SeededRandom(this.seed + gx * 149 + gz * 211);
-      if (!isWorkstation && waterRng.next() < 0.14) {
+      if (!isWorkstation && waterRng.next() < LEVEL4_WATER_CHANCE) {
         const maxOffset = hSize / 2 - 0.65;
         const bottle = this.createAlmondWaterBottleMesh();
         const ix = posX + waterRng.nextRange(-maxOffset, maxOffset);

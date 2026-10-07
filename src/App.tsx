@@ -23,6 +23,7 @@ import { SpaceWiringModal } from "./components/SpaceWiringModal";
 import { TownModelModal } from "./components/TownModelModal";
 import { KingDialogueModal } from "./components/KingDialogueModal";
 import { ChessModal } from "./components/ChessModal";
+import { GarageKeypadModal } from "./components/GarageKeypadModal";
 import { EMPTY_CHESS, type ChessNetState } from "./shared/chess";
 import type { TownDialogueView } from "./game/levels/townDirector";
 import type { SpaceTerminalId, WireColor } from "./game/levels/spaceLayout";
@@ -2032,16 +2033,10 @@ export default function App() {
           <HotbarHUD inventory={inventory} engineRef={engineRef} giveTarget={giveMode} fx={hotbarFx} />
 
           {isTerminalOpen && currentLevel === 1 && (
-            <TerminalModal
-              length={4}
-              title={t("garage.keypad.title")}
-              prompt={t("garage.keypad.prompt")}
-              hint={
-                <span className="text-[#3cff7a] font-bold tracking-wider">
-                  {(engineRef.current?.garageKeypadColors() ?? []).map((c) => t(`garage.color.${c}`)).join(" · ")}
-                </span>
-              }
-              onSubmit={(code) => engineRef.current?.submitGarageCode(code) ?? false}
+            <GarageKeypadModal
+              colors={engineRef.current?.garageKeypadColors() ?? []}
+              initialLocked={engineRef.current?.garageKeypadLocked() ?? []}
+              onSubmit={(entered) => engineRef.current?.submitGarageDigits(entered) ?? { locked: [], ok: false }}
               onClose={() => {
                 setIsTerminalOpen(false);
                 const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
