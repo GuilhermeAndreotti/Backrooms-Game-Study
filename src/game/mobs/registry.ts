@@ -26,8 +26,12 @@ import { ceifador } from "./ceifador";
 import { alien } from "./alien";
 import { animation } from "./animation";
 import { townKing } from "./townKing";
+import { bellman } from "./bellman";
+import { deathmoth } from "./deathmoth";
 
 export const MOB_DEFS: Record<EntityType, MobDefinition> = {
+  [EntityType.BELLMAN]: bellman,
+  [EntityType.DEATHMOTH]: deathmoth,
   [EntityType.HOUND]: hound,
   [EntityType.SKIN_STEALER]: skinStealer,
   [EntityType.CLUMP]: clump,

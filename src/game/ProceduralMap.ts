@@ -12,6 +12,9 @@ import { NoiseBus } from "./systems/noiseBus";
 import { VisitTracker } from "./systems/visitTracker";
 import { contentLevelFor, FUN_CONTENT_LEVEL, OLD_TOWN_CONTENT_LEVEL, SPACE_LEVEL } from "./levels/constants";
 import { SpaceWorld } from "./levels/spaceWorld";
+import { HOTEL_LEVEL } from "./levels/constants";
+import { HOTEL_GRID, HOTEL_RECTS, HOTEL_SPAWN, hotelFloorAt } from "./levels/hotelLayout";
+import { HotelWorld } from "./levels/hotelWorld";
 import { TownWorld } from "./levels/townWorld";
 import { TOWN_GRID, TOWN_MAX_SLOPE, TOWN_SPAWN, townCellAt, townGroundHeight, townSlope } from "./levels/townLayout";
 import { SPACE_GRID, SPACE_RECTS, SPACE_SPAWN } from "./levels/spaceLayout";
@@ -99,6 +102,7 @@ const LEVEL4_WATER_CHANCE = 0.07;
 
 export function gridSizeForLevel(level: number): number {
   level = contentLevelFor(level);
+  if (level === HOTEL_LEVEL) return HOTEL_GRID;
   if (level === 4) return 18; // Level G: a small office, on purpose
   if (level === SPACE_LEVEL) return SPACE_GRID; // Level 79: a hand-laid station
   if (level === OLD_TOWN_CONTENT_LEVEL) return TOWN_GRID; // Level 94: a town, its hills and a castle
@@ -462,6 +466,7 @@ export class ProceduralMap {
 
   /** Cells monsters may walk into: not walls, and not Level G's exit while it's locked. */
   public isWalkableForEntities(gx: number, gz: number): boolean {
+    if (this.hotel?.isBlocked(gx, gz)) return false;
     if (this.grid[gx]?.[gz] === undefined || this.grid[gx][gz] === CellType.SOLID) return false;
     if (this.level === 4 && !this.emergencyDoorOpen && gx === this.exitGridX && gz === this.exitGridZ) return false;
     // Level 1's monsters patrol the ground floor and never take the ramps.
@@ -565,6 +570,7 @@ export class ProceduralMap {
 
     this.prng = new SeededRandom(seed);
     this.initMaterials();
+    if (this.level === HOTEL_LEVEL) this.hotel = this.createHotelWorld();
     if (this.level === FUN_CONTENT_LEVEL) this.fun = this.createFunWorld();
     if (this.level === SPACE_LEVEL) this.space = this.createSpaceWorld();
     if (this.level === OLD_TOWN_CONTENT_LEVEL) this.town = this.createTownWorld();
@@ -717,7 +723,7 @@ export class ProceduralMap {
 
     // Level G: no breadcrumbs, drafts or wet trails to the exit — finding the
     // emergency door (and earning it) is the level.
-    if (this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL || this.level === SPACE_LEVEL || this.level === OLD_TOWN_CONTENT_LEVEL) foundPath = [];
+    if (this.hotel || this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL || this.level === SPACE_LEVEL || this.level === OLD_TOWN_CONTENT_LEVEL) foundPath = [];
 
     this.exitPath = foundPath;
     this.exitPathSet.clear();
@@ -1890,6 +1896,10 @@ export class ProceduralMap {
       this.carveLevel4Office();
     } else if (this.level === FUN_CONTENT_LEVEL) {
       this.carveFun();
+    } else if (this.level === HOTEL_LEVEL) {
+      for (const r of HOTEL_RECTS) for (let x = r.x1; x <= r.x2; x++) for (let z = r.z1; z <= r.z2; z++) this.grid[x][z] = CellType.CORRIDOR;
+      this.spawnGridX = HOTEL_SPAWN.gx; this.spawnGridZ = HOTEL_SPAWN.gz;
+      this.exitGridX = this.exitGridZ = 0; // The director owns the wooden exit door.
     } else if (this.level === SPACE_LEVEL) {
       this.carveSpace();
     } else if (this.level === OLD_TOWN_CONTENT_LEVEL) {
@@ -2190,7 +2200,7 @@ export class ProceduralMap {
 
     // Level G is hand-laid; the generic spawn clearing below would punch
     // through its reception walls.
-    if (this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL || this.level === SPACE_LEVEL || this.level === OLD_TOWN_CONTENT_LEVEL) return;
+    if (this.hotel || this.level === 4 || this.level === LOBBY_LEVEL || this.level === FUN_CONTENT_LEVEL || this.level === SPACE_LEVEL || this.level === OLD_TOWN_CONTENT_LEVEL) return;
 
     // Ensure spawn around (2,2) is safe, walkable, and fully cleared
     for (let dx = -1; dx <= 2; dx++) {
@@ -2918,6 +2928,14 @@ export class ProceduralMap {
     });
   }
 
+  private createHotelWorld(): HotelWorld {
+    this.decorKit ??= { geo: (key, build) => this.sharedGeo(key, build), mat: (key, build) => this.sharedMat(key, build), wallTile: this.wallMaterial, track: (texture) => { this.sharedTextures.push(texture); } };
+    return new HotelWorld({ kit: this.decorKit, seed: this.seed,
+      registerLight: (...args) => this.registerLight(...args),
+      addObstacle: (...args) => this.addObstacle(...args),
+    });
+  }
+
   /**
    * Level 94: the town, the hills and the castle of townLayout.ts. Like Level
    * 79 there is no exit cell (exitGrid stays 0,0): the director ends the level
@@ -3324,6 +3342,7 @@ export class ProceduralMap {
    * moves at that floor's height, not just the 2D grid position.
    */
   public getFloorHeightAt(worldX: number, worldZ: number): number {
+    if (this.hotel) return hotelFloorAt(worldX, worldZ);
     const gx = Math.floor(worldX / this.cellSize);
     const gz = Math.floor(worldZ / this.cellSize);
     if (gx < 0 || gz < 0 || gx >= this.gridSize || gz >= this.gridSize) return 0;
@@ -3576,6 +3595,7 @@ export class ProceduralMap {
         }
         // Level FUN's doors: a shut one fills its whole cell.
         if (this.fun && this.fun.isGateClosed(gx, gz)) return true;
+        if (this.hotel?.isBlocked(gx, gz)) return true;
         // Level 94's gates likewise (the barricade, the portcullis, the King's door).
         if (this.town && this.town.isBlocked(gx, gz)) return true;
         if (!ignorePoolGate && this.isPoolCellBlocked(gx, gz)) return true;
@@ -4148,6 +4168,7 @@ export class ProceduralMap {
 
   /** Level 79's station (geometry, doors, screens, lights); null on every other level. */
   public space: SpaceWorld | null = null;
+  public hotel: HotelWorld | null = null;
   /** Level 94's town, hills and castle; null on every other level. */
   public town: TownWorld | null = null;
 
@@ -4303,6 +4324,7 @@ export class ProceduralMap {
     if (this.fun && cellType !== CellType.SOLID) return this.fun.createCell(gx, gz);
     // Level 79 likewise (see levels/spaceWorld.ts).
     if (this.space && cellType !== CellType.SOLID) return this.space.createCell(gx, gz);
+    if (this.hotel && cellType !== CellType.SOLID) return this.hotel.createCell(gx, gz);
     // Level 94 is built whole, not per cell (see levels/townWorld.ts): its cells stay empty.
     if (this.town) return group;
 
@@ -7576,6 +7598,7 @@ export class ProceduralMap {
   public clearAll(scene: THREE.Scene) {
     this.fun = null;
     this.space = null;
+    this.hotel = null;
     this.town = null;
     this.lastCulledX = -9999;
     this.lastCulledZ = -9999;
