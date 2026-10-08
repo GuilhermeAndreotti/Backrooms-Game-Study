@@ -16,6 +16,7 @@
 
 import * as THREE from "three";
 import { POOL_FLOOR_Y } from "./Water";
+import { createOfficeWindowMaterial, OFFICE_GLASS_H, OFFICE_GLASS_SILL, OFFICE_GLASS_W, type OfficeOutlook, setOfficeWindowOutlook, setOfficeWindowState } from "./officeWindow";
 
 export interface DecorKit {
   geo<T extends THREE.BufferGeometry>(key: string, build: () => T): T;
@@ -354,27 +355,44 @@ function photocopier(kit: DecorKit, _rng: Rng, wz: number): DecorPiece {
   return { object: g, footprint: [[0, z, 0.55]] };
 }
 
-function rainWindow(kit: DecorKit, _rng: Rng, wz: number): DecorPiece {
+/** The office glass: storm, city and wet pane in one shader (see officeWindow.ts), shared by every window. */
+function officeGlassMat(kit: DecorKit): THREE.ShaderMaterial {
+  return kit.mat("decor_l4_window_glass", createOfficeWindowMaterial);
+}
+
+/**
+ * A window in an outer wall of the office tower (ProceduralMap places one on
+ * every wall that faces outside, and only there): a wide pane, sill to
+ * ceiling, in a steel frame.
+ */
+export function officeWindow(kit: DecorKit, half: number): DecorPiece {
   const g = new THREE.Group();
-  // Wiki: the "sky" outside is artificial and never changes — just rain on glass.
-  const glass = canvasMat(kit, "l4_window", 256, 160, (ctx) => {
-    const r = mulberry(4242);
-    const grad = ctx.createLinearGradient(0, 0, 0, 160);
-    grad.addColorStop(0, "#7d8790"); grad.addColorStop(1, "#aeb5b8");
-    ctx.fillStyle = grad; ctx.fillRect(0, 0, 256, 160);
-    ctx.fillStyle = "rgba(90,98,105,0.55)";
-    for (let i = 0; i < 9; i++) { ctx.beginPath(); ctx.ellipse(r() * 256, r() * 70, 50 + r() * 50, 14 + r() * 10, 0, 0, Math.PI * 2); ctx.fill(); }
-    ctx.strokeStyle = "rgba(230,236,240,0.35)"; ctx.lineWidth = 1;
-    for (let i = 0; i < 90; i++) { const x = r() * 256, y = r() * 160; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 2, y + 8 + r() * 14); ctx.stroke(); }
-  }, true);
-  const frame = std(kit, "l4_window_frame", { color: 0x55595c, roughness: 0.5, metalness: 0.5 });
-  g.add(plane(kit, 1.9, 1.2, glass, 0, 1.6, wz + 0.02));
-  g.add(box(kit, 2.0, 0.07, 0.1, frame, 0, 2.23, wz + 0.05));
-  g.add(box(kit, 2.0, 0.1, 0.2, frame, 0, 0.98, wz + 0.1));
-  g.add(box(kit, 0.07, 1.3, 0.1, frame, -0.98, 1.6, wz + 0.05));
-  g.add(box(kit, 0.07, 1.3, 0.1, frame, 0.98, 1.6, wz + 0.05));
-  g.add(box(kit, 0.05, 1.2, 0.08, frame, 0, 1.6, wz + 0.05));
+  const wz = -half;
+  const cy = OFFICE_GLASS_SILL + OFFICE_GLASS_H / 2;
+  const top = OFFICE_GLASS_SILL + OFFICE_GLASS_H;
+  const fw = OFFICE_GLASS_W + 0.1;
+  const frame = std(kit, "l4_window_frame", { color: 0x3c4043, roughness: 0.5, metalness: 0.5 });
+  g.add(plane(kit, OFFICE_GLASS_W, OFFICE_GLASS_H, officeGlassMat(kit), 0, cy, wz + 0.02));
+  g.add(box(kit, fw, 0.07, 0.1, frame, 0, top + 0.03, wz + 0.05));
+  g.add(box(kit, fw, 0.08, 0.24, frame, 0, OFFICE_GLASS_SILL - 0.04, wz + 0.12)); // the sill
+  g.add(box(kit, 0.07, OFFICE_GLASS_H + 0.1, 0.1, frame, -fw / 2, cy, wz + 0.05));
+  g.add(box(kit, 0.07, OFFICE_GLASS_H + 0.1, 0.1, frame, fw / 2, cy, wz + 0.05));
+  g.add(box(kit, 0.05, OFFICE_GLASS_H, 0.08, frame, 0, cy, wz + 0.05));
   return { object: g, footprint: [] };
+}
+
+/**
+ * Animates every Abandoned Office window at once (they share one material):
+ * the rain, the drops on the glass, and `flash` (0..1) of a lightning strike
+ * whose bolt comes down at azimuth `boltAz` (rad).
+ */
+export function animateOfficeWindows(kit: DecorKit, time: number, flash: number, boltAz: number) {
+  setOfficeWindowState(officeGlassMat(kit), time, flash, boltAz);
+}
+
+/** Hands the windows what lies outside them (see officeWindow.OfficeOutlook). */
+export function setOfficeWindowsOutlook(kit: DecorKit, outlook: OfficeOutlook) {
+  setOfficeWindowOutlook(officeGlassMat(kit), outlook);
 }
 
 function whiteboard(kit: DecorKit, rng: Rng, wz: number): DecorPiece {
@@ -477,14 +495,14 @@ function darkServerMat(kit: DecorKit): THREE.Material {
 export function abandonedOfficeDecor(kit: DecorKit, rng: Rng, half: number, corridor: boolean): DecorPiece {
   const wz = -half;
   const roll = rng.next();
-  if (corridor) return roll < 0.45 ? rainWindow(kit, rng, wz) : roll < 0.7 ? waterCooler(kit, rng, wz) : roll < 0.85 ? deadPlant(kit, rng, wz) : whiteboard(kit, rng, wz);
+  // No windows here: those only go on the tower's outer walls (officeWindow).
+  if (corridor) return roll < 0.45 ? waterCooler(kit, rng, wz) : roll < 0.75 ? deadPlant(kit, rng, wz) : whiteboard(kit, rng, wz);
   if (roll < 0.13) return officeModule(kit, rng, wz, "meeting");
   if (roll < 0.27) return officeModule(kit, rng, wz, "workstations");
   if (roll < 0.37) return officeModule(kit, rng, wz, "servers");
   if (roll < 0.46) return officeModule(kit, rng, wz, "break");
   if (roll < 0.55) return officeModule(kit, rng, wz, rng.next() < 0.5 ? "lab" : "security");
-  if (roll < 0.66) return rainWindow(kit, rng, wz);
-  if (roll < 0.76) return filingCabinets(kit, rng, wz);
+  if (roll < 0.7) return filingCabinets(kit, rng, wz);
   if (roll < 0.84) return photocopier(kit, rng, wz);
   if (roll < 0.91) return waterCooler(kit, rng, wz);
   if (roll < 0.96) return whiteboard(kit, rng, wz);

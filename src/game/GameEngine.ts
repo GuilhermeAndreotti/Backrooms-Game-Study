@@ -8,6 +8,7 @@ import { EMPTY_CHESS, type ChessNetState } from "../shared/chess";
 import { Voip } from "./Voip";
 import { t, type MessageKey } from "../i18n";
 import { OfficeWorker } from "./npc/OfficeWorker";
+import { buildOfficeSkyline, type OfficeSkyline } from "./officeWindow";
 import { WaterRipples, waterUniforms } from "./Water";
 import * as THREE from "three";
 import { ProceduralMap, LEVEL_G_DOOR_OPEN_ANGLE, CellType } from "./ProceduralMap";
@@ -76,6 +77,8 @@ export interface GameEngineCallbacks {
   onReadingEnd?: () => void;
   /** Level G: digits found so far (null = missing) and whether the final alarm is on. */
   onLevelGProgress?: (progress: LevelGProgress) => void;
+  /** Abandoned Office: the door password as the programmers' IDs are found (seniority order). */
+  onMegProgress?: (progress: MegProgress) => void;
   onRedRoomExposureChange?: (val: number) => void;
   /** Level 7's toxic water exposure (see toxicWaterExposure) — same shape as onRedRoomExposureChange, kept separate rather than shared since the two hazards use different thresholds and are never active at the same time. */
   onToxicWaterExposureChange?: (val: number) => void;
@@ -122,6 +125,10 @@ const MEG_ILLUSION_CHANCE = 0.3;
 /** How many variants of that line (meg.illusion.N) and of a programmer's ID postscript (meg.illusion.id.N) exist. */
 const MEG_ILLUSION_LINES = 5;
 const MEG_ILLUSION_ID_LINES = 3;
+/** Level 4: the programmers' slots in the door password, in the order it is typed. */
+const MEG_SENIORITY: Record<string, number> = { senior: 0, pleno: 1, junior: 2 };
+/** Level 4: seconds between lightning strikes over the office (rolled by the world authority). */
+const OFFICE_THUNDER_GAP: [number, number] = [14, 34];
 /** Level 1, floor 3: seconds of calm between blackouts, and how long each lasts. */
 const GARAGE_BLACKOUT_GAP: [number, number] = [20, 32];
 const GARAGE_BLACKOUT_LENGTH: [number, number] = [8, 11];
@@ -192,6 +199,12 @@ function levelAtmosphere(level: number, funStage: FunStage = 0) {
 export interface LevelGProgress {
   digits: (number | null)[];
   alarm: boolean;
+}
+
+/** Abandoned Office: the programmers' IDs found so far, in typing order (null = not yet), and whether the door is open. */
+export interface MegProgress {
+  ids: (string | null)[];
+  open: boolean;
 }
 
 /** What each Level G document says; `d` is the digit it gives away. */
@@ -453,6 +466,7 @@ export class GameEngine {
   private lastInteractPrompt: string | null = null;
   private interactPromptTimer = 0;
   private onLevelGProgress?: (progress: LevelGProgress) => void;
+  private onMegProgress?: (progress: MegProgress) => void;
   private onRedRoomExposureChange?: (val: number) => void;
   private onToxicWaterExposureChange?: (val: number) => void;
   public onHUDNotification?: (msg: string) => void;
@@ -546,6 +560,7 @@ export class GameEngine {
     this.onReadingEnd = callbacks.onReadingEnd;
     this.onDiaryPageCollected = callbacks.onDiaryPageCollected;
     this.onLevelGProgress = callbacks.onLevelGProgress;
+    this.onMegProgress = callbacks.onMegProgress;
     this.onRedRoomExposureChange = callbacks.onRedRoomExposureChange;
     this.onToxicWaterExposureChange = callbacks.onToxicWaterExposureChange;
     this.onHUDNotification = callbacks.onHUDNotification;
@@ -827,6 +842,7 @@ export class GameEngine {
     this.applyCheatsToPlayer();
     this.setupLobby();
     this.setupOfficeWorkers();
+    this.setupOfficeSkyline();
     this.setupFun();
     this.setupSpace();
     this.setupTown();
@@ -1006,6 +1022,7 @@ export class GameEngine {
       }
       this.updateLobby(delta);
       this.updateOfficeWorkers(delta);
+      this.updateOfficeStorm(delta);
       this.updateFun(delta);
       this.updateSpace(delta);
       this.updateTown(delta);
@@ -1528,6 +1545,13 @@ export class GameEngine {
           }
           background.setHex(a.fog);
         }
+
+        // Abandoned Office: lightning through the windows washes the floor in cold white.
+        if (this.officeFlash > 0) {
+          this.ambientLight.intensity += this.officeFlash * 0.9;
+          if (fog) fog.color.lerp(this.officeFlashColor, this.officeFlash * 0.35);
+          background.lerp(this.officeFlashColor, this.officeFlash * 0.35);
+        }
       }
 
       // Local spotlight updating with probability-based flickering when sanity is below 40%
@@ -2016,10 +2040,116 @@ export class GameEngine {
         floorY: this.map.getFloorHeightAt(x, z),
         seed: (employee.gx * 73856093) ^ (employee.gz * 19349663) ^ (i * 83492791),
         seated: employee.seated,
+        programmer: employee.role === "programmer",
       });
       this.scene.add(worker.group);
       this.officeWorkers.push(worker);
     });
+  }
+
+  /** Abandoned Office: which programmers' IDs are known, by MEG_SENIORITY slot (shared by the whole level). */
+  private megKnown = [false, false, false];
+  /** World authority: seconds until it rolls the next lightning strike. */
+  private officeThunderIn = 10;
+  /** Seconds since the current strike's flash began (-1 = none). */
+  private officeFlashT = -1;
+  /** When (in officeFlashT seconds) the thunder of the current strike is heard, and how close it is (0..1). */
+  private officeThunderAt = -1;
+  private officeThunderNear = 0;
+  /** 0..1: how lit up the windows and the room are right now. */
+  private officeFlash = 0;
+  private officeFlashColor = new THREE.Color(0xd8e4ff);
+  private officeBoltAz = 0;
+  /** The landscape outside the office windows, rendered once into a cube map (kept across visits). */
+  private officeCity: OfficeSkyline | null = null;
+
+  /** Abandoned Office: renders the skyline (first visit only) and hands it to the windows. */
+  private setupOfficeSkyline() {
+    if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map) return;
+    try {
+      this.officeCity ??= buildOfficeSkyline(this.renderer, this.map.mapSeed, this.quality.shadows ? 512 : 256);
+      this.map.setOfficeSkyline(this.officeCity);
+    } catch (err) {
+      console.warn("[Office] skyline render failed; windows show sky only", err);
+    }
+  }
+
+  /** A lightning strike: the windows flash now, the thunder follows (later the farther it is). */
+  private startOfficeThunder(near: number) {
+    this.officeThunderNear = Math.min(1, Math.max(0, near));
+    // Where the bolt comes down: derived from `near`, so everyone sees it in the same place.
+    this.officeBoltAz = ((this.officeThunderNear * 7919.13) % 1) * Math.PI * 2;
+    this.officeFlashT = 0;
+    this.officeThunderAt = 0.15 + (1 - this.officeThunderNear) * 2.6;
+  }
+
+  /** Abandoned Office: rain on the windows, and the authority's lightning schedule. */
+  private updateOfficeStorm(delta: number) {
+    this.officeFlash = 0;
+    if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map) return;
+    if (this.isWorldAuthority) {
+      this.officeThunderIn -= delta;
+      if (this.officeThunderIn <= 0) {
+        const [lo, hi] = OFFICE_THUNDER_GAP;
+        this.officeThunderIn = lo + Math.random() * (hi - lo);
+        const near = Math.random();
+        this.startOfficeThunder(near);
+        // "duration" carries how close the strike is (0..1).
+        this.sendToServer({ type: "world_event", level: this.level, state: "thunder", duration: near });
+      }
+    }
+    if (this.officeFlashT >= 0) {
+      const ft = (this.officeFlashT += delta);
+      // Two or three quick flickers, the last one lingering.
+      const pulse = (start: number, len: number, peak: number) => (ft >= start && ft < start + len ? peak * (1 - (ft - start) / len) : 0);
+      const strength = 0.45 + this.officeThunderNear * 0.55;
+      this.officeFlash = strength * Math.max(pulse(0, 0.09, 1), pulse(0.16, 0.08, 0.6), pulse(0.3, 0.45, 0.85));
+      if (this.officeThunderAt >= 0 && ft >= this.officeThunderAt) {
+        this.officeThunderAt = -1;
+        this.audio.playThunder(this.officeThunderNear);
+      }
+      if (ft > 0.8 && this.officeThunderAt < 0) this.officeFlashT = -1;
+    }
+    this.map.updateOfficeWindows(this.totalPlayTime, this.officeFlash, this.officeBoltAz);
+  }
+
+  /** The door password so far, in typing order (senior, pleno, junior). */
+  private megPasswordIds(): (string | null)[] {
+    const ids: (string | null)[] = [null, null, null];
+    this.map?.level4Employees.forEach((employee) => {
+      const slot = MEG_SENIORITY[employee.grade];
+      if (employee.role === "programmer" && employee.accessId && this.megKnown[slot]) ids[slot] = employee.accessId;
+    });
+    return ids;
+  }
+
+  private emitMegProgress() {
+    this.onMegProgress?.({ ids: this.level === ABANDONED_OFFICE_LEVEL ? this.megPasswordIds() : [null, null, null], open: this.level4DoorOpen });
+  }
+
+  /**
+   * The full door password ("48, 73, 19") for the door panel to start from, or
+   * "" while a slot is still missing (a partial prefill would push the IDs typed
+   * after it out of order).
+   */
+  public megPasswordDraft(): string {
+    const ids = this.megPasswordIds();
+    return ids.every((id) => id !== null) ? ids.join(", ") : "";
+  }
+
+  /**
+   * A programmer's ID was found (by talking to them here, or by a teammate):
+   * it goes straight into the password on the HUD, nobody has to write it down.
+   */
+  public learnMegId(slot: unknown, fromTeammate = false, quiet = false) {
+    if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map) return;
+    if (typeof slot !== "number" || !Number.isInteger(slot) || slot < 0 || slot >= this.megKnown.length || this.megKnown[slot]) return;
+    this.megKnown[slot] = true;
+    const id = this.megPasswordIds()[slot];
+    const n = this.megKnown.filter(Boolean).length;
+    if (!quiet) this.onHUDNotification?.(t(fromTeammate ? "eng.megIdTeammate" : "eng.megIdLearned", { id: id ?? "", n }));
+    this.emitMegProgress();
+    if (!fromTeammate) this.sendToServer({ type: "meg_id", level: ABANDONED_OFFICE_LEVEL, index: slot });
   }
 
   private updateOfficeWorkers(delta: number) {
@@ -2778,6 +2908,10 @@ export class GameEngine {
     this.teardownLevelG();
     this.level = level;
     this.level4DoorOpen = false;
+    this.megKnown = [false, false, false];
+    this.officeThunderIn = 6 + Math.random() * 8;
+    this.officeFlashT = -1;
+    this.officeThunderAt = -1;
     this.funCakeEaten = false;
 
     // 1. Terminate current map mesh references
@@ -2830,6 +2964,7 @@ export class GameEngine {
     this.revive();
     this.setupLobby();
     this.setupOfficeWorkers();
+    this.setupOfficeSkyline();
     this.setupFun();
     this.setupSpace();
     this.setupTown();
@@ -2860,6 +2995,10 @@ export class GameEngine {
       this.spawnLevelGEntities();
       this.onHUDNotification?.(t("eng.levelG"));
     }
+
+    // Abandoned Office: say up front that the way out is the programmers' IDs.
+    this.emitMegProgress();
+    if (level === ABANDONED_OFFICE_LEVEL) this.onHUDNotification?.(t("eng.megHint"));
 
     // Level 1's garage: fresh blackout schedule.
     this.garageBlackoutIn = 12;
@@ -3982,6 +4121,7 @@ export class GameEngine {
     if (this.townDirector) this.sendToServer({ type: "town_sync", level: OLD_TOWN_LEVEL });
     if (this.level === LOBBY_LEVEL) this.sendToServer({ type: "chess_sync" });
     if (this.level === 1) this.sendToServer({ type: "garage_sync", level: 1 });
+    if (this.level === ABANDONED_OFFICE_LEVEL) this.sendToServer({ type: "meg_sync", level: ABANDONED_OFFICE_LEVEL });
   }
 
   /** A teammate took a map pickup: hide it here, and share a Level G document's digit. */
@@ -4094,6 +4234,8 @@ export class GameEngine {
       this.readingAnchor = { x: employee.gx * cs + cs / 2, z: employee.gz * cs + cs / 2 };
       this.talkingEmployee = employee.name;
       this.onMegDialogue?.({ ...employee, dialogue: this.megDialogueLine(employee) });
+      // Every line a programmer says ends with their ID: it goes into the password.
+      if (employee.role === "programmer") this.learnMegId(MEG_SENIORITY[employee.grade]);
       return "meg_employee";
     }
     if (this.nearMegDoor()) {
@@ -4130,7 +4272,7 @@ export class GameEngine {
    * access ID at the end, which still counts for the door.
    */
   private megDialogueLine(employee: { dialogue: string; role: string; accessId?: string }): string {
-    if (Math.random() >= MEG_ILLUSION_CHANCE) return employee.dialogue;
+    if (Math.random() >= MEG_ILLUSION_CHANCE) return t(employee.dialogue, { id: employee.accessId ?? "" });
     const line = t(`meg.illusion.${Math.floor(Math.random() * MEG_ILLUSION_LINES)}`);
     return employee.role === "programmer" && employee.accessId
       ? `${line} ${t(`meg.illusion.id.${Math.floor(Math.random() * MEG_ILLUSION_ID_LINES)}`, { id: employee.accessId })}`
@@ -4142,12 +4284,13 @@ export class GameEngine {
     const ids = raw.replace(/\D/g, "");
     const expected = [...this.map.level4Employees]
       .filter((employee) => employee.role === "programmer")
-      .sort((a, b) => ({ senior: 0, pleno: 1, junior: 2 }[a.grade] - { senior: 0, pleno: 1, junior: 2 }[b.grade]))
+      .sort((a, b) => MEG_SENIORITY[a.grade] - MEG_SENIORITY[b.grade])
       .map((employee) => employee.accessId);
     const ok = ids === expected.join("");
     if (ok) {
       this.level4DoorOpen = true;
       this.map.openLevel4Door();
+      this.emitMegProgress();
       this.onHUDNotification?.(t("eng.megDoorOpen"));
       this.audio.playTerminalBeep(true);
     } else {
@@ -4441,8 +4584,12 @@ export class GameEngine {
   }
 
   /** Plays a blackout/flicker storm the level's authority rolled. */
-  public applyWorldEvent(msg: { level: number; state: "flicker_storm" | "blackout" | "levelg_alarm"; duration: number }) {
+  public applyWorldEvent(msg: { level: number; state: "flicker_storm" | "blackout" | "levelg_alarm" | "thunder"; duration: number }) {
     if (!this.map || msg.level !== this.level || this.isWorldAuthority) return;
+    if (msg.state === "thunder") {
+      if (this.level === ABANDONED_OFFICE_LEVEL) this.startOfficeThunder(msg.duration);
+      return;
+    }
     if (msg.state === "levelg_alarm") {
       this.startLevelGAlarm(false);
       return;
@@ -5063,6 +5210,8 @@ export class GameEngine {
     }
 
     this.voip.dispose();
+    this.officeCity?.target.dispose();
+    this.officeCity = null;
     this.teardownFun();
     this.teardownSpace();
     this.teardownTown();

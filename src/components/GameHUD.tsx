@@ -4,12 +4,12 @@
  */
 
 import { t, useLanguage } from "../i18n";
-import { FUN_LEVEL, LEVEL_G, SPACE_LEVEL } from "../game/levels/constants";
+import { ABANDONED_OFFICE_LEVEL, FUN_LEVEL, LEVEL_G, SPACE_LEVEL } from "../game/levels/constants";
 import React, { useState, useEffect, useRef } from "react";
 import { Flashlight, ShieldAlert, Backpack, Trophy, Mic, MicOff } from "lucide-react";
 import { ChatMessage, RemotePlayer } from "../types/game";
 import { RadarHUD } from "./RadarHUD";
-import { GameEngine, LevelGProgress } from "../game/GameEngine";
+import { GameEngine, LevelGProgress, MegProgress } from "../game/GameEngine";
 import { ChatHUD } from "./ChatHUD";
 import type { QuickChatId } from "../shared/items";
 
@@ -42,6 +42,8 @@ interface GameHUDProps {
   onOpenAchievements?: () => void;
   /** Level G: code digits found so far and whether the final alarm is on. */
   levelGProgress?: LevelGProgress;
+  /** Abandoned Office: the blue door's password, filled in as the programmers are found. */
+  megProgress?: MegProgress;
   /** Level FUN: the current goal. */
   objective?: string | null;
   /** Proximity VOIP: whether the mic/call is on, whether the local player is currently speaking, and the toggle. */
@@ -76,6 +78,7 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
   inventoryCount = 0,
   onOpenAchievements,
   levelGProgress,
+  megProgress,
   objective,
   voipEnabled = false,
   voipSpeaking = false,
@@ -195,6 +198,29 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
           {level === SPACE_LEVEL && objective && (
             <div className="mt-1 ml-1 max-w-md rounded border border-cyan-500/40 bg-black/65 px-2 py-1 font-mono text-[10px] font-bold uppercase leading-snug tracking-widest text-cyan-100">
               <span className="text-cyan-400">{t("fun.hud.objective")}:</span> {objective}
+            </div>
+          )}
+          {level === ABANDONED_OFFICE_LEVEL && megProgress && (
+            <div className="mt-1 ml-1 max-w-md rounded border border-sky-500/50 bg-black/65 px-2 py-1 text-[10px] font-bold uppercase leading-snug tracking-widest text-sky-100">
+              {megProgress.open ? (
+                <span className="text-sky-300">{t("hud.megOpen")}</span>
+              ) : (
+                <>
+                  <div>
+                    <span className="text-sky-400">{t("hud.megPassword")}</span>{" "}
+                    {megProgress.ids.map((id, i) => (
+                      <span key={i} className={`ml-1 inline-block min-w-[2.6em] rounded border px-1 text-center ${id ? "border-sky-400/70 text-white" : "border-slate-600 text-slate-500"}`}>
+                        <span className="text-[8px] text-sky-400/80">{t(`hud.megSlot.${i}` as "hud.megSlot.0")}</span> {id ?? "__"}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="mt-0.5 normal-case tracking-normal text-[#ff9a4a]">
+                    {megProgress.ids.every((id) => id !== null)
+                      ? t("hud.megReady")
+                      : t("hud.megFind", { n: megProgress.ids.filter((id) => id !== null).length })}
+                  </div>
+                </>
+              )}
             </div>
           )}
           {level === LEVEL_G && levelGProgress && (

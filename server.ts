@@ -185,6 +185,8 @@ interface Room {
   consumed: Map<number, Map<string, number>>;
   /** Level 1: someone typed floor 2's car code, so the shutter to floor 3 is up. */
   garageGateOpen: boolean;
+  /** Abandoned Office: which programmers' door IDs someone has found (seniority slots 0-2). */
+  megIds: Set<number>;
   /** The lobby's chess table: who sits where, and the game they're playing. */
   chess: ChessTable;
 }
@@ -361,8 +363,8 @@ const ENTITY_TYPES = new Set<string>(ALL_ENTITY_TYPES);
 const MAX_ENTITIES = 40;
 const MAX_SMILERS = 8;
 const MAX_SPEECH_LENGTH = 64;
-/** Level-wide events the authority may broadcast ("levelg_alarm": Level G's final alarm). */
-const GLOBAL_EVENTS = new Set(["flicker_storm", "blackout", "levelg_alarm"]);
+/** Level-wide events the authority may broadcast ("levelg_alarm": Level G's final alarm; "thunder": an Abandoned Office lightning strike, duration = how close, 0..1). */
+const GLOBAL_EVENTS = new Set(["flicker_storm", "blackout", "levelg_alarm", "thunder"]);
 /** Level FUN puzzle facts a client may announce (see funDirector.ts). */
 const FUN_EVENT_KINDS = new Set(["p1_slot", "p2_solved", "p3_open", "p3_placed"]);
 /** A Level FUN puzzle item: group (table setting / final party) and its index in that group's list. */
@@ -607,6 +609,7 @@ function sweepSharedLevelState(room: Room) {
   if (!occupied.has(FUN_LEVEL)) room.funFacts.clear();
   if (!occupied.has(OLD_TOWN_LEVEL)) room.townFacts.clear();
   if (!occupied.has(LEVEL_1)) room.garageGateOpen = false;
+  if (!occupied.has(ABANDONED_OFFICE_LEVEL)) room.megIds.clear();
   room.consumed.forEach((_ids, level) => { if (!occupied.has(level)) room.consumed.delete(level); });
 }
 
@@ -615,6 +618,7 @@ function resetSharedLevelState(room: Room) {
   room.townFacts.clear();
   room.consumed.clear();
   room.garageGateOpen = false;
+  room.megIds.clear();
   room.players.forEach((p) => { if (p.held) { p.held = ""; room.dirty.add(p.id); } });
 }
 
@@ -722,6 +726,7 @@ async function startServer() {
             townFacts: new Map(),
             consumed: new Map(),
             garageGateOpen: false,
+            megIds: new Set(),
             chess: { seats: { w: "", b: "" }, game: null, rev: 0 },
             poolVigiaIntellect: 0,
           };
@@ -968,6 +973,24 @@ async function startServer() {
 
       if (type === "garage_sync") {
         if (conn.player.level === LEVEL_1 && room.garageGateOpen) send(ws, { type: "garage_gate", level: LEVEL_1 });
+        return;
+      }
+
+      // Abandoned Office: someone talked to a programmer, so their ID goes into
+      // everyone's door password. Only the slot travels — each client reads the
+      // ID itself from the seeded map. Remembered for late arrivals.
+      if (type === "meg_id") {
+        const index = data.index;
+        if (conn.player.level !== ABANDONED_OFFICE_LEVEL || data.level !== ABANDONED_OFFICE_LEVEL) return;
+        if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index > 2 || room.megIds.has(index)) return;
+        room.megIds.add(index);
+        broadcastToLevel(room, ABANDONED_OFFICE_LEVEL, { type: "meg_id", level: ABANDONED_OFFICE_LEVEL, index }, conn);
+        return;
+      }
+
+      if (type === "meg_sync") {
+        if (conn.player.level !== ABANDONED_OFFICE_LEVEL) return;
+        room.megIds.forEach((index) => send(ws, { type: "meg_id", level: ABANDONED_OFFICE_LEVEL, index, quiet: true }));
         return;
       }
 
