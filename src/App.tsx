@@ -5,7 +5,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { GameSettings, ConnectionPhase, RemotePlayer, ChatMessage, DEFAULT_SUIT_COLOR, RoomConfig, DeathAction, ROOM_CHEATS, SUDO_CHEAT, type RoomCheat } from "./types/game";
-import { GameEngine, LevelGProgress } from "./game/GameEngine";
+import { GameEngine, LevelGProgress, MegProgress } from "./game/GameEngine";
 import { MainMenu } from "./components/MainMenu";
 import { GameHUD } from "./components/GameHUD";
 import { InventoryHUD } from "./components/InventoryHUD";
@@ -162,6 +162,7 @@ export default function App() {
   // Level G: documents found / alarm state, the terminal overlay, and the
   // special ending shown before the regular victory screen.
   const [levelGProgress, setLevelGProgress] = useState<LevelGProgress>({ digits: [null, null, null], alarm: false });
+  const [megProgress, setMegProgress] = useState<MegProgress>({ ids: [null, null, null], open: false });
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [isMegDoorOpen, setIsMegDoorOpen] = useState(false);
   const [isFunPanelOpen, setIsFunPanelOpen] = useState(false);
@@ -974,6 +975,7 @@ export default function App() {
                       });
                     },
                     onLevelGProgress: (progress) => setLevelGProgress(progress),
+                    onMegProgress: (progress) => setMegProgress(progress),
                     onRedRoomExposureChange: (exp) => setRedRoomExposure(exp),
                     onToxicWaterExposureChange: (exp) => setToxicWaterExposure(exp),
                     onHUDNotification: (msg) => triggerNotification(msg),
@@ -1306,6 +1308,10 @@ export default function App() {
 
           else if (type === "garage_gate") {
             engineRef.current?.applyGarageGate(data);
+          }
+
+          else if (type === "meg_id") {
+            if (data.level === 4) engineRef.current?.learnMegId(data.index, true, data.quiet === true);
           }
 
           else if (type === "brick_office_switch") {
@@ -2018,6 +2024,7 @@ export default function App() {
             inventoryCount={inventory.length}
             onOpenAchievements={() => setIsAchievementsOpen(true)}
             levelGProgress={levelGProgress}
+            megProgress={megProgress}
             objective={funObjective}
             voipEnabled={voipEnabled}
             voipSpeaking={voipSpeaking}
@@ -2124,6 +2131,7 @@ export default function App() {
           )}
           {isMegDoorOpen && currentLevel === 4 && (
             <MegDoorModal
+              initial={engineRef.current?.megPasswordDraft() ?? ""}
               onSubmit={(ids) => engineRef.current?.submitMegDoorIds(ids) ?? false}
               onClose={() => {
                 setIsMegDoorOpen(false);
@@ -2136,7 +2144,7 @@ export default function App() {
           {megDialogue && currentLevel === 4 && !isMegDoorOpen && (
             <div className="pointer-events-none fixed inset-x-0 bottom-24 z-40 flex justify-center px-4">
               <div className="w-full max-w-2xl border border-amber-500/60 bg-[#171513]/90 px-6 py-4 text-slate-100 shadow-[0_0_30px_rgba(0,0,0,0.6)]">
-                <div className="mb-1 text-[10px] tracking-[0.25em] text-amber-400">{t("dialog.megEmployee", { grade: megDialogue.grade.toUpperCase() })}</div>
+                <div className="mb-1 text-[10px] tracking-[0.25em] text-amber-400">{t("dialog.megEmployee", { grade: t(`meg.grade.${megDialogue.grade}`) })}</div>
                 <h2 className="mb-2 text-xl font-bold">{megDialogue.name}</h2>
                 <p className="text-sm text-slate-300">{megDialogue.dialogue}</p>
                 <div className="mt-3 text-right text-[10px] uppercase tracking-widest text-amber-500/80">{t("dialog.closeHint")}</div>

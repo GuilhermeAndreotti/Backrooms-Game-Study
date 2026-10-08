@@ -318,6 +318,57 @@ export class AudioManager {
     this.rain = { nodes: [hiss, body, gust], out };
   }
 
+  /**
+   * Level 4 — a thunderclap rolling in through the windows. `near` (0..1):
+   * 1 is a sharp crack right overhead, 0 a long, low, far-off rumble.
+   */
+  public playThunder(near: number) {
+    if (!this.ctx || !this.masterGain || this.level !== RAIN_LEVEL || !this.backgroundAmbienceEnabled) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const loud = this.settings.volumeHum * (0.55 + near * 0.6);
+    const out = ctx.createGain();
+    out.gain.value = loud;
+    out.connect(this.masterGain);
+
+    // The crack: a bright burst that only a close strike has.
+    if (near > 0.35) {
+      const crack = ctx.createBufferSource();
+      crack.buffer = this.noise();
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.value = 900;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.5 * near, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+      crack.connect(hp); hp.connect(g); g.connect(out);
+      crack.start(t, Math.random() * 1.5);
+      crack.stop(t + 0.7);
+    }
+
+    // The rumble: low noise that swells, rolls a couple of times and dies away.
+    const length = 4 + (1 - near) * 3;
+    const rumble = ctx.createBufferSource();
+    rumble.buffer = this.noise();
+    rumble.loop = true;
+    rumble.playbackRate.value = 0.45;
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(260 + near * 260, t);
+    lp.frequency.exponentialRampToValueAtTime(90, t + length);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(1.0, t + 0.12 + (1 - near) * 0.5);
+    g.gain.exponentialRampToValueAtTime(0.45, t + length * 0.35);
+    g.gain.exponentialRampToValueAtTime(0.7, t + length * 0.5);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + length);
+    rumble.connect(lp); lp.connect(g); g.connect(out);
+    rumble.start(t);
+    rumble.stop(t + length + 0.1);
+    setTimeout(() => { try { out.disconnect(); } catch { /* gone */ } }, (length + 0.5) * 1000);
+  }
+
   private stopRain() {
     if (!this.rain || !this.ctx) return;
     const { nodes, out } = this.rain;

@@ -20,6 +20,13 @@ const LOOKS: Record<EmployeeGrade, { suit: number; shirt: number; tie: number; h
   senior: { suit: 0x25272c, shirt: 0xe8e4da, tie: 0x7f1d1d, hair: 0x8d8a84, jacket: true },
 };
 
+/**
+ * The three programmers hold the door's IDs, so they stand out from the rest
+ * of the staff: no jacket or tie, just a bright orange T-shirt with a "</>"
+ * on the chest (the spawn hint and the HUD name the colour).
+ */
+const PROGRAMMER_TEE = 0xff7a1a;
+
 const WALK_SPEED = 0.75;
 const PACE_HALF_WIDTH = 1.1;
 const WATCH_RADIUS = 5;
@@ -43,6 +50,7 @@ export class OfficeWorker {
   private joints: MobJoints = {};
   private materials: THREE.Material[] = [];
   private geometries: THREE.BufferGeometry[] = [];
+  private textures: THREE.Texture[] = [];
 
   private homeX: number;
   private floorY: number;
@@ -63,6 +71,7 @@ export class OfficeWorker {
     proto.joints = {};
     proto.materials = [];
     proto.geometries = [];
+    proto.textures = [];
     proto.build(LOOKS[grade]);
     proto.body.name = "monsterSkinBody";
     proto.body.userData.officeRig = { joints: proto.joints, time: 0, phase: 0, move: 0, run: 0 };
@@ -94,7 +103,7 @@ export class OfficeWorker {
   private talkW = 0;
   private seated: boolean;
 
-  constructor(opts: { name: string; grade: EmployeeGrade; x: number; z: number; floorY: number; seed: number; seated: boolean }) {
+  constructor(opts: { name: string; grade: EmployeeGrade; x: number; z: number; floorY: number; seed: number; seated: boolean; programmer?: boolean }) {
     this.name = opts.name;
     this.homeX = opts.x;
     this.floorY = opts.floorY;
@@ -103,7 +112,7 @@ export class OfficeWorker {
     this.targetX = opts.x;
     this.time = this.random() * 20;
     this.seated = opts.seated;
-    this.build(LOOKS[opts.grade]);
+    this.build(LOOKS[opts.grade], opts.programmer ?? false);
     this.group.position.set(opts.x, opts.floorY, opts.z);
     if (this.seated) this.heading = Math.PI;
   }
@@ -138,15 +147,16 @@ export class OfficeWorker {
   }
 
   /** Office clothes over a plain humanoid rig (same joint names as the monsters' bipeds). */
-  private build(look: (typeof LOOKS)[EmployeeGrade]) {
-    const suit = this.mat(look.suit, 0.75);
-    const shirt = this.mat(look.shirt, 0.85);
+  private build(look: (typeof LOOKS)[EmployeeGrade], programmer = false) {
+    const suit = this.mat(programmer ? 0x2b3440 : look.suit, 0.75); // programmers: jeans
+    const shirt = programmer ? this.tee() : this.mat(look.shirt, 0.85);
     const tieMat = this.mat(look.tie, 0.6);
     const skin = this.mat(0xb98268, 0.9);
     const hair = this.mat(look.hair, 0.95);
     const shoe = this.mat(0x141414, 0.5);
     const badge = this.mat(0xf1f1ea, 0.4);
-    const torsoMat = look.jacket ? suit : shirt;
+    const jacket = look.jacket && !programmer;
+    const torsoMat = jacket ? suit : shirt;
     this.group.add(this.body);
 
     // Legs: hip -> knee -> shoe (hips at 0.9 m)
@@ -163,11 +173,16 @@ export class OfficeWorker {
     const spine = this.joint("spine", 0, 0.9, 0, this.body);
     this.mesh(new THREE.CylinderGeometry(0.2, 0.18, 0.2, 8), suit, 0, 0.02, 0, spine); // hips/belt line
     this.mesh(new THREE.CylinderGeometry(0.22, 0.19, 0.55, 8), torsoMat, 0, 0.38, 0, spine);
-    if (look.jacket) {
+    if (jacket) {
       // Shirt front showing between the lapels
       this.mesh(new THREE.BoxGeometry(0.14, 0.4, 0.04), shirt, 0, 0.43, 0.18, spine);
     }
-    this.mesh(new THREE.BoxGeometry(0.05, 0.34, 0.02), tieMat, 0, 0.42, 0.205, spine);
+    if (programmer) {
+      // The "</>" print on the tee
+      this.mesh(new THREE.BoxGeometry(0.17, 0.12, 0.01), this.logo(), 0, 0.46, 0.205, spine);
+    } else {
+      this.mesh(new THREE.BoxGeometry(0.05, 0.34, 0.02), tieMat, 0, 0.42, 0.205, spine);
+    }
     this.mesh(new THREE.BoxGeometry(0.08, 0.1, 0.015), badge, -0.12, 0.47, 0.2, spine);
 
     // Arms: shoulder -> elbow -> hand
@@ -176,7 +191,7 @@ export class OfficeWorker {
       const arm = this.joint(`arm${n}`, side * 0.26, 0.6, 0, spine);
       this.mesh(new THREE.CylinderGeometry(0.06, 0.055, 0.3, 7), torsoMat, 0, -0.15, 0, arm);
       const fore = this.joint(`fore${n}`, 0, -0.3, 0, arm);
-      this.mesh(new THREE.CylinderGeometry(0.052, 0.047, 0.27, 7), torsoMat, 0, -0.135, 0, fore);
+      this.mesh(new THREE.CylinderGeometry(0.052, 0.047, 0.27, 7), programmer ? skin : torsoMat, 0, -0.135, 0, fore); // T-shirt: bare forearms
       this.mesh(new THREE.SphereGeometry(0.05, 7, 6), skin, 0, -0.3, 0.01, fore);
     }
 
@@ -193,6 +208,31 @@ export class OfficeWorker {
     this.mesh(eyeGeo, eyeMat, 0.05, 0.22, 0.13, head);
     const jaw = this.joint("jaw", 0, 0.14, 0.1, head);
     this.mesh(new THREE.BoxGeometry(0.07, 0.015, 0.02), this.mat(0x5a2a22, 0.9), 0, 0, 0.035, jaw);
+  }
+
+  /** The programmers' orange T-shirt; a touch emissive so it still reads in the dim office. */
+  private tee(): THREE.MeshStandardMaterial {
+    const m = new THREE.MeshStandardMaterial({ color: PROGRAMMER_TEE, roughness: 0.9, emissive: PROGRAMMER_TEE, emissiveIntensity: 0.18 });
+    this.materials.push(m);
+    return m;
+  }
+
+  /** "</>" printed in white on orange, for the front of the tee. */
+  private logo(): THREE.MeshStandardMaterial {
+    const canvas = document.createElement("canvas");
+    canvas.width = 64; canvas.height = 48;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#ff7a1a"; ctx.fillRect(0, 0, 64, 48);
+      ctx.fillStyle = "#ffffff"; ctx.font = "bold 26px monospace"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("</>", 32, 25);
+    }
+    const map = new THREE.CanvasTexture(canvas);
+    map.colorSpace = THREE.SRGBColorSpace;
+    const m = new THREE.MeshStandardMaterial({ map, roughness: 0.9, emissive: PROGRAMMER_TEE, emissiveIntensity: 0.12 });
+    this.textures.push(map);
+    this.materials.push(m);
+    return m;
   }
 
   // -------------------------------------------------------------------------
@@ -312,6 +352,7 @@ export class OfficeWorker {
     scene.remove(this.group);
     this.geometries.forEach((g) => g.dispose());
     this.materials.forEach((m) => m.dispose());
+    this.textures.forEach((t) => t.dispose());
   }
 }
 

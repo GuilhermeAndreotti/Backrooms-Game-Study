@@ -19,6 +19,7 @@ import { CAR_COLOR_HEX, GARAGE_DIVIDERS, GARAGE_SAFE_RADIUS, GARAGE_FLOORS, GARA
 import { FunWorld } from "./levels/funWorld";
 import { FUN_EXIT, FUN_RECTS, FUN_SPAWN } from "./levels/funLayout";
 import * as Decor from "./LevelDecor";
+import type { OfficeSkyline } from "./officeWindow";
 import * as Fun from "./LevelFunModels";
 import { POOL_FLOOR_Y, WATER_SURFACE_Y, createPoolTileMaterial, createWallTileMaterial, createWaterMaterial } from "./Water";
 import { POOL_ROOM_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./poolroomsPuzzle";
@@ -428,6 +429,7 @@ export class ProceduralMap {
     accessId?: string;
     gx: number;
     gz: number;
+    /** i18n key of their usual line (see meg.line.* / meg.staff.*). */
     dialogue: string;
     seated: boolean;
   }[] = [];
@@ -1769,12 +1771,20 @@ export class ProceduralMap {
     this.rippleGeo = new THREE.RingGeometry(0.01, 0.1, 16);
     this.rippleGeo.rotateX(-Math.PI / 2);
 
+    // Water, not metal: no level has an environment map, so the old metallic
+    // puddle (metalness 0.4) reflected nothing and rendered nearly black. A
+    // thin, mostly clear film tinted like the floor it sits on, glossy enough
+    // to catch the ceiling lights, with a soft edge.
     this.puddleMaterial = new THREE.MeshStandardMaterial({
-      color: 0x3d321d,      // swampy dark yellowish brown
-      roughness: 0.1,       // super glossy/wet!
-      metalness: 0.4,       // reflective/shiny
+      color: this.level === 9 ? 0x8a929a : 0x9a8d68,
+      roughness: 0.06,
+      metalness: 0.0,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.38,
+      depthWrite: false,
+      alphaMap: this.puddleAlphaMap(),
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
     });
 
     this.leakStainMaterial = new THREE.MeshBasicMaterial({
@@ -2263,16 +2273,66 @@ export class ProceduralMap {
     const seniorId = nextId();
     const plenoId = nextId();
     const juniorId = nextId();
+    const programmers = this.drawLevel4Programmers();
+    const [senior, pleno, junior] = programmers;
+    // Lines are i18n keys, read with t() when the dialogue opens ({id} = accessId);
+    // programmers have a feminine and a masculine variant (".f" / ".m").
+    const line = (grade: string, p: { female: boolean }) => `meg.line.${grade}.${p.female ? "f" : "m"}`;
     this.level4Employees = [
-      { name: "Marina Alves", grade: "junior", role: "programmer", accessId: juniorId, gx: 6, gz: 6, seated: true, dialogue: `Se você precisa sair, anote meu ID de programadora junior: ${juniorId}. Ele vem por último.` },
-      { name: "Rafael Costa", grade: "pleno", role: "programmer", accessId: plenoId, gx: 7, gz: 20, seated: true, dialogue: `Meu ID de programador pleno é ${plenoId}. A porta verifica a senioridade, não a pressa.` },
-      { name: "Helena Duarte", grade: "senior", role: "programmer", accessId: seniorId, gx: 39, gz: 7, seated: true, dialogue: `Acesso de programador senior: ${seniorId}. Digite este primeiro, depois os IDs do pleno e do junior.` },
-      { name: "Diego Moura", grade: "junior", role: "staff", gx: 18, gz: 18, seated: true, dialogue: "A Base Omega ainda usa esta ala. Se precisar de água ou abrigo, a recepção ajuda." },
-      { name: "Lia Ramos", grade: "pleno", role: "staff", gx: 22, gz: 18, seated: true, dialogue: "Os corredores do sul parecem iguais, mas a porta de acesso fica longe daqui. Continue explorando." },
-      { name: "Caio Nunes", grade: "junior", role: "staff", gx: 26, gz: 23, seated: true, dialogue: "Estamos catalogando relatos de níveis instáveis. Não bloqueie as passagens entre as mesas." },
-      { name: "Bruna Reis", grade: "pleno", role: "staff", gx: 30, gz: 28, seated: true, dialogue: "A iluminação é estável na sala da MEG. Nos anexos, o silêncio costuma ser mais alto." },
-      { name: "Otavio Lima", grade: "senior", role: "staff", gx: 31, gz: 5, seated: false, dialogue: "A sala principal é segura, mas não é a saída. Procure a porta de controle no fim da ala." },
+      { name: junior.name, grade: "junior", role: "programmer", accessId: juniorId, gx: junior.gx, gz: junior.gz, seated: true, dialogue: line("junior", junior) },
+      { name: pleno.name, grade: "pleno", role: "programmer", accessId: plenoId, gx: pleno.gx, gz: pleno.gz, seated: true, dialogue: line("pleno", pleno) },
+      { name: senior.name, grade: "senior", role: "programmer", accessId: seniorId, gx: senior.gx, gz: senior.gz, seated: true, dialogue: line("senior", senior) },
+      { name: "Diego Moura", grade: "junior", role: "staff", gx: 18, gz: 18, seated: true, dialogue: "meg.staff.0" },
+      { name: "Lia Ramos", grade: "pleno", role: "staff", gx: 22, gz: 18, seated: true, dialogue: "meg.staff.1" },
+      { name: "Caio Nunes", grade: "junior", role: "staff", gx: 26, gz: 23, seated: true, dialogue: "meg.staff.2" },
+      { name: "Bruna Reis", grade: "pleno", role: "staff", gx: 30, gz: 28, seated: true, dialogue: "meg.staff.3" },
+      { name: "Otavio Lima", grade: "senior", role: "staff", gx: 31, gz: 5, seated: false, dialogue: "meg.staff.4" },
     ];
+  }
+
+  /**
+   * Abandoned Office: who the three programmers are and where they sit, drawn
+   * from the seed (so it changes every run but is the same for the whole
+   * room). Returned in seniority order: senior, pleno, junior. Each one gets
+   * a different side office, never the central operations floor.
+   */
+  private drawLevel4Programmers(): { name: string; female: boolean; gx: number; gz: number }[] {
+    const rng = new SeededRandom(this.seed ^ 0x50524f47);
+    const NAMES: [string, boolean][] = [
+      ["Marina Alves", true], ["Rafael Costa", false], ["Helena Duarte", true], ["Bruno Teixeira", false],
+      ["Camila Rocha", true], ["Thiago Martins", false], ["Juliana Freitas", true], ["Lucas Pereira", false],
+      ["Fernanda Lopes", true], ["André Carvalho", false], ["Patrícia Gomes", true], ["Gustavo Ribeiro", false],
+      ["Beatriz Souza", true], ["Felipe Andrade", false], ["Larissa Pinto", true], ["Mateus Barros", false],
+      ["Renata Castro", true], ["Vinícius Melo", false], ["Aline Cardoso", true], ["Eduardo Farias", false],
+    ];
+    // Seats in each side office (cell + the cell behind the chair stay walkable);
+    // clear of the office dividers, doorways, meeting tables and the exit.
+    const OFFICES: [number, number][][] = [
+      [[6, 6], [9, 4], [10, 8], [5, 8]],      // reception
+      [[16, 8], [21, 4], [22, 8]],            // west annex
+      [[39, 7], [42, 4], [29, 9], [33, 9]],   // north wing
+      [[5, 18], [10, 18], [5, 24], [10, 24]], // west offices
+      [[40, 18], [43, 24], [40, 24]],         // east offices
+      [[4, 33], [5, 41], [10, 38], [11, 42]], // southwest block
+      [[19, 41], [24, 43], [27, 40]],         // south hall
+      [[36, 33], [37, 42], [41, 33]],         // southeast block
+    ];
+    const open = (x: number, z: number) => this.grid[x]?.[z] !== undefined && this.grid[x][z] !== CellType.SOLID;
+    const shuffle = <T,>(list: T[]) => {
+      for (let i = list.length - 1; i > 0; i--) {
+        const j = Math.floor(rng.next() * (i + 1));
+        [list[i], list[j]] = [list[j], list[i]];
+      }
+      return list;
+    };
+    const names = shuffle([...NAMES]);
+    const offices = shuffle(OFFICES.map((seats) => seats.filter(([x, z]) => open(x, z) && open(x, z + 1))).filter((seats) => seats.length > 0));
+    return [0, 1, 2].map((i) => {
+      const seats = offices[i % offices.length];
+      const [gx, gz] = seats[Math.floor(rng.next() * seats.length)];
+      const [name, female] = names[i];
+      return { name, female, gx, gz };
+    });
   }
 
   // Helper method to carve a side maze of winding alleys
@@ -3965,6 +4025,27 @@ export class ProceduralMap {
     return this.wetSpills.has(`${gx},${gz}`);
   }
 
+  /** Soft, irregular edge for the floor puddles (alpha only: white = water). */
+  private puddleAlphaMap(): THREE.Texture {
+    const S = 128;
+    const canvas = document.createElement("canvas");
+    canvas.width = S; canvas.height = S;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#000"; ctx.fillRect(0, 0, S, S);
+      const rng = new SeededRandom(0x9dd1e);
+      for (let i = 0; i < 7; i++) {
+        const x = S / 2 + (rng.next() - 0.5) * 34, y = S / 2 + (rng.next() - 0.5) * 34, r = 22 + rng.next() * 22;
+        const grad = ctx.createRadialGradient(x, y, r * 0.35, x, y, r);
+        grad.addColorStop(0, "rgba(255,255,255,1)"); grad.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    this.sharedTextures.push(tex);
+    return tex;
+  }
+
   private decorKit: Decor.DecorKit | null = null;
 
   private levelDecorKit(): Decor.DecorKit {
@@ -3974,6 +4055,92 @@ export class ProceduralMap {
       wallTile: this.wallMaterial,
       track: (texture) => { this.sharedTextures.push(texture); },
     };
+  }
+
+  /**
+   * Abandoned Office: scrolls the rain on every window and lights their sky
+   * with `flash` (0..1) during a lightning strike. Cheap: the windows share
+   * their materials, so this only touches three of them.
+   */
+  public updateOfficeWindows(time: number, flash: number, boltAz: number) {
+    if (this.level !== 9 || !this.decorKit) return;
+    Decor.animateOfficeWindows(this.decorKit, time, flash, boltAz);
+    Decor.setOfficeWindowsOutlook(this.decorKit, {
+      far: this.officeSkyline,
+      mass: this.officeMassTexture(),
+      gridSize: this.gridSize,
+      cellSize: this.cellSize,
+    });
+  }
+
+  /** Set before the windows may exist (cells are built as the player nears them). */
+  private officeSkyline: OfficeSkyline | null = null;
+
+  /**
+   * Abandoned Office: the tower's outline, one flag per cell. It follows the
+   * rooms: the walkable cells, closed by two cells (a Chebyshev dilation then
+   * erosion), so the solid between neighbouring rooms is building while
+   * gaps of five cells or more stay open as recesses between wings. Cells
+   * off it are outside, 200 m up.
+   */
+  private officeMass: Uint8Array | null = null;
+  private officeMassTex: THREE.DataTexture | null = null;
+
+  private officeMassMask(): Uint8Array {
+    if (this.officeMass) return this.officeMass;
+    const gs = this.gridSize;
+    const R = 2;
+    const idx = (x: number, z: number) => z * gs + x;
+    const walk = new Uint8Array(gs * gs);
+    for (let x = 0; x < gs; x++) for (let z = 0; z < gs; z++) walk[idx(x, z)] = this.grid[x][z] !== CellType.SOLID ? 1 : 0;
+    const morph = (src: Uint8Array, dilate: boolean) => {
+      const out = new Uint8Array(gs * gs);
+      for (let x = 0; x < gs; x++) for (let z = 0; z < gs; z++) {
+        let v = dilate ? 0 : 1;
+        for (let dx = -R; dx <= R && v === (dilate ? 0 : 1); dx++) for (let dz = -R; dz <= R; dz++) {
+          const nx = x + dx, nz = z + dz;
+          const n = nx < 0 || nz < 0 || nx >= gs || nz >= gs ? 0 : src[idx(nx, nz)];
+          if (dilate && n) { v = 1; break; }
+          if (!dilate && !n) { v = 0; break; }
+        }
+        out[idx(x, z)] = v;
+      }
+      return out;
+    };
+    const closed = morph(morph(walk, true), false);
+    for (let i = 0; i < closed.length; i++) closed[i] |= walk[i];
+    return (this.officeMass = closed);
+  }
+
+  /** Whether cell (gx, gz) is outside the office tower (off the grid counts as outside). */
+  public isOfficeExterior(gx: number, gz: number): boolean {
+    const gs = this.gridSize;
+    if (gx < 0 || gz < 0 || gx >= gs || gz >= gs) return true;
+    return this.officeMassMask()[gz * gs + gx] === 0;
+  }
+
+  /** The tower outline as a texture for the window shader (texel (gx, gz)). */
+  private officeMassTexture(): THREE.DataTexture {
+    if (this.officeMassTex) return this.officeMassTex;
+    const mask = this.officeMassMask();
+    const data = new Uint8Array(mask.length);
+    for (let i = 0; i < mask.length; i++) data[i] = mask[i] ? 255 : 0;
+    const tex = new THREE.DataTexture(data, this.gridSize, this.gridSize, THREE.RedFormat, THREE.UnsignedByteType);
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    tex.needsUpdate = true;
+    this.sharedTextures.push(tex);
+    return (this.officeMassTex = tex);
+  }
+
+  /** The room seed this map was generated from. */
+  public get mapSeed(): number {
+    return this.seed;
+  }
+
+  /** Abandoned Office: the 3D city the windows look out on (rendered once by the engine). */
+  public setOfficeSkyline(skyline: OfficeSkyline | null) {
+    this.officeSkyline = skyline;
   }
 
   /** Level FUN's world (geometry, props, gates); null on every other level. */
@@ -4072,6 +4239,11 @@ export class ProceduralMap {
     }
 
     const walkable = (x: number, z: number) => !isSolid(x, z);
+    // Level 4: every wall facing out of the tower is a window, and only those.
+    const exterior = (dx: number, dz: number) => this.level === 9 && isSolid(gx + dx, gz + dz) && this.isOfficeExterior(gx + dx, gz + dz);
+    if (this.level === 9 && !(gx === this.level4DoorX && gz === this.level4DoorZ) && !(gx === this.abandonedSecretX && gz === this.abandonedSecretZ)) {
+      for (const [dx, dz, rot] of sides) if (exterior(dx, dz)) place(Decor.officeWindow(kit, half), rot);
+    }
     if (gx <= 3 && gz <= 3) return; // spawn / entrance
     const corridor = cellType === CellType.CORRIDOR;
     if (corridor) {
@@ -4107,7 +4279,7 @@ export class ProceduralMap {
     if (this.level4Employees.some((e) => Math.abs(e.gx - gx) <= 1 && Math.abs(e.gz - gz) <= 1)) return;
     if ((gx === 5 && gz === 5) || (gx === 18 && gz === 5) || (gx === 31 && gz === 5)) return; // meeting tables
     if (new SeededRandom(this.seed + gx * 149 + gz * 211).next() < LEVEL4_WATER_CHANCE) return; // an almond water bottle lies here
-    const side = pickSide((dx, dz) => isSolid(gx + dx, gz + dz));
+    const side = pickSide((dx, dz) => isSolid(gx + dx, gz + dz) && !exterior(dx, dz)); // windows keep their wall
     if (side === null) {
       if (!corridor && rng.next() < 0.14) {
         const marks = Decor.carpetIndents(kit, rng);
