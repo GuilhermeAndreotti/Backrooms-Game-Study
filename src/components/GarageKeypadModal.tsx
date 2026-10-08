@@ -40,15 +40,22 @@ export const GarageKeypadModal: React.FC<GarageKeypadModalProps> = ({ colors, in
     return -1;
   };
 
+  // The parent hands in a fresh onClose on nearly every render (stamina, sanity and the
+  // radar all update the HUD), so it is read through a ref: depending on it here re-ran
+  // this effect mid-typing and snapped the cursor back to the first box.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  // Focus the first open digit once, when the panel opens.
   useEffect(() => {
     refs.current[firstOpen()]?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onClose]);
+  }, []);
 
   const set = (i: number, raw: string) => {
     const digit = raw.replace(/\D/g, "").slice(-1);
@@ -73,7 +80,7 @@ export const GarageKeypadModal: React.FC<GarageKeypadModalProps> = ({ colors, in
     setGained(now - before);
     if (result.ok) {
       setStatus("done");
-      setTimeout(onClose, 900);
+      setTimeout(() => onCloseRef.current(), 900);
       return;
     }
     // Only the wrong ones are wiped.
@@ -111,6 +118,7 @@ export const GarageKeypadModal: React.FC<GarageKeypadModalProps> = ({ colors, in
                   value={isLocked ? locked[i]! : values[i]}
                   disabled={isLocked}
                   onChange={(e) => set(i, e.target.value)}
+                  onFocus={(e) => e.target.select()}
                   onKeyDown={(e) => {
                     if (e.key === "Backspace" && values[i] === "") {
                       for (let k = i - 1; k >= 0; k--) if (locked[k] === null) { refs.current[k]?.focus(); break; }
