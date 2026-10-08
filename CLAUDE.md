@@ -66,7 +66,7 @@ Each client simulates its own physics/collision (`PlayerController.ts`) and send
 
 ### Networking message types
 
-The client/server protocol is a flat `{ type: ... }` JSON message set (join, update, players_snapshot, entities, world_event, box_push, levelg_code, entities_relocate, level_transition_request/level_transition, start_game, ball/ball_kick, chess_sit/chess_stand/chess_move/chess_resign/chess_new/chess_sync (server-validated lobby chess, `src/shared/chess.ts`), died, room_reset, ping/pong, chat). When adding a new message type, add server-side validation/sanitization for every field the client controls (see the existing `sanitize*`/`gridInt`/`finiteNumber` helpers in `server.ts`) — the server trusts nothing from a client message body.
+The client/server protocol is a flat `{ type: ... }` JSON message set (join, update, players_snapshot, entities, world_event, box_push, levelg_code, entities_relocate, level_transition_request/level_transition, start_game, ball/ball_kick, chess_sit/chess_stand/chess_move/chess_resign/chess_new/chess_sync (server-validated lobby chess, `src/shared/chess.ts`), look/player_look (lobby wardrobe: suit colour, face, accessories from `src/shared/outfit.ts`), died, room_reset, ping/pong, chat). When adding a new message type, add server-side validation/sanitization for every field the client controls (see the existing `sanitize*`/`gridInt`/`finiteNumber` helpers in `server.ts`) — the server trusts nothing from a client message body.
 
 ### Other notable pieces
 

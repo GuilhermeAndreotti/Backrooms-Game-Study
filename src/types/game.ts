@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { Outfit } from "../shared/outfit";
+
 export interface RemotePlayer {
   id: string;
   name: string;
@@ -16,8 +18,10 @@ export interface RemotePlayer {
   level?: number;
   /** Hazmat suit colour chosen in the customization screen (hex string). */
   suitColor?: string;
-  /** Hand-drawn helmet face (see utils/face.ts). Only in join/roster messages. */
+  /** Hand-drawn helmet face (see utils/face.ts). Only in join/roster/player_look messages. */
   face?: string;
+  /** Wardrobe accessories (see shared/outfit.ts). Only in join/roster/player_look messages. */
+  outfit?: Outfit;
   /** Died and is spectating (server-authoritative). */
   dead?: boolean;
   /** Reached the current exit and is waiting for the other living explorers. */
@@ -52,6 +56,10 @@ export const SUIT_COLORS: string[] = [
   '#b0243a', // warning red
   '#c9c2b0', // bleached grey
   '#1c1c22', // blackout
+  '#e07fa8', // party pink (Level FUN)
+  '#6b4a2b', // cardboard brown
+  '#7fb8d9', // poolrooms blue
+  '#9bc23c', // toxic lime
 ];
 
 export const DEFAULT_SUIT_COLOR = SUIT_COLORS[0];
@@ -92,6 +100,8 @@ export interface GameSettings {
   suitColor: string;
   /** Hand-drawn helmet face (see utils/face.ts); EMPTY_FACE for none. */
   face: string;
+  /** Accessories picked at the lobby wardrobe (see shared/outfit.ts). */
+  outfit: Outfit;
 }
 
 export enum ConnectionPhase {
