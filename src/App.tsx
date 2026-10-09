@@ -1052,17 +1052,20 @@ export default function App() {
                         return [...prev, lore];
                       });
                     },
-                  }
+                  },
+                  // A room waiting in its lobby is built as the lobby straight away;
+                  // mid-expedition joins still catch up via transitionToLevel below.
+                  roomLevel === LOBBY_LEVEL ? LOBBY_LEVEL : 0
                 );
                 engineRef.current.secretRoutesEnabled = () => roomConfigRef.current.secretRoutes !== false;
 
                 // The room had already moved past Level 0 by the time we joined
                 // (the rest of the group found an exit earlier) — catch up to that
                 // same level instead of spawning alone back on Level 0.
-                if (roomLevel > 0) {
+                if (roomLevel > 0 && roomLevel !== LOBBY_LEVEL) {
                   engineRef.current.transitionToLevel(roomLevel, seed, settings);
-                  setCurrentLevel(roomLevel);
                 }
+                setCurrentLevel(roomLevel);
                 if (roomLevel === POOLROOMS_LEVEL && poolroomsState) {
                   engineRef.current.applyPoolroomsState(poolroomsState);
                 }
@@ -1092,7 +1095,7 @@ export default function App() {
                   setLoadingProgress(Math.round(p * 100));
                 }).then(() => {
                   setLoadingProgress(100);
-                  unlockAchievement("first_steps");
+                  if (roomLevel === 0) unlockAchievement("first_steps");
                   setTimeout(() => {
                     setLoadingMap(false);
                     if (engineRef.current && engineRef.current.player) {
@@ -1139,6 +1142,8 @@ export default function App() {
               console.log(`Group noclipped into Level ${nextLevel}!`);
               if (nextLevel === 1) unlockAchievement("noclip_master");
             }
+            // The expedition leaving the lobby for Level 0 is the player's first step in.
+            if (nextLevel === 0) unlockAchievement("first_steps");
 
             // Poolrooms completion is the main-route ending. The server resets
             // the room to its lobby, but this client should see the existing

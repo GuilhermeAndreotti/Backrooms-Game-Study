@@ -538,9 +538,12 @@ export class GameEngine {
     settings: GameSettings,
     seed: number,
     socket: WebSocket | null,
-    callbacks: GameEngineCallbacks
+    callbacks: GameEngineCallbacks,
+    /** Level the world is first built on (the lobby when joining a fresh room), so no throwaway Level 0 gets generated first. */
+    initialLevel = 0
   ) {
     this.containerID = containerID;
+    this.level = initialLevel;
     const el = document.getElementById(containerID);
     if (!el) throw new Error(`Canvas container #${containerID} not found`);
     this.container = el;
