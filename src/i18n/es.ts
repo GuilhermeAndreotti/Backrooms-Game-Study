@@ -11,7 +11,7 @@ export const es: Record<MessageKey, string> = {
   "radar.title.13": "LEVEL 5: TERROR HOTEL",
   "hotel.bellman": "The Bellman",
   "hotel.deathmoth": "Deathmoth",
-  "hotel.receptionClue": "Cuatro retratos, de izquierda a derecha.\nLos huéspedes guardan sus números.\nLa llave de 512 espera en esta caja.",
+  "hotel.hud.code": "CÓDIGO DE RECEPCIÓN",
   "hotel.gallery": "I → II → III → IV · GALERÍA DE HUÉSPEDES",
   "hotel.tableClue": "Faltan cuatro vientos en la mesa.\nCada ficha revela la siguiente puerta.\nTraigan los vientos de vuelta.",
   "hotel.maintenanceClue": "MANTENIMIENTO · PRESSURE\nLOW · MEDIUM · HIGH\nCircuitos A / B / C\nConsulten las placas de los medidores.\nSeleccionen la presión y confirmen.",

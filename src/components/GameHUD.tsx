@@ -4,7 +4,7 @@
  */
 
 import { t, useLanguage } from "../i18n";
-import { ABANDONED_OFFICE_LEVEL, FUN_LEVEL, LEVEL_G, SPACE_LEVEL } from "../game/levels/constants";
+import { ABANDONED_OFFICE_LEVEL, FUN_LEVEL, HOTEL_LEVEL, LEVEL_G, SPACE_LEVEL } from "../game/levels/constants";
 import React, { useState, useEffect, useRef } from "react";
 import { Flashlight, ShieldAlert, Backpack, Trophy, Mic, MicOff } from "lucide-react";
 import { ChatMessage, RemotePlayer } from "../types/game";
@@ -198,6 +198,11 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
           {level === SPACE_LEVEL && objective && (
             <div className="mt-1 ml-1 max-w-md rounded border border-cyan-500/40 bg-black/65 px-2 py-1 font-mono text-[10px] font-bold uppercase leading-snug tracking-widest text-cyan-100">
               <span className="text-cyan-400">{t("fun.hud.objective")}:</span> {objective}
+            </div>
+          )}
+          {level === HOTEL_LEVEL && objective && (
+            <div className="mt-1 ml-1 max-w-md rounded border border-[#c9a65e]/50 bg-black/65 px-2 py-1 font-serif text-[12px] font-bold leading-snug tracking-wider text-[#e5d5af]">
+              {objective}
             </div>
           )}
           {level === ABANDONED_OFFICE_LEVEL && megProgress && (

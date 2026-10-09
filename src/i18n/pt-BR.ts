@@ -9,7 +9,7 @@ export const ptBR = {
   "radar.title.13": "LEVEL 5: TERROR HOTEL",
   "hotel.bellman": "The Bellman",
   "hotel.deathmoth": "Deathmoth",
-  "hotel.receptionClue": "Quatro retratos, da esquerda à direita.\nOs hóspedes guardam seus números.\nA chave de 512 espera nesta caixa.",
+  "hotel.hud.code": "CÓDIGO DA RECEPÇÃO",
   "hotel.gallery": "I → II → III → IV · GALERIA DOS HÓSPEDES",
   "hotel.tableClue": "Quatro ventos faltam à mesa.\nUma peça revela a próxima porta.\nTragam os ventos de volta.",
   "hotel.maintenanceClue": "MANUTENÇÃO · PRESSURE\nLOW · MEDIUM · HIGH\nCircuitos A / B / C\nConsulte as placas dos medidores.\nSelecione a pressão e confirme.",

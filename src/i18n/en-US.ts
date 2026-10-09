@@ -11,7 +11,7 @@ export const enUS: Record<MessageKey, string> = {
   "radar.title.13": "LEVEL 5: TERROR HOTEL",
   "hotel.bellman": "The Bellman",
   "hotel.deathmoth": "Deathmoth",
-  "hotel.receptionClue": "Four portraits, left to right.\nThe guests keep their numbers.\nThe key to 512 waits in this box.",
+  "hotel.hud.code": "RECEPTION CODE",
   "hotel.gallery": "I → II → III → IV · GUEST GALLERY",
   "hotel.tableClue": "Four winds are missing.\nEach tile reveals the next door.\nBring the winds back to the table.",
   "hotel.maintenanceClue": "MAINTENANCE · PRESSURE\nLOW · MEDIUM · HIGH\nCircuits A / B / C\nRead the gauge service plates.\nSelect a pressure and confirm.",

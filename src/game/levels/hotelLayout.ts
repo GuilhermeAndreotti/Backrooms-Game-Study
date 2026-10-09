@@ -8,11 +8,15 @@ export const HOTEL_ROOMS = [501, 507, 503, 510, 502, 509, 506, 504, 508, 511, 50
 export const HOTEL_GUEST_ROOMS = HOTEL_ROOMS.map((number, i) => {
   const column = i % 4, row = Math.floor(i / 4), gx = 12 + column * 5;
   const gz = row === 0 ? 3 : row === 1 ? 9 : 16;
-  return { number, gx, gz, doorX: gx, doorZ: row === 0 ? 4 : row === 1 ? 6 : 13 };
+  // Bedroom bounds. The last middle-row room stops at x=27: x=28 would sit
+  // flush against the east corridor (x=29) and open the room's whole side.
+  const z1 = row === 0 ? 2 : row === 1 ? 7 : 14, z2 = row === 0 ? 3 : row === 1 ? 10 : 17;
+  const x2 = row === 1 ? Math.min(gx + 1, 27) : gx + 1;
+  return { number, gx, gz, x1: gx - 1, z1, x2, z2, doorX: gx, doorZ: row === 0 ? 4 : row === 1 ? 6 : 13 };
 });
 export const HOTEL_RECTS: readonly HotelRect[] = [
   rect(2, 2, 8, 7), rect(9, 5, 29, 5), rect(9, 6, 9, 12), rect(29, 6, 29, 12), rect(9, 12, 28, 12),
-  ...HOTEL_GUEST_ROOMS.flatMap((r, i) => [rect(r.gx - 1, i < 4 ? 2 : i < 8 ? 7 : 14, r.gx + 1, i < 4 ? 3 : i < 8 ? 10 : 17), rect(r.doorX, r.doorZ, r.doorX, r.doorZ)]),
+  ...HOTEL_GUEST_ROOMS.flatMap(r => [rect(r.x1, r.z1, r.x2, r.z2), rect(r.doorX, r.doorZ, r.doorX, r.doorZ)]),
   rect(30, 10, 31, 10), rect(32, 5, 43, 16, "beverly"),
   // Four playable alcoves. Floor/ceiling doors elsewhere are scenery.
   rect(34, 4, 34, 4, "beverly"), rect(33, 2, 35, 3, "beverly"),

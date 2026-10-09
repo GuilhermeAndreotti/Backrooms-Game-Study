@@ -21,7 +21,7 @@ interface HotelHost {
   notify(message: string): void;
   escape(): void;
 }
-type Interaction = { prompt: string; action?: HotelAction; panel?: HotelPanel; text?: string; x: number; z: number };
+type Interaction = { prompt: string; action?: HotelAction; panel?: HotelPanel; text?: string; card?: number; x: number; z: number };
 
 /** Only the world authority directs appearances; puzzles always await server snapshots. */
 export class HotelDirector {
@@ -34,6 +34,8 @@ export class HotelDirector {
   private escaped = false;
   panel: HotelPanel | null = null;
   private flickerUntil = 0;
+  /** Guest cards (room numbers) this player has read or walked up to. */
+  private foundCards = new Set<number>();
 
   constructor(readonly world: HotelWorld, private host: HotelHost) { host.sync(); }
   get now() { return Date.now() + this.clockOffset; }
@@ -68,7 +70,7 @@ export class HotelDirector {
     const options: Interaction[] = [];
     if (!s.key) options.push({ ...HOTEL_RECEPTION, prompt: t(s.boxOpen ? "hotel.takeKey" : "hotel.openBox"), ...(s.boxOpen ? { action: { kind: "key" } as HotelAction } : { panel: { kind: "code" } as HotelPanel }) });
     if (!s.beverlyOpen) options.push({ ...hotelCenter(HOTEL_BEVERLY_DOOR.gx, HOTEL_BEVERLY_DOOR.gz), prompt: t(s.key ? "hotel.unlock512" : "hotel.locked512"), ...(s.key ? { action: { kind: "beverly" } as HotelAction } : { text: t("hotel.locked512") }) });
-    for (const card of this.world.puzzle.cards) options.push({ x: card.gx * 4 + 3.25, z: card.gz * 4 + 2, prompt: t("hotel.readCard"), text: `ROOM ${card.number} · ${card.suit} · ${t(`hotel.digit.${card.digit}`)} (${card.digit})` });
+    for (const card of this.world.puzzle.cards) options.push({ x: card.gx * 4 + 3.25, z: card.gz * 4 + 2, prompt: t("hotel.readCard"), card: card.number, text: `ROOM ${card.number} · ${card.suit} · ${t(`hotel.digit.${card.digit}`)} (${card.digit})` });
     if (s.beverlyOpen && s.collected < 4) {
       const slot = this.world.puzzle.alcoves[s.collected], door = HOTEL_ALCOVES[slot];
       if (!(s.doors & (1 << slot))) options.push({ ...hotelCenter(door.gx, door.gz), prompt: t("hotel.openTileDoor", { symbol: HOTEL_TILES[s.collected] }), action: { kind: "door", index: slot } });
@@ -85,7 +87,17 @@ export class HotelDirector {
     if (target.panel) { this.panel = target.panel; return "panel"; }
     if (target.action) this.host.send(target.action, this.world.state.epoch);
     if (target.text) this.host.notify(target.text);
+    if (target.card !== undefined) this.foundCards.add(target.card);
     return "done";
+  }
+  /** Reception code as found so far: each slot's suit (from the portraits), its digit once its card is found. */
+  objective(): string | null {
+    if (!this.world.ready || this.world.state.boxOpen) return null;
+    const { cards, order } = this.world.puzzle;
+    return `${t("hotel.hud.code")}: ` + order.map((i, slot) => {
+      const card = cards[i];
+      return `${["I", "II", "III", "IV"][slot]} ${card.suit} ${this.foundCards.has(card.number) ? card.digit : "?"}`;
+    }).join(" · ");
   }
   submit(action: HotelAction) { if (this.host.player().alive && this.world.ready) this.host.send(action, this.world.state.epoch); }
 
@@ -156,6 +168,10 @@ export class HotelDirector {
       this.eventPlayed = this.runtime.event;
     }
     if (s.stairAt && now >= s.stairAt && !this.stairSound) { this.stairSound = true; this.host.audio.setHotelSilence(false); this.host.audio.playHotelSound("door"); }
+    // Walking up to a guest card counts as finding it, no need to press E.
+    if (p.alive && !s.boxOpen) for (const card of this.world.puzzle.cards) {
+      if (!this.foundCards.has(card.number) && this.near(p, { x: card.gx * 4 + 3.25, z: card.gz * 4 + 2 }, 3.5)) this.foundCards.add(card.number);
+    }
     const zone = hotelZone(Math.floor(p.x / 4), Math.floor(p.z / 4)) ?? "hall";
     if (zone === "exit" && s.exitOpen && p.z > 184) this.world.departed = true;
     if (this.world.departed) this.world.departureZ = Math.max(this.world.departureZ, p.z);
@@ -168,7 +184,7 @@ export class HotelDirector {
   }
   atmosphere() {
     const p = this.host.player(), zone = hotelZone(Math.floor(p.x / 4), Math.floor(p.z / 4));
-    return { color: 0xffd8aa, intensity: this.blackout || zone === "exit" ? 0 : zone === "boiler" ? 0.13 : 0.25, fog: zone === "exit" ? 0x000000 : zone === "boiler" ? 0x181510 : 0x160c0c, density: zone === "exit" ? 0.045 : 0.014 };
+    return { color: 0xffd8aa, intensity: this.blackout || zone === "exit" ? 0 : zone === "boiler" ? 0.38 : 0.6, fog: zone === "exit" ? 0x000000 : zone === "boiler" ? 0x2a241a : 0x2b1a16, density: zone === "exit" ? 0.045 : 0.008 };
   }
   canCatch(e: WanderingEntity) {
     if (this.immune || e.type === EntityType.BELLMAN && this.world.bellmanMode !== 2) return false;

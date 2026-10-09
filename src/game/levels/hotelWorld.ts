@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { DecorKit } from "../LevelDecor";
 import type { DynamicLightSource } from "../LightPool";
 import { t } from "../../i18n";
-import { createHotelState, hotelBlocked, hotelPuzzle, HOTEL_SUITS, HOTEL_TILES, type HotelState } from "../../shared/hotel";
+import { createHotelState, hotelBlocked, hotelPuzzle, HOTEL_TILES, type HotelState } from "../../shared/hotel";
 import { HOTEL_ALCOVES, HOTEL_BEVERLY_DOOR, HOTEL_GUEST_ROOMS, HOTEL_RECEPTION, HOTEL_STAIRS, HOTEL_STEAM, HOTEL_TABLE, HOTEL_VALVES, hotelCenter, hotelFloorAt, hotelZone, type HotelZone } from "./hotelLayout";
 
 interface HotelEnv {
@@ -10,7 +10,15 @@ interface HotelEnv {
   registerLight(gx: number, gz: number, x: number, y: number, z: number, color: number, intensity: number, distance: number): DynamicLightSource;
   addObstacle(gx: number, gz: number, x: number, z: number, radius: number): void;
 }
-interface Door { mesh: THREE.Group; gx: number; gz: number; open: number; alcove: number }
+interface Door { mesh: THREE.Group; blank: THREE.Object3D | null; leaves: THREE.Object3D[]; gx: number; gz: number; open: number; alcove: number }
+/**
+ * The four clue portraits, in order: two each on the reception's back wall
+ * (north wall of cells 4,2 and 6,2), flanking the desk so players see them on spawn.
+ */
+const GALLERY = [{ gx: 4, x: -0.9 }, { gx: 4, x: 0.9 }, { gx: 6, x: -0.9 }, { gx: 6, x: 0.9 }];
+const GALLERY_Z = 2;
+/** How far a fully open leaf swings: flat against the wall beside its frame. */
+const DOOR_OPEN_ANGLE = Math.PI * 0.97;
 
 /** A cell-streamed hotel: all assets share the map's geometry/material lifetime. */
 export class HotelWorld {
@@ -77,34 +85,83 @@ export class HotelWorld {
   private cylinder(r: number, h: number, mat: THREE.Material, x = 0, y = 0, z = 0) {
     const m = new THREE.Mesh(this.kit.geo(`hotel_cyl_${r}_${h}`, () => new THREE.CylinderGeometry(r, r, h, 12)), mat); m.position.set(x, y, z); return m;
   }
-  private sign(text: string, w = 2, h = 0.8, paper = false) {
-    const material = this.kit.mat(`hotel_text_${text}_${paper}`, () => {
+  private sign(text: string, w = 2, h = 0.8, paper = false, maxFont = 72) {
+    const material = this.kit.mat(`hotel_text_${text}_${paper}_${maxFont}`, () => {
       const c = document.createElement("canvas"); c.width = 768; c.height = Math.max(192, Math.round(768 * h / w));
       const g = c.getContext("2d")!; g.fillStyle = paper ? "#e5d5af" : "#20120c"; g.fillRect(0, 0, c.width, c.height);
       g.strokeStyle = paper ? "#513824" : "#c9a65e"; g.lineWidth = 8; g.strokeRect(12, 12, c.width - 24, c.height - 24);
       const lines = text.split("\n"); g.fillStyle = g.strokeStyle; g.textAlign = "center"; g.textBaseline = "middle";
-      const size = Math.min(72, (c.height - 35) / lines.length * 0.8); g.font = `${size}px Georgia, serif`;
+      const size = Math.min(maxFont, (c.height - 35) / lines.length * 0.8); g.font = `${size}px Georgia, serif`;
       lines.forEach((line, i) => g.fillText(line, c.width / 2, 20 + (c.height - 40) * (i + 0.5) / lines.length, c.width - 48));
       const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; this.kit.track(tex);
       return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.7, side: THREE.DoubleSide });
     });
     return new THREE.Mesh(this.kit.geo(`hotel_sign_${w}_${h}`, () => new THREE.PlaneGeometry(w, h)), material);
   }
-  private door(label: string, industrial = false) {
-    const g = new THREE.Group();
-    g.add(this.box(2.7, 3.25, 0.16, industrial ? this.metal : this.wood, 0, 1.625));
-    for (const x of [-1.4, 1.4]) g.add(this.box(0.12, 3.5, 0.24, this.brass, x, 1.75));
-    g.add(this.box(2.9, 0.1, 0.24, this.brass, 0, 3.45));
-    for (const y of [0.75, 2.15]) g.add(this.box(2.25, 0.92, 0.08, industrial ? this.metal : this.red, 0, y, 0.12));
-    g.add(this.cylinder(0.065, 0.32, this.brass, 1.02, 1.3, 0.19));
-    const sign = this.sign(label, 1.65, 0.5); sign.position.set(0, 2.8, 0.17); g.add(sign);
-    return g;
+  /**
+   * A real-sized door: brass frame, a number plate on both faces and one or two
+   * leaves on hinge pivots. Leaves swing towards `swing` (+1 = the front, +z).
+   */
+  private door(label: string, { width = 1.1, height = 2.3, double = false, industrial = false, swing = 1 } = {}) {
+    const g = new THREE.Group(), leaves: THREE.Object3D[] = [];
+    for (const s of [-1, 1]) g.add(this.box(0.1, height + 0.1, 0.24, this.brass, s * (width / 2 + 0.05), (height + 0.1) / 2));
+    g.add(this.box(width + 0.2, 0.1, 0.24, this.brass, 0, height + 0.05));
+    const count = double ? 2 : 1, leafW = width / count - 0.02;
+    for (let i = 0; i < count; i++) {
+      const hinge = double && i === 1 ? 1 : -1;
+      const pivot = new THREE.Group(); pivot.position.x = hinge * width / 2;
+      pivot.userData.dir = -hinge * swing; pivot.userData.swing = swing;
+      const leaf = new THREE.Group(); leaf.position.x = -hinge * (leafW / 2 + 0.01);
+      leaf.add(this.box(leafW, height - 0.02, 0.06, industrial ? this.metal : this.wood, 0, height / 2));
+      for (const z of [-0.035, 0.035]) {
+        for (const y of [0.3, 0.72]) leaf.add(this.box(leafW * 0.7, height * 0.3, 0.02, industrial ? this.metal : this.red, 0, height * y, z));
+        leaf.add(this.box(0.07, 0.07, 0.08, this.brass, -hinge * (leafW / 2 - 0.12), 1.05, z * 2));
+      }
+      pivot.add(leaf); g.add(pivot); leaves.push(pivot);
+    }
+    this.swingLeaves(leaves, 0);
+    if (label) for (const side of [1, -1]) {
+      const sign = this.sign(label, Math.min(1.5, width + 0.3), 0.36);
+      sign.position.set(0, height + 0.32, side * 0.13); sign.rotation.y = side > 0 ? 0 : Math.PI; g.add(sign);
+    }
+    return { group: g, leaves };
+  }
+  /** 0 = shut in the frame, 1 = folded back against the wall. */
+  private swingLeaves(leaves: THREE.Object3D[], open: number) {
+    for (const pivot of leaves) {
+      pivot.rotation.y = pivot.userData.dir * open * DOOR_OPEN_ANGLE;
+      pivot.position.z = pivot.userData.swing * (0.04 + 0.09 * Math.min(1, open * 4)); // clear of the wall once open
+    }
+  }
+  /**
+   * A cell-wide wall with a doorway cut into it, plus collision posts along the
+   * solid parts so only the doorway itself can be walked through.
+   */
+  private doorway(holder: THREE.Group, gx: number, gz: number, h: number, opening: number, doorH: number, industrial: boolean) {
+    const mat = industrial ? this.metal : this.wallpaper, half = opening / 2 + 0.1, side = 2 - half;
+    for (const s of [-1, 1]) {
+      const x = s * (half + side / 2);
+      holder.add(this.box(side, h, 0.16, mat, x, h / 2));
+      holder.add(this.box(side, 1, 0.22, this.wood, x, 0.5));
+      for (const y of [0.1, 1, h - 0.2]) holder.add(this.box(side, 0.055, 0.26, this.brass, x, y));
+      const posts = Math.ceil(side / 0.4);
+      for (let i = 0; i < posts; i++) {
+        const along = s * (half + 0.25 + (side - 0.25) * i / Math.max(1, posts - 1));
+        // Holder-local (along, 0) -> world, through the holder's yaw and offset.
+        const p = hotelCenter(gx, gz), yaw = holder.rotation.y;
+        this.env.addObstacle(gx, gz, p.x + holder.position.x + along * Math.cos(yaw), p.z + holder.position.z - along * Math.sin(yaw), 0.25);
+      }
+    }
+    holder.add(this.box(half * 2, h - doorH - 0.1, 0.16, mat, 0, (h + doorH + 0.1) / 2));
   }
   private portrait(symbol: string, ordinal: number) {
     const g = new THREE.Group(); g.add(this.box(1.5, 1.9, 0.12, this.brass, 0, 0, 0));
-    const p = this.sign(`${ordinal}\n${symbol}`, 1.32, 1.7); p.position.z = 0.08; g.add(p);
-    // Unnaturally pale eyes above the suit, with pupils looking towards the aisle.
-    for (const x of [-0.19, 0.19]) {
+    // A clue portrait shows its place in the order and its suit, large enough to read from the desk.
+    const p = symbol ? this.sign(`${["I", "II", "III", "IV"][ordinal - 1] ?? ordinal}\n${symbol}`, 1.32, 1.7, false, 380)
+      : this.sign(`${ordinal}`, 1.32, 1.7);
+    p.position.z = 0.08; g.add(p);
+    // Decorative portraits: unnaturally pale eyes, pupils looking towards the aisle.
+    if (!symbol) for (const x of [-0.19, 0.19]) {
       g.add(this.box(0.2, 0.09, 0.02, this.cream, x, 0.25, 0.095));
       g.add(this.box(0.055, 0.085, 0.022, this.wood, x + 0.025, 0.25, 0.11));
     }
@@ -131,7 +188,7 @@ export class HotelWorld {
     }
     g.add(root);
     const p = hotelCenter(gx, gz);
-    const source = this.env.registerLight(gx, gz, p.x, hotelFloorAt(p.x, p.z) + y - 0.1, p.z, industrial ? 0xffb76b : 0xffd29a, zone === "beverly" ? 7.5 : 4.5, zone === "beverly" ? 24 : 15);
+    const source = this.env.registerLight(gx, gz, p.x, hotelFloorAt(p.x, p.z) + y - 0.1, p.z, industrial ? 0xffb76b : 0xffd29a, zone === "beverly" ? 11 : industrial ? 7 : 6.5, zone === "beverly" ? 28 : 18);
     this.lights.push({ source, bulb, zone });
   }
   createCell(gx: number, gz: number): THREE.Group {
@@ -141,6 +198,8 @@ export class HotelWorld {
     g.position.set(p.x, floor, p.z);
     g.userData.aabb = new THREE.Box3(new THREE.Vector3(p.x - 2.2, floor - 1, p.z - 2.2), new THREE.Vector3(p.x + 2.2, floor + h + 1, p.z + 2.2));
     const industrial = zone === "boiler" || zone === "stairs";
+    // Bedrooms and their entrances get no fake doors on their walls.
+    const guestCell = HOTEL_GUEST_ROOMS.some(r => r.doorX === gx && r.doorZ === gz || gx >= r.x1 && gx <= r.x2 && gz >= r.z1 && gz <= r.z2);
     if (zone === "stairs") {
       for (let i = 0; i < 8; i++) {
         const z = -1.75 + i * 0.5, y = hotelFloorAt(p.x, p.z + z) - floor;
@@ -156,14 +215,19 @@ export class HotelWorld {
       for (const y of [0.1, 1, h - 0.2]) wall.add(this.box(4, 0.055, 0.24, this.brass, 0, y, 0.06));
       if (industrial) {
         for (const py of [h - 0.9, h - 0.45]) { const pipe = this.cylinder(0.12, 4, this.brass, 0, py, 0.25); pipe.rotation.z = Math.PI / 2; wall.add(pipe); }
-      } else if (zone !== "exit" && (gx + gz) % 3 === 0) {
-        const door = this.door(`ROOM ${600 + ((gx * 7 + gz * 13) % 83)}`); door.position.z = 0.2; wall.add(door);
+      } else if (dz === -1 && gz === GALLERY_Z && GALLERY.some(p => p.gx === gx)) {
+        // The guest gallery's wall: its portrait is the only thing hung there.
+      } else if (zone !== "exit" && !guestCell && (gx + gz) % 3 === 0) {
+        const door = this.door(`ROOM ${600 + ((gx * 7 + gz * 13) % 83)}`).group; door.position.z = 0.14; wall.add(door);
       } else if (zone === "hall" && (gx + gz) % 3 === 1) {
-        const portrait = this.portrait(HOTEL_SUITS[(gx + gz) % 4], 1930); portrait.position.set(0, 2.2, 0.14); wall.add(portrait);
+        // Decorative portraits carry no suit, so they can't be mistaken for the gallery's clues.
+        const portrait = this.portrait("", 1930); portrait.position.set(0, 2.2, 0.14); wall.add(portrait);
       }
       g.add(wall);
     }
-    if (zone !== "exit" && ((zone === "beverly" && gx % 3 === 1 && gz % 3 === 1) || (zone !== "beverly" && (gx + gz) % 3 === 0))) this.chandelier(g, gx, gz, h - 0.9, zone);
+    // Every bedroom gets its own fixture, on top of the regular hall pattern.
+    const bedroomCentre = HOTEL_GUEST_ROOMS.some(r => r.gx === gx && r.gz === gz);
+    if (zone !== "exit" && ((zone === "beverly" && gx % 3 === 1 && gz % 3 === 1) || (zone !== "beverly" && ((gx + gz) % 3 === 0 || bedroomCentre)))) this.chandelier(g, gx, gz, h - 0.9, zone);
     if (zone === "exit" && gz % 3 === 0) this.chandelier(g, gx, gz, h - 0.9, zone);
 
     const putAt = (object: THREE.Object3D, pos: { x: number; z: number }, y = 0) => { object.position.set(pos.x - p.x, y, pos.z - p.z); g.add(object); };
@@ -177,7 +241,6 @@ export class HotelWorld {
       g.add(this.box(0.95, 0.38, 0.65, this.brass, 0, 1.3, 0));
       this.boxLid = this.box(0.98, 0.06, 0.68, this.wood, 0, 1.52); g.add(this.boxLid);
       const dial = this.sign("0 0 0 0", 0.7, 0.2); dial.position.set(0, 1.3, 0.34); g.add(dial);
-      const note = this.sign(t("hotel.receptionClue"), 1.8, 0.75, true); note.position.set(0, 2.45, -0.8); g.add(note);
       this.key = new THREE.Group(); this.key.add(this.cylinder(0.06, 0.4, this.brass));
       this.key.add(this.box(0.22, 0.1, 0.08, this.brass, 0.06, -0.13)); this.key.rotation.z = Math.PI / 2; this.key.position.set(0, 1.6, 0); g.add(this.key);
     }
@@ -196,8 +259,15 @@ export class HotelWorld {
 
     const room = HOTEL_GUEST_ROOMS.find(r => r.doorX === gx && r.doorZ === gz);
     if (room) {
-      const frame = this.door(`ROOM ${room.number}`); frame.rotation.y = Math.PI / 2; frame.position.x = -1.45; g.add(frame);
-      const sign = this.sign(`ROOM ${room.number}`, 2.3, 0.42); sign.position.set(0, 3.55, 0); g.add(sign);
+      // The room's own wall, set just inside the entrance, facing the corridor;
+      // the door stands open, folded back against the bedroom side.
+      const hallSide = room.gz < room.doorZ ? 1 : -1;
+      const holder = new THREE.Group(); holder.rotation.y = hallSide > 0 ? 0 : Math.PI; holder.position.z = hallSide * 1.75; g.add(holder);
+      this.doorway(holder, gx, gz, h, 1.2, 2.3, false);
+      // Rooms holding a guest card show its suit on the door plate, so the search is short.
+      const guest = this.puzzle.cards.find(c => c.number === room.number);
+      const { group, leaves } = this.door(guest ? `ROOM ${room.number} ${guest.suit}` : `ROOM ${room.number}`, { width: 1.2, swing: -1 });
+      this.swingLeaves(leaves, 1); holder.add(group);
     }
     const bedroom = HOTEL_GUEST_ROOMS.find(r => r.gx === gx && r.gz === gz);
     if (bedroom) {
@@ -207,14 +277,19 @@ export class HotelWorld {
       g.add(this.box(0.7, 0.9, 0.7, this.wood, 1.25, 0.45));
       const card = this.puzzle.cards.find(c => c.number === bedroom.number);
       if (card) {
-        const note = this.sign(`ROOM ${card.number}\n${card.suit}\n${t(`hotel.digit.${card.digit}`)} · ${card.digit}`, 0.72, 0.9, true);
-        note.position.set(1.25, 1.25, 0.1); note.rotation.x = -0.35; g.add(note);
+        // Stood upright on the nightstand, facing the doorway.
+        const note = this.sign(`ROOM ${card.number}\n${card.suit}\n${t(`hotel.digit.${card.digit}`)} · ${card.digit}`, 0.95, 1.2, true);
+        const facing = bedroom.doorZ > bedroom.gz ? 1 : -1;
+        note.position.set(1.25, 1.55, 0.1 * facing); note.rotation.y = facing > 0 ? 0 : Math.PI; g.add(note);
       }
     }
-    const picture = [13, 17, 21, 25].indexOf(gx);
-    if (gz === 12 && picture >= 0) {
-      const portrait = this.portrait(this.puzzle.cards[this.puzzle.order[picture]].suit, picture + 1); portrait.position.set(0, 2.2, -1.8); g.add(portrait);
-      const s = this.sign(t("hotel.gallery"), 2.7, 0.35); s.position.set(0, 3.45, -1.75); g.add(s);
+    if (gz === GALLERY_Z && GALLERY.some(p => p.gx === gx)) {
+      GALLERY.forEach((spot, picture) => {
+        if (spot.gx !== gx) return;
+        const portrait = this.portrait(this.puzzle.cards[this.puzzle.order[picture]].suit, picture + 1);
+        portrait.position.set(spot.x, 2.1, -1.8); g.add(portrait);
+      });
+      const s = this.sign(t("hotel.gallery"), 3.2, 0.4); s.position.set(0, 3.4, -1.75); g.add(s);
     }
 
     const alcove = HOTEL_ALCOVES.findIndex(d => d.gx === gx && d.gz === gz);
@@ -222,13 +297,17 @@ export class HotelWorld {
     const stairGate = gx === HOTEL_STAIRS.gx && gz === HOTEL_STAIRS.gz;
     const exitGate = gx === 40 && gz === 40;
     if (alcove >= 0 || beverlyGate || stairGate || exitGate) {
-      const label = beverlyGate ? "ROOM 512\nTHE BEVERLY ROOM" : stairGate ? "BOILER ROOM" : exitGate ? "EMERGENCY EXIT" : HOTEL_TILES[this.puzzle.alcoves.indexOf(alcove)];
-      const d = this.door(label, stairGate || exitGate);
-      const holder = new THREE.Group(); holder.rotation.y = beverlyGate || alcove >= 0 && HOTEL_ALCOVES[alcove].axis === "x" ? Math.PI / 2 : 0; holder.add(d); g.add(holder);
-      this.doors.push({ mesh: d, gx, gz, open: 0, alcove });
-      // Fill beside and above the actual door, matching the gate's collision cell.
-      for (const x of [-1.75, 1.75]) holder.add(this.box(0.5, h, 0.2, this.wood, x, h / 2));
-      holder.add(this.box(3, h - 3.5, 0.2, this.wood, 0, (h + 3.5) / 2));
+      const label = beverlyGate ? "ROOM 512 · BEVERLY" : stairGate ? "BOILER ROOM" : exitGate ? "EMERGENCY EXIT" : HOTEL_TILES[this.puzzle.alcoves.indexOf(alcove)];
+      const industrial = stairGate || exitGate;
+      const holder = new THREE.Group(); holder.rotation.y = beverlyGate || alcove >= 0 && HOTEL_ALCOVES[alcove].axis === "x" ? Math.PI / 2 : 0; g.add(holder);
+      this.doorway(holder, gx, gz, h, 1.8, 2.6, industrial);
+      // Leaves swing away from the side players arrive on (the alcoves open off the hall at +z).
+      const d = this.door(label, { width: 1.8, height: 2.6, double: true, industrial, swing: alcove >= 0 && HOTEL_ALCOVES[alcove].axis === "z" ? -1 : 1 });
+      holder.add(d.group);
+      // A shut alcove that is not part of the puzzle yet reads as plain wall.
+      const blank = alcove >= 0 ? this.box(1.8, 2.6, 0.16, this.wallpaper, 0, 1.3) : null;
+      if (blank) holder.add(blank);
+      this.doors.push({ mesh: d.group, blank, leaves: d.leaves, gx, gz, open: 0, alcove });
     }
     for (let i = 0; i < 4; i++) if (inCell(HOTEL_ALCOVES[this.puzzle.alcoves[i]].tile)) {
       g.add(this.box(1.4, 0.8, 1.2, this.wood, 0, 0.4)); obstacle(0, 0, 0.5);
@@ -248,7 +327,7 @@ export class HotelWorld {
       g.add(this.cylinder(1, 0.15, this.wood, 0, 0.85)); g.add(this.cylinder(0.12, 0.8, this.brass, 0, 0.4)); obstacle(0, 0, 0.85);
     }
     if (zone === "beverly" && gx === 36 && (gz === 6 || gz === 15)) {
-      const d = this.door("PRIVATE"); d.rotation.x = Math.PI / 2; d.position.y = gz === 6 ? 6.7 : 0.03; g.add(d); this.oddDoors.push(d);
+      const d = this.door("PRIVATE").group; d.rotation.x = Math.PI / 2; d.position.y = gz === 6 ? 6.7 : 0.03; g.add(d); this.oddDoors.push(d);
     }
     if (zone === "boiler" && gx % 3 === 0 && gz >= 29 && gz <= 34) {
       g.add(this.cylinder(1.25, 3.7, this.metal, 0, 1.85)); g.add(this.cylinder(1.32, 0.16, this.brass, 0, 0.35)); g.add(this.cylinder(1.32, 0.16, this.brass, 0, 3.25));
@@ -281,7 +360,7 @@ export class HotelWorld {
       for (let i = 0; i < 7; i++) { const cloud = new THREE.Mesh(this.kit.geo("hotel_cloud", () => new THREE.IcosahedronGeometry(0.75, 1)), m); cloud.position.set((i % 3 - 1) * 1.1, 0.8 + i * 0.35, (i % 2) * 0.6); jet.add(cloud); }
       g.add(jet); this.steam.push(jet);
     }
-    if (gx === 40 && gz === 54) { const d = this.door("6"); d.position.z = 1.5; g.add(d); }
+    if (gx === 40 && gz === 54) { const d = this.door("6").group; d.rotation.y = Math.PI; d.position.z = 1.86; g.add(d); }
     if (zone === "exit" && gx === 40 && gz === 44) {
       this.returnWall = this.box(4, h, 0.16, this.wallpaper, 0, h / 2, -2);
       this.returnWall.visible = this.departed;
@@ -302,8 +381,9 @@ export class HotelWorld {
     for (const d of this.doors) {
       const open = !hotelBlocked(this.state, d.gx, d.gz, now);
       d.open += ((open ? 1 : 0) - d.open) * Math.min(1, delta * 4);
-      d.mesh.position.x = -d.open * 2.95;
+      this.swingLeaves(d.leaves, d.open);
       if (d.alcove >= 0) d.mesh.visible = !!(this.state.doors & (1 << d.alcove)) || this.puzzle.alcoves[this.state.collected] === d.alcove;
+      if (d.blank) d.blank.visible = !d.mesh.visible;
     }
     for (const tile of this.tiles) tile.mesh.visible = tile.placed ? tile.index < this.state.placed : tile.index >= this.state.collected;
     this.oddDoors.forEach((d, i) => { d.position.x = decor ? (i ? -2 : 2) : 0; });

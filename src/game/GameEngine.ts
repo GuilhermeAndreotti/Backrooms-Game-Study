@@ -485,6 +485,7 @@ export class GameEngine {
   /** Level 94's day, night, castle and the King's vision; null on every other level. */
   private townDirector: TownDirector | null = null;
   private lastTownObjective: string | null = null;
+  private lastHotelObjective: string | null = null;
   /** The vision's camera roll (radians), field-of-view offset (degrees) and VHS distortion. */
   private townWarp = { roll: 0, fov: 0 };
   private townDread = 0;
@@ -1029,6 +1030,10 @@ export class GameEngine {
       this.updateSpace(delta);
       this.updateTown(delta);
       this.hotelDirector?.update(delta);
+      if (this.hotelDirector) {
+        const objective = this.hotelDirector.objective();
+        if (objective !== this.lastHotelObjective) { this.lastHotelObjective = objective; this.onObjectiveChange?.(objective); }
+      }
       this.updateInteractPrompt(delta);
       this.updateReadingRange();
       if (this.radarBoostTimer > 0) this.radarBoostTimer = Math.max(0, this.radarBoostTimer - delta);
@@ -3832,7 +3837,10 @@ export class GameEngine {
     const def = LEVEL_DEFS[HOTEL_LEVEL];
     if (def.spawn.kind === "static") this.spawnStaticRoster(def.spawn.roster, 1);
   }
-  private teardownHotel() { this.hotelDirector?.dispose(); this.hotelDirector = null; }
+  private teardownHotel() {
+    this.hotelDirector?.dispose(); this.hotelDirector = null;
+    if (this.lastHotelObjective !== null) { this.lastHotelObjective = null; this.onObjectiveChange?.(null); }
+  }
   private setupHotel() {
     this.teardownHotel();
     if (!this.map.hotel) return;
