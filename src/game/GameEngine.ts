@@ -1916,10 +1916,12 @@ export class GameEngine {
 
   /** Abandoned Office: renders the skyline (first visit only) and hands it to the windows. */
   private setupOfficeSkyline() {
-    if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map) return;
+    // The Terror Hotel's room windows reuse the office glass and its city.
+    if (this.level !== ABANDONED_OFFICE_LEVEL && !this.map?.hotel || !this.map) return;
     try {
       this.officeCity ??= buildOfficeSkyline(this.renderer, this.map.mapSeed, this.quality.shadows ? 512 : 256);
-      this.map.setOfficeSkyline(this.officeCity);
+      if (this.map.hotel) this.map.hotel.setSkyline(this.officeCity);
+      else this.map.setOfficeSkyline(this.officeCity);
     } catch (err) {
       console.warn("[Office] skyline render failed; windows show sky only", err);
     }

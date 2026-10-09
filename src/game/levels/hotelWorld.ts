@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { DecorKit } from "../LevelDecor";
 import type { DynamicLightSource } from "../LightPool";
+import { createOfficeWindowMaterial, setOfficeWindowOutlook, setOfficeWindowState, type OfficeSkyline } from "../officeWindow";
 import { t } from "../../i18n";
 import { createHotelState, hotelBlocked, hotelPuzzle, HOTEL_TILES, type HotelState } from "../../shared/hotel";
 import { HOTEL_ALCOVES, HOTEL_BEVERLY_DOOR, HOTEL_GUEST_ROOMS, HOTEL_RECEPTION, HOTEL_STAIRS, HOTEL_STEAM, HOTEL_TABLE, HOTEL_VALVES, hotelCardSpot, hotelCenter, hotelFloorAt, hotelRng, hotelRoomPoint, hotelRoomSide, hotelZone, type HotelGuestRoom, type HotelZone } from "./hotelLayout";
@@ -27,6 +28,8 @@ const BEVERLY_COLUMNS = [[140, 32], [164, 32], [140, 56], [164, 56]];
 const BEVERLY_ROUND_TABLES = [[33, 6], [42, 6], [33, 15], [42, 15]];
 const BEVERLY_BAR = [33, 34, 35];
 const isReception = (gx: number, gz: number) => gx >= 2 && gx <= 8 && gz >= 2 && gz <= 7;
+/** Guest room window glass (m) and its sill height. */
+const GLASS_W = 2.2, GLASS_H = 2.0, GLASS_SILL = 0.8;
 
 /** A cell-streamed hotel: all assets share the map's geometry/material lifetime. */
 export class HotelWorld {
@@ -51,6 +54,10 @@ export class HotelWorld {
   private key: THREE.Group | null = null;
   private boxLid: THREE.Mesh | null = null;
   private roomPieces = new Map<number, Piece[]>();
+  /** The Abandoned Office's storm glass (rain, drops, the far city), shared by every room window. */
+  private glass: THREE.ShaderMaterial | null = null;
+  private skyline: OfficeSkyline | null = null;
+  private outlookApplied = false;
   // Surfaces.
   private wood: THREE.Material;
   private brass: THREE.Material;
@@ -318,29 +325,33 @@ export class HotelWorld {
     });
     art.position.z = 0.04; g.add(art); return g;
   }
-  /** A tall painted window: the city at night, far below the fifth floor. */
-  private nightWindow() {
-    const g = new THREE.Group();
-    const view = this.picture("night", 1.5, 1.9, 256, (c, w, h) => {
-      const sky = c.createLinearGradient(0, 0, 0, h); sky.addColorStop(0, "#05081a"); sky.addColorStop(1, "#1d2b4f"); c.fillStyle = sky; c.fillRect(0, 0, w, h);
-      const rng = hotelRng(0x51a7);
-      c.fillStyle = "#d8d8f0"; for (let i = 0; i < 60; i++) c.fillRect(rng() * w, rng() * h * 0.55, 1.5, 1.5);
-      c.fillStyle = "#efe6c4"; c.beginPath(); c.arc(w * 0.72, h * 0.18, 14, 0, Math.PI * 2); c.fill();
-      for (let x = 0; x < w;) {
-        const bw = 18 + rng() * 34, bh = h * (0.18 + rng() * 0.3);
-        c.fillStyle = "#070708"; c.fillRect(x, h - bh, bw, bh);
-        c.fillStyle = "#e3b85c"; for (let k = 0; k < 6; k++) if (rng() < 0.6) c.fillRect(x + 3 + rng() * (bw - 6), h - bh + 4 + rng() * (bh - 8), 2.5, 3);
-        x += bw + 2;
-      }
-    }, true);
-    view.position.set(0, 0, 0.02); g.add(view);
-    for (const x of [-0.8, 0.8]) g.add(this.box(0.1, 2.0, 0.1, this.wood, x, 0, 0.05));
-    for (const y of [-1, 1]) g.add(this.box(1.7, 0.1, 0.12, this.wood, 0, y, 0.05));
-    g.add(this.box(0.05, 1.9, 0.06, this.wood, 0, 0, 0.06)); g.add(this.box(1.5, 0.05, 0.06, this.wood, 0, 0.25, 0.06));
-    g.add(this.box(1.9, 0.08, 0.3, this.wood, 0, -1.06, 0.12));
-    // Heavy curtains, drawn to the sides.
-    for (const x of [-1.05, 1.05]) g.add(this.box(0.45, 2.5, 0.12, this.red, x, 0.05, 0.14));
-    g.add(this.box(2.6, 0.1, 0.1, this.brass, 0, 1.3, 0.18));
+  /** What the room windows look out on: the engine renders it once (see officeWindow.buildOfficeSkyline). */
+  setSkyline(skyline: OfficeSkyline | null) { this.skyline = skyline; this.outlookApplied = false; }
+  private windowGlass() {
+    return this.glass ??= this.kit.mat("hotel_window_glass", () => {
+      const m = createOfficeWindowMaterial(); m.uniforms.uSize.value.set(GLASS_W, GLASS_H); return m;
+    }) as THREE.ShaderMaterial;
+  }
+  /**
+   * A guest room window, set in the back wall (its local +z faces the room): the
+   * Abandoned Office's storm glass, so the rain, the drops running down the pane
+   * and the city far below all move with the viewer. Wooden sash, brass rail, velvet curtains.
+   */
+  private stormWindow() {
+    const g = new THREE.Group(), cy = GLASS_SILL + GLASS_H / 2, top = GLASS_SILL + GLASS_H, fw = GLASS_W + 0.12;
+    const pane = new THREE.Mesh(this.kit.geo(`hotel_plane_${GLASS_W}_${GLASS_H}`, () => new THREE.PlaneGeometry(GLASS_W, GLASS_H)), this.windowGlass());
+    pane.position.set(0, cy, 0.02); g.add(pane);
+    g.add(this.box(fw, 0.1, 0.14, this.wood, 0, top + 0.04, 0.06));
+    g.add(this.box(fw + 0.2, 0.08, 0.3, this.wood, 0, GLASS_SILL - 0.04, 0.14)); // the sill
+    g.add(this.box(fw + 0.1, 0.25, 0.06, this.wood, 0, GLASS_SILL - 0.2, 0.05));
+    for (const x of [-fw / 2, fw / 2]) g.add(this.box(0.08, GLASS_H + 0.12, 0.14, this.wood, x, cy, 0.06));
+    // Sash bars: a centre mullion and a transom near the top, as in a 1930 casement.
+    g.add(this.box(0.06, GLASS_H, 0.1, this.wood, 0, cy, 0.06));
+    g.add(this.box(GLASS_W, 0.06, 0.1, this.wood, 0, top - 0.55, 0.06));
+    g.add(this.box(0.04, 0.12, 0.05, this.brass, 0.1, cy - 0.1, 0.13));
+    // Heavy curtains, drawn to the sides, on a brass rail.
+    for (const x of [-1, 1]) g.add(this.box(0.5, 3.05, 0.12, this.red, x * (fw / 2 + 0.22), 1.85, 0.2));
+    g.add(this.box(fw + 1.2, 0.06, 0.06, this.brass, 0, 3.42, 0.24));
     return g;
   }
   private sconces(wall: THREE.Group, h: number) {
@@ -487,7 +498,7 @@ export class HotelWorld {
       return g;
     }, [[0, 0, 0.35]]);
     // Window and painting on the back wall.
-    add(at(-s * 2.6, 7.92), facing, () => this.nightWindow(), undefined); pieces[pieces.length - 1].y = 1.9;
+    add(at(-s * 2.6, 7.92), facing, () => this.stormWindow());
     add(at(s * 2.7, 7.93), facing, () => this.landscape()); pieces[pieces.length - 1].y = 2.6;
     // Wardrobe and writing desk against the far side wall.
     add(at(-s * 5.62, 5.4), s * Math.PI / 2, () => {
@@ -796,6 +807,13 @@ export class HotelWorld {
   isBlocked(gx: number, gz: number) { return !this.ready || this.departed && gx === 40 && gz === 43 || hotelBlocked(this.state, gx, gz, this.now); }
   update(now: number, delta: number, blackout: boolean, flicker: number, decor: number) {
     this.now = now;
+    if (this.glass) {
+      if (!this.outlookApplied) {
+        setOfficeWindowOutlook(this.glass, { far: this.skyline, mass: null, gridSize: 1, cellSize: 4 });
+        this.outlookApplied = true;
+      }
+      setOfficeWindowState(this.glass, now / 1000, 0, 0);
+    }
     for (const d of this.doors) {
       const open = !hotelBlocked(this.state, d.gx, d.gz, now);
       d.open += ((open ? 1 : 0) - d.open) * Math.min(1, delta * 4);
