@@ -21,6 +21,8 @@ export const LOBBY_LEVEL = 10;
  * one number is both the network id and the id ProceduralMap sees.
  */
 export const SPACE_LEVEL = 12;
+/** Displayed as Level 5. The Poolrooms keep their original network id. */
+export const HOTEL_LEVEL = 13;
 
 /** Main route after the lobby. */
 export const MAIN_LEVELS = [
@@ -29,6 +31,8 @@ export const MAIN_LEVELS = [
   LEVEL_2,
   ELECTRICAL_ROOM_LEVEL,
   ABANDONED_OFFICE_LEVEL,
+  HOTEL_LEVEL,
+  LIGHTS_OUT_LEVEL,
   POOLROOMS_LEVEL,
   // The Poolrooms' exit is a station door: the route ends in Level 79.
   SPACE_LEVEL,

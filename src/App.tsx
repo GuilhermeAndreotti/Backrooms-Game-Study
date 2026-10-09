@@ -30,7 +30,9 @@ import { EMPTY_CHESS, type ChessNetState } from "./shared/chess";
 import type { TownDialogueView } from "./game/levels/townDirector";
 import type { SpaceTerminalId, WireColor } from "./game/levels/spaceLayout";
 import { AdSlot } from "./components/AdSlot";
-import { LOBBY_LEVEL, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, OLD_TOWN_LEVEL, nextMainLevel } from "./game/levels/constants";
+import { LOBBY_LEVEL, FUN_LEVEL, SPACE_LEVEL, HOTEL_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, OLD_TOWN_LEVEL, nextMainLevel } from "./game/levels/constants";
+import { HotelPanelModal } from "./components/HotelPanelModal";
+import type { HotelPanel } from "./game/levels/hotelDirector";
 import { addAchievementListener, removeAchievementListener, unlockAchievement } from "./utils/achievements";
 import { isTypingInField, lockGameInput } from "./utils/input";
 import { EMPTY_FACE } from "./utils/face";
@@ -45,11 +47,12 @@ import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, FileText, Compass,
  * such special case in one place instead of scattered ternaries.
  */
 function displayLabelForLevel(level: number): string {
+  if (level === HOTEL_LEVEL) return t("hotel.name");
   if (level === ELECTRICAL_ROOM_LEVEL) return "LEVEL 3 · ELECTRICAL ROOM";
   if (level === ABANDONED_OFFICE_LEVEL) return "LEVEL 4 · ABANDONED OFFICE";
   if (level === POOLROOMS_LEVEL) return "POOLROOMS";
   if (level === LOBBY_LEVEL) return "LOBBY";
-  if (level === LIGHTS_OUT_LEVEL) return "6 · SECRET";
+  if (level === LIGHTS_OUT_LEVEL) return "6 · LIGHTS OUT";
   if (level === LEVEL_G) return "LEVEL G · SECRET";
   if (level === OLD_TOWN_LEVEL) return "LEVEL 94 · MOTION";
   if (level === FUN_LEVEL) return "LEVEL FUN";
@@ -150,6 +153,8 @@ export default function App() {
   const [activeLoreNote, setActiveLoreNote] = useState<BackroomsLore | null>(null);
   const [collectedNotes, setCollectedNotes] = useState<BackroomsLore[]>([]);
   const [pauseMenuTab, setPauseMenuTab] = useState<"controles" | "diario" | "config">("controles");
+  const [hotelPanel, setHotelPanel] = useState<HotelPanel | null>(null);
+  const [hotelFeedback, setHotelFeedback] = useState<"idle" | "pending" | "accepted" | "denied">("idle");
   const [selectedJournalNote, setSelectedJournalNote] = useState<BackroomsLore | null>(null);
   const [isInventoryOpen, setIsInventoryOpen] = useState(false);
   /** "Give" mode (G): the teammate the next hotbar key hands an item to. */
@@ -290,12 +295,19 @@ export default function App() {
    * count as "the player left the game": no pause menu behind them.
    */
   const interfaceOpen = isTerminalOpen || isMegDoorOpen || isFunPanelOpen || isCheatTerminalOpen || wardrobeInitial !== null || isLevelSelectorOpen
-    || isAchievementsOpen || spaceTerminal !== null || spaceWiring !== null || townModelOpen || townDialogue !== null || chessOpen;
+    || hotelPanel !== null || isAchievementsOpen || spaceTerminal !== null || spaceWiring !== null || townModelOpen || townDialogue !== null || chessOpen;
   useEffect(() => {
     if (currentLevel !== SPACE_LEVEL) { setSpaceTerminal(null); setSpaceWiring(null); }
     if (currentLevel !== OLD_TOWN_LEVEL) { setTownModelOpen(false); setTownDialogue(null); }
     if (currentLevel !== LOBBY_LEVEL) { setChessOpen(false); setWardrobeInitial(null); }
+    setHotelPanel(null);
   }, [currentLevel]);
+  useEffect(() => { if (isDead) setHotelPanel(null); }, [isDead]);
+  useEffect(() => {
+    if (hotelFeedback !== "pending") return;
+    const timer = setTimeout(() => setHotelFeedback("denied"), 3000);
+    return () => clearTimeout(timer);
+  }, [hotelFeedback]);
   /** Read by the (rarely re-bound) global key handler: hotbar keys do nothing behind a panel. */
   const panelOpenRef = useRef(false);
   panelOpenRef.current = interfaceOpen || isInventoryOpen;
@@ -414,6 +426,11 @@ export default function App() {
     const engine = engineRef.current;
     if (!engine) return false;
     switch (engine.tryInteract()) {
+      case "hotel": return true;
+      case "hotel_panel":
+        setHotelPanel(engine.hotelPanel); setHotelFeedback("idle");
+        pauseGameInput();
+        return true;
       case "meg_employee":
         // The dialogue itself arrives through onMegDialogue; it's read in-game,
         // pointer lock kept.
@@ -1109,7 +1126,7 @@ export default function App() {
             const forced = type === "respawn" || type === "return_to_lobby";
             // An explorer waiting alone in the lobby (they aborted) rejoins the
             // group on its next transition, whatever the level number.
-            if (!engine || typeof nextLevel !== "number" || (!forced && !data.secret && !data.convergence && !data.start && engine.level !== LOBBY_LEVEL && nextLevel <= engine.level)) return;
+            if (!engine || typeof nextLevel !== "number" || (!forced && !data.secret && !data.convergence && !data.start && engine.level !== LOBBY_LEVEL && nextLevel !== nextMainLevel(engine.level))) return;
 
             if (forced) {
               logSystemMessage(
@@ -1370,6 +1387,9 @@ export default function App() {
             engineRef.current?.applyConsumablesState(data);
           }
 
+          else if (type === "hotel_state") { engineRef.current?.applyHotelState(data); }
+          else if (type === "hotel_world") { engineRef.current?.applyHotelWorld(data); }
+          else if (type === "hotel_result") { setHotelFeedback(data.ok ? "accepted" : "denied"); }
           else if (type === "space_event") {
             engineRef.current?.applySpaceEvent(data);
           }
@@ -2129,6 +2149,11 @@ export default function App() {
                 }
               }}
             />
+          )}
+          {hotelPanel && currentLevel === HOTEL_LEVEL && (
+            <HotelPanelModal panel={hotelPanel} feedback={hotelFeedback}
+              onSubmit={action => { setHotelFeedback("pending"); engineRef.current?.submitHotelAction(action); }}
+              onClose={() => { setHotelPanel(null); const canvas = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null; if (canvas) lockGameInput(canvas); }} />
           )}
           {townModelOpen && currentLevel === OLD_TOWN_LEVEL && (
             <TownModelModal

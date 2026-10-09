@@ -21,7 +21,9 @@ import { sanitizeOutfit, type Outfit } from "./src/shared/outfit";
 import { ChessGame, initialPosition, toFen, type Color, type Promotion } from "./src/shared/chess";
 
 const INITIAL_FEN = toFen(initialPosition());
-import { LOBBY_LEVEL, LEVEL_1, MAIN_LEVELS, FUN_LEVEL, SPACE_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, OLD_TOWN_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
+import { LOBBY_LEVEL, LEVEL_1, MAIN_LEVELS, FUN_LEVEL, SPACE_LEVEL, HOTEL_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, OLD_TOWN_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, nextMainLevel } from "./src/game/levels/constants";
+import { applyHotelAction, createHotelState, createHotelWorldState, parseHotelAction, type HotelState, type HotelWorldState } from "./src/shared/hotel";
+import { HOTEL_EXIT, hotelCenter } from "./src/game/levels/hotelLayout";
 import { POOL_ROOM_COUNT, POOL_VALVE_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./src/game/poolroomsPuzzle";
 
 // ---------------------------------------------------------------------------
@@ -148,9 +150,13 @@ interface Connection {
   isAlive: boolean;
   chatTimestamps: number[];
   giveTimestamps: number[];
+  hotelActionAt?: number;
 }
 
 interface Room {
+  hotel: HotelState;
+  hotelWorld: HotelWorldState;
+  hotelEntities: ReturnType<typeof sanitizeEntities>;
   seed: number;
   /**
    * The level the whole room is on. Authoritative: a player reaching an exit
@@ -485,6 +491,11 @@ function tryAdvanceRoom(room: Room) {
   const expected = nextMainLevel(room.level);
   if (expected === null) return;
   room.level = expected;
+  if (expected === HOTEL_LEVEL) {
+    room.hotel = createHotelState(room.hotel.epoch + 1);
+    room.hotelWorld = createHotelWorldState(room.hotel.startedAt);
+    room.hotelEntities = null;
+  }
   if (room.level === POOLROOMS_LEVEL) resetPoolroomsState(room);
   // Explorers who took Level FUN's way out are already in Level 79, ahead of the
   // group: the transition leaves them where they are (and as they are, dead or alive).
@@ -621,6 +632,9 @@ function sweepSharedLevelState(room: Room) {
 }
 
 function resetSharedLevelState(room: Room) {
+  room.hotel = createHotelState(room.hotel.epoch + 1);
+  room.hotelWorld = createHotelWorldState(room.hotel.startedAt);
+  room.hotelEntities = null;
   room.funFacts.clear();
   room.townFacts.clear();
   room.consumed.clear();
@@ -718,6 +732,9 @@ async function startServer() {
               ? Math.floor(requestedSeed)
               : Math.floor(Math.random() * 999999) + 1;
           room = {
+            hotel: createHotelState(),
+            hotelWorld: createHotelWorldState(Date.now()),
+            hotelEntities: null,
             seed,
             level: LOBBY_LEVEL,
             config: { ...DEFAULT_ROOM_CONFIG },
@@ -817,6 +834,41 @@ async function startServer() {
       if (!room) return;
 
       // --- movement ---------------------------------------------------------
+      if (type === "hotel_sync") {
+        if (conn.player.level !== HOTEL_LEVEL) return;
+        send(ws, { type: "hotel_state", level: HOTEL_LEVEL, state: room.hotel, world: room.hotelWorld, now: Date.now() });
+        if (room.hotelEntities) send(ws, { type: "entities", level: HOTEL_LEVEL, epoch: room.hotel.epoch, bootstrap: true, ...room.hotelEntities });
+        return;
+      }
+      if (type === "hotel_action") {
+        const now = Date.now();
+        if (conn.player.level !== HOTEL_LEVEL || conn.player.dead || conn.player.exitReady || data.epoch !== room.hotel.epoch || now - (conn.hotelActionAt ?? 0) < 200) return;
+        conn.hotelActionAt = now;
+        const action = parseHotelAction(data.action);
+        if (!action) return;
+        const state = applyHotelAction(room.hotel, action, room.seed, conn.player, now);
+        if (state) {
+          room.hotel = state;
+          broadcastToLevel(room, HOTEL_LEVEL, { type: "hotel_state", level: HOTEL_LEVEL, state, now });
+        }
+        send(ws, { type: "hotel_result", ok: !!state, kind: action.kind });
+        return;
+      }
+      if (type === "hotel_world") {
+        if (conn.player.level !== HOTEL_LEVEL || computeAuthority(room)[String(HOTEL_LEVEL)] !== conn.player.id || data.epoch !== room.hotel.epoch) return;
+        const now = Date.now();
+        if (now - room.hotelWorld.at < 150 || !data.world || typeof data.world !== "object") return;
+        const w = data.world as Record<string, unknown>;
+        const time = (v: unknown) => Math.max(now - 180000, Math.min(now + 180000, finiteNumber(v, now)));
+        const dwell: HotelWorldState["dwell"] = {};
+        if (w.dwell && typeof w.dwell === "object") for (const p of room.players.values()) {
+          const d = (w.dwell as Record<string, any>)[p.id];
+          if (p.level === HOTEL_LEVEL && d && ["hall", "beverly", "stairs", "boiler", "exit"].includes(d.zone)) dwell[p.id] = { zone: d.zone, since: time(d.since) };
+        }
+        room.hotelWorld = { at: now, nextAt: time(w.nextAt), until: time(w.until), lastSeen: time(w.lastSeen), mode: w.mode === 1 || w.mode === 2 ? w.mode : 0, target: typeof w.target === "string" && room.players.has(w.target) ? w.target : "", dwell, decor: Number.isInteger(w.decor) ? Math.abs(Number(w.decor)) % 2 : 0, event: Math.min(1e8, Math.max(0, Math.floor(finiteNumber(w.event, 0)))) };
+        broadcastToLevel(room, HOTEL_LEVEL, { type: "hotel_world", epoch: room.hotel.epoch, world: room.hotelWorld, now }, conn);
+        return;
+      }
       if (type === "update") {
         const p = conn.player;
         if (p.dead || p.exitReady) return;
@@ -827,6 +879,14 @@ async function startServer() {
         // then never becomes a lobby again (start_game refused) and teammates
         // in the lobby stop seeing them. Drop them whole (stale position too).
         const frameLevel = finiteNumber(data.level, p.level);
+        // A local secret entrance is the only movement frame allowed to change levels.
+        // In particular, queued Lights Out frames must not undo Hotel -> 6 -> Poolrooms.
+        const enteringSecret = room.config.secretRoutes !== false && (
+          p.level === LEVEL_1 && frameLevel === LIGHTS_OUT_LEVEL ||
+          p.level === ABANDONED_OFFICE_LEVEL && (frameLevel === LEVEL_G || frameLevel === FUN_LEVEL) ||
+          (p.level === ELECTRICAL_ROOM_LEVEL || p.level === SPACE_LEVEL) && frameLevel === OLD_TOWN_LEVEL
+        );
+        if (frameLevel !== p.level && !enteringSecret) return;
         if (room.level === LOBBY_LEVEL
           ? frameLevel !== LOBBY_LEVEL // the whole room is in the lobby: any other level is a leftover (even a private one)
           : (p.level === LOBBY_LEVEL) !== (frameLevel === LOBBY_LEVEL)) return;
@@ -876,9 +936,11 @@ async function startServer() {
         if (computeAuthority(room)[String(level)] !== conn.player.id) return;
 
         if (type === "entities") {
+          if (level === HOTEL_LEVEL && data.epoch !== room.hotel.epoch) return;
           const frame = sanitizeEntities(data);
           if (!frame) return;
-          broadcastToLevel(room, level, { type, level, ...frame }, conn);
+          if (level === HOTEL_LEVEL) room.hotelEntities = frame;
+          broadcastToLevel(room, level, { type, level, ...(level === HOTEL_LEVEL ? { epoch: room.hotel.epoch } : {}), ...frame }, conn);
         } else {
           if (typeof data.state !== "string" || !GLOBAL_EVENTS.has(data.state)) return;
           const duration = Math.min(15, Math.max(0, finiteNumber(data.duration, 0)));
@@ -1138,7 +1200,13 @@ async function startServer() {
         const requestedLevel = data.level;
         if (typeof requestedLevel !== "number" || !Number.isFinite(requestedLevel)) return;
         if (conn.player.dead || conn.player.exitReady) return;
-        const requested = Math.floor(requestedLevel);
+        let requested = Math.floor(requestedLevel);
+        // Lights Out's old private detour and its new main-route visit have different exits.
+        if (conn.player.level === LIGHTS_OUT_LEVEL) requested = room.level === LIGHTS_OUT_LEVEL ? POOLROOMS_LEVEL : ELECTRICAL_ROOM_LEVEL;
+        if (conn.player.level === HOTEL_LEVEL) {
+          const end = hotelCenter(HOTEL_EXIT.gx, HOTEL_EXIT.gz);
+          if (!room.hotel.exitOpen || Math.hypot(conn.player.x - end.x, conn.player.z - end.z) > 6) return;
+        }
         // (A room that started on Level FUN from the lobby isn't taking a secret route: it may leave.)
         if (data.secret === true && room.config.secretRoutes === false && !(conn.player.level === FUN_LEVEL && room.level === FUN_LEVEL)) return;
 
@@ -1169,7 +1237,15 @@ async function startServer() {
 
         // Escaping Lights Out takes the whole room to Electrical Room. Unlike
         // Level G, this is a shared route rather than a private convergence.
-        if (conn.player.level === LIGHTS_OUT_LEVEL && requested === ELECTRICAL_ROOM_LEVEL && data.secret === true) {
+        if (conn.player.level === LIGHTS_OUT_LEVEL && requested === ELECTRICAL_ROOM_LEVEL && room.level !== LIGHTS_OUT_LEVEL) {
+          if (room.level !== LEVEL_1 && room.level !== 2) {
+            conn.player.level = ELECTRICAL_ROOM_LEVEL;
+            conn.player.exitReady = false;
+            room.dirty.add(conn.player.id);
+            send(ws, { type: "level_transition", level: ELECTRICAL_ROOM_LEVEL, seed: room.seed, secret: true });
+            refreshAuthority(room);
+            return;
+          }
           room.level = ELECTRICAL_ROOM_LEVEL;
           reviveAll(room);
           room.players.forEach((p) => {
@@ -1244,8 +1320,9 @@ async function startServer() {
       if (type === "start_game") {
         if (room.level !== LOBBY_LEVEL || room.hostId !== conn.player.id) return;
         const requestedLevel = data.level === undefined ? 0 : data.level;
-        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || (requestedLevel > OLD_TOWN_LEVEL && requestedLevel !== FUN_LEVEL && requestedLevel !== SPACE_LEVEL) || requestedLevel === LOBBY_LEVEL) return;
+        if (typeof requestedLevel !== "number" || !Number.isInteger(requestedLevel) || requestedLevel < 0 || (requestedLevel > OLD_TOWN_LEVEL && requestedLevel !== FUN_LEVEL && requestedLevel !== SPACE_LEVEL && requestedLevel !== HOTEL_LEVEL) || requestedLevel === LOBBY_LEVEL) return;
         room.level = requestedLevel;
+        resetSharedLevelState(room);
         resetPoolroomsState(room);
         reviveAll(room);
         room.players.forEach((p) => { p.level = requestedLevel; });
@@ -1335,6 +1412,7 @@ async function startServer() {
         broadcastToRoom(room, { type: "player_died", id: conn.player.id, cause });
         refreshAuthority(room);
         checkAllDead(room);
+        tryAdvanceRoom(room);
         return;
       }
 

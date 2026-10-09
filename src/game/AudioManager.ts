@@ -4,7 +4,7 @@
  */
 
 import { GameSettings } from "../types/game";
-import { ABANDONED_OFFICE_LEVEL } from "./levels/constants";
+import { ABANDONED_OFFICE_LEVEL, HOTEL_LEVEL } from "./levels/constants";
 
 /** The level that has rain all the time, and how loud it is (scaled by the ambience volume). */
 const RAIN_LEVEL = ABANDONED_OFFICE_LEVEL;
@@ -16,6 +16,10 @@ export class AudioManager {
   private humOsc2: OscillatorNode | null = null;
   private humGain: GainNode | null = null;
   private masterGain: GainNode | null = null;
+  private sceneGate: GainNode | null = null;
+  private hotelMuted = false;
+  private hotelBeat = -1;
+  private hotelNodes = new Set<AudioScheduledSourceNode>();
   /** Echo bus: sounds that should ring in the room send a copy here (see setEcho). */
   private reverbIn: GainNode | null = null;
   private echoTarget = -1;
@@ -54,7 +58,10 @@ export class AudioManager {
       // Master volume node
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.setValueAtTime(this.settings.volumeMaster, this.ctx.currentTime);
-      this.masterGain.connect(this.ctx.destination);
+      this.sceneGate = this.ctx.createGain();
+      this.sceneGate.gain.value = this.hotelMuted ? 0 : 1;
+      this.masterGain.connect(this.sceneGate);
+      this.sceneGate.connect(this.ctx.destination);
       this.buildReverb();
 
       this.initialized = true;
@@ -249,7 +256,7 @@ export class AudioManager {
     this.backgroundAmbienceEnabled = enabled;
     if (!this.initialized) return;
 
-    if (!enabled) {
+    if (!enabled || this.level === HOTEL_LEVEL) {
       this.stopFluorescentHum();
       this.stopDistantAmbianceScheduler();
       this.stopBackgroundMusic();
@@ -267,6 +274,60 @@ export class AudioManager {
   }
 
   // ---------------------------------------------------------------------
+  // Terror Hotel: finite notes, no background timers; every source is disposed.
+  public setHotelSilence(silent: boolean) {
+    if (silent === this.hotelMuted) return;
+    this.hotelMuted = silent;
+    if (silent) this.stopHotelSources();
+    if (this.ctx && this.sceneGate) {
+      this.sceneGate.gain.cancelScheduledValues(this.ctx.currentTime);
+      this.sceneGate.gain.setTargetAtTime(silent ? 0 : 1, this.ctx.currentTime, 0.015);
+    }
+  }
+  private stopHotelSources() {
+    for (const node of this.hotelNodes) { try { node.stop(); } catch { /* already ended */ } }
+    this.hotelNodes.clear();
+  }
+  public stopHotelAudio() { this.stopHotelSources(); this.setHotelSilence(false); this.hotelBeat = -1; }
+  private hotelNote(hz: number, duration: number, volume: number, pan: number, type: OscillatorType = "triangle", noise = false) {
+    if (!this.ctx || !this.masterGain || this.hotelMuted) return;
+    const ctx = this.ctx, start = ctx.currentTime;
+    const source = noise ? ctx.createBufferSource() : ctx.createOscillator();
+    if (source instanceof OscillatorNode) { source.type = type; source.frequency.value = hz; }
+    else { source.buffer = this.noise(); source.loop = true; }
+    const filter = ctx.createBiquadFilter(); filter.type = noise ? "bandpass" : "lowpass"; filter.frequency.value = noise ? hz : 2200; filter.Q.value = noise ? 3 : 0.6;
+    const gain = ctx.createGain(); gain.gain.setValueAtTime(0.0001, start); gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, volume * this.settings.volumeHum), start + 0.03); gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+    const panner = ctx.createStereoPanner(); panner.pan.value = Math.max(-1, Math.min(1, pan));
+    source.connect(filter); filter.connect(gain); gain.connect(panner); panner.connect(this.masterGain);
+    this.hotelNodes.add(source); source.onended = () => { this.hotelNodes.delete(source); source.disconnect(); filter.disconnect(); gain.disconnect(); panner.disconnect(); };
+    source.start(); source.stop(start + duration + 0.03);
+  }
+  public playHotelSound(kind: "whisper" | "party" | "knock" | "door" | "bell", pan = 0, volume = 1) {
+    if (kind === "whisper" || kind === "party") {
+      for (const hz of kind === "party" ? [320, 470, 680, 920] : [750, 1300]) this.hotelNote(hz, kind === "party" ? 3.5 : 1.8, 0.09 * volume, pan, "sine", true);
+    } else this.hotelNote(kind === "bell" ? 930 : kind === "door" ? 90 : 140, kind === "door" ? 1.1 : 0.7, 0.16 * volume, pan, "sine");
+  }
+  public updateHotelAudio(now: number, zone: string, alarm: boolean, quiet: boolean) {
+    const beat = Math.floor(now / 375);
+    if (beat === this.hotelBeat || quiet || this.hotelMuted) return;
+    this.hotelBeat = beat;
+    if (zone === "boiler" || zone === "stairs") {
+      this.hotelNote(54 + beat % 3, 0.5, 0.085, 0, "sawtooth");
+      this.hotelNote(alarm ? 1800 : 300, 0.5, alarm ? 0.1 : 0.025, Math.sin(beat) * 0.5, "sine", true);
+      if (alarm && beat % 2 === 0) this.hotelNote(beat % 4 ? 520 : 740, 0.6, 0.12, 0, "sine");
+      return;
+    }
+    // A 12-bar swing phrase, with long rests. Exit playback has tape wow and detuning.
+    if (zone !== "exit" && Math.floor(now / 1000) % 80 > 35) return;
+    const chord = [[48, 55, 58, 64], [53, 57, 60, 63], [55, 59, 62, 65]][Math.floor(beat / 16) % 3];
+    const detune = zone === "exit" ? 0.79 + Math.sin(now * 0.003) * 0.07 : 1;
+    const hz = (m: number) => 440 * 2 ** ((m - 69) / 12) * detune;
+    if (beat % 2 === 0) this.hotelNote(hz(chord[(beat / 2) % 4] - 12), 0.5, 0.08, -0.25);
+    if (beat % 3 !== 0) this.hotelNote(hz(chord[(beat * 7) % 4] + 12), 0.8, 0.05, 0.2);
+    if (beat % 4 === 1) chord.slice(1).forEach(n => this.hotelNote(hz(n), 0.9, 0.022, 0.1));
+    this.hotelNote(3600, 0.12, 0.025, -0.3, "sine", true);
+  }
+
   // Level 4 — steady rain against the building, heard from inside.
   // ---------------------------------------------------------------------
   private rain: { nodes: AudioScheduledSourceNode[]; out: GainNode } | null = null;

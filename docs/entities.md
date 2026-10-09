@@ -15,6 +15,7 @@ Elencos de [levels/registry.ts](../src/game/levels/registry.ts). "Estático" = p
 | Level 2 | estático, 11 posições | `HOUND` ×3, `SKIN_STEALER` ×2, `WRETCH` ×3, `SOMBRA`, `IMITADOR` ×2 |
 | Electrical Room | estático | `HOUND` ×8 |
 | Abandoned Office | bespoke | nenhuma hostil (NPCs M.E.G.) |
+| Terror Hotel | estático, dirigido por eventos | `BELLMAN`, `DEATHMOTH` ×3 |
 | Poolrooms | estático | `CLUMP`, `VIGIA` |
 | Level 79 | estático | `ALIEN` |
 | Lights Out | sob demanda | pool `DULLER`, `SKIN_STEALER`, `WRETCH`, `HOUND` |
@@ -40,6 +41,8 @@ Elencos de [levels/registry.ts](../src/game/levels/registry.ts). "Estático" = p
 | `ANIMATION` | [animation.ts](../src/game/mobs/animation.ts) | "Eles me viram?" | Personagens de desenho antigo, em stop-motion. Veem quem está à frente com linha livre (mais longe se você corre ou usa a lanterna, bem menos agachado); desistem após ~3,5 s sem te ver; **nunca entram em casas** | Entre numa casa, use carros e becos, apague a lanterna |
 | `TOWN_KING` | [townKing.ts](../src/game/mobs/townKing.ts) | "Como passo por ele?" | Sentado no trono até alguém chegar perto ou passar por ele; então persegue sem parar, mais devagar que uma corrida, com alcance longo (2,4 m). Preso ao salão | Use colunas e mesas: ele contorna, você se espreme ao lado |
 | `ALIEN` | [alien.ts](../src/game/mobs/alien.ts) | — | Patrulha corredores e cabines, caça a quem vê; **nunca entra em cabine durante a perseguição** | Esconda-se em cabines |
+| `BELLMAN` | [bellman.ts](../src/game/mobs/bellman.ts) | "Estou chamando atenção?" | Aparições intermitentes; corrida, demora e pressão podem provocar perseguição | Quebre a linha de visão e evite correr sem necessidade |
+| `DEATHMOTH` | [deathmoth.ts](../src/game/mobs/deathmoth.ts) | "Minha lanterna está atraindo algo?" | Mariposa de voo baixo; reage à luz até 6 m e à proximidade até 2 m, com linha de visão | Apague a lanterna e mantenha distância |
 | `FINGER_KING` | [fingerKing.ts](../src/game/mobs/fingerKing.ts) | — | Exclusivo do Level G. Anuncia-se por **dedos arranhando paredes**; fica mais forte ao longo do nível, mas nunca passa de um corredor em disparada (a corrida final é vencível). Se você o encara de perto, ele **encara de volta** e então ataca | Esconda-se em armários, agachado |
 
 ## Notas técnicas

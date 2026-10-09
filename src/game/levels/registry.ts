@@ -21,9 +21,19 @@ import {
   OLD_TOWN_LEVEL,
   POOLROOMS_LEVEL,
   SPACE_LEVEL,
+  HOTEL_LEVEL,
 } from "./constants";
 
 export const LEVEL_DEFS: Record<number, LevelDefinition> = {
+  [HOTEL_LEVEL]: {
+    id: HOTEL_LEVEL, displayLabel: "LEVEL 5 · TERROR HOTEL",
+    spawn: { kind: "static", roster: [
+      { type: EntityType.BELLMAN, targetCell: [23, 12] },
+      { type: EntityType.DEATHMOTH, targetCell: [27, 16] },
+      { type: EntityType.DEATHMOTH, targetCell: [42, 15] },
+      { type: EntityType.DEATHMOTH, targetCell: [50, 34] },
+    ] },
+  },
   // Level 1: the "learn the ropes" level. DULLER/CLUMP teach basic
   // proximity/hearing chases; ECO/OBSERVADOR are the two newly-introduced
   // mechanics (sound, sight) that belong at the front of the curve per the

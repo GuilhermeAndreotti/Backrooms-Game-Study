@@ -2,7 +2,7 @@
 
 - **Id de rede:** `4` (conteúdo `9`) — **Grid:** 48×48
 - **Entidades:** nenhuma hostil fixa (`bespoke`); os **funcionários M.E.G.** são NPCs ([npc/OfficeWorker.ts](../../src/game/npc/OfficeWorker.ts))
-- **Próximo nível:** Poolrooms · **Segredos:** [Level G](level-g.md) e [Level FUN](level-fun.md)
+- **Próximo nível:** [Terror Hotel](level-5-terror-hotel.md) · **Segredos:** [Level G](level-g.md) e [Level FUN](level-fun.md)
 
 ## Ambientação
 

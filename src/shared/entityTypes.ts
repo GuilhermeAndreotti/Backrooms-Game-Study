@@ -13,6 +13,8 @@
  */
 
 export enum EntityType {
+  BELLMAN = "BELLMAN",
+  DEATHMOTH = "DEATHMOTH",
   DULLER = "DULLER",
   HOUND = "HOUND",
   CLUMP = "CLUMP",

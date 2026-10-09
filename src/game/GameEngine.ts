@@ -41,6 +41,9 @@ import { POOL_VALVE_COUNT } from "./poolroomsPuzzle";
 import { FunDirector } from "./levels/funDirector";
 import { SpaceDirector, type SpaceTerminalView } from "./levels/spaceDirector";
 import { TownDirector, type TownDialogueChoice, type TownDialogueView } from "./levels/townDirector";
+import { HotelDirector, type HotelObserver, type HotelPanel } from "./levels/hotelDirector";
+import { HOTEL_LEVEL } from "./levels/constants";
+import type { HotelAction, HotelState, HotelWorldState } from "../shared/hotel";
 import { ANIMATION_CELLS, KING_THRONE, townRelocationCells } from "./levels/townLayout";
 import { MOB_DEFS } from "./mobs/registry";
 import type { SpaceConsoleId, SpaceTarget, SpaceTerminalId } from "./levels/spaceLayout";
@@ -273,6 +276,7 @@ function nearestHuntable(targets: AiTarget[], x: number, z: number): { target: A
 const ENTITY_TYPES = new Set<string>(Object.values(EntityType));
 
 export class GameEngine {
+  private hotelDirector: HotelDirector | null = null;
   private containerID: string;
   private container: HTMLElement;
   public renderer!: any;
@@ -839,6 +843,7 @@ export class GameEngine {
     this.setupFun();
     this.setupSpace();
     this.setupTown();
+    this.setupHotel();
     this.requestLevelSync();
 
     // Spotlight representing local F key Flashlight
@@ -873,6 +878,7 @@ export class GameEngine {
       if (def12.spawn.kind === "static") this.spawnStaticRoster(def12.spawn.roster, 4);
     }
     if (this.level === OLD_TOWN_LEVEL) this.spawnTownKing();
+    if (this.level === HOTEL_LEVEL) this.spawnHotelEntities();
 
     // Initial first-turn map culler tick
     this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z);
@@ -1019,6 +1025,7 @@ export class GameEngine {
       this.updateFun(delta);
       this.updateSpace(delta);
       this.updateTown(delta);
+      this.hotelDirector?.update(delta);
       this.updateInteractPrompt(delta);
       this.updateReadingRange();
       if (this.radarBoostTimer > 0) this.radarBoostTimer = Math.max(0, this.radarBoostTimer - delta);
@@ -1238,6 +1245,7 @@ export class GameEngine {
         const canBeCaught = !this.isDead && !this.kingGrab && !this.townDirector?.immune;
 
         this.entities.forEach(entity => {
+          if (this.hotelDirector && (this.hotelDirector.immune || entity.type === EntityType.BELLMAN && this.map.hotel?.bellmanMode === 0)) return;
           if (aiTargets) {
             // Hunt whichever explorer is closest (on Level G, visible ones first).
             const { target, distSq: entityDistSq } = this.level === LEVEL_G || this.level === OLD_TOWN_LEVEL
@@ -1258,7 +1266,7 @@ export class GameEngine {
             // Billboard towards *our* camera, not the explorer it's hunting.
             // O Alien faces where it walks: its facing is its sight cone. Level 94's
             // cartoons and their King turn like characters, not billboards.
-            if (entity.type !== EntityType.ALIEN && entity.type !== EntityType.ANIMATION && entity.type !== EntityType.TOWN_KING) {
+            if (entity.type !== EntityType.BELLMAN && entity.type !== EntityType.ALIEN && entity.type !== EntityType.ANIMATION && entity.type !== EntityType.TOWN_KING) {
               entity.mesh.lookAt(px, entity.mesh.position.y, pz);
             }
           } else {
@@ -1274,7 +1282,7 @@ export class GameEngine {
           const dx = entity.mesh.position.x - px;
           const dz = entity.mesh.position.z - pz;
           const reach = MOB_DEFS[entity.type].catchRadius ?? 1.45;
-          if (canBeCaught && !caught && !this.cheatLife && dx * dx + dz * dz < reach * reach) {
+          if (canBeCaught && !caught && !this.cheatLife && (!this.hotelDirector || this.hotelDirector.canCatch(entity)) && dx * dx + dz * dz < reach * reach) {
             caught = true;
             caughtBy = entity;
             console.warn(`[GameEngine] Explorer CAUGHT by ${entity.type}! Reseting state...`);
@@ -1323,6 +1331,7 @@ export class GameEngine {
 
         // 1. Distance check to active entities (hostile monsters)
         this.entities.forEach(ent => {
+          if (!ent.mesh.visible || this.hotelDirector?.immune) return;
           if (!sameFloor(ent.mesh.position.x)) return;
           const dx = ent.mesh.position.x - px;
           const dz = ent.mesh.position.z - pz;
@@ -1351,7 +1360,7 @@ export class GameEngine {
         const isFlashlightOn = this.player.isFlashlightOn;
         // Level 94 is only dark in the town at night (its sunny day, hills and lit castle aren't).
         const townLit = this.level === OLD_TOWN_LEVEL && !this.townDirector?.dark;
-        if (!isFlashlightOn && this.level !== LOBBY_LEVEL && this.level !== SPACE_LEVEL && !townLit) {
+        if (!isFlashlightOn && this.level !== LOBBY_LEVEL && this.level !== SPACE_LEVEL && this.level !== HOTEL_LEVEL && !townLit) {
           if (this.map.globalEventState === "blackout" && this.map.inGarageBlackoutZone(this.player.position.x)) {
             darknessDepletion = 0.014; // completed blackout is terrifying (retuned ~3x slower)
           } else if (this.level === ELECTRICAL_ROOM_LEVEL) {
@@ -1455,7 +1464,7 @@ export class GameEngine {
       // Level 79's lighting belongs to its navigation sequences for the same reason.
       // Level 1's floor 3 schedules its own blackouts (updateGarage).
       // Level 94's lights belong to its day/night timeline.
-      this.map.rollGlobalEvents = this.isWorldAuthority && this.level !== LOBBY_LEVEL && this.level !== FUN_LEVEL && this.level !== SPACE_LEVEL && this.level !== OLD_TOWN_LEVEL && this.level !== 1;
+      this.map.rollGlobalEvents = this.isWorldAuthority && this.level !== HOTEL_LEVEL && this.level !== LOBBY_LEVEL && this.level !== FUN_LEVEL && this.level !== SPACE_LEVEL && this.level !== OLD_TOWN_LEVEL && this.level !== 1;
       const eventBefore = this.map.globalEventState;
       this.map.updateLights(
         delta,
@@ -1539,6 +1548,13 @@ export class GameEngine {
           background.setHex(a.fog);
         }
 
+        if (this.hotelDirector) {
+          const a = this.hotelDirector.atmosphere();
+          this.ambientLight.color.setHex(a.color); this.ambientLight.intensity = a.intensity;
+          if (fog) { fog.color.setHex(a.fog); fog.density = a.density; }
+          background.setHex(a.fog);
+        }
+
         // Abandoned Office: lightning through the windows washes the floor in cold white.
         if (this.officeFlash > 0) {
           this.ambientLight.intensity += this.officeFlash * 0.9;
@@ -1586,6 +1602,8 @@ export class GameEngine {
         this.flashlight.intensity = 0.0;
         this.flickerRemaining = 0;
       }
+
+      if (this.hotelDirector?.blackout) this.flashlight.visible = false;
 
       // Report current player telemetry states up to React UI components (optimized throttling to avoid React 60fps churn)
       const diffStamina = Math.abs(this.player.stamina - this.lastReportedStamina);
@@ -1799,6 +1817,7 @@ export class GameEngine {
 
     for (const e of this.entities) {
       if (e.type === EntityType.FINGER_KING) continue;
+      if (e.type === EntityType.BELLMAN || e.type === EntityType.DEATHMOTH) continue;
       const dx = e.mesh.position.x - px, dz = e.mesh.position.z - pz;
       const dist = Math.hypot(dx, dz);
       const alertNow = e.alert;
@@ -2757,6 +2776,7 @@ export class GameEngine {
     this.teardownFun();
     this.teardownSpace();
     this.teardownTown();
+    this.teardownHotel();
     this.teardownLevelG();
     this.level = level;
     this.level4DoorOpen = false;
@@ -2820,6 +2840,7 @@ export class GameEngine {
     this.setupFun();
     this.setupSpace();
     this.setupTown();
+    this.setupHotel();
     this.requestLevelSync();
 
     // Reset total play time for the new layout
@@ -2893,6 +2914,7 @@ export class GameEngine {
 
     // Level 94: the King on his throne from the start; the Animations come with the night.
     if (level === OLD_TOWN_LEVEL) this.spawnTownKing();
+    if (level === HOTEL_LEVEL) this.spawnHotelEntities();
 
     // Initial map cull
     this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z);
@@ -3567,7 +3589,10 @@ export class GameEngine {
       const funPrompt = this.funDirector ? this.funDirector.interactionPrompt() : null;
       const spacePrompt = this.spaceDirector ? this.spaceDirector.interactionPrompt() : null;
       const townPrompt = this.townDirector ? this.townDirector.interactionPrompt() : null;
-      if (funPrompt) {
+      const hotelPrompt = this.hotelDirector?.interactionPrompt();
+      if (hotelPrompt) {
+        text = hotelPrompt;
+      } else if (funPrompt) {
         text = funPrompt;
       } else if (spacePrompt) {
         text = spacePrompt;
@@ -3799,6 +3824,42 @@ export class GameEngine {
   // ---------------------------------------------------------------------
   // Level 94
   // ---------------------------------------------------------------------
+
+  private spawnHotelEntities() {
+    const def = LEVEL_DEFS[HOTEL_LEVEL];
+    if (def.spawn.kind === "static") this.spawnStaticRoster(def.spawn.roster, 1);
+  }
+  private teardownHotel() { this.hotelDirector?.dispose(); this.hotelDirector = null; }
+  private setupHotel() {
+    this.teardownHotel();
+    if (!this.map.hotel) return;
+    const player = () => {
+      const [lookX, lookZ] = this.lookDirectionXZ();
+      return { id: this.localPlayerId ?? "local", x: this.player.position.x, z: this.player.position.z, lookX, lookZ, running: this.player.state === "running", alive: !this.isDead && !this.isWaitingForTransition };
+    };
+    this.hotelDirector = new HotelDirector(this.map.hotel, {
+      audio: this.audio, player,
+      observers: () => {
+        const local = player(), observers: HotelObserver[] = local.alive ? [local] : [];
+        this.remoteStates.forEach((r, id) => { if (!r.dead && !r.exitReady && (r.level ?? this.level) === HOTEL_LEVEL) observers.push({ id, x: r.x, z: r.z, lookX: -Math.sin(r.yaw), lookZ: -Math.cos(r.yaw), running: r.state === "running" }); });
+        return observers;
+      },
+      authority: () => this.isWorldAuthority,
+      entities: () => this.entities,
+      walkable: (gx, gz) => this.map.isWalkableForEntities(gx, gz) && !this.map.checkCollision(gx * 4 + 2, gz * 4 + 2, 0.5),
+      sync: () => this.sendToServer({ type: "hotel_sync" }),
+      send: (action, epoch) => this.sendToServer({ type: "hotel_action", epoch, action }),
+      checkpoint: (world, epoch) => this.sendToServer({ type: "hotel_world", epoch, world }),
+      notify: text => this.onHUDNotification?.(text),
+      escape: () => this.onEscapeTrigger?.(),
+    });
+  }
+  public get hotelPanel(): HotelPanel | null { return this.hotelDirector?.panel ?? null; }
+  public submitHotelAction(action: HotelAction) { this.hotelDirector?.submit(action); }
+  public applyHotelState(msg: { state: HotelState; now: number; world?: HotelWorldState }) { this.hotelDirector?.applyState(msg.state, msg.now, msg.world); }
+  public applyHotelWorld(msg: { epoch: number; world: HotelWorldState; now: number }) {
+    if (this.map?.hotel?.state.epoch === msg.epoch) this.hotelDirector?.applyWorld(msg.world, msg.now);
+  }
 
   private teardownTown() {
     this.townDirector?.dispose();
@@ -4059,8 +4120,12 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | "town" | "town_model" | "chess" | "wardrobe" | null {
+  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | "town" | "town_model" | "chess" | "wardrobe" | "hotel" | "hotel_panel" | null {
     if (this.isDead) return null;
+    if (this.hotelDirector) {
+      const used = this.hotelDirector.interact();
+      return used === "panel" ? "hotel_panel" : used ? "hotel" : null;
+    }
     if (this.funDirector) {
       const used = this.funDirector.interact();
       if (used === "panel") return "fun_panel";
@@ -4430,7 +4495,7 @@ export class GameEngine {
 
   /** Streams monsters and smilers to the rest of the level (authority only). */
   private sendWorldState(delta: number) {
-    if (!this.isWorldAuthority || this.remoteStates.size === 0) return;
+    if (!this.isWorldAuthority || this.remoteStates.size === 0 && this.level !== HOTEL_LEVEL || this.map?.hotel && !this.map.hotel.ready) return;
     this.worldSendTimer += delta;
     if (this.worldSendTimer < this.worldSendInterval) return;
     this.worldSendTimer = 0;
@@ -4438,14 +4503,16 @@ export class GameEngine {
     this.sendToServer({
       type: "entities",
       level: this.level,
+      ...(this.map.hotel ? { epoch: this.map.hotel.state.epoch } : {}),
       list: this.entities.map((e) => e.toNetState()),
       smilers: this.smilers.map((s) => ({ id: s.netId, gx: s.gridX, gz: s.gridZ })),
     });
   }
 
   /** Adopts a monsters/smilers frame from the level's authority. */
-  public applyWorldState(msg: { level: number; list: EntityNetState[]; smilers: { id: number; gx: number; gz: number }[] }) {
-    if (!this.map || msg.level !== this.level || this.isWorldAuthority) return;
+  public applyWorldState(msg: { level: number; epoch?: number; bootstrap?: boolean; list: EntityNetState[]; smilers: { id: number; gx: number; gz: number }[] }) {
+    if (!this.map || msg.level !== this.level || this.isWorldAuthority && !(this.map.hotel && msg.bootstrap)) return;
+    if (this.map.hotel && msg.epoch !== this.map.hotel.state.epoch) return;
 
     const seenEntities = new Set<number>();
     for (const s of msg.list) {
@@ -5110,6 +5177,7 @@ export class GameEngine {
     }
 
     this.voip.dispose();
+    this.teardownHotel();
     this.officeCity?.target.dispose();
     this.officeCity = null;
     this.teardownFun();

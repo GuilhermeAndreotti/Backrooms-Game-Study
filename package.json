@@ -8,7 +8,9 @@
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs",
     "start": "NODE_ENV=production node dist/server.cjs",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:hotel": "node --import tsx --test src/shared/hotel.test.ts",
+    "test:hotel:multiplayer": "node --import tsx --test src/shared/hotel.multiplayer.test.ts"
   },
   "dependencies": {
     "compression": "^1.8.1",
