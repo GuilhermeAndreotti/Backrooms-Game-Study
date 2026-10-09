@@ -26,7 +26,7 @@ Toda sala começa aqui. É um campo aberto onde o grupo espera o anfitrião inic
 O host (indicado no lobby) controla:
 
 - **Iniciar expedição** (`Enter` ou botão) — por padrão leva todos ao Level 0.
-- **Seletor de níveis** — iniciar direto em qualquer nível jogável: 0, 1, 2, Electrical Room, Abandoned Office, Poolrooms, Lights Out, Level G, Motion, Level FUN, Level 79.
+- **Seletor de níveis** — iniciar direto em qualquer nível jogável: 0, 1, 2, Electrical Room, Abandoned Office, Terror Hotel, Lights Out, Poolrooms, Level G, Motion, Level FUN, Level 79.
 - **Configurações da sala**: o que ocorre se todos morrerem (nível atual, Level 0 ou lobby) e se as rotas secretas estão ativas.
 
 ## Notas técnicas

@@ -5,7 +5,7 @@ Guia de cada nível do jogo. Os ids e a rota principal vêm de [src/game/levels/
 ## Rota principal
 
 ```
-Lobby ─▶ Level 0 ─▶ Level 1 ─▶ Level 2 ─▶ Electrical Room ─▶ Abandoned Office ─▶ Poolrooms ─▶ Level 79 ─▶ fim
+Lobby ─▶ Level 0 ─▶ Level 1 ─▶ Level 2 ─▶ Electrical Room ─▶ Abandoned Office ─▶ Terror Hotel ─▶ Lights Out ─▶ Poolrooms ─▶ Level 79 ─▶ fim
 ```
 
 A sala avança **junta**: o jogador que chega à saída envia `level_transition_request`; o servidor só muda de nível quando todos os jogadores vivos naquele nível estão prontos e o destino é o próximo de `MAIN_LEVELS`. Ao avançar, todos os mortos são revividos.
@@ -20,7 +20,8 @@ A sala avança **junta**: o jogador que chega à saída envia `level_transition_
 | Level 3 — Electrical Room | `3` | Rota principal / lobby / saída do Lights Out | [level-3-electrical-room.md](level-3-electrical-room.md) |
 | Level 4 — Abandoned Office | `4` | Rota principal / lobby / saída do Level G | [level-4-abandoned-office.md](level-4-abandoned-office.md) |
 | Poolrooms | `5` | Rota principal / lobby | [poolrooms.md](poolrooms.md) |
-| Level 6 — Lights Out *(secreto)* | `6` | Corredor escuro no Level 1 / lobby | [level-6-lights-out.md](level-6-lights-out.md) |
+| Level 5 — Terror Hotel | `13` | Saída do Abandoned Office / lobby | [level-5-terror-hotel.md](level-5-terror-hotel.md) |
+| Level 6 — Lights Out | `6` | Saída do Terror Hotel / corredor secreto no Level 1 / lobby | [level-6-lights-out.md](level-6-lights-out.md) |
 | Level G — The Small Office *(secreto)* | `7` | Passagem escondida no Level 4 / lobby | [level-g.md](level-g.md) |
 | Level 94 — Motion *(secreto)* | `8` | Porta de saída na Electrical Room / rumo DESCONHECIDO no Level 79 / lobby | [level-94-motion.md](level-94-motion.md) |
 | Level FUN *(secreto)* | `9` | Bolo escondido no Level 4 / lobby | [level-fun.md](level-fun.md) |
@@ -46,6 +47,7 @@ Existem **dois** conjuntos de números, e confundi-los é a armadilha mais comum
 | Level 94 — Motion | 8 | 94 |
 | Level FUN | 9 | 11 |
 | Level 79 | 12 | 12 |
+| Terror Hotel | 13 | 13 |
 | 0, 1, 2, Lobby | igual | igual |
 
 Detalhes: o id `11` é pulado na rede porque é o id de **conteúdo** do Level FUN; por isso o Level 79 usa `12`, que é ao mesmo tempo id de rede e de conteúdo. Comentários mais antigos no código (e rótulos como "Level 6/7" em `ProceduralMap`) usam ids de conteúdo — ao ler `if (level === 7)` lá dentro, cheque em qual espaço de ids aquele código está.
@@ -56,7 +58,7 @@ Controlados pela opção de sala **Rotas secretas** (anfitrião, no lobby).
 
 | Detour | Entrada | Saída |
 |---|---|---|
-| Lights Out | Beco sem saída de um corredor sem luz no Level 1 | Volta à Electrical Room (convergência) |
+| Lights Out | Beco sem saída de um corredor sem luz no Level 1 | Leva o grupo à Electrical Room; na rota principal, após o Hotel, segue às Poolrooms |
 | Level G | Passagem escondida no Abandoned Office | Volta ao Abandoned Office |
 | Level 94 — Motion | Porta "SAÍDA" num nicho da parede norte da Electrical Room (individual), ou os três consoles do Level 79 em DESCONHECIDO (todos a bordo) | Final da própria fase (volta ao lobby) |
 | Level FUN | Comer o bolo que ninguém está vigiando (Abandoned Office), ou escolher no lobby | **Segue para o Level 79** (pula as Poolrooms) — não encerra a expedição |

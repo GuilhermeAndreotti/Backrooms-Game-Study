@@ -20,6 +20,7 @@ export class HotelWorld {
   now = 0;
   ready = false;
   departed = false;
+  departureZ = 0;
   bellmanMode = 0;
   private kit: DecorKit;
   private doors: Door[] = [];
@@ -30,7 +31,7 @@ export class HotelWorld {
   private needles: THREE.Object3D[] = [];
   private steam: THREE.Group[] = [];
   private oddDoors: THREE.Object3D[] = [];
-  private departureApplied = false;
+  private returnWall: THREE.Object3D | null = null;
   private key: THREE.Group | null = null;
   private boxLid: THREE.Mesh | null = null;
   private wood: THREE.Material;
@@ -156,13 +157,14 @@ export class HotelWorld {
       if (industrial) {
         for (const py of [h - 0.9, h - 0.45]) { const pipe = this.cylinder(0.12, 4, this.brass, 0, py, 0.25); pipe.rotation.z = Math.PI / 2; wall.add(pipe); }
       } else if (zone !== "exit" && (gx + gz) % 3 === 0) {
-        const door = this.door(`ROOM ${500 + ((gx * 7 + gz * 13) % 83)}`); door.position.z = 0.2; wall.add(door);
+        const door = this.door(`ROOM ${600 + ((gx * 7 + gz * 13) % 83)}`); door.position.z = 0.2; wall.add(door);
       } else if (zone === "hall" && (gx + gz) % 3 === 1) {
         const portrait = this.portrait(HOTEL_SUITS[(gx + gz) % 4], 1930); portrait.position.set(0, 2.2, 0.14); wall.add(portrait);
       }
       g.add(wall);
     }
     if (zone !== "exit" && ((zone === "beverly" && gx % 3 === 1 && gz % 3 === 1) || (zone !== "beverly" && (gx + gz) % 3 === 0))) this.chandelier(g, gx, gz, h - 0.9, zone);
+    if (zone === "exit" && gz % 3 === 0) this.chandelier(g, gx, gz, h - 0.9, zone);
 
     const putAt = (object: THREE.Object3D, pos: { x: number; z: number }, y = 0) => { object.position.set(pos.x - p.x, y, pos.z - p.z); g.add(object); };
     const inCell = (pos: { x: number; z: number }) => Math.floor(pos.x / 4) === gx && Math.floor(pos.z / 4) === gz;
@@ -280,7 +282,18 @@ export class HotelWorld {
       g.add(jet); this.steam.push(jet);
     }
     if (gx === 40 && gz === 54) { const d = this.door("6"); d.position.z = 1.5; g.add(d); }
-    this.cells.push({ group: g, zone });
+    if (zone === "exit" && gx === 40 && gz === 44) {
+      this.returnWall = this.box(4, h, 0.16, this.wallpaper, 0, h / 2, -2);
+      this.returnWall.visible = this.departed;
+      g.add(this.returnWall);
+    }
+    // Map streaming controls the cell root's visibility. Keep a separate content
+    // root so streaming and puzzle updates cannot reveal the departed hotel.
+    const content = new THREE.Group();
+    content.add(...g.children);
+    content.visible = zone === "exit" || !this.departed;
+    g.add(content);
+    this.cells.push({ group: content, zone });
     return g;
   }
   isBlocked(gx: number, gz: number) { return !this.ready || this.departed && gx === 40 && gz === 43 || hotelBlocked(this.state, gx, gz, this.now); }
@@ -302,13 +315,13 @@ export class HotelWorld {
     this.steam.forEach((s, index) => { s.visible = steaming; s.children.forEach((c, i) => { c.rotation.y = now * 0.001 + i; c.scale.setScalar(0.85 + Math.sin(now * 0.004 + i + index) * 0.2); }); });
     for (const l of this.lights) {
       const pulse = (flicker > 0 || steaming && l.zone === "boiler") && Math.sin(now * 0.047) > 0.25;
-      const scale = blackout ? 0 : pulse ? 0.08 : 1;
+      const scale = blackout || this.departed && l.zone !== "exit" ? 0
+        : l.zone === "exit" ? (this.departed && l.source.z < this.departureZ - 4 ? 0.25 : 0)
+        : pulse ? 0.08 : 1;
       l.source.intensity = l.source.baseIntensity * scale; l.bulb.visible = scale > 0.1;
     }
     // Hide only the local view beyond the one-way threshold. Other explorers retain their hotel.
-    if (this.departed && !this.departureApplied) {
-      this.departureApplied = true;
-      for (const c of this.cells) if (c.zone !== "exit") for (const child of c.group.children) child.visible = false;
-    }
+    if (this.returnWall) this.returnWall.visible = this.departed;
+    for (const c of this.cells) if (c.zone !== "exit") c.group.visible = !this.departed;
   }
 }

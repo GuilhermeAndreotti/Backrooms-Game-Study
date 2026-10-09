@@ -101,8 +101,30 @@ test("four explorers share puzzles, late join, authority handoff, reset and the 
     b.send({ type: "hotel_sync" });
     const fresh = await b.wait("hotel_state", m => m.state.epoch > state.epoch);
     assert.equal(fresh.state.collected, 0); assert.equal(fresh.state.exitOpen, false);
+    await delay(215);
+    b.move(HOTEL_RECEPTION);
+    b.send({ type: "hotel_action", epoch: state.epoch, action: { kind: "code", code: puzzle.code } });
+    b.send({ type: "hotel_sync" });
+    const afterStale = await b.wait("hotel_state", m => m.state.epoch === fresh.state.epoch);
+    assert.equal(afterStale.state.revision, 0, "an old expedition cannot mutate the reset puzzle");
+    assert.equal(afterStale.state.boxOpen, false);
     for (const client of [b, c, d, e]) client.send({ type: "died", cause: "caught" });
     await b.wait("respawn", m => m.level === 13);
     b.send({ type: "hotel_sync" }); assert.ok((await b.wait("hotel_state", m => m.state.epoch > fresh.state.epoch)).state.revision === 0);
   } finally { clients.forEach(c => c.ws.close()); }
+});
+
+for (const start of [1, 6]) test(`Lights Out preserves its ${start === 1 ? "secret" : "main"} route`, { timeout: 10000 }, async () => {
+  const c = new Client();
+  try {
+    await new Promise<void>((resolve, reject) => { c.ws.once("open", resolve); c.ws.once("error", reject); });
+    c.send({ type: "join", create: true, name: "Route test" });
+    await c.wait("joined");
+    c.send({ type: "start_game", level: start });
+    await c.wait("level_transition", m => m.level === start);
+    if (start === 1) c.move({ x: 10, z: 10 }, 6);
+    // The server chooses the destination from the route, not from a client guess.
+    c.send({ type: "level_transition_request", level: start === 1 ? 5 : 3 });
+    await c.wait("level_transition", m => m.level === (start === 1 ? 3 : 5));
+  } finally { c.ws.close(); }
 });

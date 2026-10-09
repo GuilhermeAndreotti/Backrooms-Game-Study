@@ -1,8 +1,9 @@
-# Level 6 — Lights Out (secreto)
+# Level 6 — Lights Out
 
 - **Id de rede:** `6` (conteúdo `3`) — **Grid:** 48×48
 - **Entidades:** invocadas sob demanda (`timedSummon`): `DULLER`, `SKIN_STEALER`, `WRETCH`, `HOUND`
-- **Entrada:** beco sem saída de um corredor sem luz no [Level 1](level-1.md) — **Saída:** volta à [Electrical Room](level-3-electrical-room.md)
+- **Rota principal:** [Terror Hotel](level-5-terror-hotel.md) → Lights Out → [Poolrooms](poolrooms.md).
+- **Desvio secreto:** corredor sem luz no [Level 1](level-1.md) → Lights Out → [Electrical Room](level-3-electrical-room.md).
 
 ## Ambientação
 
@@ -23,11 +24,13 @@ O jogo é um equilíbrio entre **ver para onde vai** e **ser visto**: use a lant
 
 ## Entrada
 
-É um desvio **opcional e individual**: chegue ao fim do corredor escuro do Level 1 (a posição vem da seed; o radar a marca com o rótulo `6`) e a transição dispara só para você. Conta como a conquista **Luzes Apagadas**. Pode ser desativado em **Rotas secretas**.
+Na rota principal, o grupo chega pelo corredor final do Terror Hotel. Também pode ser escolhido no lobby.
+
+A entrada pelo Level 1 continua **opcional e individual**: chegue ao fim do corredor escuro (a posição vem da seed; o radar a marca com o rótulo `6`) e a transição dispara só para você. Conta como a conquista **Luzes Apagadas**. Esse desvio pode ser desativado em **Rotas secretas**.
 
 ## Saída
 
-Ao alcançar a saída, o servidor leva o jogador à Electrical Room (convergência), onde ele reencontra o grupo quando a sala chegar lá.
+Na rota principal (ou quando escolhido no lobby), a saída segue às Poolrooms após todos os exploradores vivos estarem prontos. Pelo desvio do Level 1, a saída leva o grupo à Electrical Room, pulando o Level 2. O servidor determina o destino a partir da rota da sala.
 
 ## Referências no código
 

@@ -32,7 +32,6 @@ export class HotelDirector {
   private eventPlayed = -1;
   private stairSound = false;
   private escaped = false;
-  private exitEnteredAt = 0;
   panel: HotelPanel | null = null;
   private flickerUntil = 0;
 
@@ -158,8 +157,8 @@ export class HotelDirector {
     }
     if (s.stairAt && now >= s.stairAt && !this.stairSound) { this.stairSound = true; this.host.audio.setHotelSilence(false); this.host.audio.playHotelSound("door"); }
     const zone = hotelZone(Math.floor(p.x / 4), Math.floor(p.z / 4)) ?? "hall";
-    if (zone === "exit" && s.exitOpen && !this.exitEnteredAt) this.exitEnteredAt = now;
-    if (zone === "exit" && p.z > 184) this.world.departed = true;
+    if (zone === "exit" && s.exitOpen && p.z > 184) this.world.departed = true;
+    if (this.world.departed) this.world.departureZ = Math.max(this.world.departureZ, p.z);
     const quiet = this.blackout || s.exitOpen && zone !== "exit";
     this.host.audio.setHotelSilence(quiet);
     this.host.audio.updateHotelAudio(now - s.startedAt, zone, s.steamUntil > now, quiet);
