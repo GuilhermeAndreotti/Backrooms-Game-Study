@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyHotelAction, createHotelState, hotelBlocked, hotelPuzzle, parseHotelAction, type HotelAction, type HotelState } from "./hotel";
+import { applyHotelAction, createHotelState, hotelBlocked, hotelPuzzle, parseHotelAction, HOTEL_PSI_BANDS, type HotelAction, type HotelState, type Pressure } from "./hotel";
 import { HOTEL_ALCOVES, HOTEL_BEVERLY_DOOR, HOTEL_EXIT, HOTEL_RECEPTION, HOTEL_SPAWN, HOTEL_TABLE, HOTEL_VALVES, hotelCenter, hotelFloorAt, hotelZone } from "../game/levels/hotelLayout";
 import { ABANDONED_OFFICE_LEVEL, HOTEL_LEVEL, LIGHTS_OUT_LEVEL, POOLROOMS_LEVEL, SPACE_LEVEL, nextMainLevel } from "../game/levels/constants";
 
@@ -41,6 +41,7 @@ test("seeds produce unique discoverable codes and a connected gated route", () =
     assert.deepEqual(p, hotelPuzzle(seed));
     assert.equal(new Set(p.cards.map(c => c.suit)).size, 4);
     assert.match(p.code, /^[1-9]{4}$/);
+    p.valves.forEach((v, i) => { const [lo, hi] = HOTEL_PSI_BANDS[v]; assert.ok(p.psi[i] >= lo && p.psi[i] <= hi && p.psi[i] % 5 === 0); });
     const accessible = reachable(createHotelState(1, time));
     p.cards.forEach(c => assert.ok(accessible.has(`${c.gx},${c.gz}`)));
     assert.ok(!accessible.has("37,10"));
@@ -64,14 +65,14 @@ test("distance, height, prerequisites, duplicates and out-of-order pickups are r
   assert.equal(applyHotelAction(solved.state, { kind: "place" }, 42, player(HOTEL_TABLE), time), null);
 });
 test("pressure errors block optional passages but preserve recovery; correct settings open exit", () => {
-  const run = solve(42), at = time + 5100;
-  run.act({ kind: "valve", index: 0, setting: 2 }, HOTEL_VALVES[0], at);
+  const run = solve(42), at = time + 5100, valves = hotelPuzzle(42).valves;
+  run.act({ kind: "valve", index: 0, setting: ((valves[0] + 1) % 3) as Pressure }, HOTEL_VALVES[0], at);
   assert.ok(!hotelBlocked(run.state, 29, 36, at + 100));
   assert.ok(hotelBlocked(run.state, 29, 36, at + 2000));
   const accessible = reachable(run.state, at + 2000);
   HOTEL_VALVES.forEach(v => assert.ok(accessible.has(`${Math.floor(v.x / 4)},${Math.floor(v.z / 4)}`)));
   assert.ok(!accessible.has(`${HOTEL_EXIT.gx},${HOTEL_EXIT.gz}`));
-  for (const index of [2, 0, 1] as const) run.act({ kind: "valve", index, setting: index }, HOTEL_VALVES[index], at + 3000);
+  for (const index of [2, 0, 1] as const) run.act({ kind: "valve", index, setting: valves[index] }, HOTEL_VALVES[index], at + 3000);
   assert.ok(run.state.exitOpen); assert.equal(run.state.steamUntil, 0);
   assert.ok(reachable(run.state, at + 3000).has(`${HOTEL_EXIT.gx},${HOTEL_EXIT.gz}`));
   assert.equal(createHotelState(run.state.epoch + 1, at).collected, 0);

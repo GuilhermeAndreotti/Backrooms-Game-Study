@@ -14,7 +14,7 @@ export const enUS: Record<MessageKey, string> = {
   "hotel.hud.code": "RECEPTION CODE",
   "hotel.gallery": "I → II → III → IV · GUEST GALLERY",
   "hotel.tableClue": "Four winds are missing.\nEach tile reveals the next door.\nBring the winds back to the table.",
-  "hotel.maintenanceClue": "MAINTENANCE · PRESSURE\nLOW · MEDIUM · HIGH\nCircuits A / B / C\nRead the gauge service plates.\nSelect a pressure and confirm.",
+  "hotel.maintenanceClue": "MAINTENANCE · PRESSURE CHART\nRead the gauge beside each valve.\nBelow 60 PSI → HIGH\n60 to 120 PSI → MEDIUM\nAbove 120 PSI → LOW",
   "hotel.openBox": "[E] Inspect reception box",
   "hotel.takeKey": "[E] Take Beverly Room key",
   "hotel.keyFound": "The team found the Beverly Room key — ROOM 512.",

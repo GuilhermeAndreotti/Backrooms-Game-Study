@@ -12,7 +12,7 @@ export const ptBR = {
   "hotel.hud.code": "CÓDIGO DA RECEPÇÃO",
   "hotel.gallery": "I → II → III → IV · GALERIA DOS HÓSPEDES",
   "hotel.tableClue": "Quatro ventos faltam à mesa.\nUma peça revela a próxima porta.\nTragam os ventos de volta.",
-  "hotel.maintenanceClue": "MANUTENÇÃO · PRESSURE\nLOW · MEDIUM · HIGH\nCircuitos A / B / C\nConsulte as placas dos medidores.\nSelecione a pressão e confirme.",
+  "hotel.maintenanceClue": "MANUTENÇÃO · TABELA DE PRESSÃO\nLeia o manômetro ao lado de cada válvula.\nAbaixo de 60 PSI → HIGH\nDe 60 a 120 PSI → MEDIUM\nAcima de 120 PSI → LOW",
   "hotel.openBox": "[E] Examinar caixa da recepção",
   "hotel.takeKey": "[E] Pegar chave do Beverly Room",
   "hotel.keyFound": "A equipe encontrou a chave do Beverly Room — ROOM 512.",

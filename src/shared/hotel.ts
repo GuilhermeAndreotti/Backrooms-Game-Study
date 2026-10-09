@@ -4,6 +4,11 @@ export const HOTEL_BLACKOUT_MS = 5000;
 export const HOTEL_SUITS = ["♣", "♦", "♠", "♥"] as const;
 export const HOTEL_TILES = ["東", "南", "西", "北"] as const;
 export type Pressure = 0 | 1 | 2;
+/**
+ * Gauge readings (PSI) per correct setting, inclusive and in steps of 5. The
+ * maintenance chart reads: under 60 -> HIGH, 60 to 120 -> MEDIUM, over 120 -> LOW.
+ */
+export const HOTEL_PSI_BANDS: Record<Pressure, [number, number]> = { 0: [130, 175], 1: [70, 110], 2: [25, 55] };
 export interface HotelState {
   epoch: number; revision: number; startedAt: number;
   boxOpen: boolean; key: boolean; beverlyOpen: boolean;
@@ -21,9 +26,14 @@ export function createHotelState(epoch = 1, now = Date.now()): HotelState {
 export function hotelPuzzle(seed: number) {
   const random = hotelRng(seed ^ 0x5121930);
   const shuffle = <T>(a: readonly T[]) => { const out = [...a]; for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; } return out; };
-  const cards = shuffle(HOTEL_GUEST_ROOMS.filter(r => r.number < 510)).slice(0, 4).map((room, i) => ({ ...room, suit: HOTEL_SUITS[i], digit: room.number % 10 }));
+  // The digit is drawn, not the room number's last figure: the door plate alone must not give it away.
+  const cards = shuffle(HOTEL_GUEST_ROOMS).slice(0, 4).map((room, i) => ({ ...room, suit: HOTEL_SUITS[i], digit: 1 + Math.floor(random() * 9) }));
   const order = shuffle([0, 1, 2, 3]);
-  return { cards, order, code: order.map(i => cards[i].digit).join(""), alcoves: shuffle([0, 1, 2, 3]) };
+  const alcoves = shuffle([0, 1, 2, 3]);
+  // Each valve's correct pressure, and the gauge reading beside it that points there.
+  const valves = [0, 1, 2].map(() => Math.floor(random() * 3) as Pressure);
+  const psi = valves.map(v => { const [lo, hi] = HOTEL_PSI_BANDS[v]; return lo + 5 * Math.floor(random() * ((hi - lo) / 5 + 1)); });
+  return { cards, order, code: order.map(i => cards[i].digit).join(""), alcoves, valves, psi };
 }
 export function hotelBlocked(s: HotelState, gx: number, gz: number, now: number): boolean {
   if (gx === HOTEL_BEVERLY_DOOR.gx && gz === HOTEL_BEVERLY_DOOR.gz) return !s.beverlyOpen;
@@ -66,9 +76,9 @@ export function applyHotelAction(s: HotelState, a: HotelAction, seed: number, p:
     case "valve":
       if (!s.stairAt || now < s.stairAt || s.exitOpen || s.valves[a.index] === a.setting || !near(HOTEL_VALVES[a.index])) return null;
       out.valves[a.index] = a.setting;
-      if (a.setting !== a.index) { out.pressure = Math.min(3, s.pressure + 1); out.steamAt = now + 1800; out.steamUntil = now + 10000; }
+      if (a.setting !== puzzle.valves[a.index]) { out.pressure = Math.min(3, s.pressure + 1); out.steamAt = now + 1800; out.steamUntil = now + 10000; }
       else out.pressure = Math.max(0, s.pressure - 1);
-      out.exitOpen = out.valves.every((v, i) => v === i);
+      out.exitOpen = out.valves.every((v, i) => v === puzzle.valves[i]);
       if (out.exitOpen) { out.steamUntil = 0; out.pressure = 0; }
       break;
   }

@@ -4,16 +4,34 @@ export const HOTEL_CELL = 4;
 export type HotelZone = "hall" | "beverly" | "stairs" | "boiler" | "exit";
 export interface HotelRect { x1: number; z1: number; x2: number; z2: number; zone: HotelZone }
 const rect = (x1: number, z1: number, x2: number, z2: number, zone: HotelZone = "hall"): HotelRect => ({ x1, z1, x2, z2, zone });
-export const HOTEL_ROOMS = [501, 507, 503, 510, 502, 509, 506, 504, 508, 511, 505, 514] as const;
+/** Numbered in order along the corridors; like many old hotels, there is no 513. */
+export const HOTEL_ROOMS = [501, 502, 503, 504, 505, 506, 507, 508, 509, 510, 511, 514] as const;
+/** Room centre columns per row. The inner row's last room sits at 26 so it keeps a wall off the east corridor (x=29). */
+const ROOM_COLUMNS = [[12, 17, 22, 27], [12, 17, 22, 26], [12, 17, 22, 27]];
+/**
+ * Twelve identical 3x2-cell guest rooms (12 x 8 m), each behind a one-cell entry
+ * (doorX, doorZ) off a corridor: row 0 north of the top corridor, row 1 inside the
+ * ring off the top corridor, row 2 south of the bottom corridor. `into` is the z
+ * direction from the entry into the room; (gx, gz) is the room cell by the entry.
+ */
 export const HOTEL_GUEST_ROOMS = HOTEL_ROOMS.map((number, i) => {
-  const column = i % 4, row = Math.floor(i / 4), gx = 12 + column * 5;
-  const gz = row === 0 ? 3 : row === 1 ? 9 : 16;
-  // Bedroom bounds. The last middle-row room stops at x=27: x=28 would sit
-  // flush against the east corridor (x=29) and open the room's whole side.
-  const z1 = row === 0 ? 2 : row === 1 ? 7 : 14, z2 = row === 0 ? 3 : row === 1 ? 10 : 17;
-  const x2 = row === 1 ? Math.min(gx + 1, 27) : gx + 1;
-  return { number, gx, gz, x1: gx - 1, z1, x2, z2, doorX: gx, doorZ: row === 0 ? 4 : row === 1 ? 6 : 13 };
+  const row = Math.floor(i / 4), gx = ROOM_COLUMNS[row][i % 4];
+  const z1 = [2, 7, 14][row], z2 = z1 + 1, into = row === 0 ? -1 : 1;
+  return { number, gx, gz: into < 0 ? z2 : z1, x1: gx - 1, z1, x2: gx + 1, z2, doorX: gx, doorZ: [4, 6, 13][row], into };
 });
+export type HotelGuestRoom = (typeof HOTEL_GUEST_ROOMS)[number];
+/**
+ * World position inside a guest room: u across the room (-6..6, +x), v in from
+ * the entry wall (0..8). Furniture and the guest card are laid out this way.
+ */
+export function hotelRoomPoint(room: HotelGuestRoom, u: number, v: number) {
+  const entryWall = room.into < 0 ? (room.z2 + 1) * HOTEL_CELL : room.z1 * HOTEL_CELL;
+  return { x: room.gx * HOTEL_CELL + 2 + u, z: entryWall + room.into * v };
+}
+/** Which side of the room the bed stands on (+1 = +x); odd rooms mirror even ones. */
+export const hotelRoomSide = (room: HotelGuestRoom) => room.number % 2 ? 1 : -1;
+/** The guest card stands on the nightstand by the bed's outer side. */
+export const hotelCardSpot = (room: HotelGuestRoom) => hotelRoomPoint(room, hotelRoomSide(room) * 4.15, 7.5);
 export const HOTEL_RECTS: readonly HotelRect[] = [
   rect(2, 2, 8, 7), rect(9, 5, 29, 5), rect(9, 6, 9, 12), rect(29, 6, 29, 12), rect(9, 12, 28, 12),
   ...HOTEL_GUEST_ROOMS.flatMap(r => [rect(r.x1, r.z1, r.x2, r.z2), rect(r.doorX, r.doorZ, r.doorX, r.doorZ)]),

@@ -6,11 +6,11 @@
 
 ## Ambientes e puzzles
 
-O hotel tem planta finita, decoração dos anos 1920/1930, carpete vermelho, madeira escura, lustres e detalhes dourados. A seed determina as pistas e a ordem das alcovas.
+O hotel tem planta finita e decoração dos anos 1920/1930. Os corredores têm papel de parede damasco bordô, carpete de hexágonos e luminárias de teto. Os quartos têm papel listrado verde e piso de taco. O Beverly Room tem piso de mármore xadrez, colunas, piano e bar, e a Boiler Room tem chapas rebitadas e piso de chapa xadrez. Todas as texturas são procedurais (canvas), em `hotelWorld.ts`. A seed determina os dígitos dos cartões, a ordem dos retratos, a ordem das alcovas e a pressão de cada válvula.
 
-1. **Main Hall:** encontre quatro cartões nos quartos. Cada cartão associa um naipe a um dígito; a ordem dos quatro quadros numerados da galeria determina a combinação da caixa da recepção. Abra a caixa, recolha a chave compartilhada e destranque a **ROOM 512**.
+1. **Main Hall:** doze quartos iguais (3×2 células, 12×8 m), numerados de 501 a 514 sem o 513, cada um atrás de uma entrada com porta e banheiro. Os quatro quartos com cartão mostram o naipe na placa da porta (ex.: `ROOM 503 ♠`). O cartão fica no criado-mudo e associa o naipe a um dígito sorteado, que não tem relação com o número do quarto. Os quatro retratos I→IV atrás do balcão da recepção dão a ordem dos naipes. A HUD mostra `CÓDIGO DA RECEPÇÃO` com os dígitos que o jogador já encontrou. Abra a caixa, recolha a chave compartilhada e destranque a **ROOM 512**.
 2. **The Beverly Room:** encontre as quatro peças de Mahjong nas alcovas liberadas em sequência e coloque-as na mesa. As peças recolhidas ficam disponíveis para o grupo inteiro. A última peça provoca cinco segundos de blackout, após os quais a escada da Boiler Room é liberada.
-3. **Boiler Room:** explore os avisos de manutenção e configure as válvulas: **A LOW, B MEDIUM, C HIGH**. O seletor só aplica a escolha ao confirmar. Um erro anuncia vapor com 1,8 segundo de antecedência e bloqueia temporariamente duas passagens opcionais; a rota central continua disponível. A combinação correta abre a saída.
+3. **Boiler Room:** ao pé da escada há a tabela de manutenção: **abaixo de 60 PSI → HIGH, de 60 a 120 → MEDIUM, acima de 120 → LOW**. Ao lado de cada válvula (A, B, C) há um manômetro com a leitura sorteada pela seed (`hotelPuzzle().psi`, faixas em `HOTEL_PSI_BANDS`). Leia, converta e configure. O seletor só aplica a escolha ao confirmar. Um erro anuncia vapor com 1,8 segundo de antecedência e bloqueia temporariamente duas passagens opcionais; a rota central continua disponível. A combinação correta abre a saída.
 4. **Corredor final:** ao passar pelo ponto sem retorno, o hotel desaparece apenas para aquele explorador e as luzes acendem atrás dele. A porta final registra sua chegada; o servidor espera pelos demais exploradores vivos antes de avançar ao Level 6.
 
 ## Ameaças

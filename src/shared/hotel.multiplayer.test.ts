@@ -82,9 +82,9 @@ test("four explorers share puzzles, late join, authority handoff, reset and the 
     const late = await e.wait("hotel_state");
     assert.equal(late.state.stairAt, state.stairAt); assert.equal(late.state.placed, 4);
     await delay(Math.max(0, state.stairAt - Date.now()) + 50);
-    await action(b, { kind: "valve", index: 0, setting: 2 }, HOTEL_VALVES[0]);
+    await action(b, { kind: "valve", index: 0, setting: (puzzle.valves[0] + 1) % 3 }, HOTEL_VALVES[0]);
     assert.ok(state.steamUntil > Date.now());
-    for (const index of [0, 1, 2] as const) await action([b, c, d][index], { kind: "valve", index, setting: index }, HOTEL_VALVES[index]);
+    for (const index of [0, 1, 2] as const) await action([b, c, d][index], { kind: "valve", index, setting: puzzle.valves[index] }, HOTEL_VALVES[index]);
     assert.ok(state.exitOpen);
     for (const client of [b, c, d, e]) { client.move(hotelCenter(HOTEL_EXIT.gx, HOTEL_EXIT.gz)); client.send({ type: "level_transition_request", level: 6 }); }
     for (const client of [b, c, d, e]) await client.wait("level_transition", m => m.level === 6);

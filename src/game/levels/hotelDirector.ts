@@ -4,7 +4,7 @@ import { createHotelWorldState, HOTEL_TILES, type HotelAction, type HotelState, 
 import type { AudioManager } from "../AudioManager";
 import type { WanderingEntity } from "../WanderingEntity";
 import type { HotelWorld } from "./hotelWorld";
-import { HOTEL_ALCOVES, HOTEL_BEVERLY_DOOR, HOTEL_EXIT, HOTEL_RECEPTION, HOTEL_TABLE, HOTEL_VALVES, hotelCenter, hotelFloorAt, hotelRng, hotelSightClear, hotelZone } from "./hotelLayout";
+import { HOTEL_ALCOVES, HOTEL_BEVERLY_DOOR, HOTEL_EXIT, HOTEL_RECEPTION, HOTEL_TABLE, HOTEL_VALVES, hotelCardSpot, hotelCenter, hotelFloorAt, hotelRng, hotelSightClear, hotelZone } from "./hotelLayout";
 
 export type HotelPanel = { kind: "code" } | { kind: "valve"; index: number };
 export interface HotelObserver { id: string; x: number; z: number; lookX: number; lookZ: number; running: boolean }
@@ -70,7 +70,7 @@ export class HotelDirector {
     const options: Interaction[] = [];
     if (!s.key) options.push({ ...HOTEL_RECEPTION, prompt: t(s.boxOpen ? "hotel.takeKey" : "hotel.openBox"), ...(s.boxOpen ? { action: { kind: "key" } as HotelAction } : { panel: { kind: "code" } as HotelPanel }) });
     if (!s.beverlyOpen) options.push({ ...hotelCenter(HOTEL_BEVERLY_DOOR.gx, HOTEL_BEVERLY_DOOR.gz), prompt: t(s.key ? "hotel.unlock512" : "hotel.locked512"), ...(s.key ? { action: { kind: "beverly" } as HotelAction } : { text: t("hotel.locked512") }) });
-    for (const card of this.world.puzzle.cards) options.push({ x: card.gx * 4 + 3.25, z: card.gz * 4 + 2, prompt: t("hotel.readCard"), card: card.number, text: `ROOM ${card.number} · ${card.suit} · ${t(`hotel.digit.${card.digit}`)} (${card.digit})` });
+    for (const card of this.world.puzzle.cards) options.push({ ...hotelCardSpot(card), prompt: t("hotel.readCard"), card: card.number, text: `ROOM ${card.number} · ${card.suit} · ${t(`hotel.digit.${card.digit}`)} (${card.digit})` });
     if (s.beverlyOpen && s.collected < 4) {
       const slot = this.world.puzzle.alcoves[s.collected], door = HOTEL_ALCOVES[slot];
       if (!(s.doors & (1 << slot))) options.push({ ...hotelCenter(door.gx, door.gz), prompt: t("hotel.openTileDoor", { symbol: HOTEL_TILES[s.collected] }), action: { kind: "door", index: slot } });
@@ -170,7 +170,7 @@ export class HotelDirector {
     if (s.stairAt && now >= s.stairAt && !this.stairSound) { this.stairSound = true; this.host.audio.setHotelSilence(false); this.host.audio.playHotelSound("door"); }
     // Walking up to a guest card counts as finding it, no need to press E.
     if (p.alive && !s.boxOpen) for (const card of this.world.puzzle.cards) {
-      if (!this.foundCards.has(card.number) && this.near(p, { x: card.gx * 4 + 3.25, z: card.gz * 4 + 2 }, 3.5)) this.foundCards.add(card.number);
+      if (!this.foundCards.has(card.number) && this.near(p, hotelCardSpot(card), 3.5)) this.foundCards.add(card.number);
     }
     const zone = hotelZone(Math.floor(p.x / 4), Math.floor(p.z / 4)) ?? "hall";
     if (zone === "exit" && s.exitOpen && p.z > 184) this.world.departed = true;
