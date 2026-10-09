@@ -169,36 +169,53 @@ export class Lobby {
    */
   private buildSky() {
     const rand = mulberry(7);
-    const tex = this.canvasTexture(1024, 512, (g) => {
-      const grad = g.createLinearGradient(0, 0, 0, 512);
+    const W = 2048, H = 1024;
+    const tex = this.canvasTexture(W, H, (g) => {
+      // The texture wraps around the sphere: anything crossing the left/right
+      // edge is drawn a second time on the other side, or it shows a seam.
+      const wrapped = (x: number, r: number, draw: (x: number) => void) => {
+        draw(x);
+        if (x - r < 0) draw(x + W);
+        if (x + r > W) draw(x - W);
+      };
+      const grad = g.createLinearGradient(0, 0, 0, H);
       grad.addColorStop(0, "#2f6fbf");
       grad.addColorStop(0.36, "#5d9ad8");
       grad.addColorStop(0.5, "#a6d2f2");
       grad.addColorStop(1, "#a6d2f2");
       g.fillStyle = grad;
-      g.fillRect(0, 0, 1024, 512);
-      // Sun (matches the directional light below).
-      const sun = g.createRadialGradient(SUN_U * 1024, SUN_V * 512, 0, SUN_U * 1024, SUN_V * 512, 90);
-      sun.addColorStop(0, "rgba(255,255,240,1)");
-      sun.addColorStop(0.12, "rgba(255,250,225,0.95)");
-      sun.addColorStop(0.35, "rgba(255,240,200,0.25)");
-      sun.addColorStop(1, "rgba(255,240,200,0)");
-      g.fillStyle = sun;
-      g.fillRect(0, 0, 1024, 512);
+      g.fillRect(0, 0, W, H);
+      // Sun (matches the directional light below), widened by the projection's
+      // 1/sin(polar angle) so it reads round on the sphere instead of squashed.
+      const sunR = 180, sunStretch = 1 / Math.sin(SUN_V * Math.PI);
+      wrapped(SUN_U * W, sunR * sunStretch, (x) => {
+        const sun = g.createRadialGradient(x, SUN_V * H, 0, x, SUN_V * H, sunR);
+        sun.addColorStop(0, "rgba(255,255,240,1)");
+        sun.addColorStop(0.12, "rgba(255,250,225,0.95)");
+        sun.addColorStop(0.35, "rgba(255,240,200,0.25)");
+        sun.addColorStop(1, "rgba(255,240,200,0)");
+        g.fillStyle = sun;
+        g.save(); g.translate(x, SUN_V * H); g.scale(sunStretch, 1); g.translate(-x, -SUN_V * H);
+        g.fillRect(x - sunR, SUN_V * H - sunR, sunR * 2, sunR * 2);
+        g.restore();
+      });
       // Clouds: clusters of soft blobs, squashed toward the horizon.
-      for (let i = 0; i < 26; i++) {
-        const cx = rand() * 1024, cy = 120 + rand() * 120;
+      for (let i = 0; i < 28; i++) {
+        const cx = rand() * W, cy = 250 + rand() * 230;
         const n = 4 + Math.floor(rand() * 5);
         for (let j = 0; j < n; j++) {
-          const x = cx + (rand() - 0.5) * 90, y = cy + (rand() - 0.5) * 14;
-          const r = 14 + rand() * 26;
-          const blob = g.createRadialGradient(x, y, 0, x, y, r);
-          blob.addColorStop(0, "rgba(255,255,255,0.55)");
-          blob.addColorStop(1, "rgba(255,255,255,0)");
-          g.fillStyle = blob;
-          g.save(); g.translate(x, y); g.scale(1.8, 0.6); g.translate(-x, -y);
-          g.fillRect(x - r, y - r, r * 2, r * 2);
-          g.restore();
+          const y = cy + (rand() - 0.5) * 26;
+          const r = 20 + rand() * 34;
+          wrapped(cx + (rand() - 0.5) * 150, r * 1.8, (x) => {
+            const blob = g.createRadialGradient(x, y, 0, x, y, r);
+            blob.addColorStop(0, "rgba(255,255,255,0.65)");
+            blob.addColorStop(0.45, "rgba(255,255,255,0.3)");
+            blob.addColorStop(1, "rgba(255,255,255,0)");
+            g.fillStyle = blob;
+            g.save(); g.translate(x, y); g.scale(1.8, 0.6); g.translate(-x, -y);
+            g.fillRect(x - r, y - r, r * 2, r * 2);
+            g.restore();
+          });
         }
       }
     });
