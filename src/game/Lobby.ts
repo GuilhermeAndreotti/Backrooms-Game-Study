@@ -3,35 +3,71 @@
  * SPDX-License-Identifier: Apache-2.0
  *
 
- * The room lobby ("level 5"): a small open-air field, roofless and walled only
- * by the sky, where explorers wait for the host to start the expedition. It
- * has a soccer field everybody can kick a ball around on. Everything here is
- * plain props on top of the generic map (which only carves the empty plot and
+ * The room lobby: a fenced sports ground under an open sky, where explorers
+ * wait for the host to start the expedition. A soccer pitch with bleachers
+ * takes the west side; a paved plaza on the east holds the cheat terminal,
+ * the mirror, the wardrobe and the chess table. Everything here is plain
+ * props on top of the generic map (which only carves the empty plot and
  * skips the walls/ceiling, see ProceduralMap.carveLobby / createCell3D).
+ *
+ * Graphics budget: one sun + one hemisphere light, no extra shadow casters,
+ * and everything repeated (fence posts, trees, lamps, far buildings) is a
+ * single InstancedMesh, so the whole scenery is a few dozen draw calls.
  */
 
 import * as THREE from "three";
 import { Reflector } from "three/examples/jsm/objects/Reflector.js";
 import { EMPTY_CHESS, fromFen, type ChessNetState, type PieceType } from "../shared/chess";
+import { t } from "../i18n";
 export { LOBBY_LEVEL } from "./levels/constants";
 
 /** Layout in world metres (the hall itself is grid cells 2..21 x 2..15, 4 m each). */
 export const LOBBY = {
-  field: { cx: 20, cz: 20, length: 22, width: 14 },
+  field: { cx: 21, cz: 24, length: 22, width: 14 },
   goalWidth: 5,
   goalDepth: 1.4,
   spawnCell: { x: 10, z: 6 },
+  /** Walkable plot: world x 8..48, z 8..40 (solid, invisible cells all around). */
   hall: { minCell: 2, maxCellX: 11, maxCellZ: 9 },
-  /** The cheat terminal, off in the corner away from the pitch (world XZ). */
-  terminal: { x: 44, z: 34 },
-  /** A big standing mirror right beside the cheat terminal; its glass faces -X (toward the pitch). */
-  mirror: { x: 44, z: 30, width: 2.2, height: 3.2 },
+  /** The paved plaza east of the pitch (world XZ bounds). */
+  plaza: { minX: 34.5, maxX: 48, minZ: 8, maxZ: 40 },
+  /** The cheat terminal, in the plaza's south-east corner (world XZ). */
+  terminal: { x: 45, z: 36 },
+  /** A big standing mirror against the east fence; its glass faces -X (toward the pitch). */
+  mirror: { x: 46.9, z: 27.6, width: 2.2, height: 3.2 },
+  /** The wardrobe ("Armário"), right beside the mirror, doors facing -X. */
+  wardrobe: { x: 46.95, z: 23.6, width: 1.7, depth: 0.62, height: 2.25 },
   /**
-   * The chess table, in the hall's north-east corner. White sits on its south
-   * side (+z), black on the north; the board spans CHESS.board metres.
+   * The chess table, in the plaza's north end. White sits on its south side
+   * (+z), black on the north; the board spans CHESS.board metres.
    */
-  chess: { x: 40, z: 13 },
+  chess: { x: 41, z: 13.5 },
+  /** Almond-water vending machine against the north fence (decorative, solid). */
+  vending: { x: 45.6, z: 8.75 },
+  /** Bleachers along the pitch's north touchline (centre of the front row's footprint). */
+  bleachers: { x: 21, z: 14.1, length: 12 },
+  /** Street lamps around the pitch and plaza (solid poles). */
+  lamps: [[8.9, 9.1], [21, 9.1], [33.6, 9.1], [8.9, 38.9], [21, 38.9], [33.6, 38.9], [47.4, 32.5], [47.4, 16]] as [number, number][],
 };
+
+/** Where the sun is painted on the sky canvas (u across, v down from the zenith). */
+const SUN_U = 0.62, SUN_V = 0.27;
+
+/** Small deterministic PRNG for decoration placement (never gameplay). */
+function mulberry(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** The fence just outside the walkable plot (world XZ). */
+const FENCE = { minX: 7.7, maxX: 48.3, minZ: 7.7, maxZ: 40.3, height: 2.3 };
+/** Far enough to hold the sky dome; restored to the default when leaving (see GameEngine.setupLobby). */
+export const LOBBY_CAMERA_FAR = 230;
 
 /** The chess table's dimensions (metres). */
 export const CHESS = { top: 0.78, size: 1.7, board: 1.36, seatDist: 1.35 };
@@ -80,12 +116,22 @@ export class Lobby {
   private resetTimer = 0;
   private disposables: { dispose(): void }[] = [];
 
+  /** Follows the player so the horizon never gets any closer. */
+  private sky: THREE.Mesh | null = null;
+
   constructor(scene: THREE.Scene) {
+    this.buildSky();
+    this.buildGround();
+    this.buildFence();
+    this.buildScenery();
+    this.buildPlaza();
     this.buildField();
     this.buildGoals();
     this.buildBenches();
+    this.buildBleachers();
     this.buildCheatTerminal();
     this.buildMirror();
+    this.buildWardrobe();
     this.buildChessTable();
     this.ball = this.buildBall();
     scene.add(this.group);
@@ -96,6 +142,421 @@ export class Lobby {
   private track<T extends { dispose(): void }>(d: T): T {
     this.disposables.push(d);
     return d;
+  }
+
+  /** A canvas texture this lobby owns (disposed with it). */
+  private canvasTexture(w: number, h: number, draw: (g: CanvasRenderingContext2D) => void, repeat?: [number, number]): THREE.CanvasTexture {
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    draw(c.getContext("2d")!);
+    const tex = this.track(new THREE.CanvasTexture(c));
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    if (repeat) {
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(repeat[0], repeat[1]);
+    }
+    return tex;
+  }
+
+  // --- scenery --------------------------------------------------------------
+
+  /**
+   * An equirectangular sky painted once on a canvas (gradient, a soft sun and
+   * a few clouds) on an unlit inside-out sphere that follows the player, plus
+   * the two lights that make everything else read as daylight. The horizon
+   * colour matches the lobby's fog, so the ground melts into it.
+   */
+  private buildSky() {
+    const rand = mulberry(7);
+    const tex = this.canvasTexture(1024, 512, (g) => {
+      const grad = g.createLinearGradient(0, 0, 0, 512);
+      grad.addColorStop(0, "#2f6fbf");
+      grad.addColorStop(0.36, "#5d9ad8");
+      grad.addColorStop(0.5, "#a6d2f2");
+      grad.addColorStop(1, "#a6d2f2");
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 1024, 512);
+      // Sun (matches the directional light below).
+      const sun = g.createRadialGradient(SUN_U * 1024, SUN_V * 512, 0, SUN_U * 1024, SUN_V * 512, 90);
+      sun.addColorStop(0, "rgba(255,255,240,1)");
+      sun.addColorStop(0.12, "rgba(255,250,225,0.95)");
+      sun.addColorStop(0.35, "rgba(255,240,200,0.25)");
+      sun.addColorStop(1, "rgba(255,240,200,0)");
+      g.fillStyle = sun;
+      g.fillRect(0, 0, 1024, 512);
+      // Clouds: clusters of soft blobs, squashed toward the horizon.
+      for (let i = 0; i < 26; i++) {
+        const cx = rand() * 1024, cy = 120 + rand() * 120;
+        const n = 4 + Math.floor(rand() * 5);
+        for (let j = 0; j < n; j++) {
+          const x = cx + (rand() - 0.5) * 90, y = cy + (rand() - 0.5) * 14;
+          const r = 14 + rand() * 26;
+          const blob = g.createRadialGradient(x, y, 0, x, y, r);
+          blob.addColorStop(0, "rgba(255,255,255,0.55)");
+          blob.addColorStop(1, "rgba(255,255,255,0)");
+          g.fillStyle = blob;
+          g.save(); g.translate(x, y); g.scale(1.8, 0.6); g.translate(-x, -y);
+          g.fillRect(x - r, y - r, r * 2, r * 2);
+          g.restore();
+        }
+      }
+    });
+    const sky = new THREE.Mesh(
+      this.track(new THREE.SphereGeometry(200, 32, 16)),
+      this.track(new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, depthWrite: false })),
+    );
+    sky.renderOrder = -1;
+    sky.frustumCulled = false;
+    this.group.add(sky);
+    this.sky = sky;
+
+    // Where the painted sun ends up on the sphere (SphereGeometry's own u/v mapping).
+    const phi = SUN_U * Math.PI * 2, theta = SUN_V * Math.PI;
+    const dir = new THREE.Vector3(-Math.cos(phi) * Math.sin(theta), Math.cos(theta), Math.sin(phi) * Math.sin(theta));
+    const sunLight = new THREE.DirectionalLight(0xfff0d2, 1.7);
+    sunLight.position.set(28 + dir.x * 60, dir.y * 60, 24 + dir.z * 60);
+    sunLight.target.position.set(28, 0, 24);
+    this.group.add(sunLight, sunLight.target);
+    this.group.add(new THREE.HemisphereLight(0xcfe4ff, 0x56703a, 0.9));
+  }
+
+  /** One big grass plane out to the horizon (the plot's own cell floors are hidden, see ProceduralMap). */
+  private buildGround() {
+    const SIZE = 600;
+    const rand = mulberry(3);
+    const tex = this.canvasTexture(128, 128, (g) => {
+      g.fillStyle = "#4f7a33";
+      g.fillRect(0, 0, 128, 128);
+      for (let i = 0; i < 900; i++) {
+        const shade = rand();
+        g.fillStyle = shade < 0.5 ? "rgba(36,70,24,0.45)" : shade < 0.85 ? "rgba(112,150,62,0.4)" : "rgba(150,140,80,0.35)";
+        g.fillRect(rand() * 128, rand() * 128, 1 + rand() * 2, 2 + rand() * 3);
+      }
+    }, [SIZE / 4, SIZE / 4]);
+    const ground = new THREE.Mesh(
+      this.track(new THREE.PlaneGeometry(SIZE, SIZE)),
+      this.track(new THREE.MeshStandardMaterial({ map: tex, roughness: 1 })),
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    this.group.add(ground);
+  }
+
+  /** Chain-link fence on a concrete curb, right where the plot's invisible collision is. */
+  private buildFence() {
+    const { minX, maxX, minZ, maxZ, height } = FENCE;
+    const mesh = this.canvasTexture(64, 64, (g) => {
+      g.clearRect(0, 0, 64, 64);
+      g.strokeStyle = "rgba(170,176,178,1)";
+      g.lineWidth = 3;
+      g.beginPath();
+      g.moveTo(0, 0); g.lineTo(64, 64);
+      g.moveTo(64, 0); g.lineTo(0, 64);
+      g.stroke();
+    });
+    mesh.wrapS = mesh.wrapT = THREE.RepeatWrapping;
+    const steel = this.track(new THREE.MeshStandardMaterial({ color: 0x8d9497, roughness: 0.45, metalness: 0.6 }));
+    const concrete = this.track(new THREE.MeshStandardMaterial({ color: 0xa8a49a, roughness: 0.95 }));
+    const sides: [number, number, number, number][] = [
+      [minX, minZ, maxX, minZ], [maxX, minZ, maxX, maxZ], [maxX, maxZ, minX, maxZ], [minX, maxZ, minX, minZ],
+    ];
+    const posts: THREE.Vector3[] = [];
+    for (const [x0, z0, x1, z1] of sides) {
+      const len = Math.hypot(x1 - x0, z1 - z0);
+      const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+      const yaw = Math.atan2(x1 - x0, z1 - z0) - Math.PI / 2;
+      const tex = mesh.clone();
+      this.track(tex);
+      tex.repeat.set(len / 0.3, (height - 0.2) / 0.3);
+      tex.needsUpdate = true;
+      const net = new THREE.Mesh(
+        this.track(new THREE.PlaneGeometry(len, height - 0.2)),
+        this.track(new THREE.MeshStandardMaterial({ map: tex, transparent: true, alphaTest: 0.02, side: THREE.DoubleSide, depthWrite: false, roughness: 0.5, metalness: 0.5 })),
+      );
+      net.position.set(mx, 0.2 + (height - 0.2) / 2, mz);
+      net.rotation.y = yaw;
+      this.group.add(net);
+      const rail = new THREE.Mesh(this.track(new THREE.BoxGeometry(len, 0.05, 0.05)), steel);
+      rail.position.set(mx, height, mz);
+      rail.rotation.y = yaw;
+      this.group.add(rail);
+      const curb = new THREE.Mesh(this.track(new THREE.BoxGeometry(len + 0.25, 0.22, 0.25)), concrete);
+      curb.position.set(mx, 0.11, mz);
+      curb.rotation.y = yaw;
+      this.group.add(curb);
+      const n = Math.max(1, Math.round(len / 2.5));
+      for (let i = 0; i < n; i++) posts.push(new THREE.Vector3(x0 + ((x1 - x0) * i) / n, 0, z0 + ((z1 - z0) * i) / n));
+    }
+    const postMesh = this.instanced(new THREE.CylinderGeometry(0.045, 0.045, height + 0.05, 6), steel, posts.length);
+    const m = new THREE.Matrix4();
+    posts.forEach((p, i) => postMesh.setMatrixAt(i, m.makeTranslation(p.x, (height + 0.05) / 2, p.z)));
+    this.group.add(postMesh);
+  }
+
+  private instanced(geo: THREE.BufferGeometry, mat: THREE.Material, count: number): THREE.InstancedMesh {
+    const mesh = new THREE.InstancedMesh(this.track(geo), mat, count);
+    this.track(mesh);
+    return mesh;
+  }
+
+  /**
+   * Everything past the fence: a belt of low-poly trees and bushes, a few
+   * street lamps inside, and a ring of far-off blocky buildings that the fog
+   * turns into a skyline. Each kind is a single InstancedMesh; positions come
+   * from a fixed-seed generator (pure decoration — nothing gameplay-relevant).
+   */
+  private buildScenery() {
+    const rand = mulberry(11);
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3();
+    const color = new THREE.Color();
+    const up = new THREE.Vector3(0, 1, 0);
+    const outsideFence = (x: number, z: number, margin: number) =>
+      x < FENCE.minX - margin || x > FENCE.maxX + margin || z < FENCE.minZ - margin || z > FENCE.maxZ + margin;
+
+    // Trees (trunk + canopy) and bushes (canopy only, near the ground).
+    type Plant = { x: number; z: number; scale: number; tree: boolean };
+    const plants: Plant[] = [];
+    for (let tries = 0; plants.length < 95 && tries < 2000; tries++) {
+      const x = FENCE.minX - 34 + rand() * (FENCE.maxX - FENCE.minX + 68);
+      const z = FENCE.minZ - 34 + rand() * (FENCE.maxZ - FENCE.minZ + 68);
+      if (!outsideFence(x, z, 2.2)) continue;
+      if (plants.some((o) => (o.x - x) ** 2 + (o.z - z) ** 2 < 9)) continue;
+      const nearFence = !outsideFence(x, z, 4.5);
+      plants.push({ x, z, scale: 0.8 + rand() * 0.7, tree: !nearFence || rand() < 0.35 });
+    }
+    // A hedge of bushes hugging the fence on its outside.
+    const hedge: Plant[] = [];
+    for (let x = FENCE.minX; x <= FENCE.maxX; x += 1.6) {
+      hedge.push({ x, z: FENCE.minZ - 0.9, scale: 0.55 + rand() * 0.3, tree: false });
+      hedge.push({ x, z: FENCE.maxZ + 0.9, scale: 0.55 + rand() * 0.3, tree: false });
+    }
+    for (let z = FENCE.minZ; z <= FENCE.maxZ; z += 1.6) {
+      hedge.push({ x: FENCE.minX - 0.9, z, scale: 0.55 + rand() * 0.3, tree: false });
+      hedge.push({ x: FENCE.maxX + 0.9, z, scale: 0.55 + rand() * 0.3, tree: false });
+    }
+    const all = [...plants, ...hedge];
+    const trees = all.filter((o) => o.tree);
+    const bark = this.track(new THREE.MeshStandardMaterial({ color: 0x5a4030, roughness: 1, flatShading: true }));
+    const leaves = this.track(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true }));
+    const trunks = this.instanced(new THREE.CylinderGeometry(0.16, 0.24, 2.6, 6).translate(0, 1.3, 0), bark, trees.length);
+    const canopyGeo = new THREE.IcosahedronGeometry(1, 0);
+    const canopies = this.instanced(canopyGeo, leaves, trees.length * 2 + (all.length - trees.length));
+    let c = 0;
+    trees.forEach((o, i) => {
+      q.setFromAxisAngle(up, rand() * Math.PI * 2);
+      trunks.setMatrixAt(i, m.compose(p.set(o.x, 0, o.z), q, s.setScalar(o.scale)));
+      for (const [dy, r] of [[2.9, 1.5], [3.9, 1.05]] as const) {
+        canopies.setMatrixAt(c, m.compose(p.set(o.x, dy * o.scale, o.z), q, s.set(r, r * 0.95, r).multiplyScalar(o.scale)));
+        canopies.setColorAt(c++, color.setHSL(0.27 + rand() * 0.06, 0.45, 0.22 + rand() * 0.1));
+      }
+    });
+    for (const o of all) {
+      if (o.tree) continue;
+      q.setFromAxisAngle(up, rand() * Math.PI * 2);
+      canopies.setMatrixAt(c, m.compose(p.set(o.x, 0.45 * o.scale, o.z), q, s.set(1.1, 0.8, 1.1).multiplyScalar(o.scale)));
+      canopies.setColorAt(c++, color.setHSL(0.26 + rand() * 0.05, 0.42, 0.2 + rand() * 0.08));
+    }
+    this.group.add(trunks, canopies);
+
+    // Street lamps (unlit by day — just the fixture, no light source).
+    const lampSpots = LOBBY.lamps;
+    const poles = this.instanced(new THREE.CylinderGeometry(0.06, 0.09, 5, 6).translate(0, 2.5, 0), this.track(new THREE.MeshStandardMaterial({ color: 0x3a3f44, roughness: 0.5, metalness: 0.6 })), lampSpots.length);
+    const heads = this.instanced(new THREE.BoxGeometry(0.7, 0.14, 0.32).translate(0.28, 5, 0), this.track(new THREE.MeshStandardMaterial({ color: 0x4a4f54, emissive: 0xfff2c4, emissiveIntensity: 0.15, roughness: 0.4 })), lampSpots.length);
+    lampSpots.forEach(([x, z], i) => {
+      // Lean the head toward the plot's middle.
+      q.setFromAxisAngle(up, Math.atan2(-(24 - z), 28 - x));
+      m.compose(p.set(x, 0, z), q, s.setScalar(1));
+      poles.setMatrixAt(i, m);
+      heads.setMatrixAt(i, m);
+    });
+    this.group.add(poles, heads);
+
+    // Far-off buildings.
+    const windows = this.canvasTexture(64, 128, (g) => {
+      g.fillStyle = "#ffffff"; g.fillRect(0, 0, 64, 128);
+      g.fillStyle = "#7d8790";
+      for (let y = 6; y < 128; y += 12) for (let x = 5; x < 64; x += 12) g.fillRect(x, y, 7, 7);
+    });
+    const blocks = this.instanced(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), this.track(new THREE.MeshStandardMaterial({ map: windows, roughness: 0.9 })), 34);
+    for (let i = 0; i < 34; i++) {
+      const a = (i / 34) * Math.PI * 2 + rand() * 0.12;
+      const r = 100 + rand() * 60;
+      const w = 10 + rand() * 18, d = 10 + rand() * 16, h = 7 + rand() * (rand() < 0.2 ? 32 : 14);
+      q.setFromAxisAngle(up, a + (rand() - 0.5) * 0.4);
+      blocks.setMatrixAt(i, m.compose(p.set(28 + Math.cos(a) * r, 0, 24 + Math.sin(a) * r), q, s.set(w, h, d)));
+      blocks.setColorAt(i, color.setHSL(0.08 + rand() * 0.05, 0.12, 0.62 + rand() * 0.2));
+    }
+    this.group.add(blocks);
+  }
+
+  /**
+   * The paved plaza east of the pitch (concrete slabs, a kerb on its pitch
+   * side) and an almond-water vending machine against the north fence.
+   */
+  private buildPlaza() {
+    const { minX, maxX, minZ, maxZ } = LOBBY.plaza;
+    const w = maxX - minX, d = maxZ - minZ;
+    const slabs = this.canvasTexture(128, 128, (g) => {
+      g.fillStyle = "#b8b3a7"; g.fillRect(0, 0, 128, 128);
+      const rand = mulberry(5);
+      for (let i = 0; i < 600; i++) {
+        g.fillStyle = rand() < 0.5 ? "rgba(90,86,78,0.18)" : "rgba(255,255,255,0.14)";
+        g.fillRect(rand() * 128, rand() * 128, 2, 2);
+      }
+      g.strokeStyle = "#8b867b"; g.lineWidth = 3;
+      g.strokeRect(0, 0, 64, 64); g.strokeRect(64, 0, 64, 64); g.strokeRect(0, 64, 64, 64); g.strokeRect(64, 64, 64, 64);
+    }, [w / 2, d / 2]);
+    const plaza = new THREE.Mesh(this.track(new THREE.PlaneGeometry(w, d)), this.track(new THREE.MeshStandardMaterial({ map: slabs, roughness: 0.9 })));
+    plaza.rotation.x = -Math.PI / 2;
+    plaza.position.set((minX + maxX) / 2, 0.012, (minZ + maxZ) / 2);
+    plaza.receiveShadow = true;
+    this.group.add(plaza);
+    const kerb = new THREE.Mesh(this.track(new THREE.BoxGeometry(0.18, 0.06, d)), this.track(new THREE.MeshStandardMaterial({ color: 0x9d998f, roughness: 0.95 })));
+    kerb.position.set(minX, 0.03, (minZ + maxZ) / 2);
+    this.group.add(kerb);
+
+    // Vending machine.
+    const { x, z } = LOBBY.vending;
+    const root = new THREE.Group();
+    root.position.set(x, 0, z);
+    this.group.add(root);
+    const body = new THREE.Mesh(this.track(new THREE.BoxGeometry(1.0, 1.9, 0.75)), this.track(new THREE.MeshStandardMaterial({ color: 0x2f6f8f, roughness: 0.5, metalness: 0.3 })));
+    body.position.y = 0.95;
+    root.add(body);
+    const front = this.canvasTexture(128, 256, (g) => {
+      g.fillStyle = "#e9dfc4"; g.fillRect(0, 0, 128, 256);
+      g.fillStyle = "#2f6f8f"; g.fillRect(0, 0, 128, 44);
+      g.fillStyle = "#f2e8cf"; g.font = "bold 18px monospace"; g.textAlign = "center";
+      g.fillText("ALMOND", 64, 20); g.fillText("WATER", 64, 38);
+      for (let r = 0; r < 4; r++) for (let k = 0; k < 4; k++) {
+        g.fillStyle = "#d8cfb4"; g.fillRect(8 + k * 22, 56 + r * 40, 18, 32);
+        g.fillStyle = "#f4ecd6"; g.fillRect(12 + k * 22, 60 + r * 40, 10, 26);
+        g.fillStyle = "#2f6f8f"; g.fillRect(12 + k * 22, 60 + r * 40, 10, 5);
+      }
+      g.fillStyle = "#222"; g.fillRect(104, 70, 18, 90);
+      g.fillStyle = "#111"; g.fillRect(10, 222, 86, 24);
+    });
+    const glass = new THREE.Mesh(this.track(new THREE.PlaneGeometry(0.9, 1.8)), this.track(new THREE.MeshStandardMaterial({ map: front, emissive: 0xffffff, emissiveMap: front, emissiveIntensity: 0.35, roughness: 0.25 })));
+    glass.position.set(0, 0.97, 0.376);
+    root.add(glass);
+  }
+
+  /** Three-row aluminium bleachers along the pitch's north touchline, facing it. */
+  private buildBleachers() {
+    const { x, z, length } = LOBBY.bleachers;
+    // Low metalness: there's no environment map to reflect, so real metal values just render black.
+    const alu = this.track(new THREE.MeshStandardMaterial({ color: 0xd4d8db, roughness: 0.4, metalness: 0.25 }));
+    const frame = this.track(new THREE.MeshStandardMaterial({ color: 0x3a3f44, roughness: 0.6, metalness: 0.5 }));
+    const seat = this.track(new THREE.BoxGeometry(length, 0.05, 0.34));
+    const riser = this.track(new THREE.BoxGeometry(length, 0.42, 0.02));
+    for (let row = 0; row < 3; row++) {
+      const y = 0.45 + row * 0.42, zz = z + 0.9 - row * 0.75;
+      const s = new THREE.Mesh(seat, alu); s.position.set(x, y, zz); this.group.add(s);
+      const r = new THREE.Mesh(riser, alu); r.position.set(x, y - 0.22, zz - 0.18); this.group.add(r);
+    }
+    const legs: [number, number, number][] = [];
+    for (let lx = -length / 2 + 0.3; lx <= length / 2 - 0.29; lx += (length - 0.6) / 4) {
+      for (let row = 0; row < 3; row++) legs.push([x + lx, 0.45 + row * 0.42, z + 0.9 - row * 0.75]);
+    }
+    const legMesh = this.instanced(new THREE.BoxGeometry(0.06, 1, 0.06), frame, legs.length);
+    const m = new THREE.Matrix4();
+    legs.forEach(([lx, h, lz], i) => legMesh.setMatrixAt(i, m.makeScale(1, h, 1).setPosition(lx, h / 2, lz)));
+    this.group.add(legMesh);
+    // Back rail on the top row.
+    const rail = new THREE.Mesh(this.track(new THREE.BoxGeometry(length, 0.05, 0.05)), frame);
+    rail.position.set(x, 0.45 + 2 * 0.42 + 0.7, z + 0.9 - 2 * 0.75 - 0.2);
+    this.group.add(rail);
+    for (const sx of [-1, 1]) {
+      const post = new THREE.Mesh(this.track(new THREE.BoxGeometry(0.05, 0.7, 0.05)), frame);
+      post.position.set(x + sx * (length / 2 - 0.05), 0.45 + 2 * 0.42 + 0.35, z + 0.9 - 2 * 0.75 - 0.2);
+      this.group.add(post);
+    }
+  }
+
+  /**
+   * The wardrobe ("Armário"): a tall wooden cabinet, its left door ajar on a
+   * rail of spare suits, a hat left on top and a brass name plate. Using it
+   * opens the WardrobeModal in React (see GameEngine.tryInteract).
+   */
+  private buildWardrobe() {
+    const { x, z, width, depth, height } = LOBBY.wardrobe;
+    const root = new THREE.Group();
+    root.position.set(x, 0, z);
+    root.rotation.y = -Math.PI / 2; // local +Z (the doors) -> world -X
+    this.group.add(root);
+
+    const wood = this.track(new THREE.MeshStandardMaterial({ color: 0x6e4526, roughness: 0.65 }));
+    const dark = this.track(new THREE.MeshStandardMaterial({ color: 0x3b2414, roughness: 0.75 }));
+    const brass = this.track(new THREE.MeshStandardMaterial({ color: 0xc9a13a, roughness: 0.3, metalness: 0.85 }));
+    const th = 0.04, plinth = 0.12;
+    const box = (w: number, h: number, d: number, mat: THREE.Material, px: number, py: number, pz: number, parent: THREE.Object3D = root) => {
+      const mesh = new THREE.Mesh(this.track(new THREE.BoxGeometry(w, h, d)), mat);
+      mesh.position.set(px, py, pz);
+      parent.add(mesh);
+      return mesh;
+    };
+    box(width, height - plinth, th, dark, 0, plinth + (height - plinth) / 2, -depth / 2 + th / 2); // back
+    for (const sx of [-1, 1]) box(th, height - plinth, depth, wood, sx * (width / 2 - th / 2), plinth + (height - plinth) / 2, 0);
+    box(width, th, depth, wood, 0, plinth + th / 2, 0); // floor
+    box(width + 0.08, 0.08, depth + 0.06, wood, 0, height + 0.04, 0.01); // crown
+    box(width - 0.04, plinth, depth - 0.04, dark, 0, plinth / 2, 0);
+    box(width - 2 * th, th, depth - th, wood, 0, height - 0.42, 0); // hat shelf
+
+    // Door panels: a carved-looking inset drawn on a canvas.
+    const panel = this.canvasTexture(64, 160, (g) => {
+      g.fillStyle = "#74492a"; g.fillRect(0, 0, 64, 160);
+      g.strokeStyle = "#4a2c16"; g.lineWidth = 3;
+      g.strokeRect(8, 10, 48, 62); g.strokeRect(8, 86, 48, 64);
+      g.strokeStyle = "rgba(255,220,170,0.18)"; g.lineWidth = 1;
+      for (let i = 0; i < 18; i++) { g.beginPath(); g.moveTo(0, i * 9 + 3); g.bezierCurveTo(20, i * 9 + 6, 44, i * 9, 64, i * 9 + 4); g.stroke(); }
+    });
+    const doorMat = this.track(new THREE.MeshStandardMaterial({ map: panel, roughness: 0.6 }));
+    const doorW = width / 2 - 0.01, doorH = height - plinth - 0.04;
+    for (const side of [-1, 1]) {
+      const hinge = new THREE.Group();
+      hinge.position.set(side * (width / 2), plinth + 0.02, depth / 2);
+      hinge.rotation.y = side < 0 ? -1.15 : 0; // left door swung open
+      root.add(hinge);
+      box(doorW, doorH, 0.035, doorMat, -side * doorW / 2, doorH / 2, 0.0175, hinge);
+      const knob = new THREE.Mesh(this.track(new THREE.SphereGeometry(0.03, 8, 6)), brass);
+      knob.position.set(-side * (doorW - 0.07), doorH * 0.5, 0.06);
+      hinge.add(knob);
+    }
+
+    // Inside: a rail of spare suits and a tie, visible through the open door.
+    const rail = new THREE.Mesh(this.track(new THREE.CylinderGeometry(0.012, 0.012, width - 2 * th, 6)), brass);
+    rail.rotation.z = Math.PI / 2;
+    rail.position.set(0, height - 0.55, 0);
+    root.add(rail);
+    const suitGeo = this.track(new THREE.BoxGeometry(0.06, 0.95, 0.4));
+    [0xdeb81d, 0xd94f2b, 0x2f6f8f, 0x8a3ab0, 0x3f7d3a].forEach((col, i) => {
+      const mat = this.track(new THREE.MeshStandardMaterial({ color: col, roughness: 0.9 }));
+      box(0.06, 0.95, 0.4, mat, -width / 2 + 0.16 + i * 0.1, height - 1.07, 0).geometry = suitGeo;
+    });
+    const tie = this.track(new THREE.MeshStandardMaterial({ color: 0xa81c2e, roughness: 0.6 }));
+    box(0.02, 0.6, 0.07, tie, width / 2 - 0.25, height - 0.88, 0.05);
+    box(0.02, 0.5, 0.07, this.track(new THREE.MeshStandardMaterial({ color: 0x15151a })), width / 2 - 0.2, height - 0.83, -0.05);
+
+    // A top hat left on the hat shelf, and one more on top of the cabinet.
+    const hatMat = this.track(new THREE.MeshStandardMaterial({ color: 0x15151a, roughness: 0.45 }));
+    const brim = this.track(new THREE.CylinderGeometry(0.2, 0.2, 0.015, 14));
+    const crown = this.track(new THREE.CylinderGeometry(0.11, 0.115, 0.22, 12));
+    for (const [hx, hy] of [[-0.45, height - 0.4], [0.3, height + 0.08]] as const) {
+      const b = new THREE.Mesh(brim, hatMat); b.position.set(hx, hy + 0.008, 0.02); root.add(b);
+      const c = new THREE.Mesh(crown, hatMat); c.position.set(hx, hy + 0.125, 0.02); root.add(c);
+    }
+
+    // Brass name plate above the doors.
+    const plate = this.canvasTexture(256, 48, (g) => {
+      g.fillStyle = "#c9a13a"; g.fillRect(0, 0, 256, 48);
+      g.strokeStyle = "#6e5212"; g.lineWidth = 4; g.strokeRect(4, 4, 248, 40);
+      g.fillStyle = "#3b2a06"; g.font = "bold 26px Georgia, serif"; g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillText(t("wardrobe.sign"), 128, 26);
+    });
+    const sign = new THREE.Mesh(this.track(new THREE.PlaneGeometry(0.62, 0.115)), this.track(new THREE.MeshStandardMaterial({ map: plate, roughness: 0.35, metalness: 0.6 })));
+    sign.position.set(0, height + 0.04, depth / 2 + 0.042);
+    root.add(sign);
   }
 
   private buildField() {
@@ -617,7 +1078,7 @@ export class Lobby {
       this.ball.rotateOnWorldAxis(axis, (sp * dt) / BALL_RADIUS);
     }
     this.ball.position.set(this.x, BALL_RADIUS + 0.02, this.z);
-
+    this.sky?.position.set(ctx.px, 0, ctx.pz);
   }
 
   private simulate(dt: number, ctx: LobbyUpdateContext) {

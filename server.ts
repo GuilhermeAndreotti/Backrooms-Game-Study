@@ -16,7 +16,8 @@ import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { ALL_ENTITY_TYPES } from "./src/shared/entityTypes";
 import { GIVE_RANGE_SERVER, isInventoryItemId, isQuickChatId } from "./src/shared/items";
-import { ROOM_CHEATS, SUDO_CHEAT, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
+import { ROOM_CHEATS, SUDO_CHEAT, SUIT_COLORS, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
+import { sanitizeOutfit, type Outfit } from "./src/shared/outfit";
 import { ChessGame, initialPosition, toFen, type Color, type Promotion } from "./src/shared/chess";
 
 const INITIAL_FEN = toFen(initialPosition());
@@ -92,6 +93,13 @@ interface PlayerState {
    */
   face: string;
   /**
+   * Wardrobe accessories (src/shared/outfit.ts). Like `face`, only sent in
+   * join/roster messages and `player_look`, never in movement snapshots.
+   */
+  outfit: Outfit;
+  /** Last accepted "look" (ms), to rate-limit wardrobe changes. */
+  lookAt: number;
+  /**
    * Lobby SKIN cheat: an EntityType name worn instead of the hazmat suit, or
    * "" for none. Unlike `face`, this can change mid-session, so (unlike
    * `face`) it rides along on every movement snapshot.
@@ -107,15 +115,14 @@ interface PlayerState {
 }
 
 /**
- * Hazmat suit colours the client offers in its customization screen. Kept in
- * sync with SUIT_COLORS in src/types/game.ts. Anything a client sends outside
- * this set is rejected and replaced with the default.
+ * Hazmat suit colours the client offers (SUIT_COLORS in src/types/game.ts).
+ * Anything a client sends outside this set is rejected and replaced with the
+ * default.
  */
-const ALLOWED_SUIT_COLORS = new Set([
-  "#deb81d", "#d94f2b", "#3f7d3a", "#2f6f8f",
-  "#8a3ab0", "#b0243a", "#c9c2b0", "#1c1c22",
-]);
+const ALLOWED_SUIT_COLORS = new Set(SUIT_COLORS);
 const DEFAULT_SUIT_COLOR = "#deb81d";
+/** Wardrobe changes are applied when it closes; this only stops a client spamming rebuilds. */
+const LOOK_MIN_INTERVAL_MS = 500;
 
 function sanitizeSuitColor(value: unknown): string {
   return typeof value === "string" && ALLOWED_SUIT_COLORS.has(value.toLowerCase())
@@ -786,6 +793,8 @@ async function startServer() {
           dead: false,
           exitReady: false,
           face: sanitizeFace(data.face),
+          outfit: sanitizeOutfit(data.outfit),
+          lookAt: 0,
           monsterSkin: sanitizeMonsterSkin(data.monsterSkin),
           held: "",
         };
@@ -898,6 +907,23 @@ async function startServer() {
 
         // Queued instead of relayed immediately: see the room tick below.
         room.dirty.add(p.id);
+        return;
+      }
+
+      // --- lobby wardrobe -------------------------------------------------------
+      // A new suit colour / face / accessories, only while standing in the
+      // lobby. Validated field by field and relayed to the whole room (the
+      // movement snapshots don't carry face or outfit).
+      if (type === "look") {
+        const p = conn.player;
+        if (p.level !== LOBBY_LEVEL || p.monsterSkin) return;
+        const now = Date.now();
+        if (now - p.lookAt < LOOK_MIN_INTERVAL_MS) return;
+        p.lookAt = now;
+        p.suitColor = sanitizeSuitColor(data.suitColor);
+        p.face = sanitizeFace(data.face);
+        p.outfit = sanitizeOutfit(data.outfit);
+        broadcastToRoom(room, { type: "player_look", id: p.id, suitColor: p.suitColor, face: p.face, outfit: p.outfit }, conn);
         return;
       }
 
@@ -1510,11 +1536,11 @@ async function startServer() {
       sweepSharedLevelState(room);
       if (room.dirty.size === 0) return;
 
-      const players: Omit<PlayerState, "face">[] = [];
+      const players: Omit<PlayerState, "face" | "outfit" | "lookAt">[] = [];
       room.dirty.forEach((id) => {
         const player = room.players.get(id);
         if (!player) return;
-        const { face: _face, ...moving } = player;
+        const { face: _face, outfit: _outfit, lookAt: _lookAt, ...moving } = player;
         players.push(moving);
       });
       room.dirty.clear();

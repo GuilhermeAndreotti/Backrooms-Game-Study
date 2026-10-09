@@ -24,6 +24,8 @@ import { TownModelModal } from "./components/TownModelModal";
 import { KingDialogueModal } from "./components/KingDialogueModal";
 import { ChessModal } from "./components/ChessModal";
 import { GarageKeypadModal } from "./components/GarageKeypadModal";
+import { WardrobeModal, type WardrobeLook } from "./components/WardrobeModal";
+import { EMPTY_OUTFIT, sanitizeOutfit } from "./shared/outfit";
 import { EMPTY_CHESS, type ChessNetState } from "./shared/chess";
 import type { TownDialogueView } from "./game/levels/townDirector";
 import type { SpaceTerminalId, WireColor } from "./game/levels/spaceLayout";
@@ -74,6 +76,7 @@ const defaultSettings: GameSettings = {
   showFps: true,
   suitColor: DEFAULT_SUIT_COLOR,
   face: EMPTY_FACE,
+  outfit: EMPTY_OUTFIT,
 };
 
 /**
@@ -191,6 +194,8 @@ export default function App() {
   // engine's own state for the picker's checkmark — GameEngine.cheatSkin
   // (replicated to teammates) is the source of truth.
   const [isCheatTerminalOpen, setIsCheatTerminalOpen] = useState(false);
+  /** The lobby wardrobe, with the look it was opened on (restored on cancel). */
+  const [wardrobeInitial, setWardrobeInitial] = useState<WardrobeLook | null>(null);
   const [isLevelSelectorOpen, setIsLevelSelectorOpen] = useState(false);
   const [cheatSkin, setCheatSkin] = useState<SkinChoice | null>(null);
   const [isNoclipActive, setIsNoclipActive] = useState(false);
@@ -289,12 +294,12 @@ export default function App() {
    * the pointer lock on purpose so the mouse can be used, which must not
    * count as "the player left the game": no pause menu behind them.
    */
-  const interfaceOpen = isTerminalOpen || isMegDoorOpen || isFunPanelOpen || isCheatTerminalOpen || isLevelSelectorOpen
+  const interfaceOpen = isTerminalOpen || isMegDoorOpen || isFunPanelOpen || isCheatTerminalOpen || wardrobeInitial !== null || isLevelSelectorOpen
     || hotelPanel !== null || isAchievementsOpen || spaceTerminal !== null || spaceWiring !== null || townModelOpen || townDialogue !== null || chessOpen;
   useEffect(() => {
     if (currentLevel !== SPACE_LEVEL) { setSpaceTerminal(null); setSpaceWiring(null); }
     if (currentLevel !== OLD_TOWN_LEVEL) { setTownModelOpen(false); setTownDialogue(null); }
-    if (currentLevel !== LOBBY_LEVEL) setChessOpen(false);
+    if (currentLevel !== LOBBY_LEVEL) { setChessOpen(false); setWardrobeInitial(null); }
     setHotelPanel(null);
   }, [currentLevel]);
   useEffect(() => { if (isDead) setHotelPanel(null); }, [isDead]);
@@ -351,7 +356,7 @@ export default function App() {
           delete parsed.ipAddress;
           delete parsed.port;
         }
-        setSettings({ ...defaultSettings, ...parsed });
+        setSettings({ ...defaultSettings, ...parsed, outfit: sanitizeOutfit(parsed.outfit) });
       }
     } catch (e) {
       console.warn("Could not load persisted local settings:", e);
@@ -395,6 +400,12 @@ export default function App() {
     setMegDialogue(null);
     setActiveLoreNote(null);
     engineRef.current?.endReading();
+  };
+
+  const closeWardrobe = () => {
+    setWardrobeInitial(null);
+    const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+    if (canvasEl) lockGameInput(canvasEl);
   };
 
   /** Releases either pointer-lock input mode so the pause menu can reliably open. */
@@ -469,6 +480,13 @@ export default function App() {
         setIsInventoryOpen(false);
         setIsAchievementsOpen(false);
         setIsTerminalOpen(true);
+        document.exitPointerLock?.();
+        return true;
+      case "wardrobe":
+        // The lobby's wardrobe
+        setIsInventoryOpen(false);
+        setIsAchievementsOpen(false);
+        setWardrobeInitial({ suitColor: settings.suitColor, face: settings.face, outfit: settings.outfit });
         document.exitPointerLock?.();
         return true;
       case "cheat":
@@ -751,6 +769,7 @@ export default function App() {
     setConnectedPlayers([]);
     setCheatSkin(null);
     setIsCheatTerminalOpen(false);
+    setWardrobeInitial(null);
     setIsNoclipActive(false);
     setVoipEnabled(false);
     setVoipSpeaking(false);
@@ -775,6 +794,7 @@ export default function App() {
           name: settings.name,
           suitColor: settings.suitColor,
           face: settings.face,
+          outfit: settings.outfit,
           requestedSeed: forceSeed,
         }));
 
@@ -1061,7 +1081,7 @@ export default function App() {
 
                 // Instantly spawn existing players
                 currentOn.forEach((p: RemotePlayer) => {
-                  engineRef.current?.spawnRemotePlayer(p.id, p.name, p.x, p.y, p.z, p.suitColor, p.face, p.monsterSkin);
+                  engineRef.current?.spawnRemotePlayer(p.id, p.name, p.x, p.y, p.z, p.suitColor, p.face, p.monsterSkin, p.outfit);
                   if (p.dead) engineRef.current?.setRemoteDead(p.id, true);
                   // Proximity VOIP: call them now if we already turned our mic on.
                   engineRef.current?.voipConnectPeer(p.id);
@@ -1235,7 +1255,7 @@ export default function App() {
 
             // Update 3D engine world
             if (engineRef.current) {
-              engineRef.current.spawnRemotePlayer(player.id, player.name, player.x, player.y, player.z, player.suitColor, player.face, player.monsterSkin);
+              engineRef.current.spawnRemotePlayer(player.id, player.name, player.x, player.y, player.z, player.suitColor, player.face, player.monsterSkin, player.outfit);
               // Proximity VOIP: call them now if we already turned our mic on.
               engineRef.current.voipConnectPeer(player.id);
             }
@@ -1267,6 +1287,18 @@ export default function App() {
             }
 
             if (added || incoming.length > 0) touchRoster();
+          }
+
+          else if (type === "player_look") {
+            // A teammate changed clothes at the lobby wardrobe.
+            const who = playersRef.current.find((p) => p.id === data.id);
+            if (who) {
+              who.suitColor = data.suitColor;
+              who.face = data.face;
+              who.outfit = sanitizeOutfit(data.outfit);
+              engineRef.current?.refreshRemoteLook(who.id, who);
+              touchRoster();
+            }
           }
 
           else if (type === "player_to_lobby") {
@@ -2202,6 +2234,23 @@ export default function App() {
             />
           )}
 
+          {wardrobeInitial && currentLevel === LOBBY_LEVEL && (
+            <WardrobeModal
+              name={settings.name}
+              initial={wardrobeInitial}
+              onPreview={(look) => engineRef.current?.setSelfLook(look)}
+              onSave={(look) => {
+                handleUpdateSettings({ ...settings, ...look });
+                socketRef.current?.send(JSON.stringify({ type: "look", ...look }));
+                closeWardrobe();
+              }}
+              onCancel={() => {
+                engineRef.current?.setSelfLook(wardrobeInitial);
+                closeWardrobe();
+              }}
+            />
+          )}
+
           {isLevelSelectorOpen && currentLevel === LOBBY_LEVEL && (
             <LevelSelectorModal
               isHost={clientIdRef.current === hostIdRef.current}
@@ -2232,7 +2281,7 @@ export default function App() {
 
           {/* Achievement Unlock Popup Toast */}
           {/* Context hint (e.g. "[E] Empurrar caixa") just below the crosshair */}
-          {interactPrompt && !megDialogue && !activeLoreNote && !isInventoryOpen && !isAchievementsOpen && !isTerminalOpen && !isCheatTerminalOpen && (
+          {interactPrompt && !megDialogue && !activeLoreNote && !isInventoryOpen && !isAchievementsOpen && !isTerminalOpen && !isCheatTerminalOpen && !wardrobeInitial && (
             <div className="fixed left-1/2 top-[58%] -translate-x-1/2 z-40 pointer-events-none font-mono">
               <div className="bg-[#0b0b05]/80 border border-[#deb81d]/60 rounded px-3 py-1.5 text-[11px] tracking-widest uppercase text-[#deb81d] shadow-[0_0_12px_rgba(222,184,29,0.25)]">
                 {interactPrompt}

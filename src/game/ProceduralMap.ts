@@ -4424,7 +4424,8 @@ export class ProceduralMap {
       const isRamp = this.level === 1 && this.rampCells.has(`${gx},${gz}`);
       const isToxicWater = cellType === CellType.WATER_ROOM && this.toxicWaterCells.has(`${gx},${gz}`);
       const mat = this.level === LOBBY_LEVEL
-        ? this.sharedMat("lobby_floor", () => new THREE.MeshStandardMaterial({ color: 0xcdbd93, roughness: 0.85 }))
+        // Hidden: Lobby lays one continuous grass plane out to the horizon instead.
+        ? this.sharedMat("lobby_floor", () => new THREE.MeshBasicMaterial({ visible: false }))
         : (cellType === CellType.RED_ROOM)
         ? this.redCarpetMaterial
         : isToxicWater

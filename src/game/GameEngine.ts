@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Lobby, LOBBY, CHESS, LOBBY_LEVEL, BallNetState } from "./Lobby";
+import { Lobby, LOBBY, CHESS, LOBBY_LEVEL, LOBBY_CAMERA_FAR, BallNetState } from "./Lobby";
 import { EMPTY_CHESS, type ChessNetState } from "../shared/chess";
 import { Voip } from "./Voip";
 import { t, type MessageKey } from "../i18n";
@@ -13,10 +13,10 @@ import { WaterRipples, waterUniforms } from "./Water";
 import * as THREE from "three";
 import { ProceduralMap, LEVEL_G_DOOR_OPEN_ANGLE, CellType } from "./ProceduralMap";
 import { PlayerController, PLAYER_STANDING_HEIGHT, PLAYER_CROUCH_HEIGHT } from "./PlayerController";
-import { FACE_SIZE, drawFace, hasFace } from "../utils/face";
+import { animateAccessories, buildExplorerAvatar, monsterSkinType, MONSTER_SKIN_TYPES } from "./ExplorerAvatar";
+import { outfitKey, sanitizeOutfit, type Outfit } from "../shared/outfit";
 import { AudioManager } from "./AudioManager";
 import { WanderingEntity, EntityType, EntityNetState, type SkinBodyChoice } from "./WanderingEntity";
-import { ALL_ENTITY_TYPES } from "../shared/entityTypes";
 import { USABLE_ITEMS } from "../shared/items";
 import { KingScratches } from "./KingScratches";
 import { garageFloorAt } from "./levels/garageLayout";
@@ -177,7 +177,8 @@ function levelAtmosphere(level: number, funStage: FunStage = 0) {
     case SPACE_LEVEL: // Level 79: cold white panels, and the black of space behind the glass
       return { ambientColor: 0xdce6f5, ambientIntensity: 1.45, fogColor: 0x080b12, dimmedFogColor: 0x020304 };
     case LOBBY_LEVEL: // room lobby: open-air field under a clear blue sky
-      return { ambientColor: 0xfff6e0, ambientIntensity: 2.6, fogColor: 0x8fc7f0, dimmedFogColor: 0x4a6a8a };
+      // Lobby.buildSky adds the sun and a sky/grass hemisphere light on top.
+      return { ambientColor: 0xfff6e0, ambientIntensity: 1.3, fogColor: 0xa6d2f2, dimmedFogColor: 0x4a6a8a };
     case LEVEL_G: // Level G: dim, cold office under failing tubes
       return { ambientColor: 0x9aa4ad, ambientIntensity: 0.5, fogColor: 0x23272a, dimmedFogColor: 0x0b0c0d };
     case ABANDONED_OFFICE_LEVEL: // Abandoned Office: cold monitors and dust
@@ -273,14 +274,6 @@ function nearestHuntable(targets: AiTarget[], x: number, z: number): { target: A
 }
 
 const ENTITY_TYPES = new Set<string>(Object.values(EntityType));
-
-/** Bodies offered by the lobby's SKIN cheat: every monster type, plus the NPC looks (see SkinBodyChoice). */
-const MONSTER_SKIN_TYPES: SkinBodyChoice[] = [...ALL_ENTITY_TYPES, "OFFICE_WORKER", "PARTYGOER"];
-
-/** Validates a `monsterSkin` string (network field or cheat-picker choice) against the offered set. */
-function monsterSkinType(value?: string | null): SkinBodyChoice | null {
-  return value && (MONSTER_SKIN_TYPES as string[]).includes(value) ? (value as SkinBodyChoice) : null;
-}
 
 export class GameEngine {
   private hotelDirector: HotelDirector | null = null;
@@ -476,7 +469,7 @@ export class GameEngine {
   public onHUDNotification?: (msg: string) => void;
   private onObjectiveChange?: (text: string | null) => void;
   /** How this explorer looks to others (name, suit, face) — for the lobby mirror's copy of them. */
-  private selfLook: { name: string; suitColor: string; face: string };
+  private selfLook: { name: string; suitColor: string; face: string; outfit: Outfit };
   /** The lobby mirror's copy of the local explorer; only the reflection pass ever renders it. */
   private selfAvatar: THREE.Group | null = null;
   private selfAvatarKey = "";
@@ -569,7 +562,7 @@ export class GameEngine {
     this.onToxicWaterExposureChange = callbacks.onToxicWaterExposureChange;
     this.onHUDNotification = callbacks.onHUDNotification;
     this.onObjectiveChange = callbacks.onObjectiveChange;
-    this.selfLook = { name: settings.name, suitColor: settings.suitColor, face: settings.face };
+    this.selfLook = { name: settings.name, suitColor: settings.suitColor, face: settings.face, outfit: sanitizeOutfit(settings.outfit) };
     this.onSectorChange = callbacks.onSectorChange;
     this.onInventoryChange = callbacks.onInventoryChange;
     this.onSanityChange = callbacks.onSanityChange;
@@ -966,7 +959,7 @@ export class GameEngine {
 
   public updateConfig(settings: GameSettings) {
     this.audio.setSettings(settings);
-    this.selfLook = { name: settings.name, suitColor: settings.suitColor, face: settings.face };
+    this.selfLook = { name: settings.name, suitColor: settings.suitColor, face: settings.face, outfit: sanitizeOutfit(settings.outfit) };
     if (this.player) {
       this.player.setMouseSensitivity(settings.mouseSensitivity);
       this.baseFov = settings.fov;
@@ -1703,178 +1696,9 @@ export class GameEngine {
     animate();
   }
 
-  /**
-   * Spawns a beautiful, stylized retro Hazmat Explorer (Yellow Anti-contamination Suit) made of THREE primitive blocks.
-   * Super light weight, no assets loading slowdown!
-   */
-  private createHazmatExplorer(name: string, suitColor?: string, face?: string, monsterSkin?: string): THREE.Group {
-    const group = new THREE.Group();
-
-    // Lobby SKIN cheat: wear a monster's body instead of the hazmat suit.
-    // Everything below this — suit, visor, drawn face — is skipped; only the
-    // floating name tag (added at the end) is shared between the two.
-    const skinType = monsterSkinType(monsterSkin);
-
-    if (skinType) {
-      const body = WanderingEntity.buildSkinMesh(skinType);
-      body.position.y = WanderingEntity.skinAnchorY(skinType);
-      group.add(body);
-    } else {
-      // Hazmat suit fabric — colour picked in the customization screen, defaults
-      // to the classic Level 0 yellow (flat shading keeps the vintage polygon look)
-      const suitMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(suitColor || "#deb81d"), roughness: 0.9, metalness: 0.1 });
-
-      // Visor Glass: Shiny dark glass block
-      const visorMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.9, roughness: 0.1 });
-
-      // Black boot soles / rubber belt
-      const darkMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9, metalness: 0.1 });
-
-      // Rig: hips -> spine -> (head, arms), hips -> legs. Every pivot is named
-      // so animateRemotePlayers can pose walk / run / crouch / idle; limbs hang
-      // along -Y from their pivot, the visor faces +Z.
-      const hips = new THREE.Group();
-      hips.name = "hips";
-      hips.position.set(0, 0.47, 0);
-      group.add(hips);
-
-      const spine = new THREE.Group();
-      spine.name = "spine";
-      hips.add(spine);
-
-      // Torso (Main bodysuit body)
-      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 0.9, 8), suitMat);
-      body.position.set(0, 0.28, 0);
-      spine.add(body);
-
-      // Breathing Apparatus Back Oxygen Tank
-      const tank = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.65, 0.18), suitMat);
-      tank.position.set(0, 0.31, -0.18);
-      spine.add(tank);
-
-      // Belt
-      const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.08, 8), darkMat);
-      belt.position.set(0, -0.02, 0);
-      spine.add(belt);
-
-      // Everything on the head hangs off a pivot at the neck so the whole head
-      // (helmet, visor, drawn face) tilts up/down with where the player looks.
-      const headPivot = new THREE.Group();
-      headPivot.name = "head";
-      headPivot.position.set(0, 0.83, 0);
-      spine.add(headPivot);
-      const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 10), suitMat);
-      headPivot.add(head);
-
-      // Distinctive Level 0 reflective Visor Mask — skipped when the player has
-      // drawn a custom face, so the drawing shows through the hood opening
-      // instead of sitting behind a dark glass plate.
-      if (!hasFace(face)) {
-        const visor = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.1, 0.12), visorMat);
-        // Face the positive Z direction as default orientation
-        visor.position.set(0, 0.03, 0.14);
-        headPivot.add(visor);
-      }
-
-      // Arms: shoulder -> elbow -> glove; the right hand carries the flashlight.
-      const upperArmGeo = new THREE.CylinderGeometry(0.07, 0.065, 0.3, 6);
-      const forearmGeo = new THREE.CylinderGeometry(0.062, 0.055, 0.27, 6);
-      const gloveGeo = new THREE.SphereGeometry(0.065, 6, 6);
-      for (const side of [-1, 1]) {
-        const prefix = side < 0 ? "l" : "r";
-        const shoulder = new THREE.Group();
-        shoulder.name = `${prefix}Arm`;
-        shoulder.position.set(side * 0.31, 0.64, 0);
-        spine.add(shoulder);
-        const upper = new THREE.Mesh(upperArmGeo, suitMat);
-        upper.position.y = -0.15;
-        shoulder.add(upper);
-        const elbow = new THREE.Group();
-        elbow.name = `${prefix}Forearm`;
-        elbow.position.y = -0.3;
-        shoulder.add(elbow);
-        const fore = new THREE.Mesh(forearmGeo, suitMat);
-        fore.position.y = -0.135;
-        elbow.add(fore);
-        const glove = new THREE.Mesh(gloveGeo, darkMat);
-        glove.position.y = -0.29;
-        elbow.add(glove);
-        if (side > 0) {
-          const torch = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.2, 8), darkMat);
-          torch.rotation.x = Math.PI / 2;
-          torch.position.set(0, -0.3, 0.08);
-          elbow.add(torch);
-        }
-      }
-
-      // Legs: hip (lLeg/rLeg) -> knee (lShin/rShin) -> boot
-      const thighGeo = new THREE.CylinderGeometry(0.09, 0.08, 0.24, 6);
-      const shinGeo = new THREE.CylinderGeometry(0.08, 0.075, 0.2, 6);
-      const bootGeo = new THREE.BoxGeometry(0.11, 0.07, 0.18);
-      for (const side of [-1, 1]) {
-        const prefix = side < 0 ? "l" : "r";
-        const hip = new THREE.Group();
-        hip.name = `${prefix}Leg`;
-        hip.position.set(side * 0.11, 0, 0);
-        hips.add(hip);
-        const thigh = new THREE.Mesh(thighGeo, suitMat);
-        thigh.position.y = -0.11;
-        hip.add(thigh);
-        const knee = new THREE.Group();
-        knee.name = `${prefix}Shin`;
-        knee.position.y = -0.23;
-        hip.add(knee);
-        const shin = new THREE.Mesh(shinGeo, suitMat);
-        shin.position.y = -0.1;
-        knee.add(shin);
-        const boot = new THREE.Mesh(bootGeo, darkMat);
-        boot.position.set(0, -0.2, 0.03);
-        knee.add(boot);
-      }
-
-      // Hand-drawn face from the customization screen, as a pixel-art decal just
-      // in front of the helmet. Transparent pixels let the visor show through.
-      if (hasFace(face)) {
-        const faceCanvas = document.createElement("canvas");
-        faceCanvas.width = FACE_SIZE;
-        faceCanvas.height = FACE_SIZE;
-        const faceCtx = faceCanvas.getContext("2d");
-        if (faceCtx) {
-          drawFace(faceCtx, face);
-          const faceTexture = new THREE.CanvasTexture(faceCanvas);
-          faceTexture.magFilter = THREE.NearestFilter;
-          faceTexture.minFilter = THREE.NearestFilter;
-          faceTexture.colorSpace = THREE.SRGBColorSpace;
-          const faceMat = new THREE.MeshStandardMaterial({ map: faceTexture, alphaTest: 0.5, roughness: 0.7 });
-          const facePlane = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.26), faceMat);
-          facePlane.position.set(0, 0.01, 0.215);
-          headPivot.add(facePlane);
-        }
-      }
-    }
-
-    // Floating UI player tag card setup in 3D Space! (both suit and skin get one)
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 64;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.fillStyle = "rgba(0,0,0,0.55)";
-      ctx.fillRect(0, 0, 256, 64);
-      ctx.font = "bold 24px Courier New, monospace";
-      ctx.fillStyle = "#deb81d";
-      ctx.textAlign = "center";
-      ctx.fillText(name.toUpperCase(), 128, 40);
-    }
-
-    const tagTexture = new THREE.CanvasTexture(canvas);
-    const tagMaterial = new THREE.SpriteMaterial({ map: tagTexture, depthTest: false, depthWrite: false });
-    const tagSprite = new THREE.Sprite(tagMaterial);
-    tagSprite.position.set(0, 1.75, 0);
-    tagSprite.scale.set(1.1, 0.3, 1.0);
-    group.add(tagSprite);
-
-    return group;
+  /** A teammate's (or the mirror's) explorer avatar — see buildExplorerAvatar. */
+  private createHazmatExplorer(name: string, suitColor?: string, face?: string, monsterSkin?: string, outfit?: Outfit): THREE.Group {
+    return buildExplorerAvatar({ name, suitColor, face, monsterSkin, outfit });
   }
 
   /**
@@ -2185,6 +2009,13 @@ export class GameEngine {
       this.lobby = new Lobby(this.scene);
       this.setupMirror();
       this.setupChessTable();
+      this.setupWardrobe();
+      // The lobby's sky dome and far skyline sit past the usual 45 m far plane.
+      this.camera.far = LOBBY_CAMERA_FAR;
+      this.camera.updateProjectionMatrix();
+    } else if (this.camera.far === LOBBY_CAMERA_FAR) {
+      this.camera.far = 45;
+      this.camera.updateProjectionMatrix();
     }
   }
 
@@ -2215,10 +2046,10 @@ export class GameEngine {
   private updateMirrorSelf(delta: number) {
     if (!this.lobby?.mirror || !this.player) return;
     const look = this.selfLook;
-    const key = `${look.name}|${look.suitColor}|${look.face}|${this.cheatSkin ?? ""}`;
+    const key = `${look.name}|${look.suitColor}|${look.face}|${outfitKey(look.outfit)}|${this.cheatSkin ?? ""}`;
     if (!this.selfAvatar || this.selfAvatarKey !== key) {
       if (this.selfAvatar) this.disposeExplorerGroup(this.selfAvatar);
-      const avatar = this.createHazmatExplorer(look.name, look.suitColor, look.face, this.cheatSkin ?? undefined);
+      const avatar = this.createHazmatExplorer(look.name, look.suitColor, look.face, this.cheatSkin ?? undefined, look.outfit);
       avatar.userData.silentFeet = true;
       avatar.visible = false;
       this.scene.add(avatar);
@@ -2450,11 +2281,11 @@ export class GameEngine {
   /**
    * Spawns a remote explorer visual node and sets up their shoulder spotlight.
    */
-  public spawnRemotePlayer(id: string, name: string, x: number, y: number, z: number, suitColor?: string, face?: string, monsterSkin?: string) {
+  public spawnRemotePlayer(id: string, name: string, x: number, y: number, z: number, suitColor?: string, face?: string, monsterSkin?: string, outfit?: Outfit) {
     if (this.remotePlayerGroups.has(id)) return;
 
     // Create Hazmat Group Mesh
-    const group = this.createHazmatExplorer(name, suitColor, face, monsterSkin);
+    const group = this.createHazmatExplorer(name, suitColor, face, monsterSkin, outfit && sanitizeOutfit(outfit));
     group.position.set(x, this.remoteFloorY(y), z);
     // Remembered so updateRemotePlayer can tell a SKIN cheat toggled mid-session
     // and rebuild the visual instead of silently ignoring the change.
@@ -2534,6 +2365,23 @@ export class GameEngine {
   }
 
   /**
+   * A teammate changed clothes at the lobby wardrobe (`player_look`): rebuild
+   * their avatar from the merged roster entry, keeping where they stand.
+   */
+  public refreshRemoteLook(id: string, player: RemotePlayer) {
+    const group = this.remotePlayerGroups.get(id);
+    if (!group) return;
+    const { x, z } = group.position;
+    const state = this.remoteStates.get(id);
+    this.removeRemotePlayer(id);
+    if (state) this.remoteStates.set(id, { ...state, ...player });
+    this.spawnRemotePlayer(id, player.name, x, (state?.y ?? player.y), z, player.suitColor, player.face, player.monsterSkin, player.outfit);
+    this.refreshRemoteVisibility();
+    const rebuilt = this.remotePlayerGroups.get(id);
+    if (rebuilt) this.setRemoteHeld(rebuilt, player.held ?? "");
+  }
+
+  /**
    * Sync-tracks position reporting from the WebSocket server.
    */
   public updateRemotePlayer(id: string, update: RemotePlayer) {
@@ -2551,7 +2399,7 @@ export class GameEngine {
 
     const group = this.remotePlayerGroups.get(id);
     if (!group) {
-      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor, update.face, update.monsterSkin);
+      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor, update.face, update.monsterSkin, update.outfit);
       this.refreshRemoteVisibility();
       const spawned = this.remotePlayerGroups.get(id);
       if (spawned) this.setRemoteHeld(spawned, update.held ?? "");
@@ -2564,7 +2412,7 @@ export class GameEngine {
     if ((monsterSkinType(update.monsterSkin) ?? "") !== group.userData.monsterSkin) {
       this.removeRemotePlayer(id); // clears remoteStates too — restore it below
       this.remoteStates.set(id, update);
-      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor, update.face, update.monsterSkin);
+      this.spawnRemotePlayer(id, update.name, update.x, update.y, update.z, update.suitColor, update.face, update.monsterSkin, update.outfit);
       this.refreshRemoteVisibility();
       const rebuilt = this.remotePlayerGroups.get(id);
       if (rebuilt) this.setRemoteHeld(rebuilt, update.held ?? "");
@@ -2628,17 +2476,20 @@ export class GameEngine {
     this.remotePlayerGroups.forEach((group, id) => {
       const anyG = group as any;
       if (anyG.targetX !== undefined) {
-        // Smoothly slide positions (Lerping: 15% rate per tick)
-        group.position.x += (anyG.targetX - group.position.x) * 15 * delta;
-        group.position.y += (anyG.targetY - group.position.y) * 15 * delta;
-        group.position.z += (anyG.targetZ - group.position.z) * 15 * delta;
+        // Smoothly slide positions. Clamped: on a long frame (background tab,
+        // hitch) an unclamped 15*delta > 2 overshoots further every frame and
+        // flings the teammate off the map.
+        const k = Math.min(1, 15 * delta);
+        group.position.x += (anyG.targetX - group.position.x) * k;
+        group.position.y += (anyG.targetY - group.position.y) * k;
+        group.position.z += (anyG.targetZ - group.position.z) * k;
 
         // Yaw angle (Rotate body horizontal mesh)
         // Guard against rot angle jump discontinuities (wrap around PI check)
         let diffYaw = anyG.targetYaw - group.rotation.y;
         while (diffYaw < -Math.PI) diffYaw += Math.PI * 2;
         while (diffYaw > Math.PI) diffYaw -= Math.PI * 2;
-        group.rotation.y += diffYaw * 15 * delta;
+        group.rotation.y += diffYaw * k;
 
         // Pitch look direction (Rotate shoulder target looking up/down)
         const target = this.remotePlayerLightTargets.get(id);
@@ -2673,6 +2524,7 @@ export class GameEngine {
     const damp = THREE.MathUtils.damp;
     const rawSpeed = Math.min(Math.hypot(vx, vz), 12);
     anim.speed = damp(anim.speed, rawSpeed, 10, delta);
+    animateAccessories(group, delta, Math.min(1, anim.speed / 6));
     anim.time += delta;
 
     const state = (group as any).animState || "idle";
@@ -3750,6 +3602,8 @@ export class GameEngine {
         text = t("act.readPaper");
       } else if (this.nearCheatTerminal()) {
         text = t("act.cheatTerminal");
+      } else if (this.nearWardrobe()) {
+        text = t(this.cheatSkin ? "act.wardrobeBlocked" : "act.wardrobe");
       } else if (this.nearChessTable()) {
         text = t("chess.act.open");
       } else if (this.nearGarageKeypad()) {
@@ -4266,7 +4120,7 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | "town" | "town_model" | "chess" | "hotel" | "hotel_panel" | null {
+  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | "town" | "town_model" | "chess" | "wardrobe" | "hotel" | "hotel_panel" | null {
     if (this.isDead) return null;
     if (this.hotelDirector) {
       const used = this.hotelDirector.interact();
@@ -4322,6 +4176,14 @@ export class GameEngine {
       return "paper";
     }
     if (this.nearCheatTerminal()) return "cheat";
+    if (this.nearWardrobe()) {
+      // A monster body has no hazmat suit to dress up.
+      if (this.cheatSkin) {
+        this.onHUDNotification?.(t("wardrobe.skinBlocked"));
+        return null;
+      }
+      return "wardrobe";
+    }
     if (this.nearChessTable()) return "chess";
     if (this.nearGarageKeypad()) return "garage_keypad";
     if (this.level !== LEVEL_G || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
@@ -4425,6 +4287,44 @@ export class GameEngine {
   // ---------------------------------------------------------------------------
   // Lobby cheat terminal (MVJM / UHUM / CLIP / LIFE / SKIN)
   // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // Lobby wardrobe ("Armário"): suit colour, helmet face and accessories
+  // ---------------------------------------------------------------------------
+
+  /** The wardrobe, the vending machine, the bleachers and the lamp posts are solid. */
+  private setupWardrobe() {
+    if (!this.map) return;
+    const cs = this.map.cellSize;
+    const add = (x: number, z: number, r: number) => this.map.addObstacle(Math.floor(x / cs), Math.floor(z / cs), x, z, r);
+    const { x, z, width } = LOBBY.wardrobe;
+    for (const dz of [-width / 3, width / 3]) add(x, z + dz, 0.45);
+    add(LOBBY.vending.x - 0.25, LOBBY.vending.z, 0.45);
+    add(LOBBY.vending.x + 0.25, LOBBY.vending.z, 0.45);
+    const b = LOBBY.bleachers;
+    for (let bx = -b.length / 2 + 0.5; bx <= b.length / 2 - 0.5; bx += 1) {
+      add(b.x + bx, b.z + 0.7, 0.55);
+      add(b.x + bx, b.z - 0.4, 0.55);
+    }
+    for (const [lx, lz] of LOBBY.lamps) add(lx, lz, 0.15);
+  }
+
+  /** Standing in front of the wardrobe. */
+  private nearWardrobe(): boolean {
+    if (this.level !== LOBBY_LEVEL || !this.player) return false;
+    const dx = this.player.position.x - LOBBY.wardrobe.x;
+    const dz = this.player.position.z - LOBBY.wardrobe.z;
+    return dx * dx + dz * dz < 2.3 * 2.3;
+  }
+
+  /**
+   * The look being tried on at the wardrobe. Applied locally right away, so
+   * the mirror beside it shows each change; App sends it to the room once
+   * the wardrobe closes.
+   */
+  public setSelfLook(look: { suitColor: string; face: string; outfit: Outfit }) {
+    this.selfLook = { ...this.selfLook, suitColor: look.suitColor, face: look.face, outfit: sanitizeOutfit(look.outfit) };
+  }
 
   /** Within arm's reach of the lobby's cheat terminal. */
   private nearCheatTerminal(): boolean {
