@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applyHotelAction, createHotelState, hotelBlocked, hotelPuzzle, parseHotelAction, HOTEL_PSI_BANDS, type HotelAction, type HotelState, type Pressure } from "./hotel";
-import { HOTEL_ALCOVES, HOTEL_BEVERLY_DOOR, HOTEL_EXIT, HOTEL_RECEPTION, HOTEL_SPAWN, HOTEL_TABLE, HOTEL_VALVES, hotelCenter, hotelFloorAt, hotelZone } from "../game/levels/hotelLayout";
+import { HOTEL_ALCOVES, HOTEL_BEVERLY_DOOR, HOTEL_EXIT, HOTEL_RECEPTION, HOTEL_SPAWN, HOTEL_TABLE, HOTEL_VALVES, hotelCardSpot, hotelCenter, hotelFloorAt, hotelRoomPoint, hotelRoomSide, hotelZone } from "../game/levels/hotelLayout";
 import { ABANDONED_OFFICE_LEVEL, HOTEL_LEVEL, LIGHTS_OUT_LEVEL, POOLROOMS_LEVEL, SPACE_LEVEL, nextMainLevel } from "../game/levels/constants";
 
 const time = 100000;
@@ -64,6 +64,21 @@ test("distance, height, prerequisites, duplicates and out-of-order pickups are r
   assert.equal(solved.state.collected, 4); assert.equal(solved.state.placed, 4);
   assert.equal(applyHotelAction(solved.state, { kind: "place" }, 42, player(HOTEL_TABLE), time), null);
 });
+test("guest cards are found once for the whole room, only from inside the card's room", () => {
+  for (let seed = 1; seed <= 150; seed++) {
+    const puzzle = hotelPuzzle(seed);
+    let state = createHotelState(1, time);
+    puzzle.cards.forEach((card, index) => {
+      // Standing by the bed, a couple of metres from the nightstand.
+      const at = hotelRoomPoint(card, hotelRoomSide(card) * 2.5, 5.5);
+      assert.equal(applyHotelAction(state, { kind: "card", index }, seed, player(HOTEL_RECEPTION), time), null);
+      const next = applyHotelAction(state, { kind: "card", index }, seed, player(at), time);
+      assert.ok(next, `seed ${seed} card ${index}`); state = next;
+      assert.equal(applyHotelAction(state, { kind: "card", index }, seed, player(hotelCardSpot(card)), time), null);
+    });
+    assert.equal(state.cards, 0b1111);
+  }
+});
 test("pressure errors block optional passages but preserve recovery; correct settings open exit", () => {
   const run = solve(42), at = time + 5100, valves = hotelPuzzle(42).valves;
   run.act({ kind: "valve", index: 0, setting: ((valves[0] + 1) % 3) as Pressure }, HOTEL_VALVES[0], at);
@@ -78,7 +93,7 @@ test("pressure errors block optional passages but preserve recovery; correct set
   assert.equal(createHotelState(run.state.epoch + 1, at).collected, 0);
 });
 test("malformed messages and numeric-id regressions are handled explicitly", () => {
-  for (const value of [null, {}, { kind: "code", code: 1234 }, { kind: "code", code: "12345" }, { kind: "tile", index: -1 }, { kind: "door", index: 0.5 }, { kind: "valve", index: 4, setting: 2 }, { kind: "valve", index: 0, setting: "LOW" }]) assert.equal(parseHotelAction(value), null);
+  for (const value of [null, {}, { kind: "code", code: 1234 }, { kind: "code", code: "12345" }, { kind: "tile", index: -1 }, { kind: "door", index: 0.5 }, { kind: "valve", index: 4, setting: 2 }, { kind: "valve", index: 0, setting: "LOW" }, { kind: "card", index: 4 }, { kind: "card" }]) assert.equal(parseHotelAction(value), null);
   assert.equal(nextMainLevel(ABANDONED_OFFICE_LEVEL), HOTEL_LEVEL);
   assert.equal(nextMainLevel(HOTEL_LEVEL), LIGHTS_OUT_LEVEL);
   assert.equal(nextMainLevel(LIGHTS_OUT_LEVEL), POOLROOMS_LEVEL);

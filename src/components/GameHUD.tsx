@@ -201,8 +201,10 @@ const GameHUDComponent: React.FC<GameHUDProps> = ({
             </div>
           )}
           {level === HOTEL_LEVEL && objective && (
-            <div className="mt-1 ml-1 max-w-md rounded border border-[#c9a65e]/50 bg-black/65 px-2 py-1 font-serif text-[12px] font-bold leading-snug tracking-wider text-[#e5d5af]">
-              {objective}
+            <div className="mt-1 ml-1 max-w-md rounded border border-[#c9a65e]/50 bg-black/65 px-2 py-1 font-serif leading-snug tracking-wider text-[#e5d5af]">
+              {objective.split("\n").map((line, i) => i === 0
+                ? <div key={i} className="text-[12px] font-bold">{line}</div>
+                : <div key={i} className="mt-0.5 text-[11px] font-normal text-[#e5d5af]/85">{line}</div>)}
             </div>
           )}
           {level === ABANDONED_OFFICE_LEVEL && megProgress && (

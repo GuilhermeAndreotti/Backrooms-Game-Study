@@ -1,5 +1,5 @@
 /** Server-owned hotel progression. No DOM/Three dependencies. */
-import { HOTEL_ALCOVES, HOTEL_BEVERLY_DOOR, HOTEL_GUEST_ROOMS, HOTEL_RECEPTION, HOTEL_STAIRS, HOTEL_STEAM, HOTEL_TABLE, HOTEL_VALVES, hotelCenter, hotelFloorAt, hotelRng, hotelSightClear } from "../game/levels/hotelLayout";
+import { HOTEL_ALCOVES, HOTEL_BEVERLY_DOOR, HOTEL_GUEST_ROOMS, HOTEL_RECEPTION, HOTEL_STAIRS, HOTEL_STEAM, HOTEL_TABLE, HOTEL_VALVES, hotelCardSpot, hotelCenter, hotelFloorAt, hotelRng, hotelSightClear } from "../game/levels/hotelLayout";
 export const HOTEL_BLACKOUT_MS = 5000;
 export const HOTEL_SUITS = ["♣", "♦", "♠", "♥"] as const;
 export const HOTEL_TILES = ["東", "南", "西", "北"] as const;
@@ -11,17 +11,19 @@ export type Pressure = 0 | 1 | 2;
 export const HOTEL_PSI_BANDS: Record<Pressure, [number, number]> = { 0: [130, 175], 1: [70, 110], 2: [25, 55] };
 export interface HotelState {
   epoch: number; revision: number; startedAt: number;
+  /** Guest cards found by anyone in the room (bit i = hotelPuzzle().cards[i]). */
+  cards: number;
   boxOpen: boolean; key: boolean; beverlyOpen: boolean;
   collected: number; placed: number; doors: number;
   stairAt: number; valves: (Pressure | null)[];
   pressure: number; steamAt: number; steamUntil: number; exitOpen: boolean;
 }
 export type HotelAction =
-  | { kind: "code"; code: string } | { kind: "key" } | { kind: "beverly" }
+  | { kind: "code"; code: string } | { kind: "card"; index: number } | { kind: "key" } | { kind: "beverly" }
   | { kind: "door"; index: number } | { kind: "tile"; index: number } | { kind: "place" }
   | { kind: "valve"; index: number; setting: Pressure };
 export function createHotelState(epoch = 1, now = Date.now()): HotelState {
-  return { epoch, revision: 0, startedAt: now, boxOpen: false, key: false, beverlyOpen: false, collected: 0, placed: 0, doors: 0, stairAt: 0, valves: [null, null, null], pressure: 0, steamAt: 0, steamUntil: 0, exitOpen: false };
+  return { epoch, revision: 0, startedAt: now, cards: 0, boxOpen: false, key: false, beverlyOpen: false, collected: 0, placed: 0, doors: 0, stairAt: 0, valves: [null, null, null], pressure: 0, steamAt: 0, steamUntil: 0, exitOpen: false };
 }
 export function hotelPuzzle(seed: number) {
   const random = hotelRng(seed ^ 0x5121930);
@@ -48,7 +50,7 @@ export function parseHotelAction(raw: unknown): HotelAction | null {
   const a = raw as Record<string, unknown>;
   if (a.kind === "code") return typeof a.code === "string" && /^\d{4}$/.test(a.code) ? { kind: "code", code: a.code } : null;
   if (a.kind === "key" || a.kind === "beverly" || a.kind === "place") return { kind: a.kind };
-  if ((a.kind === "tile" || a.kind === "door") && Number.isInteger(a.index) && Number(a.index) >= 0 && Number(a.index) < 4) return { kind: a.kind, index: Number(a.index) };
+  if ((a.kind === "tile" || a.kind === "door" || a.kind === "card") && Number.isInteger(a.index) && Number(a.index) >= 0 && Number(a.index) < 4) return { kind: a.kind, index: Number(a.index) };
   if (a.kind === "valve" && Number.isInteger(a.index) && Number(a.index) >= 0 && Number(a.index) < 3 && [0, 1, 2].includes(a.setting as number)) return { kind: "valve", index: Number(a.index), setting: a.setting as Pressure };
   return null;
 }
@@ -60,6 +62,7 @@ export function applyHotelAction(s: HotelState, a: HotelAction, seed: number, p:
   const out = { ...s, valves: [...s.valves], revision: s.revision + 1 };
   switch (a.kind) {
     case "code": if (s.boxOpen || !near(HOTEL_RECEPTION) || a.code !== puzzle.code) return null; out.boxOpen = true; break;
+    case "card": if (s.boxOpen || s.cards & (1 << a.index) || !near(hotelCardSpot(puzzle.cards[a.index]))) return null; out.cards |= 1 << a.index; break;
     case "key": if (!s.boxOpen || s.key || !near(HOTEL_RECEPTION)) return null; out.key = true; break;
     case "beverly": if (!s.key || s.beverlyOpen || !near(hotelCenter(HOTEL_BEVERLY_DOOR.gx, HOTEL_BEVERLY_DOOR.gz))) return null; out.beverlyOpen = true; break;
     case "door": {
@@ -92,5 +95,5 @@ export interface HotelWorldState {
   decor: number; event: number;
 }
 export function createHotelWorldState(now: number): HotelWorldState {
-  return { at: now, nextAt: now + 65000, until: 0, lastSeen: now, mode: 0, target: "", dwell: {}, decor: 0, event: 0 };
+  return { at: now, nextAt: now + 40000, until: 0, lastSeen: now, mode: 0, target: "", dwell: {}, decor: 0, event: 0 };
 }

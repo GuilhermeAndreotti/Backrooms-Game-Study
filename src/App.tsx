@@ -155,6 +155,22 @@ export default function App() {
   const [pauseMenuTab, setPauseMenuTab] = useState<"controles" | "diario" | "config">("controles");
   const [hotelPanel, setHotelPanel] = useState<HotelPanel | null>(null);
   const [hotelFeedback, setHotelFeedback] = useState<"idle" | "pending" | "accepted" | "denied">("idle");
+  /**
+   * A panel just closed and the game asked for the mouse back. Browsers refuse
+   * that when the panel was closed with Esc (not a user gesture), so until the
+   * lock actually lands this shows a light "click to return" prompt instead of
+   * dropping the player on the pause menu.
+   */
+  const [resumePrompt, setResumePrompt] = useState(false);
+  const resumePromptRef = useRef(false);
+  resumePromptRef.current = resumePrompt;
+  // Shown only if the lock really failed: a successful re-lock clears the prompt well before this.
+  const [resumeVisible, setResumeVisible] = useState(false);
+  useEffect(() => {
+    if (!resumePrompt) { setResumeVisible(false); return; }
+    const timer = setTimeout(() => setResumeVisible(true), 250);
+    return () => clearTimeout(timer);
+  }, [resumePrompt]);
   const [selectedJournalNote, setSelectedJournalNote] = useState<BackroomsLore | null>(null);
   const [isInventoryOpen, setIsInventoryOpen] = useState(false);
   /** "Give" mode (G): the teammate the next hotbar key hands an item to. */
@@ -274,18 +290,23 @@ export default function App() {
     () => (spaceTerminal ? engineRef.current?.spaceTerminalView(spaceTerminal) ?? null : null),
     [spaceTerminal],
   );
+  /** Every in-game panel's close: re-take the mouse, or wait for a click if the browser refuses. */
+  const resumeGameInput = useCallback(() => {
+    const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+    if (!canvasEl) return;
+    setResumePrompt(true);
+    lockGameInput(canvasEl);
+  }, []);
   const closeSpaceTerminal = useCallback(() => {
     setSpaceTerminal(null);
     setSpaceWiring(null);
-    const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
-    if (canvasEl) lockGameInput(canvasEl);
+    resumeGameInput();
   }, []);
   const getGiveTarget = useCallback(() => engineRef.current?.nearestTeammateInRange(GIVE_RANGE) ?? null, []);
   const spacePowered = useCallback(() => engineRef.current?.spacePowered() ?? true, []);
   const closeTownModel = useCallback(() => {
     setTownModelOpen(false);
-    const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
-    if (canvasEl) lockGameInput(canvasEl);
+    resumeGameInput();
   }, []);
   const townModelPlaced = useCallback(() => engineRef.current?.townModelPlaced() ?? [], []);
   const townModelSolved = useCallback(() => engineRef.current?.townModelSolved() ?? true, []);
@@ -295,14 +316,14 @@ export default function App() {
    * count as "the player left the game": no pause menu behind them.
    */
   const interfaceOpen = isTerminalOpen || isMegDoorOpen || isFunPanelOpen || isCheatTerminalOpen || wardrobeInitial !== null || isLevelSelectorOpen
-    || hotelPanel !== null || isAchievementsOpen || spaceTerminal !== null || spaceWiring !== null || townModelOpen || townDialogue !== null || chessOpen;
+    || hotelPanel !== null || resumePrompt || isAchievementsOpen || spaceTerminal !== null || spaceWiring !== null || townModelOpen || townDialogue !== null || chessOpen;
   useEffect(() => {
     if (currentLevel !== SPACE_LEVEL) { setSpaceTerminal(null); setSpaceWiring(null); }
     if (currentLevel !== OLD_TOWN_LEVEL) { setTownModelOpen(false); setTownDialogue(null); }
     if (currentLevel !== LOBBY_LEVEL) { setChessOpen(false); setWardrobeInitial(null); }
     setHotelPanel(null);
   }, [currentLevel]);
-  useEffect(() => { if (isDead) setHotelPanel(null); }, [isDead]);
+  useEffect(() => { if (isDead) { setHotelPanel(null); setResumePrompt(false); } }, [isDead]);
   useEffect(() => {
     if (hotelFeedback !== "pending") return;
     const timer = setTimeout(() => setHotelFeedback("denied"), 3000);
@@ -404,8 +425,7 @@ export default function App() {
 
   const closeWardrobe = () => {
     setWardrobeInitial(null);
-    const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
-    if (canvasEl) lockGameInput(canvasEl);
+    resumeGameInput();
   };
 
   /** Releases either pointer-lock input mode so the pause menu can reliably open. */
@@ -615,6 +635,8 @@ export default function App() {
         if (e.defaultPrevented) return;
         if (e.key === "Escape" && !e.repeat) {
           setGiveMode(null);
+          // Esc on the "click to return" prompt: the player wants the pause menu.
+          if (resumePromptRef.current) { setResumePrompt(false); return; }
           const inputActive = document.pointerLockElement !== null || pointerLocked || pointerLockedOverride || engineRef.current?.player?.isOverrideActive;
           if (inputActive) {
             e.preventDefault();
@@ -713,6 +735,7 @@ export default function App() {
       setPointerLocked(locked);
       if (locked) {
         setPointerLockedOverride(false);
+        setResumePrompt(false);
       } else if (megDialogueRef.current || activeLoreNoteRef.current) {
         // Esc / alt-tab released the lock: close the reading overlay rather
         // than leave it stacked over the pause menu.
@@ -1394,7 +1417,7 @@ export default function App() {
 
           else if (type === "hotel_state") { engineRef.current?.applyHotelState(data); }
           else if (type === "hotel_world") { engineRef.current?.applyHotelWorld(data); }
-          else if (type === "hotel_result") { setHotelFeedback(data.ok ? "accepted" : "denied"); }
+          else if (type === "hotel_result") { if (data.kind === "code" || data.kind === "valve") setHotelFeedback(data.ok ? "accepted" : "denied"); }
           else if (type === "space_event") {
             engineRef.current?.applySpaceEvent(data);
           }
@@ -1627,6 +1650,22 @@ export default function App() {
                 background: `radial-gradient(circle, rgba(0,0,0,0) 30%, rgba(74,140,26,${Math.min(0.9, 0.2 + (toxicWaterExposure / 8) * 0.7)}) 100%)`
               }}
             />
+          )}
+
+          {/* A panel closed with Esc: the browser won't hand the mouse back without a click */}
+          {resumePrompt && resumeVisible && !pointerLocked && !allDead && (
+            <div
+              className="absolute inset-0 z-40 flex cursor-pointer items-center justify-center bg-black/25 font-mono select-none"
+              onClick={() => {
+                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
+                if (canvasEl) lockGameInput(canvasEl);
+              }}
+            >
+              <div className="rounded border border-[#a28e3b]/60 bg-[#14130a]/90 px-5 py-3 text-center text-[#deb81d] shadow-[0_0_30px_rgba(0,0,0,0.6)]">
+                <div className="text-sm font-bold uppercase tracking-widest">{t("game.resumeClick")}</div>
+                <div className="mt-1 text-[10px] uppercase tracking-wider text-[#a28e3b]">{t("game.resumeEsc")}</div>
+              </div>
+            </div>
           )}
 
           {/* Locked Mouse Notice/Overlay */}
@@ -2103,8 +2142,7 @@ export default function App() {
               onSubmit={(entered) => engineRef.current?.submitGarageDigits(entered) ?? { locked: [], ok: false }}
               onClose={() => {
                 setIsTerminalOpen(false);
-                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
-                if (canvasEl) lockGameInput(canvasEl);
+                resumeGameInput();
               }}
             />
           )}
@@ -2114,8 +2152,7 @@ export default function App() {
               onSubmit={(code) => engineRef.current?.submitLevelGCode(code) ?? false}
               onClose={() => {
                 setIsTerminalOpen(false);
-                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
-                if (canvasEl) lockGameInput(canvasEl);
+                resumeGameInput();
               }}
             />
           )}
@@ -2125,8 +2162,7 @@ export default function App() {
               onPress={(index) => engineRef.current?.funPressButton(index) ?? { result: "wrong", progress: 0 }}
               onClose={() => {
                 setIsFunPanelOpen(false);
-                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
-                if (canvasEl) lockGameInput(canvasEl);
+                resumeGameInput();
               }}
             />
           )}
@@ -2137,8 +2173,7 @@ export default function App() {
               send={(message) => socketRef.current?.send(JSON.stringify(message))}
               onClose={() => {
                 setChessOpen(false);
-                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
-                if (canvasEl) lockGameInput(canvasEl);
+                resumeGameInput();
               }}
             />
           )}
@@ -2149,16 +2184,16 @@ export default function App() {
                 const next = engineRef.current?.townDialogueChoose(choice) ?? null;
                 setTownDialogue(next);
                 if (!next) {
-                  const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
-                  if (canvasEl) lockGameInput(canvasEl);
+                  resumeGameInput();
                 }
               }}
             />
           )}
           {hotelPanel && currentLevel === HOTEL_LEVEL && (
             <HotelPanelModal panel={hotelPanel} feedback={hotelFeedback}
+              info={() => ({ hint: engineRef.current?.hotelCodeHint() ?? null, valve: hotelPanel.kind === "valve" ? engineRef.current?.hotelValveInfo(hotelPanel.index) ?? null : null })}
               onSubmit={action => { setHotelFeedback("pending"); engineRef.current?.submitHotelAction(action); }}
-              onClose={() => { setHotelPanel(null); const canvas = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null; if (canvas) lockGameInput(canvas); }} />
+              onClose={() => { setHotelPanel(null); resumeGameInput(); }} />
           )}
           {townModelOpen && currentLevel === OLD_TOWN_LEVEL && (
             <TownModelModal
@@ -2197,8 +2232,7 @@ export default function App() {
               onSubmit={(ids) => engineRef.current?.submitMegDoorIds(ids) ?? false}
               onClose={() => {
                 setIsMegDoorOpen(false);
-                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
-                if (canvasEl) lockGameInput(canvasEl);
+                resumeGameInput();
               }}
             />
           )}
@@ -2233,8 +2267,7 @@ export default function App() {
               }}
               onClose={() => {
                 setIsCheatTerminalOpen(false);
-                const canvasEl = document.querySelector("#threejs-viewport canvas") as HTMLCanvasElement | null;
-                if (canvasEl) lockGameInput(canvasEl);
+                resumeGameInput();
               }}
             />
           )}
