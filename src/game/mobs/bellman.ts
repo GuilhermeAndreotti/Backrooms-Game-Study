@@ -39,7 +39,10 @@ export const bellman: MobDefinition = {
     const hotel = c.map.hotel;
     const seeing = hotelSightClear(c.entityPos.x, c.entityPos.z, c.playerX, c.playerZ, (x, z) => hotel?.isBlocked(x, z) ?? false);
     const mode = hotel?.bellmanMode ?? 0;
-    return { chasing: mode === 2 && seeing, speed: mode === 0 ? 0 : mode === 2 ? 1.7 : 0.65, agitated: mode === 2, pose: mode };
+    // Appearing (1), he walks slowly up to his guest and stops a few metres short, staring
+    // (still "chasing", so he keeps facing them); angered (2), he comes for them while he can see them.
+    if (mode === 1) return { chasing: true, speed: c.distanceMeters > 7 ? 0.65 : 0, agitated: false, pose: mode };
+    return { chasing: mode === 2 && seeing, speed: mode === 2 ? 1.7 : 0, agitated: mode === 2, pose: mode };
   },
   animate(c) {
     for (const side of [-1, 1]) {

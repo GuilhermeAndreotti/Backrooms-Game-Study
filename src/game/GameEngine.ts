@@ -1272,9 +1272,9 @@ export class GameEngine {
 
             entity.update(entityDelta, target.x, target.z, target.state, target.dir, target.flashlight);
             // Billboard towards *our* camera, not the explorer it's hunting.
-            // O Alien faces where it walks: its facing is its sight cone. Level 94's
+            // O Alien faces where it walks: its facing is its sight cone; a Deathmoth flies nose first. Level 94's
             // cartoons and their King turn like characters, not billboards.
-            if (entity.type !== EntityType.BELLMAN && entity.type !== EntityType.ALIEN && entity.type !== EntityType.ANIMATION && entity.type !== EntityType.TOWN_KING) {
+            if (entity.type !== EntityType.BELLMAN && entity.type !== EntityType.DEATHMOTH && entity.type !== EntityType.ALIEN && entity.type !== EntityType.ANIMATION && entity.type !== EntityType.TOWN_KING) {
               entity.mesh.lookAt(px, entity.mesh.position.y, pz);
             }
           } else {
@@ -1576,9 +1576,13 @@ export class GameEngine {
         if (this.sanity < 0.40) {
           if (this.flickerRemaining > 0) {
             this.flickerRemaining -= delta;
-            // Rapid stochastic strobe during the active flicker window
+            // Rapid stochastic strobe during the active flicker window. The Terror
+            // Hotel keeps flashing out of its lights: there the beam just sags.
             const flickerRoll = Math.random();
-            if (flickerRoll < 0.35) {
+            if (this.hotelDirector) {
+              this.flashlight.visible = true;
+              this.flashlight.intensity = 1.5;
+            } else if (flickerRoll < 0.35) {
               this.flashlight.visible = false;
               this.flashlight.intensity = 0.0;
             } else if (flickerRoll < 0.65) {
@@ -3869,6 +3873,10 @@ export class GameEngine {
   }
   public get hotelPanel(): HotelPanel | null { return this.hotelDirector?.panel ?? null; }
   public submitHotelAction(action: HotelAction) { this.hotelDirector?.submit(action); }
+  /** Reception code as the room has found it, for the code panel. */
+  public hotelCodeHint(): string | null { return this.hotelDirector?.codeHint() ?? null; }
+  /** Gauge reading and current setting of a boiler valve, for the valve panel. */
+  public hotelValveInfo(index: number) { return this.hotelDirector?.valveInfo(index) ?? null; }
   public applyHotelState(msg: { state: HotelState; now: number; world?: HotelWorldState }) { this.hotelDirector?.applyState(msg.state, msg.now, msg.world); }
   public applyHotelWorld(msg: { epoch: number; world: HotelWorldState; now: number }) {
     if (this.map?.hotel?.state.epoch === msg.epoch) this.hotelDirector?.applyWorld(msg.world, msg.now);

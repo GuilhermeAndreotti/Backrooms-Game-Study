@@ -43,10 +43,12 @@ export class HotelWorld {
   bellmanMode = 0;
   private kit: DecorKit;
   private doors: Door[] = [];
-  private lights: { source: DynamicLightSource; bulb: THREE.Object3D; zone: HotelZone }[] = [];
+  private lights: { source: DynamicLightSource; bulb: THREE.Object3D; zone: HotelZone; level: number }[] = [];
   private cells: { group: THREE.Group; zone: HotelZone }[] = [];
   private tiles: { mesh: THREE.Object3D; index: number; placed: boolean }[] = [];
   private wheels: THREE.Object3D[] = [];
+  /** A lamp over each alcove door: lit only over the one the group must open next. */
+  private alcoveLamps: { source: DynamicLightSource; bulb: THREE.Object3D; alcove: number }[] = [];
   private needles: THREE.Object3D[] = [];
   private steam: THREE.Group[] = [];
   private oddDoors: THREE.Object3D[] = [];
@@ -218,7 +220,12 @@ export class HotelWorld {
   private cylinder(r: number, h: number, mat: THREE.Material, x = 0, y = 0, z = 0, top = r) {
     const m = new THREE.Mesh(this.kit.geo(`hotel_cyl_${top}_${r}_${h}`, () => new THREE.CylinderGeometry(top, r, h, 14)), mat); m.position.set(x, y, z); return m;
   }
-  private sign(text: string, w = 2, h = 0.8, paper = false, maxFont = 72) {
+  /**
+   * A text plate, readable from the front only. Behind it there is a plain
+   * board (never mirrored text), or with `twoSided` a second, correctly
+   * oriented copy for free-standing plates people walk around.
+   */
+  private sign(text: string, w = 2, h = 0.8, paper = false, maxFont = 72, twoSided = false): THREE.Object3D {
     const material = this.kit.mat(`hotel_text_${text}_${paper}_${maxFont}`, () => {
       const c = document.createElement("canvas"); c.width = 768; c.height = Math.max(192, Math.round(768 * h / w));
       const g = c.getContext("2d")!; g.fillStyle = paper ? "#e5d5af" : "#20120c"; g.fillRect(0, 0, c.width, c.height);
@@ -227,9 +234,15 @@ export class HotelWorld {
       const size = Math.min(maxFont, (c.height - 35) / lines.length * 0.8); g.font = `${size}px Georgia, serif`;
       lines.forEach((line, i) => g.fillText(line, c.width / 2, 20 + (c.height - 40) * (i + 0.5) / lines.length, c.width - 48));
       const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; this.kit.track(tex);
-      return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.7, side: THREE.DoubleSide });
+      return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.7 });
     });
-    return new THREE.Mesh(this.kit.geo(`hotel_sign_${w}_${h}`, () => new THREE.PlaneGeometry(w, h)), material);
+    const geo = this.kit.geo(`hotel_sign_${w}_${h}`, () => new THREE.PlaneGeometry(w, h));
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(geo, material));
+    const back = new THREE.Mesh(geo, twoSided ? material : this.mat(paper ? "sign_back_paper" : "sign_back", paper ? 0xc9b98f : 0x20120c, 0.8));
+    // A centimetre apart so the two faces never z-fight.
+    back.rotation.y = Math.PI; back.position.z = -0.01; g.add(back);
+    return g;
   }
   /** Registers a collision circle in every cell it overlaps (world metres). */
   private block(x: number, z: number, r: number) {
@@ -413,7 +426,7 @@ export class HotelWorld {
     const industrial = style === "cage";
     const source = this.env.registerLight(gx, gz, p.x + offset.x, hotelFloorAt(p.x, p.z) + root.position.y - 0.15, p.z + offset.z,
       industrial ? 0xffb76b : 0xffd29a, zone === "beverly" ? 11 : industrial ? 7 : 6.5, zone === "beverly" ? 28 : 18);
-    this.lights.push({ source, bulb, zone });
+    this.lights.push({ source, bulb, zone, level: 1 });
   }
 
   /**
@@ -684,12 +697,25 @@ export class HotelWorld {
       const blank = alcove >= 0 ? this.box(1.8, 2.6, 0.16, this.hallPaper, 0, 1.3) : null;
       if (blank) holder.add(blank);
       this.doors.push({ mesh: d.group, blank, leaves: d.leaves, gx, gz, open: 0, alcove });
+      if (alcove >= 0) {
+        // Hall side of the doorway: +z for the north alcoves, -x for the east ones.
+        const axisZ = HOTEL_ALCOVES[alcove].axis === "z", hallLocal = axisZ ? 1 : -1;
+        const bulb = this.box(0.5, 0.14, 0.14, this.kit.mat("hotel_alcove_lamp", () => new THREE.MeshBasicMaterial({ color: 0xffc46b })), 0, 3.05, hallLocal * 0.2);
+        bulb.visible = false; holder.add(bulb);
+        const source = this.env.registerLight(gx, gz, p.x + (axisZ ? 0 : -1.4), floor + 2.8, p.z + (axisZ ? 1.4 : 0), 0xffc46b, 7, 12);
+        source.intensity = 0;
+        this.alcoveLamps.push({ source, bulb, alcove });
+      }
     }
 
     // The Beverly Room: alcove tiles, the Mahjong table, round tables, columns, a piano and a bar.
     for (let i = 0; i < 4; i++) if (inCell(HOTEL_ALCOVES[this.puzzle.alcoves[i]].tile)) {
       g.add(this.cylinder(0.45, 0.9, this.marble, 0, 0.45)); g.add(this.cylinder(0.55, 0.08, this.brass, 0, 0.94)); obstacle(0, 0, 0.55);
-      const tile = this.sign(HOTEL_TILES[i], 0.55, 0.7, true); tile.position.set(0, 1.35, 0.3); g.add(tile); this.tiles.push({ mesh: tile, index: i, placed: false });
+      // Facing the way players come in: from the hall (+z) or, for the east alcoves, from the west.
+      const tile = this.sign(HOTEL_TILES[i], 0.55, 0.7, true, 72, true);
+      if (HOTEL_ALCOVES[this.puzzle.alcoves[i]].axis === "x") { tile.position.set(-0.3, 1.35, 0); tile.rotation.y = -Math.PI / 2; }
+      else tile.position.set(0, 1.35, 0.3);
+      g.add(tile); this.tiles.push({ mesh: tile, index: i, placed: false });
     }
     if (inCell(HOTEL_TABLE)) {
       g.add(this.box(3.5, 0.2, 2.7, this.wood, 0, 1)); g.add(this.box(3.2, 0.025, 2.4, this.mat("felt", 0x173c32), 0, 1.12)); obstacle(0, 0, 1.1);
@@ -699,7 +725,7 @@ export class HotelWorld {
         const tile = this.sign(HOTEL_TILES[i], 0.5, 0.68, true); tile.rotation.x = -Math.PI / 2; tile.position.set(slot.position.x, 1.2, 0); g.add(tile); this.tiles.push({ mesh: tile, index: i, placed: true });
       }
       for (let i = 0; i < 12; i++) g.add(this.box(0.19, 0.28, 0.12, this.cream, -1.2 + i * 0.22, 1.3, -0.85));
-      const s = this.sign(t("hotel.tableClue"), 3.2, 0.7); s.position.set(0, 1.8, -0.9); g.add(s);
+      const s = this.sign(t("hotel.tableClue"), 3.2, 0.7, false, 72, true); s.position.set(0, 1.8, -0.9); g.add(s);
       for (const [x, z, yaw] of [[0, 1.75, Math.PI], [0, -1.75, 0], [2.15, 0, -Math.PI / 2], [-2.15, 0, Math.PI / 2]]) {
         const c = this.chair(); c.position.set(x, 0, z); c.rotation.y = yaw; g.add(c);
       }
@@ -749,8 +775,8 @@ export class HotelWorld {
       g.add(this.cylinder(0.16, 3.6, this.brass, 0, 1.8, -0.65));
       const wheel = new THREE.Mesh(this.kit.geo("hotel_wheel", () => new THREE.TorusGeometry(0.47, 0.055, 8, 20)), this.red); wheel.position.set(0, 1.35, 0); g.add(wheel); this.wheels[i] = wheel;
       for (let k = 0; k < 4; k++) { const spoke = this.box(0.92, 0.04, 0.04, this.red); spoke.rotation.z = k * Math.PI / 4; wheel.add(spoke); }
-      const s = this.sign(`VALVE ${"ABC"[i]}\nLOW · MEDIUM · HIGH`, 2.7, 0.65); s.position.set(0, 2.65, -0.1); g.add(s);
-      const dial = this.sign("LOW     MEDIUM     HIGH\n0          1          2", 2, 0.8, true); dial.position.set(0, 2.05, 0); g.add(dial);
+      const s = this.sign(`VALVE ${"ABC"[i]}\nLOW · MEDIUM · HIGH`, 2.7, 0.65, false, 72, true); s.position.set(0, 2.65, -0.1); g.add(s);
+      const dial = this.sign("LOW     MEDIUM     HIGH\n0          1          2", 2, 0.8, true, 72, true); dial.position.set(0, 2.05, 0); g.add(dial);
       const needle = this.box(0.04, 0.35, 0.02, this.red, 0, 2.05, 0.03); g.add(needle); this.needles[i] = needle;
       // The boiler gauge this valve answers to: its reading, against the chart by the stairs, gives the setting.
       g.add(this.cylinder(0.04, 1.6, this.brass, 1.35, 0.8, -0.3));
@@ -829,12 +855,22 @@ export class HotelWorld {
     this.needles.forEach((w, i) => { w.rotation.z = (1 - (this.state.valves[i] ?? 0)) * Math.PI / 3; });
     const steaming = now >= this.state.steamAt && now < this.state.steamUntil;
     this.steam.forEach((s, index) => { s.visible = steaming; s.children.forEach((c, i) => { c.rotation.y = now * 0.001 + i; c.scale.setScalar(0.85 + Math.sin(now * 0.004 + i + index) * 0.2); }); });
+    // Unease is a slow, shallow sway of the lamps (about 1 Hz, never below 60%),
+    // eased in and out: no strobing, the bulbs never go dark.
+    const ease = Math.min(1, delta * 3);
     for (const l of this.lights) {
-      const pulse = (flicker > 0 || steaming && l.zone === "boiler") && Math.sin(now * 0.047) > 0.25;
-      const scale = blackout || this.departed && l.zone !== "exit" ? 0
+      const uneasy = flicker > 0 || steaming && l.zone === "boiler";
+      const target = blackout || this.departed && l.zone !== "exit" ? 0
         : l.zone === "exit" ? (this.departed && l.source.z < this.departureZ - 4 ? 0.25 : 0)
-        : pulse ? 0.08 : 1;
-      l.source.intensity = l.source.baseIntensity * scale; l.bulb.visible = scale > 0.1;
+        : uneasy ? 0.6 + 0.4 * (0.5 + 0.5 * Math.cos(now * 0.006 + l.source.x * 0.13 + l.source.z * 0.07)) : 1;
+      // Blackouts and the departed hotel cut out at once; everything else glides.
+      l.level = target === 0 ? 0 : l.level + (target - l.level) * ease;
+      l.source.intensity = l.source.baseIntensity * l.level; l.bulb.visible = l.level > 0.1;
+    }
+    const next = this.state.beverlyOpen && this.state.collected < 4 && !blackout && !this.departed ? this.puzzle.alcoves[this.state.collected] : -1;
+    for (const lamp of this.alcoveLamps) {
+      const on = lamp.alcove === next;
+      lamp.source.intensity = on ? lamp.source.baseIntensity : 0; lamp.bulb.visible = on;
     }
     // Hide only the local view beyond the one-way threshold. Other explorers retain their hotel.
     if (this.returnWall) this.returnWall.visible = this.departed;

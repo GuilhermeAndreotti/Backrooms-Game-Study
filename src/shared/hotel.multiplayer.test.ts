@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import WebSocket from "ws";
 import { hotelPuzzle, type HotelState } from "./hotel";
-import { HOTEL_ALCOVES, HOTEL_BEVERLY_DOOR, HOTEL_EXIT, HOTEL_RECEPTION, HOTEL_TABLE, HOTEL_VALVES, hotelCenter, hotelFloorAt } from "../game/levels/hotelLayout";
+import { HOTEL_ALCOVES, HOTEL_BEVERLY_DOOR, HOTEL_EXIT, HOTEL_RECEPTION, HOTEL_TABLE, HOTEL_VALVES, hotelCenter, hotelFloorAt, hotelRoomPoint, hotelRoomSide } from "../game/levels/hotelLayout";
 
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 class Client {
@@ -47,6 +47,10 @@ test("four explorers share puzzles, late join, authority handoff, reset and the 
       state = (await c.wait("hotel_state", m => m.state.revision > state.revision)).state;
     };
     const puzzle = hotelPuzzle(42);
+    // A guest card found by one explorer shows up for the whole room (the HUD's reception code).
+    const card = puzzle.cards[0];
+    await action(a, { kind: "card", index: 0 }, hotelRoomPoint(card, hotelRoomSide(card) * 2.5, 5.5));
+    assert.equal((await b.wait("hotel_state", m => m.state.revision === state.revision)).state.cards, 1);
     await action(a, { kind: "code", code: puzzle.code }, HOTEL_RECEPTION);
     await action(b, { kind: "key" }, HOTEL_RECEPTION);
     const third = await join(code), c = third.c;

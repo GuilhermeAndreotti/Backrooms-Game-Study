@@ -29,7 +29,7 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     id: HOTEL_LEVEL, displayLabel: "LEVEL 5 · TERROR HOTEL",
     spawn: { kind: "static", roster: [
       { type: EntityType.BELLMAN, targetCell: [23, 12] },
-      { type: EntityType.DEATHMOTH, targetCell: [27, 16] },
+      { type: EntityType.DEATHMOTH, targetCell: [27, 12] },
       { type: EntityType.DEATHMOTH, targetCell: [42, 15] },
       { type: EntityType.DEATHMOTH, targetCell: [50, 34] },
     ] },
