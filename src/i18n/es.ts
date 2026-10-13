@@ -57,6 +57,8 @@ export const es: Record<MessageKey, string> = {
   "hotel.valveChart": "Menos de 60 PSI → HIGH · 60 a 120 → MEDIUM · Más de 120 → LOW",
   "hotel.valveCurrent": "Ajuste actual: {setting}",
   "hotel.valveUnset": "ninguno",
+  "hotel.valveRight": "Presión estable. Esta válvula está en el ajuste correcto.",
+  "hotel.valveWrong": "¡Presión incorrecta! Va a escapar vapor: revisa el manómetro y la tabla.",
   "hotel.close": "Cerrar · ESC / E",
   "game.resumeClick": "Haz clic para volver al juego",
   "game.resumeEsc": "ESC abre el menú de pausa",

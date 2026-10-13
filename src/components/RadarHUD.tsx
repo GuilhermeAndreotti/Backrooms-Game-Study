@@ -4,6 +4,7 @@
  */
 
 import { t, useLanguage } from "../i18n";
+import { MOB_DEFS } from "../game/mobs/registry";
 import React, { useEffect, useRef, useState } from "react";
 import { GameEngine } from "../game/GameEngine";
 import { RemotePlayer } from "../types/game";
@@ -420,6 +421,8 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
         engine.entities.forEach(entity => {
           // The Finger King, O Ceifador and the Old Town's King jam the radar: you have to listen/watch for them instead.
           if (entity.type === "FINGER_KING" || entity.type === "CEIFADOR" || entity.type === "TOWN_KING") return;
+          // Hidden on screen means hidden here too (the Terror Hotel's Bellman between appearances, its departed hotel).
+          if (!entity.mesh.visible) return;
           const entX = entity.mesh.position.x;
           const entZ = entity.mesh.position.z;
           const rx = entX - px;
@@ -498,11 +501,15 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
                 colorStroke = "#fafafa";
                 label = t("radar.animation");
                 break;
-              default:
-                colorFill = `rgba(239, 68, 68, ${0.45 + pulse * 0.55})`;
-                colorStroke = "#f87171";
-                label = t("radar.anomaly");
+              default: {
+                // Mobs that describe their own blip (the Terror Hotel's), else a generic anomaly.
+                const radar = MOB_DEFS[entity.type]?.radar;
+                const rgb = radar ? parseInt(radar.color.slice(1), 16) : 0xef4444;
+                colorFill = `rgba(${rgb >> 16}, ${(rgb >> 8) & 255}, ${rgb & 255}, ${0.45 + pulse * 0.55})`;
+                colorStroke = radar?.strokeColor ?? "#f87171";
+                label = t(radar?.labelKey ?? "radar.anomaly");
                 break;
+              }
             }
 
             ctx.fillStyle = colorFill;

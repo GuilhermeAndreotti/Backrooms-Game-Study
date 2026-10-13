@@ -1445,6 +1445,8 @@ export class WanderingEntity {
    */
   public resetForReuse(map: ProceduralMap, startX: number, startZ: number) {
     this.map = map;
+    // A level may have hidden it before it was pooled (the Terror Hotel hides its mobs).
+    this.mesh.visible = true;
     this.gridX = startX;
     this.gridZ = startZ;
     this.targetGridX = startX;

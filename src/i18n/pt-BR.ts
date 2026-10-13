@@ -55,6 +55,8 @@ export const ptBR = {
   "hotel.valveChart": "Abaixo de 60 PSI → HIGH · 60 a 120 → MEDIUM · Acima de 120 → LOW",
   "hotel.valveCurrent": "Ajuste atual: {setting}",
   "hotel.valveUnset": "nenhum",
+  "hotel.valveRight": "Pressão estabilizada. Esta válvula está no ajuste certo.",
+  "hotel.valveWrong": "Pressão incorreta! Vapor vai escapar — confira o manômetro e a tabela.",
   "hotel.close": "Fechar · ESC / E",
   "game.resumeClick": "Clique para voltar ao jogo",
   "game.resumeEsc": "ESC abre o menu de pausa",

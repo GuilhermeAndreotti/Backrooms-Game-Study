@@ -21,7 +21,7 @@ export const deathmoth: MobDefinition = {
   },
   sense(c) {
     const sees = c.distanceMeters < 6 && hotelSightClear(c.entityPos.x, c.entityPos.z, c.playerX, c.playerZ, (x, z) => c.map.hotel?.isBlocked(x, z) ?? false);
-    const chasing = sees && (c.isFlashlightOn || c.distanceMeters < 2);
+    const chasing = sees && !c.map.hotel?.calm && (c.isFlashlightOn || c.distanceMeters < 2);
     return { chasing, speed: chasing ? 1.65 : 0.45 };
   },
   animate(c) { for (const side of [-1, 1]) c.joints[`wing${side}`].rotation.z = side * Math.sin(c.time * 23) * 0.75; },
