@@ -35,8 +35,9 @@ export interface RemotePlayer {
 export type DeathAction = 'current_level' | 'level_0' | 'lobby';
 
 /** Lobby cheat-terminal effects. Unlocked for the whole room, not just whoever typed the code. */
-export type RoomCheat = 'speed' | 'stamina' | 'clip' | 'life' | 'arrow';
-export const ROOM_CHEATS: readonly RoomCheat[] = ['speed', 'stamina', 'clip', 'life', 'arrow'];
+export type RoomCheat = 'speed' | 'stamina' | 'clip' | 'life' | 'arrow' | 'radar';
+/** 'radar' (the map always at the cassette tape's range) has no code of its own: only SUDO grants it. */
+export const ROOM_CHEATS: readonly RoomCheat[] = ['speed', 'stamina', 'clip', 'life', 'arrow', 'radar'];
 /** SUDO: unlocks every room cheat at once. */
 export const SUDO_CHEAT = 'sudo';
 

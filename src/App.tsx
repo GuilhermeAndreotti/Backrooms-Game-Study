@@ -108,7 +108,7 @@ function inviteLink(code: string): string {
 const CHAT_HISTORY_LIMIT = 100;
 
 /** The terminal code that unlocks each room cheat, for the chat announcement. */
-const CHEAT_CODES: Record<RoomCheat | typeof SUDO_CHEAT, string> = { speed: "MVJM", stamina: "UHUM", clip: "CLIP", life: "LIFE", arrow: "SETA", sudo: "SUDO" };
+const CHEAT_CODES: Record<RoomCheat | typeof SUDO_CHEAT, string> = { speed: "MVJM", stamina: "UHUM", clip: "CLIP", life: "LIFE", arrow: "SETA", radar: "SUDO", sudo: "SUDO" };
 
 /** Keeps only known cheat ids from a server message. */
 function sanitizeRoomCheats(value: unknown): RoomCheat[] {
@@ -1267,7 +1267,7 @@ export default function App() {
             if (who) who.dead = true;
             engineRef.current?.setRemoteDead(deadId, true);
             if (deadId !== clientIdRef.current) {
-              logSystemMessage(t("sys.died", { name: (who?.name ?? t("sys.someone")).toUpperCase() }));
+              logSystemMessage(t(cause === "fall" ? "sys.fell" : "sys.died", { name: (who?.name ?? t("sys.someone")).toUpperCase() }));
               if (cause === "caught") engineRef.current?.triggerRemoteJumpscare(deadId);
             }
             touchRoster();

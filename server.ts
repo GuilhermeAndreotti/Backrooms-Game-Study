@@ -1416,7 +1416,7 @@ async function startServer() {
         if (conn.player.dead) return;
         conn.player.dead = true;
         room.dirty.add(conn.player.id);
-        const cause = data.cause === "caught" ? "caught" : "sanity";
+        const cause = data.cause === "caught" || data.cause === "fall" ? data.cause : "sanity";
         broadcastToRoom(room, { type: "player_died", id: conn.player.id, cause });
         refreshAuthority(room);
         checkAllDead(room);

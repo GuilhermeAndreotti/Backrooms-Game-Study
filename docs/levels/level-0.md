@@ -11,6 +11,7 @@ O clássico das Backrooms: carpete amarelado úmido, papel de parede amarelo, zu
 ## Mecânicas
 
 - **Luzes que piscam**: a autoridade do nível sorteia *blackouts* e tempestades de flicker e os transmite (`world_event`), para que todos vejam o mesmo evento.
+- **Pit rooms**: salas cujo chão foi engolido por poços quadrados enormes (2,9 m de lado, um por célula). Sobram só uma beirada de carpete junto às paredes e passarelas estreitas (~1,1 m) entre os poços; as portas mantêm o piso. **Cair num poço mata** (causa `fall`): a câmera despenca e escurece, e você passa a espectar. Um pulo correndo atravessa um poço por pouco; o cheat LIFE anda no ar. Itens que caem numa célula de poço vão para a beirada.
 - **Red Room**: salas raras de carpete vermelho-escuro, silenciosas. Ficar nelas drena a sanidade sem aviso. O HUD mostra a exposição.
 - **Passagens falsas**: perto do fim do labirinto há duas passagens; só uma leva adiante, a outra leva de volta ao vermelho. Um **Scrap of Note** com uma dica rabiscada na margem diz qual é a certa: *a que tem uma mesa com um papel*.
 - **Papel da saída** (`E` na mesa): explica a saída deste nível.
@@ -29,3 +30,4 @@ Encontrar a **saída noclip**: uma **parede** ou um **chão** sem física, cerca
 
 - Geração: `ProceduralMap` (`noclipCellX/Z`, `noclipKind`, `correctDoorMarker`).
 - Gatilho da saída: `GameEngine.ts` (`isInNoclipExit`, `noclipDwell`).
+- Pit rooms: `ProceduralMap` (`isPitHole`, `isOverPit`, `PIT_HOLE_HALF`); a queda: `GameEngine.ts` (`startPitFall`, `updatePitFall`).

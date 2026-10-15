@@ -66,6 +66,11 @@ export enum CellType {
   WATER_ROOM = 8, // Level 7's flooded pool cells — own value rather than folded into ROOM_LARGE/PIT_ROOM, since it needs its own hazard-exposure timer and swim-not-fall physics (same reasoning RED_ROOM already got its own value for)
 }
 
+/** Level 0's pit rooms: half the side (metres) of the square shaft cut into a pit cell (4 m) — a ~0.55 m ledge is left around it. */
+export const PIT_HOLE_HALF = 1.45;
+/** How deep the shafts are drawn; fog swallows them long before the bottom. */
+const PIT_DEPTH = 40;
+
 export interface LightFixture {
   mesh: THREE.Mesh;
   /** Pooled light request; no GPU light is owned by the fixture itself. */
@@ -171,8 +176,6 @@ export class ProceduralMap {
   private caseGeo!: THREE.BoxGeometry;
   private tubeGeo!: THREE.CylinderGeometry;
   private unitBoxGeo!: THREE.BoxGeometry;
-  private pitGeoWall!: THREE.PlaneGeometry;
-  private pitGeoFloor!: THREE.PlaneGeometry;
   private barrelCylinderGeo!: THREE.CylinderGeometry;
   private barrelRimGeo!: THREE.TorusGeometry;
   private boilerPipeVerticalGeo!: THREE.CylinderGeometry;
@@ -462,6 +465,33 @@ export class ProceduralMap {
     if (gz <= 7 && gx <= 6) return 1;
     if (gz <= 7 && gx >= 10) return 2;
     return 0;
+  }
+
+  /**
+   * Level 0's pit rooms: whether this cell's floor is cut by a shaft. Doorway
+   * cells (opening onto anything but their own room or a wall) keep a floor,
+   * so nobody drops in on the threshold.
+   */
+  public isPitHole(gx: number, gz: number): boolean {
+    if (this.grid[gx]?.[gz] !== CellType.PIT_ROOM) return false;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const n = this.grid[gx + dx]?.[gz + dz];
+      if (n !== CellType.PIT_ROOM && n !== CellType.SOLID) return false;
+    }
+    return true;
+  }
+
+  /** Whether a world point is over a pit shaft (`inset` shrinks the opening: how far past the edge counts). */
+  public isOverPit(x: number, z: number, inset = 0): boolean {
+    const gx = Math.floor(x / this.cellSize), gz = Math.floor(z / this.cellSize);
+    if (!this.isPitHole(gx, gz)) return false;
+    const half = PIT_HOLE_HALF - inset;
+    return Math.abs(x - (gx + 0.5) * this.cellSize) < half && Math.abs(z - (gz + 0.5) * this.cellSize) < half;
+  }
+
+  /** Centre of the pit shaft under a world point (for the fall to drift into). */
+  public pitCenterAt(x: number, z: number): [number, number] {
+    return [(Math.floor(x / this.cellSize) + 0.5) * this.cellSize, (Math.floor(z / this.cellSize) + 0.5) * this.cellSize];
   }
 
   /** Cells monsters may walk into: not walls, and not Level G's exit while it's locked. */
@@ -1652,10 +1682,6 @@ export class ProceduralMap {
 
     // Unit 1x1x1 box geometry used for scaling to prevent expensive dynamic BoxGeometry generation
     this.unitBoxGeo = new THREE.BoxGeometry(1, 1, 1);
-
-    // Pit Room geometries
-    this.pitGeoWall = new THREE.PlaneGeometry(1.0, 1.6);
-    this.pitGeoFloor = new THREE.PlaneGeometry(1.0, 1.0);
 
     // Industrial Barrel geometries (low segment count for performance)
     this.barrelCylinderGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.9, 10);
@@ -3640,25 +3666,7 @@ export class ProceduralMap {
           }
         }
 
-        // Custom collision for the Pit Room openings
-        if (this.grid[gx][gz] === CellType.PIT_ROOM) {
-          const posX = gx * this.cellSize + this.cellSize / 2;
-          const posZ = gz * this.cellSize + this.cellSize / 2;
-          const pitOffsets = [-1.0, 1.0];
-          for (const ox of pitOffsets) {
-            for (const oz of pitOffsets) {
-              const pCenterX = posX + ox;
-              const pCenterZ = posZ + oz;
-              const closestX = Math.max(pCenterX - 0.5, Math.min(x, pCenterX + 0.5));
-              const closestZ = Math.max(pCenterZ - 0.5, Math.min(z, pCenterZ + 0.5));
-              const dx = x - closestX;
-              const dz = z - closestZ;
-              if (dx * dx + dz * dz < radius * radius) {
-                return true; // Collided with the deep pit edge, prevent floating on empty slots
-              }
-            }
-          }
-        }
+        // (Pit Room shafts don't block: walking into one is a fall — see GameEngine.)
 
         // Custom collision for the Arch Room partition wall (running horizontally on gz === 9)
         if (this.grid[gx][gz] === CellType.ARCH_ROOM && gz === 9) {
@@ -4371,77 +4379,54 @@ export class ProceduralMap {
       ? [[0, 1, 0], [0, -1, Math.PI], [1, 0, Math.PI / 2], [-1, 0, -Math.PI / 2]].find(([dx, dz]) => this.grid[gx + dx]?.[gz + dz] === CellType.SOLID)
       : undefined;
 
-    // 1. CARPET (Floor pane) - Use shared floorGeo, or custom pit layouts
-    if (cellType === CellType.PIT_ROOM) {
-      // Create a grid of carpet tiles avoiding the four square pits (exactly zero overlap to prevent Z-fighting)
-      const segments = [
-        // Vertical sectors (left, center partition, right)
-        { w: 0.5, h: 0.02, d: 4.0, x: -1.75, z: 0 },
-        { w: 1.0, h: 0.02, d: 4.0, x: 0.0, z: 0 },
-        { w: 0.5, h: 0.02, d: 4.0, x: 1.75, z: 0 },
-        // Horizontal bridging sectors linking the verticals
-        { w: 1.0, h: 0.02, d: 0.5, x: -1.0, z: -1.75 },
-        { w: 1.0, h: 0.02, d: 0.5, x: 1.0, z: -1.75 },
-        { w: 1.0, h: 0.02, d: 1.0, x: -1.0, z: 0.0 },
-        { w: 1.0, h: 0.02, d: 1.0, x: 1.0, z: 0.0 },
-        { w: 1.0, h: 0.02, d: 0.5, x: -1.0, z: 1.75 },
-        { w: 1.0, h: 0.02, d: 0.5, x: 1.0, z: 1.75 }
+    // 1. CARPET (Floor pane) - Use shared floorGeo, or a pit room's ledge around its shaft
+    if (this.isPitHole(gx, gz)) {
+      // The carpet survives only as a narrow ledge around one big square shaft.
+      const H = PIT_HOLE_HALF;
+      const rim = hSize / 2 - H;
+      const ledges = [
+        { w: hSize, d: rim, x: 0, z: -(H + rim / 2) },
+        { w: hSize, d: rim, x: 0, z: H + rim / 2 },
+        { w: rim, d: 2 * H, x: -(H + rim / 2), z: 0 },
+        { w: rim, d: 2 * H, x: H + rim / 2, z: 0 },
       ];
-
-      segments.forEach((seg) => {
-        const segMesh = new THREE.Mesh(this.unitBoxGeo, this.carpetMaterial);
-        segMesh.scale.set(seg.w, seg.h, seg.d);
-        segMesh.position.set(posX + seg.x, -0.01 + seg.h / 2, posZ + seg.z);
-        segMesh.receiveShadow = true;
-        group.add(segMesh);
-      });
-
-      // Construct 4 dark recessed pit drops
-      const pitOffsets = [-1.0, 1.0];
-      const pitMat = this.sharedMat("pit", () => new THREE.MeshStandardMaterial({
-        color: 0x110f0a,
-        roughness: 0.9,
-        side: THREE.DoubleSide
-      }));
-
-      for (const ox of pitOffsets) {
-        for (const oz of pitOffsets) {
-          const pitGroup = new THREE.Group();
-          pitGroup.position.set(posX + ox, 0, posZ + oz);
-
-          // Pit Floor - flat at depth -1.6
-          const pFloor = new THREE.Mesh(this.pitGeoFloor, pitMat);
-          pFloor.position.set(0, -1.6, 0);
-          pFloor.rotation.x = -Math.PI / 2;
-          pFloor.receiveShadow = true;
-          pitGroup.add(pFloor);
-
-          // North Wall (Z = -0.5)
-          const pNorth = new THREE.Mesh(this.pitGeoWall, pitMat);
-          pNorth.position.set(0, -0.8, -0.5);
-          pitGroup.add(pNorth);
-
-          // South Wall (Z = 0.5)
-          const pSouth = new THREE.Mesh(this.pitGeoWall, pitMat);
-          pSouth.position.set(0, -0.8, 0.5);
-          pSouth.rotation.y = Math.PI;
-          pitGroup.add(pSouth);
-
-          // West Wall (X = -0.5)
-          const pWest = new THREE.Mesh(this.pitGeoWall, pitMat);
-          pWest.position.set(-0.5, -0.8, 0);
-          pWest.rotation.y = Math.PI / 2;
-          pitGroup.add(pWest);
-
-          // East Wall (X = 0.5)
-          const pEast = new THREE.Mesh(this.pitGeoWall, pitMat);
-          pEast.position.set(0.5, -0.8, 0);
-          pEast.rotation.y = -Math.PI / 2;
-          pitGroup.add(pEast);
-
-          group.add(pitGroup);
-        }
+      for (const l of ledges) {
+        const ledge = new THREE.Mesh(this.unitBoxGeo, this.carpetMaterial);
+        ledge.scale.set(l.w, 0.02, l.d);
+        ledge.position.set(posX + l.x, 0, posZ + l.z);
+        ledge.receiveShadow = true;
+        group.add(ledge);
       }
+
+      // The shaft: torn carpet and plaster at the lip, black within a few metres.
+      const shaftMat = this.sharedMat("pit_shaft", () => {
+        const c = document.createElement("canvas");
+        c.width = 8; c.height = 256;
+        const g = c.getContext("2d")!;
+        const grad = g.createLinearGradient(0, 0, 0, 256);
+        grad.addColorStop(0, "#5a4c2c");
+        grad.addColorStop(0.012, "#3a3120");
+        grad.addColorStop(0.08, "#14110a");
+        grad.addColorStop(0.2, "#000000");
+        g.fillStyle = grad;
+        g.fillRect(0, 0, 8, 256);
+        const tex = new THREE.CanvasTexture(c);
+        this.sharedTextures.push(tex);
+        return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95 });
+      });
+      const wallGeo = this.sharedGeo("pit_shaft_wall", () => new THREE.PlaneGeometry(2 * H, PIT_DEPTH));
+      for (const [dx, dz, ry] of [[0, -1, 0], [0, 1, Math.PI], [-1, 0, Math.PI / 2], [1, 0, -Math.PI / 2]] as const) {
+        const wall = new THREE.Mesh(wallGeo, shaftMat);
+        wall.position.set(posX + dx * H, -PIT_DEPTH / 2 + 0.01, posZ + dz * H);
+        wall.rotation.y = ry;
+        group.add(wall);
+      }
+      const bottom = new THREE.Mesh(
+        this.sharedGeo("pit_shaft_bottom", () => new THREE.PlaneGeometry(2 * H, 2 * H).rotateX(-Math.PI / 2)),
+        this.sharedMat("pit_bottom", () => new THREE.MeshBasicMaterial({ color: 0x000000 })),
+      );
+      bottom.position.set(posX, -PIT_DEPTH, posZ);
+      group.add(bottom);
     } else {
       const isRamp = this.level === 1 && this.rampCells.has(`${gx},${gz}`);
       const isToxicWater = cellType === CellType.WATER_ROOM && this.toxicWaterCells.has(`${gx},${gz}`);
@@ -5878,7 +5863,7 @@ export class ProceduralMap {
     }
 
     // 8. DAMP LEVEL 0 CARPET MOISTURE & CEILING LEAKS (Ripples, puddles, and dripping drops)
-    if (this.level !== 7 && this.wetSpills.has(`${gx},${gz}`)) {
+    if (this.level !== 7 && this.wetSpills.has(`${gx},${gz}`) && !this.isPitHole(gx, gz)) {
       const isExitPathCell = this.exitPathSet.has(`${gx},${gz}`);
 
       // Floor damp puddle
@@ -5983,8 +5968,14 @@ export class ProceduralMap {
       const itemTypeRoll = itemRng.next();
       // Keep it within the cell boundaries (so + hSize/2 is center, range is -hSize/2 + 0.5 to hSize/2 - 0.5)
       const maxOffset = hSize / 2 - 0.6;
-      const ix = posX + itemRng.nextRange(-maxOffset, maxOffset);
-      const iz = posZ + itemRng.nextRange(-maxOffset, maxOffset);
+      let ix = posX + itemRng.nextRange(-maxOffset, maxOffset);
+      let iz = posZ + itemRng.nextRange(-maxOffset, maxOffset);
+      // A pit room's shaft: put it on the ledge instead of hovering over the drop.
+      if (this.isPitHole(gx, gz)) {
+        const ledge = (PIT_HOLE_HALF + hSize / 2) / 2;
+        if (Math.abs(ix - posX) > Math.abs(iz - posZ)) ix = posX + Math.sign(ix - posX || 1) * ledge;
+        else iz = posZ + Math.sign(iz - posZ || 1) * ledge;
+      }
       // Floating slightly off the floor — or bobbing on the surface in a flooded pool cell.
       const iy = this.grid[gx][gz] === CellType.WATER_ROOM ? WATER_SURFACE_Y + 0.12 : 0.45;
 
@@ -7692,8 +7683,6 @@ export class ProceduralMap {
     if (this.chairLegGeo) this.chairLegGeo.dispose();
     if (this.boxGeo) this.boxGeo.dispose();
     if (this.unitBoxGeo) this.unitBoxGeo.dispose();
-    if (this.pitGeoWall) this.pitGeoWall.dispose();
-    if (this.pitGeoFloor) this.pitGeoFloor.dispose();
     if (this.barrelCylinderGeo) this.barrelCylinderGeo.dispose();
     if (this.barrelRimGeo) this.barrelRimGeo.dispose();
     if (this.boilerPipeVerticalGeo) this.boilerPipeVerticalGeo.dispose();

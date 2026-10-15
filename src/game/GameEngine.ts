@@ -91,7 +91,7 @@ export interface GameEngineCallbacks {
   onInventoryChange?: (items: string[]) => void;
   onSanityChange?: (val: number) => void;
   /** This explorer died (sanity at zero, ...); the app tells the room and shows the spectator UI. */
-  onPlayerDeath?: (cause: "sanity" | "caught") => void;
+  onPlayerDeath?: (cause: DeathCause) => void;
   /** Back from the dead (level change / room reset): the app clears its spectator UI. */
   onPlayerRevive?: () => void;
   onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
@@ -189,6 +189,12 @@ function createFlashlightCookie(): THREE.Texture {
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
   return tex;
 }
+
+/** Why the local explorer died (sent to the room, which tells the others). */
+export type DeathCause = "sanity" | "caught" | "fall";
+
+/** Seconds from stepping off a pit room's ledge to hitting the bottom. */
+const PIT_FALL_SECONDS = 1.5;
 
 /** Fraction of the ambient light the interior levels get from the baked room environment instead. */
 const AMBIENT_ENV_SHARE = 0.5;
@@ -459,6 +465,8 @@ export class GameEngine {
   private kingPhantom: { entity: WanderingEntity; t: number; awayX: number; awayZ: number; whispered: boolean } | null = null;
   /** The catch: a ~1.3 s locked-camera lunge before the kill (see updateKingGrab). */
   private kingGrab: { entity: WanderingEntity; t: number; screamed: boolean; baseFov: number } | null = null;
+  /** Falling down a Level 0 pit room's shaft (controls gone; ends in death). */
+  private pitFall: { t: number; vy: number } | null = null;
   private kingFaceScratch = new THREE.Vector3();
   /** Post-process: red glitch during the grab, then a cut to black after it. */
   private kingFlash = 0;
@@ -526,7 +534,7 @@ export class GameEngine {
   public onSectorChange?: (sector: string) => void;
   public onInventoryChange?: (items: string[]) => void;
   private onSanityChange?: (val: number) => void;
-  private onPlayerDeath?: (cause: "sanity" | "caught") => void;
+  private onPlayerDeath?: (cause: DeathCause) => void;
   private onPlayerRevive?: () => void;
   public onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   private onPerformanceSample?: (fps: number, renderScale: number) => void;
@@ -556,6 +564,8 @@ export class GameEngine {
   private cheatLife = false;
   /** SETA: the radar points toward this level's secret entrance. */
   public cheatArrow = false;
+  /** SUDO: the radar always reaches as far as a playing cassette tape. */
+  public cheatRadar = false;
   /** The room's "secret routes" option (App keeps it current); Level 79's UNKNOWN course needs it. */
   public secretRoutesEnabled: () => boolean = () => true;
   /** SKIN cheat: the monster/NPC body worn instead of the hazmat suit, replicated to teammates; "" for none. */
@@ -1073,12 +1083,18 @@ export class GameEngine {
       // Tick player controllers
       if (this.isDead || this.isWaitingForTransition) this.updateSpectator(delta);
       else if (this.kingGrab) this.updateKingGrab(delta);
+      else if (this.pitFall) this.updatePitFall(delta);
       else if (this.townDirector?.cinematic && this.camera.parent) {
         // Level 94's secret ending: the director has the camera.
         this.player.isFlashlightOn = false;
         this.townDirector.driveCamera(this.camera.parent, this.camera);
       } else {
         this.player.update(delta);
+        // Level 0's pit rooms: step (not jump) past a ledge and you're gone. LIFE walks on air.
+        if (this.map && !this.cheatLife && this.player.mapFullyLoaded && this.player.jumpOffset <= 0.01
+          && this.map.isOverPit(this.player.position.x, this.player.position.z, 0.15)) {
+          this.startPitFall();
+        }
         if (this.level === ELECTRICAL_ROOM_LEVEL && this.map) {
           const gx = Math.floor(this.player.position.x / this.map.cellSize);
           const gz = Math.floor(this.player.position.z / this.map.cellSize);
@@ -2260,7 +2276,7 @@ export class GameEngine {
   private spectateId: string | null = null;
   private remoteDead = new Set<string>();
 
-  private die(cause: "sanity" | "caught", silent = false) {
+  private die(cause: DeathCause, silent = false) {
     if (this.isDead || this.cheatLife) return;
     if (this.kingGrab) this.endKingGrab(false);
     this.isDead = true;
@@ -2899,6 +2915,7 @@ export class GameEngine {
     this.funCakeEaten = false;
     // Hazard meters belong to the level they were filled on.
     this.noclipDwell = 0;
+    this.pitFall = null;
     if (this.redRoomExposure > 0) { this.redRoomExposure = 0; this.onRedRoomExposureChange?.(0); }
     if (this.toxicWaterExposure > 0) { this.toxicWaterExposure = 0; this.onToxicWaterExposureChange?.(0); }
 
@@ -3443,6 +3460,43 @@ export class GameEngine {
     this.kingGrab = { entity, t: 0, screamed: false, baseFov: this.camera.fov };
     this.player.state = "idle";
     this.player.isFlashlightOn = true; // you see its face
+  }
+
+  private startPitFall() {
+    this.pitFall = { t: 0, vy: 0 };
+    this.player.state = "idle";
+    this.player.isFlashlightOn = false;
+    this.audio.playEntityCatchSound(0.45);
+    this.audio.triggerHumFlicker(400);
+  }
+
+  /** The drop: gravity, the shaft's walls rushing past, the opening shrinking overhead, then black. */
+  private updatePitFall(delta: number) {
+    const f = this.pitFall;
+    if (!f) return;
+    f.t += delta;
+    f.vy -= 15 * delta; // the jumps' gravity
+    const pos = this.player.position;
+    pos.y += f.vy * delta;
+    // Slide in off the lip, towards the middle of the shaft (never through its walls).
+    const [cx, cz] = this.map.pitCenterAt(pos.x, pos.z);
+    const k = Math.min(1, 2.5 * delta);
+    pos.x += (cx - pos.x) * k;
+    pos.z += (cz - pos.z) * k;
+    // The head tips back to the light you fell from.
+    this.player.rotation.x += (1.15 - this.player.rotation.x) * Math.min(1, 2 * delta);
+    const shake = 0.015 + 0.03 * Math.min(1, f.t);
+    this.camera.position.set((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, 0);
+    this.camera.rotation.set(0, 0, (Math.random() - 0.5) * shake);
+    this.camera.parent?.position.copy(pos);
+    this.camera.parent?.rotation.copy(this.player.rotation);
+    this.deathBlack = Math.max(this.deathBlack, Math.min(1, f.t / PIT_FALL_SECONDS) * 0.75);
+    if (f.t >= PIT_FALL_SECONDS) {
+      this.pitFall = null;
+      this.deathBlack = 1;
+      this.audio.playKingThud(1, 0);
+      this.die("fall", true);
+    }
   }
 
   private updateKingGrab(delta: number) {
@@ -4502,6 +4556,7 @@ export class GameEngine {
     this.cheatClip = has("clip");
     this.cheatLife = has("life");
     this.cheatArrow = has("arrow");
+    this.cheatRadar = has("radar");
     if (this.player) this.applyCheatsToPlayer();
   }
 
@@ -5216,7 +5271,7 @@ export class GameEngine {
         break;
       case "cassette_tape":
         // The recording's static sweeps the halls: the radar reaches much farther for a while.
-        if (this.radarBoostTimer > 0) return refuse("eng.itemBlocked.active");
+        if (this.radarBoostTimer > 0 || this.cheatRadar) return refuse("eng.itemBlocked.active");
         this.radarBoostTimer = RADAR_BOOST_SECONDS;
         this.audio.triggerHumFlicker(400);
         this.onHUDNotification?.(t("eng.tapeUsed"));
@@ -5294,7 +5349,7 @@ export class GameEngine {
 
   /** Radar display range in meters — extended while a cassette tape plays. */
   public get radarRange(): number {
-    return this.radarBoostTimer > 0 ? RADAR_BOOST_RANGE : RADAR_BASE_RANGE;
+    return this.radarBoostTimer > 0 || this.cheatRadar ? RADAR_BOOST_RANGE : RADAR_BASE_RANGE;
   }
 
   /**
