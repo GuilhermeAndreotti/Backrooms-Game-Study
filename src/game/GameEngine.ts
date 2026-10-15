@@ -1038,10 +1038,14 @@ export class GameEngine {
       this.updateReadingRange();
       if (this.radarBoostTimer > 0) this.radarBoostTimer = Math.max(0, this.radarBoostTimer - delta);
 
+      // Dead or waiting at the exit, player.position is the spectated teammate's
+      // (updateSpectator): nothing position-triggered below may fire for us —
+      // hazards, pickups, secret entrances, exits.
+      const embodied = !this.isDead && !this.isWaitingForTransition;
 
       // Detect if explorer has entered creeping crimson Red Rooms
       let inRedRoom = false;
-      if (this.level === 0 && this.map && this.player) {
+      if (embodied && this.level === 0 && this.map && this.player) {
         const px = this.player.position.x;
         const pz = this.player.position.z;
         const gx = Math.floor(px / this.map.cellSize);
@@ -1097,7 +1101,7 @@ export class GameEngine {
       // "in seconds" if you linger), with a proportionally faster recovery
       // once you're clear of it.
       let inToxicWater = false;
-      if (this.level === POOLROOMS_LEVEL && this.map && this.player) {
+      if (embodied && this.level === POOLROOMS_LEVEL && this.map && this.player) {
         const gx = Math.floor(this.player.position.x / this.map.cellSize);
         const gz = Math.floor(this.player.position.z / this.map.cellSize);
         if (this.map.toxicWaterCells.has(`${gx},${gz}`)) inToxicWater = true;
@@ -1122,7 +1126,7 @@ export class GameEngine {
       }
 
       // Track Level Sector transitions and collectible pickups
-      if (this.map && this.player) {
+      if (embodied && this.map && this.player) {
         const px = this.player.position.x;
         const pz = this.player.position.z;
         const gx = Math.floor(px / this.map.cellSize);
@@ -1407,7 +1411,7 @@ export class GameEngine {
       // Level 1's secret entrance: walk to the dead end of the unlit side
       // corridor and the "Lights Out" transition fires — purely local (not a
       // room-wide level_transition_request), since it's an optional solo detour.
-      if (this.level === 1 && this.map && this.map.secretGridX >= 0 && this.onSecretLevelFound) {
+      if (embodied && this.level === 1 && this.map && this.map.secretGridX >= 0 && this.onSecretLevelFound) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
         if (pgX === this.map.secretGridX && pgZ === this.map.secretGridZ) {
@@ -1416,7 +1420,7 @@ export class GameEngine {
       }
 
       // The Electrical Room's door out of the building, onto the road to Level 94's town.
-      if (this.level === ELECTRICAL_ROOM_LEVEL && this.map && this.onSecretLevelFound && this.map.atTownExitDoor(this.player.position.x, this.player.position.z)) {
+      if (embodied && this.level === ELECTRICAL_ROOM_LEVEL && this.map && this.onSecretLevelFound && this.map.atTownExitDoor(this.player.position.x, this.player.position.z)) {
         this.onSecretLevelFound(OLD_TOWN_LEVEL);
       }
 
@@ -1424,7 +1428,7 @@ export class GameEngine {
       // office-door marker is reused as a deterministic convergence point.
       // (Level FUN's own entrance is the hidden cake — see nearFunCake/tryInteract,
       // an E-press rather than a walk-in trigger.)
-      if (this.level === ABANDONED_OFFICE_LEVEL && this.map && this.map.abandonedSecretX >= 0 && this.onSecretLevelFound) {
+      if (embodied && this.level === ABANDONED_OFFICE_LEVEL && this.map && this.map.abandonedSecretX >= 0 && this.onSecretLevelFound) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
         if (pgX === this.map.abandonedSecretX && pgZ === this.map.abandonedSecretZ) {
@@ -1433,7 +1437,7 @@ export class GameEngine {
       }
 
       // Level 0: the exit is a taped wall/floor with no physics — pass through it.
-      if (this.level === 0 && this.map && this.map.noclipCellX >= 0) {
+      if (embodied && this.level === 0 && this.map && this.map.noclipCellX >= 0) {
         if (this.map.isInNoclipExit(this.player.position.x, this.player.position.z)) {
           this.noclipDwell += delta;
           if (Math.random() < delta * 6) this.audio.triggerHumFlicker(60);
@@ -1450,7 +1454,7 @@ export class GameEngine {
 
       // Other levels: stepping into the exit cell is enough (Level G's can't be
       // entered until the emergency door opens).
-      if (this.level !== 0 && this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
+      if (embodied && this.level !== 0 && this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
         if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== ELECTRICAL_ROOM_LEVEL || this.map.level3GateOpen) && (this.level !== ABANDONED_OFFICE_LEVEL || this.level4DoorOpen) && (this.level !== POOLROOMS_LEVEL || this.map.poolroomsSolved) && (this.level !== FUN_LEVEL || this.funDirector?.exitOpen)) {
@@ -2799,6 +2803,10 @@ export class GameEngine {
     this.officeFlashT = -1;
     this.officeThunderAt = -1;
     this.funCakeEaten = false;
+    // Hazard meters belong to the level they were filled on.
+    this.noclipDwell = 0;
+    if (this.redRoomExposure > 0) { this.redRoomExposure = 0; this.onRedRoomExposureChange?.(0); }
+    if (this.toxicWaterExposure > 0) { this.toxicWaterExposure = 0; this.onToxicWaterExposureChange?.(0); }
 
     // 1. Terminate current map mesh references
     if (this.map) {
@@ -4142,7 +4150,8 @@ export class GameEngine {
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
   public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | "town" | "town_model" | "chess" | "wardrobe" | "hotel" | "hotel_panel" | null {
-    if (this.isDead) return null;
+    // Waiting at the exit we spectate a teammate, so "where we are" is where they are.
+    if (this.isDead || this.isWaitingForTransition) return null;
     if (this.hotelDirector) {
       const used = this.hotelDirector.interact();
       return used === "panel" ? "hotel_panel" : used ? "hotel" : null;

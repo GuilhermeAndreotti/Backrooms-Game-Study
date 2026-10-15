@@ -750,6 +750,7 @@ export const ptBR = {
   "err.notFound": "Sala não encontrada. Confira o código e tente de novo.",
   "err.roomCap": "Esta sala atingiu o limite de {n} jogadores.",
   "err.serverFull": "O servidor atingiu o limite de salas ativas.",
+  "err.serverBusy": "O servidor está lotado. Tente novamente em instantes.",
   "lobby.goal": "GOOOL!",
   "lobby.title": "LOBBY DA SALA",
   "lobby.code": "CÓDIGO DA SALA",

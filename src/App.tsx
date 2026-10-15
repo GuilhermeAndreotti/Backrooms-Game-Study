@@ -119,6 +119,9 @@ export default function App() {
   useLanguage(); // re-render everything when the language changes
   const [settings, setSettings] = useState<GameSettings>(defaultSettings);
   const [phase, setPhase] = useState<ConnectionPhase>(ConnectionPhase.MENU);
+  // Socket handlers are created once per connection; they read the live phase here.
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
   const [errorMessage, setErrorMessage] = useState("");
   const [currentSeed, setCurrentSeed] = useState<number>(0);
   
@@ -844,12 +847,14 @@ export default function App() {
           else if (type === "room_not_found") {
             setErrorMessage(t("err.notFound"));
             setPhase(ConnectionPhase.ERROR);
+            socketRef.current = null; // closed on purpose: onclose has nothing to add
             socket.close();
           }
 
           else if (type === "room_full") {
-            setErrorMessage(data.reason === "server" ? t("err.serverFull") : t("err.roomCap", { n: data.capacity ?? 4 }));
+            setErrorMessage(data.reason === "server" ? t("err.serverFull") : data.reason === "busy" ? t("err.serverBusy") : t("err.roomCap", { n: data.capacity ?? 4 }));
             setPhase(ConnectionPhase.ERROR);
+            socketRef.current = null; // closed on purpose: onclose has nothing to add
             socket.close();
           }
 
@@ -860,6 +865,7 @@ export default function App() {
             if (!joinedCode) {
               setErrorMessage(t("err.oldServer"));
               setPhase(ConnectionPhase.ERROR);
+              socketRef.current = null;
               socket.close();
               return;
             }
@@ -1485,9 +1491,15 @@ export default function App() {
           pingIntervalRef.current = null;
         }
         setLatency(undefined);
-        // If we were active in game, transition back gracefully reporting connection issues
-        if (phase === ConnectionPhase.PLAYING) {
+        // If we were active in game, transition back gracefully reporting connection issues.
+        // (Not for a socket we closed or replaced ourselves: disconnect() clears socketRef first.)
+        if (socketRef.current === socket && phaseRef.current === ConnectionPhase.PLAYING) {
           disconnect(true, t("err.linkLost"));
+        } else if (socketRef.current === socket && phaseRef.current === ConnectionPhase.CONNECTING) {
+          // Closed before "joined" with no explanation: don't hang on the connecting screen.
+          socketRef.current = null;
+          setErrorMessage(t("err.noContact"));
+          setPhase(ConnectionPhase.ERROR);
         }
       };
 

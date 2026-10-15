@@ -752,6 +752,7 @@ export const es: Record<MessageKey, string> = {
   "err.notFound": "Sala no encontrada. Revisa el código e inténtalo de nuevo.",
   "err.roomCap": "Esta sala alcanzó el límite de {n} jugadores.",
   "err.serverFull": "El servidor alcanzó el límite de salas activas.",
+  "err.serverBusy": "El servidor está lleno. Inténtalo de nuevo en unos instantes.",
   "lobby.goal": "¡GOOOL!",
   "lobby.title": "LOBBY DE LA SALA",
   "lobby.code": "CÓDIGO DE LA SALA",

@@ -752,6 +752,7 @@ export const enUS: Record<MessageKey, string> = {
   "err.notFound": "Room not found. Check the code and try again.",
   "err.roomCap": "This room has reached the limit of {n} players.",
   "err.serverFull": "The server has reached its limit of active rooms.",
+  "err.serverBusy": "The server is full. Try again in a moment.",
   "lobby.goal": "GOOOAL!",
   "lobby.title": "ROOM LOBBY",
   "lobby.code": "ROOM CODE",

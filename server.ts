@@ -468,12 +468,12 @@ function expeditionPlayers(room: Room): PlayerState[] {
 }
 
 /** Tells the room every player is dead and applies its configured reset once. */
-function checkAllDead(room: Room, autoReset = true) {
+function checkAllDead(room: Room) {
   const players = expeditionPlayers(room);
   if (players.length === 0) return;
   for (const p of players) if (!p.dead) return;
   broadcastToRoom(room, { type: "all_dead" });
-  if (autoReset) resetRoom(room, room.config.deathAction);
+  resetRoom(room, room.config.deathAction);
 }
 
 /**
@@ -649,7 +649,9 @@ function reviveAll(room: Room) {
 }
 
 function removeConnection(conn: Connection) {
-  connections.delete(conn.ws);
+  // The heartbeat terminates a dead socket and removes it right away; its
+  // "close" event then arrives for a connection that is already gone.
+  if (!connections.delete(conn.ws)) return;
 
   const room = rooms.get(conn.player.room);
   if (!room) return;
@@ -665,7 +667,9 @@ function removeConnection(conn: Connection) {
 
   broadcastToRoom(room, { type: "player_left", id: conn.player.id });
   refreshAuthority(room);
-  checkAllDead(room, false); // the last living player leaving strands the dead ones
+  // The last living player leaving would strand the dead ones (nobody is left
+  // to trigger the reset), so the room's death policy applies right away.
+  checkAllDead(room);
   tryAdvanceRoom(room); // ...or the last one the others were waiting for at the exit
 
   if (room.players.size === 0) {
@@ -689,7 +693,7 @@ async function startServer() {
 
   wss.on("connection", (ws: WebSocket) => {
     if (connections.size >= MAX_CONNECTIONS) {
-      send(ws, { type: "error", error: "Servidor lotado. Tente novamente em instantes." });
+      send(ws, { type: "room_full", reason: "busy" });
       ws.close();
       return;
     }
