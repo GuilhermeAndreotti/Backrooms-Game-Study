@@ -387,8 +387,10 @@ const CONSUMABLE_ID = /^\d{1,3},\d{1,3}#\d{1,2}$/;
 const MAX_CONSUMED_PER_LEVEL = 4000;
 /** Level 79 facts a client may announce (see spaceDirector.ts): power restored (0), a console set (0-8), a course executed (0 planet, 1 black hole, 2 the UNKNOWN course to Level 94), the planet course aborted (0). */
 const SPACE_EVENT_MAX_INDEX: Record<string, number> = { power: 0, set: 8, exec: 2, abort: 0 };
-/** Level 94 facts a client may announce (see townDirector.ts): a clock part found (0-2), the clock started (0), a building put back on the model (0-4), the model solved (0), the King's offer turned down (0). */
-const TOWN_EVENT_MAX_INDEX: Record<string, number> = { part: 2, clock: 0, model: 4, solved: 0, kingWake: 0 };
+/** Level 94 facts a client may announce (see townDirector.ts): a clock part found (0-2), the clock started (0), a building put back on the model (0-4), the model solved (0), the King's offer turned down (0), the circus ball on its ring (0). */
+const TOWN_EVENT_MAX_INDEX: Record<string, number> = { part: 2, clock: 0, model: 4, solved: 0, kingWake: 0, ball: 0 };
+/** Levels with a ball the authority simulates (the lobby's football, Level 94's circus ball), and how far out (metres) its position may be. */
+const BALL_LEVEL_EXTENT: Record<number, number> = { [LOBBY_LEVEL]: 200, [OLD_TOWN_LEVEL]: 300 };
 
 function gridInt(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < 256 ? value : null;
@@ -1365,16 +1367,18 @@ async function startServer() {
         return;
       }
 
-      // The lobby's soccer ball: the level's authority simulates and streams it;
-      // everyone else forwards their kicks to the authority.
+      // The lobby's soccer ball (and Level 94's circus ball): the level's
+      // authority simulates and streams it; everyone else forwards their kicks
+      // to the authority.
       if (type === "ball") {
         const level = conn.player.level;
-        if (level !== LOBBY_LEVEL || data.level !== level) return;
+        const extent = BALL_LEVEL_EXTENT[level];
+        if (extent === undefined || data.level !== level) return;
         if (computeAuthority(room)[String(level)] !== conn.player.id) return;
         const n = (v: unknown, max: number) => Math.max(-max, Math.min(max, finiteNumber(v, 0)));
         broadcastToLevel(room, level, {
           type, level,
-          x: n(data.x, 200), z: n(data.z, 200), vx: n(data.vx, 40), vz: n(data.vz, 40),
+          x: n(data.x, extent), z: n(data.z, extent), vx: n(data.vx, 40), vz: n(data.vz, 40),
           g: Math.max(0, Math.min(9999, Math.floor(finiteNumber(data.g, 0)))),
         }, conn);
         return;
@@ -1382,7 +1386,7 @@ async function startServer() {
       if (type === "ball_kick") {
         const level = conn.player.level;
         const authorityId = computeAuthority(room)[String(level)];
-        if (level !== LOBBY_LEVEL || data.level !== level || !authorityId || authorityId === conn.player.id) return;
+        if (BALL_LEVEL_EXTENT[level] === undefined || data.level !== level || !authorityId || authorityId === conn.player.id) return;
         const vx = Math.max(-20, Math.min(20, finiteNumber(data.vx, 0)));
         const vz = Math.max(-20, Math.min(20, finiteNumber(data.vz, 0)));
         room.connections.forEach((c) => {

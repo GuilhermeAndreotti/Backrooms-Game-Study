@@ -2200,7 +2200,10 @@ export class GameEngine {
 
   /** Ball frame from the lobby's authority. */
   public applyBallState(msg: BallNetState & { level: number }) {
-    if (!this.lobby || msg.level !== this.level || this.isWorldAuthority) return;
+    if (msg.level !== this.level || this.isWorldAuthority) return;
+    // Level 94's circus ball rides the same messages.
+    if (this.townDirector) { this.townDirector.applyBallState(msg); return; }
+    if (!this.lobby) return;
     if (this.lobby.applyState(msg) > 0) {
       this.onHUDNotification?.(t("lobby.goal"));
       this.audio.playGlitchNoclipSound();
@@ -2209,7 +2212,9 @@ export class GameEngine {
 
   /** A teammate kicked the ball (forwarded to the authority, which owns the simulation). */
   public applyBallKick(msg: { level: number; vx: number; vz: number }) {
-    if (!this.lobby || msg.level !== this.level || !this.isWorldAuthority) return;
+    if (msg.level !== this.level || !this.isWorldAuthority) return;
+    if (this.townDirector) { this.townDirector.applyBallKick(msg.vx, msg.vz); return; }
+    if (!this.lobby) return;
     this.lobby.applyKick(msg.vx, msg.vz);
   }
 
@@ -4027,6 +4032,13 @@ export class GameEngine {
       achievement: (id) => unlockAchievement(id),
       escape: () => this.onEscapeTrigger?.(),
       dialogue: (view) => this.onTownDialogue?.(view),
+      ballAuthority: () => this.isWorldAuthority,
+      sendBall: (state) => {
+        if (this.remoteStates.size > 0) this.sendToServer({ type: "ball", level: OLD_TOWN_LEVEL, ...state });
+      },
+      kickBall: (vx, vz) => this.sendToServer({ type: "ball_kick", level: OLD_TOWN_LEVEL, vx, vz }),
+      playerVelocity: () => ({ vx: this.player.velX, vz: this.player.velZ }),
+      collide: (x, z, r) => !!this.map && this.map.checkCollision(x, z, r),
     });
   }
 
