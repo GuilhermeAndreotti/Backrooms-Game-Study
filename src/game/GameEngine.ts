@@ -48,6 +48,7 @@ import { ANIMATION_CELLS, KING_THRONE, townRelocationCells } from "./levels/town
 import { MOB_DEFS } from "./mobs/registry";
 import type { SpaceConsoleId, SpaceTarget, SpaceTerminalId } from "./levels/spaceLayout";
 import type { FunStage } from "./LevelFunModels";
+import { RoomEnvironment } from "./Environment";
 import {
   AdaptiveResolution,
   QualityLevel,
@@ -164,6 +165,33 @@ const INVENTORY_PICKUPS: Partial<Record<string, { notification: MessageKey; achi
   strange_crystal: { notification: "eng.crystal", achievement: "collector_extraordinary" },
   liquid_pain: { notification: "eng.pain" },
 };
+
+/** Radial beam profile projected by the flashlight (SpotLight.map). */
+function createFlashlightCookie(): THREE.Texture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    const c = size / 2;
+    const g = ctx.createRadialGradient(c, c, 0, c, c, c);
+    g.addColorStop(0.0, "#ffffff");
+    g.addColorStop(0.16, "#f4f4f4");
+    g.addColorStop(0.24, "#d0d0d0");
+    g.addColorStop(0.3, "#e6e6e6"); // reflector ring
+    g.addColorStop(0.38, "#9a9a9a");
+    g.addColorStop(0.7, "#6a6a6a");
+    g.addColorStop(1.0, "#000000");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
+/** Fraction of the ambient light the interior levels get from the baked room environment instead. */
+const AMBIENT_ENV_SHARE = 0.5;
 
 /** Ambient light and fog per level, shared by level setup and the per-frame event code. */
 function levelAtmosphere(level: number, funStage: FunStage = 0) {
@@ -335,6 +363,9 @@ export class GameEngine {
 
   /** Fixed-size pool that backs every lamp, so the visible light count is constant. */
   private lightPool!: LightPool;
+  /** Baked image-based ambient for the interior levels (see Environment.ts). */
+  private roomEnv: RoomEnvironment | null = null;
+  private flashlightCookie: THREE.Texture | null = null;
 
   // Scratch objects reused every frame instead of being reallocated.
   private scratchCamDir = new THREE.Vector3();
@@ -632,6 +663,8 @@ export class GameEngine {
       this.renderer.shadowMap.type = THREE.PCFShadowMap;
     }
 
+    this.roomEnv = new RoomEnvironment(this.renderer);
+
     // Empty previous renderer if any
     this.container.innerHTML = "";
     this.container.appendChild(this.renderer.domElement);
@@ -738,6 +771,23 @@ export class GameEngine {
         float b = texture2D(tDiffuse, uv + rgbShift).b;
         vec3 color = vec3(r, g, b);
 
+        #ifdef CAMERA_FX
+        // Halation: tubes, lamps and lit exit signs bleed into the dark around
+        // them, the way they do on a real (cheap) camera. 8 taps on the
+        // low-res scene buffer, only above a soft threshold.
+        vec2 px = 1.0 / uResolution;
+        vec3 glow = vec3(0.0);
+        glow += max(texture2D(tDiffuse, uv + vec2( 2.5,  0.0) * px).rgb - 0.68, 0.0);
+        glow += max(texture2D(tDiffuse, uv + vec2(-2.5,  0.0) * px).rgb - 0.68, 0.0);
+        glow += max(texture2D(tDiffuse, uv + vec2( 0.0,  2.5) * px).rgb - 0.68, 0.0);
+        glow += max(texture2D(tDiffuse, uv + vec2( 0.0, -2.5) * px).rgb - 0.68, 0.0);
+        glow += max(texture2D(tDiffuse, uv + vec2( 4.5,  4.5) * px).rgb - 0.68, 0.0);
+        glow += max(texture2D(tDiffuse, uv + vec2(-4.5,  4.5) * px).rgb - 0.68, 0.0);
+        glow += max(texture2D(tDiffuse, uv + vec2( 4.5, -4.5) * px).rgb - 0.68, 0.0);
+        glow += max(texture2D(tDiffuse, uv + vec2(-4.5, -4.5) * px).rgb - 0.68, 0.0);
+        color += glow * vec3(0.2, 0.19, 0.16);
+        #endif
+
         // C. OVERLAID CRT SCANLINES (Drastically softened and static to ensure excellent display readability)
         float scanlineValue = sin(uv.y * 380.0) * (0.02 + 0.04 * insanity);
         color -= scanlineValue;
@@ -769,6 +819,11 @@ export class GameEngine {
           color = mix(color, pulseRed, 0.32 * insanity);
         }
 
+        #ifdef CAMERA_FX
+        // Fine, constant sensor grain: breaks up banding in the dark gradients.
+        color += (random(floor(gl_FragCoord.xy) * 0.0137 + fract(uTime * 7.31)) - 0.5) * 0.028;
+        #endif
+
         color *= 1.0 - uBlack;
         gl_FragColor = vec4(color, 1.0);
       }
@@ -787,6 +842,7 @@ export class GameEngine {
       },
       vertexShader: vertexShader,
       fragmentShader: fragmentShader,
+      defines: this.quality.bloom ? { CAMERA_FX: "" } : {},
       depthWrite: false,
       depthTest: false
     });
@@ -859,6 +915,10 @@ export class GameEngine {
     this.flashlight.shadow.camera.near = 0.1;
     this.flashlight.shadow.camera.far = 18;
     this.flashlight.shadow.bias = -0.0015;
+    // A real torch's beam: hot centre, a faint reflector ring, dim spill.
+    // (Projected through the shadow map, so only where shadows are on.)
+    this.flashlightCookie = createFlashlightCookie();
+    this.flashlight.map = this.flashlightCookie;
     
     this.flashlightTarget = new THREE.Object3D();
     this.flashlightTarget.position.set(0, 0, -5);
@@ -941,6 +1001,10 @@ export class GameEngine {
       this.flashlight.castShadow = this.quality.shadows;
     }
     this.applySceneBufferSize();
+    if (this.vhsMaterial && this.quality.bloom !== ("CAMERA_FX" in this.vhsMaterial.defines)) {
+      this.vhsMaterial.defines = this.quality.bloom ? { CAMERA_FX: "" } : {};
+      this.vhsMaterial.needsUpdate = true;
+    }
 
     // Streaming radius and fog follow the preset; force a re-cull so the change
     // takes effect without waiting for the player to walk another 2.5m.
@@ -1573,6 +1637,8 @@ export class GameEngine {
           if (fog) fog.color.lerp(this.officeFlashColor, this.officeFlash * 0.35);
           background.lerp(this.officeFlashColor, this.officeFlash * 0.35);
         }
+
+        this.applyRoomEnvironment();
       }
 
       // Local spotlight updating with probability-based flickering when sanity is below 40%
@@ -1710,6 +1776,29 @@ export class GameEngine {
     };
 
     animate();
+  }
+
+  /**
+   * Hands part of this frame's ambient light to the baked room environment
+   * (Environment.ts): same overall brightness, but lit from above, with
+   * glossy surfaces reflecting the tubes. Runs after every level/director has
+   * set the ambient light, which is re-assigned each frame (never compounded).
+   */
+  private applyRoomEnvironment() {
+    // Open-air / sky-lit levels light themselves (sun, hemisphere, day cycle).
+    const outdoors = this.level === LOBBY_LEVEL || this.level === SPACE_LEVEL || this.level === OLD_TOWN_LEVEL;
+    if (outdoors || !this.roomEnv) {
+      this.scene.environment = null;
+      return;
+    }
+    // Level G's alarm pulses the ambient red: keep it all on the coloured light.
+    const share = this.level === LEVEL_G && this.levelGAlarm ? 0 : AMBIENT_ENV_SHARE;
+    // Kept assigned even at zero share, so toggling never recompiles shaders.
+    if (share > 0 || !this.scene.environment) this.scene.environment = this.roomEnv.textureFor(this.ambientLight.color.getHex());
+    const total = this.ambientLight.intensity;
+    this.ambientLight.intensity = total * (1 - share);
+    // An AmbientLight's diffuse is albedo * I / PI; image light's is albedo * radiance * intensity.
+    this.scene.environmentIntensity = total * share / Math.PI;
   }
 
   /** A teammate's (or the mirror's) explorer avatar — see buildExplorerAvatar. */
@@ -5207,6 +5296,11 @@ export class GameEngine {
     }
 
     this.voip.dispose();
+    this.scene.environment = null;
+    this.roomEnv?.dispose();
+    this.roomEnv = null;
+    this.flashlightCookie?.dispose();
+    this.flashlightCookie = null;
     this.teardownHotel();
     this.officeCity?.target.dispose();
     this.officeCity = null;

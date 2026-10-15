@@ -39,6 +39,12 @@ export interface QualityProfile {
   vhs: boolean;
   /** Target radar redraws per second. */
   radarFps: number;
+  /** Anisotropic filtering for floor/wall/ceiling textures (three clamps to what the GPU supports). */
+  anisotropy: number;
+  /** Bump-map the main surfaces from their own colour texture (no extra memory; ~3 texture taps). */
+  surfaceRelief: boolean;
+  /** Light halation (glow around bright tubes/lamps) and fine film grain in the VHS pass. */
+  bloom: boolean;
 }
 
 const PROFILES: Record<QualityLevel, QualityProfile> = {
@@ -54,6 +60,9 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     shadowMapSize: 256,
     vhs: true,
     radarFps: 12,
+    anisotropy: 1,
+    surfaceRelief: false,
+    bloom: false,
   },
   medium: {
     renderScale: 0.55,
@@ -67,6 +76,9 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     shadowMapSize: 512,
     vhs: true,
     radarFps: 20,
+    anisotropy: 4,
+    surfaceRelief: true,
+    bloom: true,
   },
   high: {
     renderScale: 0.8,
@@ -80,6 +92,9 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     shadowMapSize: 1024,
     vhs: true,
     radarFps: 30,
+    anisotropy: 8,
+    surfaceRelief: true,
+    bloom: true,
   },
 };
 

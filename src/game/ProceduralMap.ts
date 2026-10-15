@@ -941,6 +941,21 @@ export class ProceduralMap {
     return new THREE.Points(geometry, material);
   }
 
+  /**
+   * Anisotropic filtering, and (quality permitting) a bump map read from the
+   * material's own colour texture: grout, carpet pile, concrete pits and
+   * stains then catch the flashlight and fixtures instead of looking printed
+   * on. Reusing the colour map costs no memory, only two extra texture taps.
+   */
+  private addSurfaceDetail(material: THREE.Material, bumpScale: number) {
+    if (!(material instanceof THREE.MeshStandardMaterial) || !material.map) return;
+    material.map.anisotropy = this.quality.anisotropy;
+    if (this.quality.surfaceRelief && !material.bumpMap) {
+      material.bumpMap = material.map;
+      material.bumpScale = bumpScale;
+    }
+  }
+
   private createWallTexture(): THREE.Texture {
     const canvas = document.createElement("canvas");
     canvas.width = 256;
@@ -1750,6 +1765,13 @@ export class ProceduralMap {
       roughness: this.level === 2 ? 0.65 : (this.level === 1 ? 0.45 : 0.85),
       metalness: this.level === 2 ? 0.4 : (this.level === 1 ? 0.8 : 0.0),
     });
+
+    // Surface relief + sharper grazing angles on the surfaces you always see.
+    // Level 0's wallpaper is a flat print: only a hint of relief.
+    this.addSurfaceDetail(this.wallMaterial, this.level === 0 ? 0.5 : 0.9);
+    this.addSurfaceDetail(this.carpetMaterial, 1.2);
+    this.addSurfaceDetail(this.redCarpetMaterial, 1.2);
+    this.addSurfaceDetail(this.ceilingMaterial, 0.8);
 
     // Fluorescent Tubes
     this.fluorescentGlassOn = new THREE.MeshBasicMaterial({
