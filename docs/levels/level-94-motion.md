@@ -2,7 +2,7 @@
 
 - **Id de rede:** `8` (conteúdo `94`) — **Grid:** 72×72
 - **Entidades:** `TOWN_KING` (no trono desde o início), `ANIMATION` ×4 (só à noite) — `bespoke`
-- **Acesso:** a **porta de saída** num nicho da parede norte da [Electrical Room](level-3-electrical-room.md) (desvio individual), o rumo **DESCONHECIDO** na navegação do [Level 79](level-79-space-station.md) (leva todos a bordo), ou o seletor de níveis do lobby. As duas primeiras exigem "Rotas secretas". Ao terminar, volta ao lobby com o relatório de fuga (como Level FUN e Level 79).
+- **Acesso:** a **porta escondida** das [Poolrooms](poolrooms.md) — o final alternativo ao Level 79; abre quando as Poolrooms drenam (individual) —, o rumo **DESCONHECIDO** na navegação do [Level 79](level-79-space-station.md) (leva todos a bordo), ou o seletor de níveis do lobby. As duas primeiras exigem "Rotas secretas". Ao terminar, volta ao lobby com o relatório de fuga e **encerra a expedição** (conta no ranking, como o Level 79).
 - **Duração esperada:** 15–25 min
 
 ## Estrutura

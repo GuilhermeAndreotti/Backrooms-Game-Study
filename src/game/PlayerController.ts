@@ -17,15 +17,18 @@ import { GAME_KEYS, isTypingInField, lockGameInput } from "../utils/input";
 export const PLAYER_STANDING_HEIGHT = 1.33;
 export const PLAYER_CROUCH_HEIGHT = 1.13;
 
+/** Everyone's pace on foot, cheats aside (the speed cheat multiplies on top of it). */
+const BASE_SPEED_SCALE = 1.2;
+
 export class PlayerController {
   private camera: THREE.Camera;
   private domElement: HTMLElement;
   private map: ProceduralMap;
 
-  // Movement speed configuration (meters per second)
-  private walkSpeed = 2.4;
-  private runSpeed = 4.8;
-  private crouchSpeed = 1.3;
+  // Movement speed configuration (meters per second), all scaled by BASE_SPEED_SCALE.
+  private walkSpeed = 2.4 * BASE_SPEED_SCALE;
+  private runSpeed = 4.8 * BASE_SPEED_SCALE;
+  private crouchSpeed = 1.3 * BASE_SPEED_SCALE;
 
   // Stamina parameters
   public maxStamina = 1.0; // 0.0 to 1.0 representation

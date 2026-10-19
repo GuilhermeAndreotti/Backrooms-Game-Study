@@ -5,12 +5,12 @@ interface LevelSelectorModalProps {
   onClose: () => void;
 }
 
+/** The main route in order, then the secret levels. Labels are the levels' "Level N - Name". */
 const LEVELS = [
-  [LEVEL_0, "Level 0"], [LEVEL_1, "Level 1"], [LEVEL_2, "Level 2"],
-  [ELECTRICAL_ROOM_LEVEL, "Level 3 · Electrical Room"], [ABANDONED_OFFICE_LEVEL, "Level 4 · Abandoned Office"], [POOLROOMS_LEVEL, "Poolrooms"],
-  [HOTEL_LEVEL, "Level 5 · Terror Hotel"], [LIGHTS_OUT_LEVEL, "Level 6 · Lights Out"], [LEVEL_G, "Level G · secreto"], [OLD_TOWN_LEVEL, "Level 94 · Motion"], [FUN_LEVEL, "Level FUN · secreto"],
-  [SPACE_LEVEL, "Level 79 · Space Station"],
-] as const;
+  ...MAIN_LEVELS.map((level) => [level, false] as const),
+  [LEVEL_G, true] as const,
+  [OLD_TOWN_LEVEL, true] as const,
+];
 
 const COLUMNS = 2;
 
@@ -57,7 +57,7 @@ export function LevelSelectorModal({ isHost, onStart, onClose }: LevelSelectorMo
         <h2 className="mt-2 text-2xl font-bold">Escolha o nível inicial</h2>
         <p className="mt-2 text-xs text-slate-400">A escolha do host será aplicada a toda a sala.</p>
         <div className="mt-5 grid grid-cols-2 gap-2">
-          {LEVELS.map(([level, label], i) => (
+          {LEVELS.map(([level, secret], i) => (
             <button
               key={level}
               ref={(el) => { buttonRefs.current[i] = el; }}
@@ -68,7 +68,8 @@ export function LevelSelectorModal({ isHost, onStart, onClose }: LevelSelectorMo
                 i === selected ? "border-cyan-300 bg-cyan-800/60 shadow-[0_0_12px_rgba(103,232,249,0.35)]" : "border-cyan-800 bg-cyan-950/50"
               }`}
             >
-              {label}
+              {t(`hud.loc.${level}`)}
+              {secret && <span className="ml-1 text-[10px] text-cyan-400/70">· {t("selector.secret")}</span>}
             </button>
           ))}
         </div>
@@ -79,4 +80,5 @@ export function LevelSelectorModal({ isHost, onStart, onClose }: LevelSelectorMo
     </div>
   );
 }
-import { ABANDONED_OFFICE_LEVEL, ELECTRICAL_ROOM_LEVEL, HOTEL_LEVEL, LEVEL_0, LEVEL_1, LEVEL_2, FUN_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, OLD_TOWN_LEVEL, POOLROOMS_LEVEL, SPACE_LEVEL } from "../game/levels/constants";
+import { LEVEL_G, MAIN_LEVELS, OLD_TOWN_LEVEL } from "../game/levels/constants";
+import { t } from "../i18n";

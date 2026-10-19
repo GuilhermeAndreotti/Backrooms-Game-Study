@@ -310,6 +310,9 @@ export class ProceduralMap {
   public secretGridZ = -1;
   /** The Electrical Room's way out: a nook in its north wall with a door to Level 94's town. -1 if none. */
   public townExitX = -1;
+  /** The Level 94 door's daylight view and swinging leaf (opened when the Poolrooms drain). */
+  private townDoorView: THREE.Object3D | null = null;
+  private townDoorHinge: THREE.Object3D | null = null;
   public townExitZ = -1;
 
   // --- Level 0: secret office door leading to Level G ---------------------
@@ -2019,11 +2022,11 @@ export class ProceduralMap {
       // A cramped final service crawlspace leading to the barred exit.
       for (let x = 40; x <= 43; x++) this.level3LowCorridor.add(`${x},42`);
       for (let z = 42; z <= 44; z++) this.level3LowCorridor.add(`44,${z}`);
-      // A door out of the building, onto a sunny road (Level 94).
-      this.carveElectricalTownExit();
 
     } else if (this.level === 7) {
       this.carveLevel7();
+      // The drained Poolrooms' other way out: a door onto a sunny road (Level 94).
+      this.carvePoolTownExit();
     } else {
       // LEVEL 0: The Lobby (Classic Backrooms yellow partitions forming a modular wall-labyrinth)
       // Populate as walkable hallway/open area space by default
@@ -2461,29 +2464,32 @@ export class ProceduralMap {
   }
 
   /**
-   * The Electrical Room's way out to Level 94: a one-cell nook cut into the
-   * building's north wall from one of the top rooms, somewhere along it by
-   * seed, with an exit door standing open onto daylight at its end.
+   * The Poolrooms' way out to Level 94 — the alternative to the station door
+   * and Level 79: a dry one-cell nook cut into the north wall of the third
+   * hall, somewhere along it by seed, with an exit door standing open onto
+   * daylight at its end. Shut (a plain wall) until the halls are drained.
    */
-  private carveElectricalTownExit() {
+  private carvePoolTownExit() {
     const z = 1;
     const options: number[] = [];
-    for (let x = 5; x < this.gridSize - 3; x++) {
-      if (this.grid[x][z] !== CellType.SOLID || this.grid[x][z + 1] === CellType.SOLID) continue;
+    for (let x = 27; x <= this.gridSize - 4; x++) {
+      if (this.grid[x][z] !== CellType.SOLID || this.grid[x][z + 1] !== CellType.WATER_ROOM) continue;
       if (this.grid[x - 1][z + 1] === CellType.SOLID || this.grid[x + 1][z + 1] === CellType.SOLID) continue;
-      if (this.level3Switches.some(([sx, sz]) => Math.abs(sx - x) <= 1 && Math.abs(sz - (z + 1)) <= 1)) continue;
+      // Never on top of a valve or a clue mark someone needs to reach.
+      if (this.valvePositions.some(([vx, vz]) => Math.abs(vx - x) <= 1 && Math.abs(vz - (z + 1)) <= 1)) continue;
+      if (this.poolClueCells.has(`${x},${z + 1}`)) continue;
       options.push(x);
     }
     if (options.length === 0) return;
     const x = options[Math.floor(new SeededRandom(this.seed * 17 + 9494).next() * options.length)];
-    this.grid[x][z] = CellType.CORRIDOR;
+    this.grid[x][z] = CellType.ROOM_SMALL;
     this.townExitX = x;
     this.townExitZ = z;
   }
 
-  /** Whether a world position has reached the Electrical Room's exit door (the far end of its nook). */
+  /** Whether a world position has reached the Poolrooms' Level 94 door (the far end of its nook; only once drained). */
   public atTownExitDoor(x: number, z: number): boolean {
-    if (this.townExitX < 0) return false;
+    if (this.townExitX < 0 || !this.poolroomsSolved) return false;
     const cs = this.cellSize;
     return Math.floor(x / cs) === this.townExitX && Math.floor(z / cs) === this.townExitZ && z < this.townExitZ * cs + 1.7;
   }
@@ -3179,9 +3185,13 @@ export class ProceduralMap {
       return new THREE.MeshBasicMaterial({ map: tex });
     });
     const doorW = 1.5, doorH = 2.4;
+    // Shut (a closed steel door, no daylight) until the Poolrooms are drained.
+    const open = this.poolroomsSolved;
     const outside = new THREE.Mesh(this.sharedGeo("town_exit_view", () => new THREE.PlaneGeometry(doorW, doorH)), view);
     outside.position.set(posX, doorH / 2, wallZ + 0.07);
+    outside.visible = open;
     group.add(outside);
+    this.townDoorView = outside;
     // Steel frame around the doorway.
     const steel = this.sharedMat("town_exit_frame", () => new THREE.MeshStandardMaterial({ color: 0x4a5258, roughness: 0.45, metalness: 0.6 }));
     for (const sx of [-1, 1]) {
@@ -3196,7 +3206,8 @@ export class ProceduralMap {
     const leafMat = this.sharedMat("town_exit_leaf", () => new THREE.MeshStandardMaterial({ color: 0x5a6a5a, roughness: 0.5, metalness: 0.5 }));
     const hinge = new THREE.Group();
     hinge.position.set(posX - doorW / 2, 0, wallZ + 0.14);
-    hinge.rotation.y = -1.75;
+    hinge.rotation.y = open ? -1.75 : 0;
+    this.townDoorHinge = hinge;
     const leaf = new THREE.Mesh(this.sharedGeo("town_exit_leaf", () => new THREE.BoxGeometry(doorW - 0.05, doorH - 0.03, 0.06)), leafMat);
     leaf.position.set((doorW - 0.05) / 2, (doorH - 0.03) / 2, 0);
     hinge.add(leaf);
@@ -3206,7 +3217,7 @@ export class ProceduralMap {
     group.add(hinge);
     this.addObstacle(gx, gz, posX - doorW / 2 + 0.2, wallZ + 0.9, 0.22);
     // Daylight spilling in through the doorway.
-    this.registerLight(gx, gz, posX, 2.2, wallZ + 1.0, 0xfff1d0, 2.4, 10, 1.0);
+    if (open) this.registerLight(gx, gz, posX, 2.2, wallZ + 1.0, 0xfff1d0, 2.4, 10, 1.0);
     const sign = new THREE.Mesh(this.sharedGeo("town_exit_sign", () => new THREE.PlaneGeometry(1.2, 0.36)),
       this.garageLabel(t("town.sign.exitDoor"), 1.2, 0.36, "#ffffff", "#1f7a3a"));
     sign.position.set(posX, doorH + 0.42, wallZ + 0.08);
@@ -4042,6 +4053,8 @@ export class ProceduralMap {
     if (this.poolroomsSolved) {
       this.toxicWaterCells.clear();
       if (this.poolExitDoor) this.poolExitDoor.visible = true;
+      if (this.townDoorView) this.townDoorView.visible = true;
+      if (this.townDoorHinge) this.townDoorHinge.rotation.y = -1.75;
     }
   }
 

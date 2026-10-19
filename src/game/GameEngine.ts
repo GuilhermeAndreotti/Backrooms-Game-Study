@@ -475,7 +475,6 @@ export class GameEngine {
   private nearTerminal = false;
   private level4DoorOpen = false;
   /** Guards the hidden office cake against firing its transition more than once. */
-  private funCakeEaten = false;
   private scratchRight = new THREE.Vector3();
 
   // UI callbacks
@@ -1499,15 +1498,14 @@ export class GameEngine {
         }
       }
 
-      // The Electrical Room's door out of the building, onto the road to Level 94's town.
-      if (embodied && this.level === ELECTRICAL_ROOM_LEVEL && this.map && this.onSecretLevelFound && this.map.atTownExitDoor(this.player.position.x, this.player.position.z)) {
+      // The Poolrooms' other door (once drained): out onto the road to Level 94's town,
+      // the alternative to the station door and Level 79.
+      if (embodied && this.level === POOLROOMS_LEVEL && this.map && this.onSecretLevelFound && this.map.atTownExitDoor(this.player.position.x, this.player.position.z)) {
         this.onSecretLevelFound(OLD_TOWN_LEVEL);
       }
 
       // The abandoned office contains a hidden route into Level G. The old
       // office-door marker is reused as a deterministic convergence point.
-      // (Level FUN's own entrance is the hidden cake — see nearFunCake/tryInteract,
-      // an E-press rather than a walk-in trigger.)
       if (embodied && this.level === ABANDONED_OFFICE_LEVEL && this.map && this.map.abandonedSecretX >= 0 && this.onSecretLevelFound) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
@@ -2296,7 +2294,7 @@ export class GameEngine {
   private revive() {
     // Teammates revive with us: forget stale "dead" flags until snapshots refresh them.
     this.remoteDead.clear();
-    this.remoteStates.forEach((st) => { st.dead = false; });
+    this.remoteStates.forEach((st) => { st.dead = false; st.exitReady = false; });
     const wasDead = this.isDead;
     this.isDead = false;
     this.isWaitingForTransition = false;
@@ -2333,11 +2331,12 @@ export class GameEngine {
     this.refreshRemoteVisibility();
   }
 
-  /** Living teammates on our level, in a stable order. */
+  /** Teammates on our level still playing it — alive and not through the exit yet — in a stable order. */
   private spectatable(): string[] {
     const ids: string[] = [];
     this.remotePlayerGroups.forEach((_g, id) => {
-      if (!this.remoteDead.has(id) && !this.remoteStates.get(id)?.dead) ids.push(id);
+      const st = this.remoteStates.get(id);
+      if (!this.remoteDead.has(id) && !st?.dead && !st?.exitReady) ids.push(id);
     });
     return ids.sort();
   }
@@ -2365,16 +2364,29 @@ export class GameEngine {
   public setWaitingForTransition(waiting: boolean) {
     this.isWaitingForTransition = waiting;
     this.player.setSpectating(waiting);
-    if (waiting && !this.spectateId) this.cycleSpectate(1);
+    if (waiting) {
+      this.camera.position.set(0, 0, 0);
+      this.camera.rotation.set(0, 0, 0);
+      this.player.isFlashlightOn = false;
+      if (!this.spectateId || !this.spectatable().includes(this.spectateId)) this.cycleSpectate(1);
+    }
     this.refreshRemoteVisibility();
+  }
+
+  /** Watching a teammate: dead, or through the exit waiting for the rest. */
+  public get isSpectating(): boolean {
+    return this.isDead || this.isWaitingForTransition;
   }
 
   /** Hides dead teammates entirely, and the spectated one's body (we're inside its head; its flashlight stays). */
   private refreshRemoteVisibility() {
+    const spectating = this.isDead || this.isWaitingForTransition;
     this.remotePlayerGroups.forEach((group, id) => {
-      const dead = this.remoteDead.has(id) || !!this.remoteStates.get(id)?.dead;
-      group.visible = !dead;
-      const bodyVisible = !(this.isDead && id === this.spectateId);
+      const st = this.remoteStates.get(id);
+      // Dead, or already through the exit (waiting for the rest): gone from the level.
+      const gone = this.remoteDead.has(id) || !!st?.dead || !!st?.exitReady;
+      group.visible = !gone;
+      const bodyVisible = !(spectating && id === this.spectateId);
       group.children.forEach((c) => {
         if (c instanceof THREE.Light || c.type === "Object3D") return;
         c.visible = bodyVisible;
@@ -2523,7 +2535,15 @@ export class GameEngine {
       return;
     }
 
+    const before = this.remoteStates.get(id);
     this.remoteStates.set(id, update);
+    // Someone went through the exit (or came back from it): show/hide them, and
+    // whoever was watching them moves on to the next explorer still playing.
+    if (before && (!!before.exitReady !== !!update.exitReady || !!before.dead !== !!update.dead)) {
+      if ((update.exitReady || update.dead) && this.spectateId === id) this.cycleSpectate(1);
+      else if ((this.isDead || this.isWaitingForTransition) && !this.spectateId) this.cycleSpectate(1);
+      this.refreshRemoteVisibility();
+    }
 
     const group = this.remotePlayerGroups.get(id);
     if (!group) {
@@ -2912,7 +2932,6 @@ export class GameEngine {
     this.officeThunderIn = 6 + Math.random() * 8;
     this.officeFlashT = -1;
     this.officeThunderAt = -1;
-    this.funCakeEaten = false;
     // Hazard meters belong to the level they were filled on.
     this.noclipDwell = 0;
     this.pitFall = null;
@@ -3788,8 +3807,6 @@ export class GameEngine {
         text = t("act.megEmployee");
       } else if (this.nearMegDoor()) {
         text = t("act.megDoor");
-      } else if (this.nearFunCake()) {
-        text = t("fun.act.eatCake");
       }
     }
     if (text !== this.lastInteractPrompt) {
@@ -3854,15 +3871,6 @@ export class GameEngine {
     // The locked door's cell has collision, so allow interaction from the
     // neighbouring corridor cell (one 4m grid cell away).
     return dx * dx + dz * dz < 5.2 * 5.2;
-  }
-
-  /** The hidden office party's cake: eating it is Level FUN's secret entrance. */
-  private nearFunCake(): boolean {
-    if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map || !this.player || this.map.funCakeX < 0 || this.funCakeEaten) return false;
-    const cs = this.map.cellSize;
-    const dx = this.player.position.x - (this.map.funCakeX * cs + cs / 2);
-    const dz = this.player.position.z - (this.map.funCakeZ * cs + cs / 2);
-    return dx * dx + dz * dz < 2.0 * 2.0;
   }
 
   // ---------------------------------------------------------------------
@@ -4304,7 +4312,7 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | "town" | "town_model" | "chess" | "wardrobe" | "hotel" | "hotel_panel" | null {
+  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "space_terminal" | "town" | "town_model" | "chess" | "wardrobe" | "hotel" | "hotel_panel" | null {
     // Waiting at the exit we spectate a teammate, so "where we are" is where they are.
     if (this.isDead || this.isWaitingForTransition) return null;
     if (this.hotelDirector) {
@@ -4345,15 +4353,6 @@ export class GameEngine {
     if (this.nearMegDoor()) {
       this.onMegDoorRequest?.();
       return "meg_door";
-    }
-    if (this.nearFunCake()) {
-      // A completely unrelated secret from Level G's: eating the cake at
-      // the hidden office party leaves for Level FUN, nowhere near the real
-      // exit door (level4DoorX/Z) or the Level G door (abandonedSecretX/Z).
-      this.funCakeEaten = true;
-      this.audio.playFunSound("giggle", 0, 0.5);
-      this.onSecretLevelFound?.(FUN_LEVEL);
-      return "fun_cake";
     }
     if (this.nearExitDesk()) {
       this.readingAnchor = { x: this.map.exitDeskX, z: this.map.exitDeskZ };
@@ -4562,9 +4561,8 @@ export class GameEngine {
 
   /**
    * World position of every secret entrance on this level (Level 1 → Lights
-   * Out, Abandoned Office → Level G, Abandoned Office → the hidden cake ->
-   * Level FUN). Abandoned Office has two at once, so this returns a list
-   * rather than a single target.
+   * Out, Abandoned Office → Level G, the Poolrooms → Level 94). A list, so a
+   * level could hold more than one.
    */
   public secretEntranceTargets(): { x: number; z: number; label: string }[] {
     const map = this.map;
@@ -4572,9 +4570,8 @@ export class GameEngine {
     const cs = map.cellSize;
     const targets: { x: number; z: number; label: string }[] = [];
     if (this.level === 1 && map.secretGridX >= 0) targets.push({ x: (map.secretGridX + 0.5) * cs, z: (map.secretGridZ + 0.5) * cs, label: "6" });
-    if (this.level === ELECTRICAL_ROOM_LEVEL && map.townExitX >= 0) targets.push({ x: (map.townExitX + 0.5) * cs, z: (map.townExitZ + 0.5) * cs, label: "94" });
+    if (this.level === POOLROOMS_LEVEL && map.townExitX >= 0) targets.push({ x: (map.townExitX + 0.5) * cs, z: (map.townExitZ + 0.5) * cs, label: "94" });
     if (this.level === ABANDONED_OFFICE_LEVEL && map.abandonedSecretX >= 0) targets.push({ x: (map.abandonedSecretX + 0.5) * cs, z: (map.abandonedSecretZ + 0.5) * cs, label: "G" });
-    if (this.level === ABANDONED_OFFICE_LEVEL && map.funCakeX >= 0 && !this.funCakeEaten) targets.push({ x: (map.funCakeX + 0.5) * cs, z: (map.funCakeZ + 0.5) * cs, label: "FUN" });
     return targets;
   }
 

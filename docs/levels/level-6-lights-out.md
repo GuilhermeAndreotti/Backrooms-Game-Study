@@ -30,7 +30,7 @@ A entrada pelo Level 1 continua **opcional e individual**: chegue ao fim do corr
 
 ## Saída
 
-Na rota principal (ou quando escolhido no lobby), a saída segue às Poolrooms após todos os exploradores vivos estarem prontos. Pelo desvio do Level 1, a saída leva o grupo à Electrical Room, pulando o Level 2. O servidor determina o destino a partir da rota da sala.
+Na rota principal (ou quando escolhido no lobby), a saída segue ao [Level Fun](level-fun.md) após todos os exploradores vivos estarem prontos. Pelo desvio do Level 1, a saída leva o grupo à Electrical Room, pulando o Level 2. O servidor determina o destino a partir da rota da sala.
 
 ## Referências no código
 

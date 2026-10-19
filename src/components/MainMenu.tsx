@@ -9,6 +9,7 @@ import { GameSettings, SUIT_COLORS } from "../types/game";
 import { FaceEditor } from "./FaceEditor";
 import { AdSlot } from "./AdSlot";
 import { Settings, Play, Users, LogOut, Check, Sliders, Volume2, MonitorCog, Shirt, AlertTriangle } from "lucide-react";
+import { LeaderboardModal } from "./LeaderboardModal";
 
 interface MainMenuProps {
   settings: GameSettings;
@@ -37,6 +38,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
   const [joinCode, setJoinCode] = useState(initialCode);
   const cleanCode = joinCode.toUpperCase().replace(/[^A-Z0-9]/g, "");
   const [showCharacter, setShowCharacter] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [language, setLanguage] = useLanguage();
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [pendingEntry, setPendingEntry] = useState<{ create: true } | { code: string } | null>(null);
@@ -314,6 +316,21 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                     <div className="h-[1px] w-full bg-white/10 group-hover:bg-[#deb81d]/30 mt-2 transition-colors"></div>
                   </button>
 
+                  <button
+                    id="btn-leaderboard"
+                    type="button"
+                    onClick={() => setShowLeaderboard(true)}
+                    className="group w-full text-left transition-all cursor-pointer"
+                  >
+                    <div className="flex items-center gap-4 text-[#F2E8CF]/80 group-hover:text-white transition-colors">
+                      <span className="font-mono text-xs opacity-50 bg-white/5 px-2 py-0.5 rounded">05</span>
+                      <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
+                        {t("board.title")}
+                      </span>
+                    </div>
+                    <div className="h-[1px] w-full bg-white/10 group-hover:bg-[#deb81d]/30 mt-2 transition-colors"></div>
+                  </button>
+
                   {onCloseApp && (
                     <button
                       id="btn-exit"
@@ -321,7 +338,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                       className="group w-full text-left transition-all cursor-pointer"
                     >
                       <div className="flex items-center gap-4 text-red-400/80 group-hover:text-red-400 transition-colors">
-                        <span className="font-mono text-xs opacity-50 bg-red-400/5 px-2 py-0.5 rounded">05</span>
+                        <span className="font-mono text-xs opacity-50 bg-red-400/5 px-2 py-0.5 rounded">06</span>
                         <span className="text-xl font-light tracking-wide uppercase group-hover:translate-x-2 transition-transform">
                           {t("menu.exit")}
                         </span>
@@ -693,6 +710,8 @@ export const MainMenu: React.FC<MainMenuProps> = ({
           </div>
         </div>
       )}
+
+      {showLeaderboard && <LeaderboardModal onClose={() => setShowLeaderboard(false)} />}
     </div>
   );
 };
