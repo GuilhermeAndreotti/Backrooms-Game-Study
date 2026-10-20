@@ -12,8 +12,8 @@ O clássico das Backrooms: carpete amarelado úmido, papel de parede amarelo, zu
 
 - **Luzes que piscam**: a autoridade do nível sorteia *blackouts* e tempestades de flicker e os transmite (`world_event`), para que todos vejam o mesmo evento.
 - **Pit rooms**: salas cujo chão foi engolido por poços quadrados enormes (2,9 m de lado, um por célula). Sobram só uma beirada de carpete junto às paredes e passarelas estreitas (~1,1 m) entre os poços; as portas mantêm o piso. **Cair num poço mata** (causa `fall`): a câmera despenca e escurece, e você passa a espectar. Um pulo correndo atravessa um poço por pouco; o cheat LIFE anda no ar. Itens que caem numa célula de poço vão para a beirada.
-- **Red Room**: salas raras de carpete vermelho-escuro, silenciosas. Ficar nelas drena a sanidade sem aviso. O HUD mostra a exposição.
-- **Passagens falsas**: perto do fim do labirinto há duas passagens; só uma leva adiante, a outra leva de volta ao vermelho. Um **Scrap of Note** com uma dica rabiscada na margem diz qual é a certa: *a que tem uma mesa com um papel*.
+- **Red Room**: salas raras de carpete vermelho-escuro, silenciosas. Ficar nelas drena a sanidade (cerca de 70 s de cheia a zero, mesmo com a lanterna; mais rápido com um monstro por perto) e impede que ela se recupere. Uma vinheta vermelha vai fechando a tela conforme a exposição.
+- **Passagens falsas**: perto do fim do labirinto há duas passagens; só uma leva adiante, a outra dá numa sala vermelha. A certa dá numa **pit room** estreita com a saída no fundo: é obrigatório atravessá-la pela passarela entre as duas fileiras de poços (há sempre uma, com ~1,1 m). O labirinto final também tem algumas clareiras de pit room. Um **Scrap of Note** com uma dica rabiscada na margem diz qual é a certa: *a que tem uma mesa com um papel*.
 - **Papel da saída** (`E` na mesa): explica a saída deste nível.
 
 ## Objetivo

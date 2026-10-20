@@ -110,6 +110,13 @@ export interface GameEngineCallbacks {
 /** Multiplier on every sanity drain source: sanity falls slower than the raw tuning. */
 const SANITY_DRAIN_SCALE = 0.6;
 /**
+ * Red Room sanity drain, before SANITY_DRAIN_SCALE: about 70 s from full to
+ * nothing standing in one (less with a monster near, more with the crystal).
+ */
+const RED_ROOM_DRAIN = 0.024;
+/** Seconds of Red Room exposure at which the HUD's red vignette is fully closed. */
+const RED_ROOM_EXPOSURE_MAX = 60;
+/**
  * The Abandoned Office is stocked with almond water (see LEVEL4_WATER_CHANCE in
  * ProceduralMap), so a bottle drunk there restores only this share of its usual
  * sanity (+20%) and stamina (+15%).
@@ -409,6 +416,8 @@ export class GameEngine {
   
   // Exposure timer in the mysterious Level 0 Red Rooms (60 seconds to collapse)
   public redRoomExposure = 0;
+  /** Whether the local explorer stood in a Red Room this frame (drains sanity). */
+  private inRedRoom = false;
   /** Level 7: cumulative seconds standing in a toxic ("Hydrolitis Plague") water cell. Same shape as redRoomExposure, own field since the two are never simultaneous but use different thresholds/recovery. */
   public toxicWaterExposure = 0;
 
@@ -1217,8 +1226,11 @@ export class GameEngine {
         }
       }
 
+      // Red Rooms drain sanity (see the sanity pass below); the exposure meter
+      // only drives the HUD's closing red vignette, capped where it maxes out.
+      this.inRedRoom = inRedRoom;
       if (inRedRoom) {
-        this.redRoomExposure += delta;
+        this.redRoomExposure = Math.min(RED_ROOM_EXPOSURE_MAX, this.redRoomExposure + delta);
         if (this.onRedRoomExposureChange) {
           this.onRedRoomExposureChange(this.redRoomExposure);
         }
@@ -1226,29 +1238,6 @@ export class GameEngine {
         // Subtly rattle/flicker the ambient hum audio slightly to signal atmospheric instability
         if (Math.random() < delta * 0.12) {
           this.audio.triggerHumFlicker(50);
-        }
-
-        // If continuous/cumulative exposure reaches exactly 60 seconds (1 minute), the player succumbs
-        if (this.redRoomExposure >= 60.0) {
-          console.warn("[GameEngine] Succumbed to Red Room silent dimension collapse. Relocating safely...");
-          this.redRoomExposure = 0;
-          if (this.onRedRoomExposureChange) {
-            this.onRedRoomExposureChange(0);
-          }
-
-          // Trigger collapse sound effect
-          this.audio.playEntityCatchSound();
-
-          // Reset parameters and teleport key coordinates safely to spawn
-          this.player.spawnSafely();
-
-          // Relocate hostile entities far away
-          const playerGX = Math.floor(this.player.position.x / this.map.cellSize);
-          const playerGZ = Math.floor(this.player.position.z / this.map.cellSize);
-          this.relocateEntitiesAwayFrom(playerGX, playerGZ);
-
-          // Core culling update
-          this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z, true);
         }
       } else if (this.redRoomExposure > 0) {
         // Recover slowly when leaving the Red Room (at 0.5x rate)
@@ -1546,14 +1535,17 @@ export class GameEngine {
           }
         }
 
+        // 4. Red Room: the silence itself wears the mind down, lit or not.
+        const ambientDepletion = darknessDepletion + (this.inRedRoom ? RED_ROOM_DRAIN : 0);
+
         // Apply depletion or recovery. LIFE keeps sanity full and prevents every
         // sanity-based death while the cheat is active.
         if (this.cheatLife) {
           this.sanity = 1.0;
         } else if (nearMonster) {
-          this.sanity = Math.max(0.0, this.sanity - (monsterDepletionSum + darknessDepletion) * SANITY_DRAIN_SCALE * this.sanityDrainFactor() * delta);
-        } else if (darknessDepletion > 0) {
-          this.sanity = Math.max(0.0, this.sanity - darknessDepletion * SANITY_DRAIN_SCALE * this.sanityDrainFactor() * delta);
+          this.sanity = Math.max(0.0, this.sanity - (monsterDepletionSum + ambientDepletion) * SANITY_DRAIN_SCALE * this.sanityDrainFactor() * delta);
+        } else if (ambientDepletion > 0) {
+          this.sanity = Math.max(0.0, this.sanity - ambientDepletion * SANITY_DRAIN_SCALE * this.sanityDrainFactor() * delta);
         } else {
           // Recover sanity in normal illuminated space (trimmed only slightly, so a
           // careful player still recovers at close to the old pace)
@@ -3019,6 +3011,7 @@ export class GameEngine {
     // Hazard meters belong to the level they were filled on.
     this.noclipDwell = 0;
     this.pitFall = null;
+    this.inRedRoom = false;
     if (this.redRoomExposure > 0) { this.redRoomExposure = 0; this.onRedRoomExposureChange?.(0); }
     if (this.toxicWaterExposure > 0) { this.toxicWaterExposure = 0; this.onToxicWaterExposureChange?.(0); }
 

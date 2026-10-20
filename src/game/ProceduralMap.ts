@@ -2530,7 +2530,7 @@ export class ProceduralMap {
    * Level 0 progression gauntlet, carved into the enlarged east wing: a
    * perfect maze leading to a chamber with two open passages — no key, no
    * locked door, just the corridor and the choice. The correct passage
-   * reaches the exit; the wrong one opens into red rooms. Which is correct
+   * crosses a pit room to the exit; the wrong one opens into a red room. Which is correct
    * (and its painted colour) is seed-deterministic; every scrap-of-note
    * carries a clue naming it.
    */
@@ -2574,19 +2574,30 @@ export class ProceduralMap {
     this.correctDoorIsA = doorRng.next() < 0.5;
     this.correctDoorMarker = "mesa"; // notes point at the passage with the desk instead of a painted colour
 
-    // 6. A small room behind each passage. The correct one holds the exit; the
-    //    wrong one is a red room. (Passage cells were carved above.)
-    const carveRoom = (z0: number, z1: number, type: CellType) => {
-      for (let x = 59; x <= 61; x++) {
+    // 6. A small room behind each passage. The wrong one is a red room; the
+    //    correct one is a pit room the exit sits at the far end of, so the way
+    //    out always means crossing the pits. (Passage cells were carved above.)
+    const carveRoom = (z0: number, z1: number, type: CellType, x0 = 59) => {
+      for (let x = x0; x <= 61; x++) {
         for (let z = z0; z <= z1; z++) {
           if (x >= 0 && x < gs && z >= 0 && z < gs) this.grid[x][z] = type;
         }
       }
     };
+    // The exit room is two cells wide (x 60..61) behind a solid column at
+    // x = 59, which keeps the maze (whose cells run up to x = 58) from opening
+    // straight into it beside the exit. Crossing stays guaranteed: every cell
+    // with a shaft keeps a 0.55 m ledge, so between the two columns of shafts
+    // there is always a 1.1 m walkway from the passage to the exit, and the
+    // entry and exit cells themselves (next to corridor) keep their floor.
+    const carveExitRoom = (z0: number, z1: number) => {
+      carveRoom(z0, z1, CellType.SOLID);
+      carveRoom(z0, z1, CellType.PIT_ROOM, 60);
+    };
     const aIsExit = this.correctDoorIsA;
     // passage A room: z 22..26 (north).  passage B room: z 38..42 (south).
-    carveRoom(22, 26, aIsExit ? CellType.CORRIDOR : CellType.RED_ROOM);
-    carveRoom(38, 42, aIsExit ? CellType.RED_ROOM : CellType.CORRIDOR);
+    if (aIsExit) carveExitRoom(22, 26); else carveRoom(22, 26, CellType.RED_ROOM);
+    if (aIsExit) carveRoom(38, 42, CellType.RED_ROOM); else carveExitRoom(38, 42);
     // The exit is the far end of its room, up against solid rock, so a
     // noclip wall has something to pass through.
     this.exitGridX = 60;
@@ -2601,11 +2612,13 @@ export class ProceduralMap {
     this.noclipPatchX = (this.exitGridX + 0.5) * this.cellSize;
     this.noclipPatchZ = (this.exitGridZ + 0.5) * this.cellSize + (aIsExit ? 0.7 : -0.7);
 
-    // 7. A few more red-room clearings scattered through the maze.
+    // 7. A few pit-room clearings scattered through the maze. Always
+    //    crossable: shafts never touch (1.1 m walkways between them, ledges
+    //    along the walls), and a cell next to a corridor keeps its floor.
     for (const [rx, rz] of [[49, 13], [54, 47], [51, 27]] as [number, number][]) {
       for (let x = rx; x <= rx + 3; x++) {
         for (let z = rz; z <= rz + 3; z++) {
-          if (x > mazeX0 && x < mazeX1 && z > mazeZ0 && z < mazeZ1) this.grid[x][z] = CellType.RED_ROOM;
+          if (x > mazeX0 && x < mazeX1 && z > mazeZ0 && z < mazeZ1) this.grid[x][z] = CellType.PIT_ROOM;
         }
       }
     }
