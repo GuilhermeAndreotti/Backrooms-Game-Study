@@ -15,7 +15,7 @@ Ligar **5 interruptores** espalhados pelo mapa. Quando as 5 luzes acendem, a **p
 - `INTERRUPTOR LIGADO: n/5`
 - `AS 5 LUZES ACENDERAM. A PORTA DE BARRAS ESTÁ ABERTA.`
 
-A saída só funciona com a porta aberta. O estado dos interruptores é compartilhado: um interruptor ligado por um jogador conta para todos.
+Atrás dela, o corredor de serviço termina num **vão de porta de madeira cheio de luz fria de escritório** (o Abandoned Office vem a seguir). A saída só funciona com a porta aberta. O estado dos interruptores é compartilhado: um interruptor ligado por um jogador conta para todos.
 
 Posições (células): `(17,8)`, `(35,8)`, `(11,25)`, `(26,25)`, `(32,41)`.
 

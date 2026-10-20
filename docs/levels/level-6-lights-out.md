@@ -30,7 +30,7 @@ A entrada pelo Level 1 continua **opcional e individual**: chegue ao fim do corr
 
 ## Saída
 
-Na rota principal (ou quando escolhido no lobby), a saída segue ao [Level Fun](level-fun.md) após todos os exploradores vivos estarem prontos. Pelo desvio do Level 1, a saída leva o grupo à Electrical Room, pulando o Level 2. O servidor determina o destino a partir da rota da sala.
+A saída é uma **porta de festa** cor-de-rosa no fim do labirinto, com um sorriso pintado, balões amarrados e luz colorida vazando por baixo — o único ponto colorido do nível. Na rota principal (ou quando escolhido no lobby), a saída segue ao [Level Fun](level-fun.md) após todos os exploradores vivos estarem prontos. Pelo desvio do Level 1, a saída leva o grupo à Electrical Room, pulando o Level 2. O servidor determina o destino a partir da rota da sala.
 
 ## Referências no código
 

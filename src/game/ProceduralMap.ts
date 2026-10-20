@@ -23,7 +23,6 @@ import { FunWorld } from "./levels/funWorld";
 import { FUN_EXIT, FUN_RECTS, FUN_SPAWN } from "./levels/funLayout";
 import * as Decor from "./LevelDecor";
 import type { OfficeSkyline } from "./officeWindow";
-import * as Fun from "./LevelFunModels";
 import { POOL_FLOOR_Y, WATER_SURFACE_Y, createPoolTileMaterial, createWallTileMaterial, createWaterMaterial } from "./Water";
 import { POOL_ROOM_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./poolroomsPuzzle";
 
@@ -68,6 +67,9 @@ export enum CellType {
 
 /** Level 0's pit rooms: half the side (metres) of the square shaft cut into a pit cell (4 m) — a ~0.55 m ledge is left around it. */
 export const PIT_HOLE_HALF = 1.45;
+/** Places a pooled light at a point of a level exit's local frame (see buildPipeMouthExit and friends). */
+type ExitLight = (lx: number, y: number, lz: number, color: number, intensity: number, distance: number) => void;
+
 /** How deep the shafts are drawn; fog swallows them long before the bottom. */
 const PIT_DEPTH = 40;
 
@@ -452,15 +454,6 @@ export class ProceduralMap {
   /** Hidden convergence door from Abandoned Office to Level G. */
   public abandonedSecretX = -1;
   public abandonedSecretZ = -1;
-  /**
-   * Hidden office birthday party: a fixed cake cell (eat it to leave for
-   * Level FUN) plus every cell of the little room around it, kept clear of
-   * dividers/desks/random props the same way abandonedSecretX's nook is.
-   * Deliberately nowhere near level4DoorX/Z, the ordinary exit.
-   */
-  public funCakeX = -1;
-  public funCakeZ = -1;
-  public funPartyCells: { gx: number; gz: number }[] = [];
 
   /** Level G sector of a cell: 1 reception, 2 archive, 3 main room, 0 corridors. */
   public levelGSectorOf(gx: number, gz: number): 0 | 1 | 2 | 3 {
@@ -807,12 +800,6 @@ export class ProceduralMap {
 
   /** The text on the exit desk's paper (also shown when the player reads it), or null on levels without one. */
   public exitPaperNote(): { title: string; lines: string[] } | null {
-    if (this.level === 1) {
-      return {
-        title: t("paper.l1.title"),
-        lines: [0, 1, 2, 3].map((n) => t(`paper.l1.${n}`)),
-      };
-    }
     if (this.level === 0) {
       const wall = this.noclipKind === "wall";
       return {
@@ -2308,15 +2295,6 @@ export class ProceduralMap {
     this.level4DoorX = this.exitGridX; this.level4DoorZ = this.exitGridZ;
     this.abandonedSecretX = 18; this.abandonedSecretZ = 35;
     corridor(18, 33, 18, 35);
-    // A second, unrelated secret: an office birthday party nobody mentions,
-    // tucked into the unused gap between the reception rooms — nowhere near
-    // level4DoorX/Z (the real exit) or abandonedSecretX/Z (the Level G door).
-    corridor(25, 7, 25, 9);
-    room(24, 10, 26, 12);
-    this.funCakeX = 25; this.funCakeZ = 11;
-    this.funPartyCells = [];
-    for (let z = 7; z <= 9; z++) this.funPartyCells.push({ gx: 25, gz: z });
-    for (let x = 24; x <= 26; x++) for (let z = 10; z <= 12; z++) this.funPartyCells.push({ gx: x, gz: z });
 
     this.level4DeskCells = [
       { gx: 18, gz: 18, rotation: 0 }, { gx: 22, gz: 18, rotation: 0 }, { gx: 26, gz: 18, rotation: 0 }, { gx: 30, gz: 18, rotation: 0 },
@@ -3147,6 +3125,183 @@ export class ProceduralMap {
    * SAÍDA sign over it, and through the doorway (painted, lit like daylight) a
    * road running off between green hills towards a little town.
    */
+  // ---------------------------------------------------------------------------
+  // Level exits. Built in the exit cell's own frame: its wall is to the north
+  // (local z = -cellSize/2) and the group is turned onto the real wall after.
+  // ---------------------------------------------------------------------------
+
+  /** Level 1 -> Pipe Dreams: the mouth of a huge rusted pipe, warm and dark inside. */
+  private buildPipeMouthExit(g: THREE.Group, hSize: number, height: number, light: ExitLight) {
+    const wallZ = -hSize / 2;
+    const rust = this.sharedMat("exit_pipe_rust", () => new THREE.MeshStandardMaterial({ color: 0x6e3f24, roughness: 0.7, metalness: 0.65, side: THREE.DoubleSide }));
+    const steel = this.sharedMat("exit_pipe_steel", () => new THREE.MeshStandardMaterial({ color: 0x4a4f52, roughness: 0.5, metalness: 0.8 }));
+    const dark = this.sharedMat("exit_pipe_dark", () => new THREE.MeshBasicMaterial({ color: 0x050302 }));
+    const R = 1.05, cy = 1.2, depth = 1.0;
+
+    // The main pipe: its mouth stands a metre out of the wall; the inside is black.
+    const tube = new THREE.Mesh(this.sharedGeo("exit_pipe_tube", () => new THREE.CylinderGeometry(R, R, depth, 28, 1, true)), rust);
+    tube.rotation.x = Math.PI / 2;
+    tube.position.set(0, cy, wallZ + depth / 2);
+    g.add(tube);
+    const back = new THREE.Mesh(this.sharedGeo("exit_pipe_back", () => new THREE.CircleGeometry(R, 28)), dark);
+    back.position.set(0, cy, wallZ + 0.02);
+    g.add(back);
+    const flange = new THREE.Mesh(this.sharedGeo("exit_pipe_flange", () => new THREE.TorusGeometry(R + 0.04, 0.09, 8, 32)), steel);
+    flange.position.set(0, cy, wallZ + depth);
+    g.add(flange);
+    const boltGeo = this.sharedGeo("exit_pipe_bolt", () => new THREE.CylinderGeometry(0.035, 0.035, 0.08, 6).rotateX(Math.PI / 2));
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      const bolt = new THREE.Mesh(boltGeo, steel);
+      bolt.position.set(Math.cos(a) * (R + 0.04), cy + Math.sin(a) * (R + 0.04), wallZ + depth + 0.09);
+      g.add(bolt);
+    }
+
+    // Smaller pipes running along the wall into it, and a valve wheel.
+    const run = new THREE.Mesh(this.sharedGeo("exit_pipe_run", () => new THREE.CylinderGeometry(0.12, 0.12, hSize - 0.1, 10).rotateZ(Math.PI / 2)), rust);
+    run.position.set(0, height - 0.35, wallZ + 0.2);
+    g.add(run);
+    const riser = new THREE.Mesh(this.sharedGeo("exit_pipe_riser", () => new THREE.CylinderGeometry(0.1, 0.1, height, 10)), steel);
+    riser.position.set(1.65, height / 2, wallZ + 0.18);
+    g.add(riser);
+    const wheel = new THREE.Mesh(this.sharedGeo("exit_pipe_wheel", () => new THREE.TorusGeometry(0.16, 0.025, 6, 16)),
+      this.sharedMat("exit_pipe_wheel", () => new THREE.MeshStandardMaterial({ color: 0x9a1f1a, roughness: 0.5, metalness: 0.5 })));
+    wheel.position.set(1.65, 1.3, wallZ + 0.36);
+    g.add(wheel);
+
+    // Heat from somewhere deep in the pipe (Pipe Dreams runs hot).
+    light(0, cy, wallZ + 0.6, 0xff7a3a, 1.4, 5);
+  }
+
+  /** Pipe Dreams -> the Electrical Room: a power plant's steel door, light buzzing through the gap. */
+  private buildPowerPlantExit(g: THREE.Group, hSize: number, height: number, light: ExitLight) {
+    const wallZ = -hSize / 2;
+    const frameMat = this.sharedMat("exit_plant_frame", () => new THREE.MeshStandardMaterial({ color: 0x3c4146, roughness: 0.45, metalness: 0.75 }));
+    const leafMat = this.sharedMat("exit_plant_leaf", () => new THREE.MeshStandardMaterial({ color: 0x6b737a, roughness: 0.5, metalness: 0.6 }));
+    const glow = this.sharedMat("exit_plant_glow", () => new THREE.MeshBasicMaterial({ color: 0xcfe6ff }));
+    const W = 1.9, H = 2.5;
+
+    // Cold light behind a double door left a hand's width apart.
+    const back = new THREE.Mesh(this.sharedGeo("exit_plant_back", () => new THREE.PlaneGeometry(W - 0.1, H - 0.05)), glow);
+    back.position.set(0, H / 2, wallZ + 0.03);
+    g.add(back);
+    const leafGeo = this.sharedGeo("exit_plant_leaf", () => new THREE.BoxGeometry(W / 2 - 0.06, H - 0.1, 0.07));
+    for (const side of [-1, 1]) {
+      const leaf = new THREE.Mesh(leafGeo, leafMat);
+      leaf.position.set(side * (W / 4 + 0.03), (H - 0.1) / 2, wallZ + 0.08);
+      g.add(leaf);
+      // A lightning-bolt plate on each leaf.
+      const bolt = new THREE.Mesh(this.sharedGeo("exit_plant_bolt", () => new THREE.PlaneGeometry(0.36, 0.36)), this.garageLabel("⚡", 0.36, 0.36, "#111111", "#f2c230"));
+      bolt.position.set(side * (W / 4 + 0.03), 1.55, wallZ + 0.12);
+      g.add(bolt);
+      const post = new THREE.Mesh(this.sharedGeo("exit_plant_post", () => new THREE.BoxGeometry(0.14, H + 0.14, 0.2)), frameMat);
+      post.position.set(side * (W / 2 + 0.07), (H + 0.14) / 2, wallZ + 0.1);
+      g.add(post);
+    }
+    const lintel = new THREE.Mesh(this.sharedGeo("exit_plant_lintel", () => new THREE.BoxGeometry(W + 0.28, 0.14, 0.2)), frameMat);
+    lintel.position.set(0, H + 0.07, wallZ + 0.1);
+    g.add(lintel);
+    const stripe = new THREE.Mesh(this.sharedGeo("exit_plant_stripe", () => new THREE.BoxGeometry(W - 0.1, 0.2, 0.02)), this.hazardTapeMaterial(W - 0.1, "x"));
+    stripe.position.set(0, 0.12, wallZ + 0.125);
+    g.add(stripe);
+    const sign = new THREE.Mesh(this.sharedGeo("exit_plant_sign", () => new THREE.PlaneGeometry(1.3, 0.34)), this.garageLabel(t("exit.sign.highVoltage"), 1.3, 0.34, "#111111", "#f2c230"));
+    sign.position.set(0, Math.min(height - 0.25, H + 0.38), wallZ + 0.03);
+    g.add(sign);
+
+    // A red warning lamp, and cable conduits climbing the wall into the ceiling.
+    const lamp = new THREE.Mesh(this.sharedGeo("exit_plant_lamp", () => new THREE.SphereGeometry(0.09, 12, 8)),
+      this.sharedMat("exit_plant_lamp", () => new THREE.MeshBasicMaterial({ color: 0xff3322 })));
+    lamp.position.set(W / 2 + 0.38, H + 0.05, wallZ + 0.12);
+    g.add(lamp);
+    const conduit = this.sharedGeo("exit_plant_conduit", () => new THREE.CylinderGeometry(0.035, 0.035, height, 6));
+    for (const x of [0.45, 0.6, 0.75]) {
+      const c = new THREE.Mesh(conduit, frameMat);
+      c.position.set(-W / 2 - x, height / 2, wallZ + 0.06);
+      g.add(c);
+    }
+    light(0, 1.2, wallZ + 0.6, 0xcfe6ff, 1.6, 6);
+    light(W / 2 + 0.38, H + 0.05, wallZ + 0.4, 0xff3322, 0.8, 3.5);
+  }
+
+  /** Lights Out -> Level Fun: a pastel party door with a painted smile, balloons, coloured light underneath. */
+  private buildPartyDoorExit(g: THREE.Group, hSize: number, light: ExitLight) {
+    const wallZ = -hSize / 2;
+    const W = 1.1, H = 2.2;
+    const frameMat = this.sharedMat("exit_party_frame", () => new THREE.MeshStandardMaterial({ color: 0xf2ece0, roughness: 0.7 }));
+    const leaf = new THREE.Mesh(this.sharedGeo("exit_party_leaf", () => new THREE.BoxGeometry(W, H - 0.04, 0.06)),
+      this.sharedMat("exit_party_leaf", () => new THREE.MeshStandardMaterial({ color: 0xe58fb5, roughness: 0.6 })));
+    leaf.position.set(0, (H - 0.04) / 2 + 0.04, wallZ + 0.05);
+    g.add(leaf);
+    const smile = new THREE.Mesh(this.sharedGeo("exit_party_smile", () => new THREE.PlaneGeometry(0.62, 0.62)), this.sharedMat("exit_party_smile", () => {
+      const c = document.createElement("canvas");
+      c.width = c.height = 128;
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = "#f6d24a"; ctx.beginPath(); ctx.arc(64, 64, 58, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#2a1a10";
+      ctx.beginPath(); ctx.ellipse(44, 50, 7, 12, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(84, 50, 7, 12, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = 8; ctx.strokeStyle = "#2a1a10"; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.arc(64, 66, 32, 0.2 * Math.PI, 0.8 * Math.PI); ctx.stroke();
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      this.sharedTextures.push(tex);
+      return new THREE.MeshStandardMaterial({ map: tex, transparent: true, roughness: 0.6 });
+    }));
+    smile.position.set(0, 1.45, wallZ + 0.085);
+    g.add(smile);
+    const knob = new THREE.Mesh(this.sharedGeo("exit_party_knob", () => new THREE.SphereGeometry(0.045, 10, 8)), this.officeMat("brass", 0xb08d3c, 0.3, 0.8));
+    knob.position.set(0.4, 1.0, wallZ + 0.11);
+    g.add(knob);
+    for (const side of [-1, 1]) {
+      const post = new THREE.Mesh(this.sharedGeo("exit_party_post", () => new THREE.BoxGeometry(0.1, H + 0.1, 0.12)), frameMat);
+      post.position.set(side * (W / 2 + 0.05), (H + 0.1) / 2, wallZ + 0.06);
+      g.add(post);
+    }
+    const lintel = new THREE.Mesh(this.sharedGeo("exit_party_lintel", () => new THREE.BoxGeometry(W + 0.2, 0.1, 0.12)), frameMat);
+    lintel.position.set(0, H + 0.05, wallZ + 0.06);
+    g.add(lintel);
+    // The party's light leaking out under the door.
+    const gap = new THREE.Mesh(this.sharedGeo("exit_party_gap", () => new THREE.BoxGeometry(W - 0.06, 0.035, 0.02)),
+      this.sharedMat("exit_party_gap", () => new THREE.MeshBasicMaterial({ color: 0xffd27a })));
+    gap.position.set(0, 0.018, wallZ + 0.09);
+    g.add(gap);
+
+    // Balloons tied beside the door, strings hanging.
+    const balloonGeo = this.sharedGeo("exit_party_balloon", () => new THREE.SphereGeometry(0.2, 14, 10));
+    const stringGeo = this.sharedGeo("exit_party_string", () => new THREE.CylinderGeometry(0.006, 0.006, 1.1, 4));
+    const stringMat = this.sharedMat("exit_party_string", () => new THREE.MeshBasicMaterial({ color: 0xdddddd }));
+    for (const [x, y, color] of [[-0.95, 2.05, 0xd8333a], [-1.22, 2.32, 0xf2c230], [0.95, 2.2, 0x3a6fd8]] as const) {
+      const balloon = new THREE.Mesh(balloonGeo, this.sharedMat(`exit_party_balloon_${color}`, () => new THREE.MeshStandardMaterial({ color, roughness: 0.35 })));
+      balloon.scale.set(1, 1.18, 1);
+      balloon.position.set(x, y, wallZ + 0.3);
+      g.add(balloon);
+      const str = new THREE.Mesh(stringGeo, stringMat);
+      str.position.set(x, y - 0.24 - 0.55, wallZ + 0.3);
+      g.add(str);
+    }
+    light(0, 0.3, wallZ + 0.5, 0xffa6d8, 1.3, 5);
+  }
+
+  /** The Electrical Room -> the Abandoned Office: the crawlspace ends in an open wooden doorway full of cold office light. */
+  private buildOfficeDoorwayExit(g: THREE.Group, hSize: number, light: ExitLight) {
+    const wallZ = -hSize / 2;
+    const W = 1.3, H = 2.3;
+    const frameMat = this.officeMat("level3_gate_frame", 0x3d3024, 0.75);
+    const glow = new THREE.Mesh(this.sharedGeo("exit_office_glow", () => new THREE.PlaneGeometry(W, H)),
+      this.sharedMat("exit_office_glow", () => new THREE.MeshBasicMaterial({ color: 0xe8f0ff })));
+    glow.position.set(0, H / 2, wallZ + 0.02);
+    g.add(glow);
+    for (const side of [-1, 1]) {
+      const post = new THREE.Mesh(this.officeBox(0.14, H + 0.12, 0.18), frameMat);
+      post.position.set(side * (W / 2 + 0.07), (H + 0.12) / 2, wallZ + 0.09);
+      g.add(post);
+    }
+    const lintel = new THREE.Mesh(this.officeBox(W + 0.28, 0.12, 0.18), frameMat);
+    lintel.position.set(0, H + 0.06, wallZ + 0.09);
+    g.add(lintel);
+    light(0, 1.5, wallZ + 0.7, 0xe8f0ff, 1.5, 6);
+  }
+
   private buildTownExitDoor(group: THREE.Group, gx: number, gz: number, posX: number) {
     const cs = this.cellSize;
     const wallZ = gz * cs;
@@ -4230,7 +4385,6 @@ export class ProceduralMap {
     }
     if (gx === this.level4DoorX && gz === this.level4DoorZ) return false;
     if (Math.abs(gx - this.abandonedSecretX) <= 1 && Math.abs(gz - this.abandonedSecretZ) <= 1) return false;
-    if (this.funPartyCells.some((c) => Math.abs(c.gx - gx) <= 1 && Math.abs(c.gz - gz) <= 1)) return false;
     if (this.level4DeskCells.some((d) => Math.abs(d.gx - gx) <= 1 && Math.abs(d.gz - gz) <= 1)) return false;
     if (this.level4Employees.some((e) => Math.abs(e.gx - gx) <= 1 && Math.abs(e.gz - gz) <= 1)) return false;
     return !((gx === 5 && gz === 5) || (gx === 18 && gz === 5) || (gx === 31 && gz === 5));
@@ -4338,7 +4492,6 @@ export class ProceduralMap {
     // Level 4 (Abandoned Office).
     if (gx === this.level4DoorX && gz === this.level4DoorZ) return;
     if (gx === this.abandonedSecretX && gz === this.abandonedSecretZ) return;
-    if (this.funPartyCells.some((c) => c.gx === gx && c.gz === gz)) return;
     if (this.level4DeskCells.some((d) => d.gx === gx && d.gz === gz)) return;
     if (this.level4Employees.some((e) => Math.abs(e.gx - gx) <= 1 && Math.abs(e.gz - gz) <= 1)) return;
     if ((gx === 5 && gz === 5) || (gx === 18 && gz === 5) || (gx === 31 && gz === 5)) return; // meeting tables
@@ -5216,12 +5369,11 @@ export class ProceduralMap {
     if (this.level === 0 && gx === this.officeDoorX && gz === this.officeDoorZ) {
       this.buildOfficeDoor(group, posX, posZ, height);
     }
-    if (this.level === 9 && this.funPartyCells.some((c) => c.gx === gx && c.gz === gz)) {
-      this.buildFunPartyCell(group, gx, gz, posX, posZ);
-    }
 
-    // 5. THE GLITCHING NOCLIP WALL EXIT ("flipar na parede / noclip")
-    if (gx === this.exitGridX && gz === this.exitGridZ && this.level !== 4 && this.level !== 9) {
+    // 5. THE EXIT. Each one belongs to its level and hints at the next one;
+    // only Level 0 keeps the taped no-physics patch and the desk with its paper.
+    // (Level G, the Abandoned Office and the Poolrooms build their own doors.)
+    if (gx === this.exitGridX && gz === this.exitGridZ && this.level !== 4 && this.level !== 9 && this.level !== 7) {
       const exitGroup = new THREE.Group();
 
       // Find all adjacent solid neighbors
@@ -5232,115 +5384,36 @@ export class ProceduralMap {
       if (gx === this.gridSize - 1 || this.grid[gx + 1][gz] === CellType.SOLID) adjacentSolids.push('E');
 
       const wallPrng = new SeededRandom(this.seed + gx * 37 + gz * 73);
+      // A dead end (Lights Out's maze, the Electrical Room's crawlspace): the door
+      // faces whoever walks up to it, on the wall across from the way in.
+      const ways = (['N', 'S', 'W', 'E'] as const).filter((d) => !adjacentSolids.includes(d));
+      const across = { N: 'S', S: 'N', W: 'E', E: 'W' } as const;
+      const deadEnd = (this.level === 3 || this.level === 8) && ways.length === 1 ? across[ways[0]] : null;
       // On Level 1, the exit is at the end of the straight corridor running west-to-east. So force chosenDir to 'E'!
-      const chosenDir = this.level === 2 ? 'N' : (this.level === 1 ? 'E' : this.level === 0 ? this.noclipDir : (adjacentSolids.length > 0
+      const chosenDir = this.level === 2 ? 'N' : (this.level === 1 ? 'E' : this.level === 0 ? this.noclipDir : deadEnd ?? (adjacentSolids.length > 0
         ? adjacentSolids[wallPrng.nextInt(0, adjacentSolids.length - 1)]
         : 'S'));
       // Group yaw for that direction (N default, S half-turn, W/E quarter-turns)
       const chosenRot = chosenDir === 'S' ? Math.PI : chosenDir === 'W' ? Math.PI / 2 : chosenDir === 'E' ? -Math.PI / 2 : 0;
+      /** A pooled light at a point of the exit's own frame (its wall to the north), in world space. */
+      const exitLight = (lx: number, y: number, lz: number, color: number, intensity: number, distance: number) => {
+        this.registerLight(
+          gx, gz,
+          posX + lx * Math.cos(chosenRot) + lz * Math.sin(chosenRot),
+          fY + y,
+          posZ - lx * Math.sin(chosenRot) + lz * Math.cos(chosenRot),
+          color, intensity, distance, 1.2
+        );
+      };
 
-      let glitchWall: THREE.Mesh | null = null;
-
-      if (this.level === 2) {
-        // LEVEL 2: CYAN ESCAPE PORTAL LEADING TO VICTORY!
-        const pipeMat = new THREE.MeshStandardMaterial({
-          color: 0x4fa6e8, // Futuristic cyan metal
-          roughness: 0.2,
-          metalness: 0.95
-        });
-
-        // Glowing cyan dimensional portal plate (replaces glitch wall)
-        const portalGeo = new THREE.PlaneGeometry(hSize - 0.8, height - 0.5);
-        const portalMat = new THREE.MeshBasicMaterial({
-          color: 0x00f0ff, // Glowing pure cyan
-          side: THREE.DoubleSide
-        });
-        glitchWall = new THREE.Mesh(portalGeo, portalMat);
-        glitchWall.position.set(0, height / 2, -hSize / 2 + 0.08);
-        exitGroup.add(glitchWall);
-
-        // Circular Steam pipes frame around the portal plate
-        const framePipeGeo = new THREE.CylinderGeometry(0.06, 0.06, hSize - 0.6, 8);
-        const pipe1 = new THREE.Mesh(framePipeGeo, pipeMat);
-        pipe1.rotation.z = Math.PI / 2;
-        pipe1.position.set(0, height - 0.25, -hSize / 2 + 0.15);
-        exitGroup.add(pipe1);
-
-        const pipe2 = new THREE.Mesh(framePipeGeo, pipeMat);
-        pipe2.rotation.z = Math.PI / 2;
-        pipe2.position.set(0, 0.25, -hSize / 2 + 0.15);
-        exitGroup.add(pipe2);
-
-        // Vertical frame pillars on sides
-        const vertPipeGeo = new THREE.CylinderGeometry(0.08, 0.08, height - 0.4, 8);
-        const pipe3 = new THREE.Mesh(vertPipeGeo, pipeMat);
-        pipe3.position.set(-(hSize / 2 - 0.35), height / 2, -hSize / 2 + 0.15);
-        exitGroup.add(pipe3);
-
-        const pipe4 = new THREE.Mesh(vertPipeGeo, pipeMat);
-        pipe4.position.set(hSize / 2 - 0.35, height / 2, -hSize / 2 + 0.15);
-        exitGroup.add(pipe4);
-
-        // Cyan light shining through the portal
-        const portalLight = new THREE.PointLight(0x00f0ff, 8.0, 10, 0.5);
-        portalLight.position.set(0, height / 2, -hSize / 2 + 0.5);
-        exitGroup.add(portalLight);
-      } else if (this.level === 1) {
-        // LEVEL 1: RUSTY MAINTENANCE STEAM GATE PORTAL LEADING TO LEVEL 2 "PIPE DREAMS"
-        const gateMat = new THREE.MeshStandardMaterial({
-          color: 0x8a4b2a, // Deep rusty brown/orange
-          roughness: 0.9,
-          metalness: 0.15
-        });
-        const pipeMat = new THREE.MeshStandardMaterial({
-          color: 0xb55a30,
-          roughness: 0.25,
-          metalness: 0.95
-        });
-
-        // Glowing orange/red dimensional portal plate (replaces glitch wall)
-        const portalGeo = new THREE.PlaneGeometry(hSize - 0.8, height - 0.5);
-        const portalMat = new THREE.MeshBasicMaterial({
-          color: 0xff3300, // Boiling glowing hot orange/red
-          side: THREE.DoubleSide
-        });
-        glitchWall = new THREE.Mesh(portalGeo, portalMat);
-        glitchWall.position.set(0, height / 2, -hSize / 2 + 0.08);
-        exitGroup.add(glitchWall);
-
-        // Circular Steam pipes frame around the portal plate
-        const framePipeGeo = new THREE.CylinderGeometry(0.06, 0.06, hSize - 0.6, 8);
-        const pipe1 = new THREE.Mesh(framePipeGeo, pipeMat);
-        pipe1.rotation.z = Math.PI / 2;
-        pipe1.position.set(0, height - 0.25, -hSize / 2 + 0.15);
-        exitGroup.add(pipe1);
-
-        const pipe2 = new THREE.Mesh(framePipeGeo, pipeMat);
-        pipe2.rotation.z = Math.PI / 2;
-        pipe2.position.set(0, 0.25, -hSize / 2 + 0.15);
-        exitGroup.add(pipe2);
-
-        // Vertical frame pillars on sides
-        const vertPipeGeo = new THREE.CylinderGeometry(0.08, 0.08, height - 0.4, 8);
-        const pipe3 = new THREE.Mesh(vertPipeGeo, pipeMat);
-        pipe3.position.set(-(hSize / 2 - 0.35), height / 2, -hSize / 2 + 0.15);
-        exitGroup.add(pipe3);
-
-        const pipe4 = new THREE.Mesh(vertPipeGeo, pipeMat);
-        pipe4.position.set(hSize / 2 - 0.35, height / 2, -hSize / 2 + 0.15);
-        exitGroup.add(pipe4);
-
-        // Hot portal light shining through the portal
-        const portalLight = new THREE.PointLight(0xff3c00, 8.0, 10, 0.5);
-        portalLight.position.set(0, height / 2, -hSize / 2 + 0.5);
-        exitGroup.add(portalLight);
-
-        // Custom desk with instructions paper about Level 2
-        const deskWithPaper = this.createDeskWithPaperMesh();
-        deskWithPaper.position.set(0, 0, -hSize / 2 + 1.2);
-        exitGroup.add(deskWithPaper);
-        this.exitDeskX = posX + (-hSize / 2 + 1.2) * Math.sin(chosenRot);
-        this.exitDeskZ = posZ + (-hSize / 2 + 1.2) * Math.cos(chosenRot);
+      if (this.level === 1) {
+        this.buildPipeMouthExit(exitGroup, hSize, height, exitLight);
+      } else if (this.level === 2) {
+        this.buildPowerPlantExit(exitGroup, hSize, height, exitLight);
+      } else if (this.level === 3) {
+        this.buildPartyDoorExit(exitGroup, hSize, exitLight);
+      } else if (this.level === 8) {
+        this.buildOfficeDoorwayExit(exitGroup, hSize, exitLight);
       } else {
         // LEVEL 0: a stretch of wall or floor with no physics, ringed with
         // yellow-and-black hazard tape, next to a desk whose paper says which.
@@ -5398,31 +5471,8 @@ export class ProceduralMap {
 
       // Set position of the parent group
       exitGroup.position.set(posX, 0, posZ);
-
-      // Apply rotation on the entire exitGroup based on chosenDir
-      if (chosenDir === 'S') {
-        exitGroup.rotation.y = Math.PI;
-      } else if (chosenDir === 'W') {
-        exitGroup.rotation.y = Math.PI / 2;
-      } else if (chosenDir === 'E') {
-        exitGroup.rotation.y = -Math.PI / 2;
-      } else {
-        exitGroup.rotation.y = 0; // North Wall is default
-      }
-
+      exitGroup.rotation.y = chosenRot;
       group.add(exitGroup);
-
-      // Add to animating meshes so it glitches out beautifully
-      if (glitchWall) {
-        this.animatingMeshes.push({
-          mesh: glitchWall,
-          type: "glitch",
-          initialY: height / 2,
-          phase: 0,
-          gridX: gx,
-          gridZ: gz,
-        });
-      }
     }
 
     // 5b. LEVEL FURNITURE — Level 3's machinery, Level 4's office leftovers, the Poolrooms' fittings.
@@ -6055,8 +6105,7 @@ export class ProceduralMap {
     // under an employee, or at the exit.
     if (this.level === 9 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx < 5 && gz < 5)) {
       const isWorkstation = this.level4DeskCells.some((desk) => desk.gx === gx && desk.gz === gz)
-        || this.level4Employees.some((employee) => employee.gx === gx && employee.gz === gz)
-        || this.funPartyCells.some((c) => c.gx === gx && c.gz === gz);
+        || this.level4Employees.some((employee) => employee.gx === gx && employee.gz === gz);
       const waterRng = new SeededRandom(this.seed + gx * 149 + gz * 211);
       if (!isWorkstation && waterRng.next() < LEVEL4_WATER_CHANCE) {
         const maxOffset = hSize / 2 - 0.65;
@@ -6251,62 +6300,6 @@ export class ProceduralMap {
     group.add(obj);
   }
 
-  /**
-   * The hidden office birthday party (see funCakeX/Z, funPartyCells): a
-   * corridor of stray balloons leading to a small room built entirely from
-   * Level FUN's own set-dressing — banner, balloon clusters, two coworkers
-   * who never left, and the cake itself at funCakeX/funCakeZ. Eating it
-   * (GameEngine.tryEatFunCake) is what actually starts the transition; this
-   * method only builds what the player sees.
-   */
-  private buildFunPartyCell(group: THREE.Group, gx: number, gz: number, posX: number, posZ: number) {
-    this.decorKit ??= {
-      geo: (key, build) => this.sharedGeo(key, build),
-      mat: (key, build) => this.sharedMat(key, build),
-      wallTile: this.wallMaterial,
-      track: (texture) => { this.sharedTextures.push(texture); },
-    };
-    const kit = this.decorKit;
-    const rng = new SeededRandom(this.seed + gx * 971 + gz * 613 + 0xca4e);
-
-    if (gx === this.funCakeX && gz === this.funCakeZ) {
-      const table = Fun.funPartyTable(kit, "pink", { length: 1.3, depth: 0.8, places: 1, stage: 0 });
-      table.object.position.set(posX, 0, posZ);
-      group.add(table.object);
-      const cake = Fun.funCake(kit, { candles: 6, lit: true });
-      cake.object.position.set(posX, 0.737, posZ);
-      cake.object.name = "fun_secret_cake";
-      group.add(cake.object);
-      this.addObstacle(gx, gz, posX, posZ, 0.55);
-      const banner = Fun.funBirthdayBanner(kit, 2.6);
-      banner.object.position.set(posX, 2.85, posZ);
-      group.add(banner.object);
-      for (const [dx, dz] of [[-1.1, -1.1], [1.1, -1.1], [-1.1, 1.1], [1.1, 1.1]] as const) {
-        const cluster = Fun.funBalloonCluster(kit, rng, 4);
-        cluster.object.position.set(posX + dx, 0, posZ + dz);
-        group.add(cluster.object);
-      }
-      // Two coworkers who never stopped celebrating.
-      for (const [dx, dz, yaw] of [[-1.3, 0.2, 0.8], [1.3, -0.3, -1.0]] as const) {
-        const guest = Fun.funPartygoer(kit, { pose: "stand", scale: 0.92 });
-        guest.object.position.set(posX + dx, 0, posZ + dz);
-        guest.object.rotation.y = yaw;
-        group.add(guest.object);
-      }
-    } else {
-      // The approach: a stray balloon or streamer, so the party is felt before it's seen.
-      if (rng.next() < 0.6) {
-        const cluster = Fun.funBalloonCluster(kit, rng, 2 + rng.nextInt(0, 3));
-        cluster.object.position.set(posX + rng.nextRange(-0.6, 0.6), 0, posZ + rng.nextRange(-0.6, 0.6));
-        group.add(cluster.object);
-      }
-      if (rng.next() < 0.4) {
-        const streamer = Fun.funStreamer(kit, rng.next() < 0.5 ? "red" : "yellow", 1.0);
-        streamer.object.position.set(posX, 2.9, posZ);
-        group.add(streamer.object);
-      }
-    }
-  }
 
   /**
    * Everything Level G puts in a cell beyond floor/walls/ceiling: door frames

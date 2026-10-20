@@ -94,6 +94,9 @@ test("four explorers share puzzles, late join, authority handoff, reset and the 
     for (const client of [b, c, d, e]) await client.wait("level_transition", m => m.level === 6);
     // Delayed Hotel updates cannot pull a player back after the server transition.
     b.move(HOTEL_RECEPTION, 13);
+    // Lights Out -> Level Fun -> Poolrooms -> Level 79.
+    for (const client of [b, c, d, e]) client.send({ type: "level_transition_request", level: 9 });
+    for (const client of [b, c, d, e]) await client.wait("level_transition", m => m.level === 9);
     for (const client of [b, c, d, e]) client.send({ type: "level_transition_request", level: 5 });
     for (const client of [b, c, d, e]) await client.wait("level_transition", m => m.level === 5);
     // This is a transition regression test, not a Poolrooms puzzle test.
@@ -129,6 +132,6 @@ for (const start of [1, 6]) test(`Lights Out preserves its ${start === 1 ? "secr
     if (start === 1) c.move({ x: 10, z: 10 }, 6);
     // The server chooses the destination from the route, not from a client guess.
     c.send({ type: "level_transition_request", level: start === 1 ? 5 : 3 });
-    await c.wait("level_transition", m => m.level === (start === 1 ? 3 : 5));
+    await c.wait("level_transition", m => m.level === (start === 1 ? 3 : 9));
   } finally { c.ws.close(); }
 });

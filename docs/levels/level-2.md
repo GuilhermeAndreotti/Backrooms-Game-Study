@@ -6,11 +6,11 @@
 
 ## Ambientação
 
-Corredores de **metal enferrujado, canos e vapor**. Um túnel **linear em formato de S**, largo (3 células) e sem becos sem saída, para que as entidades nunca fiquem presas. Um papel no Level 1 já avisava: *"Este corredor estreito leva ao temido Level 2."*
+Corredores de **metal enferrujado, canos e vapor**. Um túnel **linear em formato de S**, largo (3 células) e sem becos sem saída, para que as entidades nunca fiquem presas. A saída do Level 1 já avisava: é a **boca de uma tubulação gigante** enferrujada, quente e escura por dentro.
 
 ## Traçado
 
-Do spawn (2,2) à saída (45,45): desce por um segmento vertical, vira por uma junta horizontal, sobe por outro segmento, atravessa pela junta superior e desce pelo último segmento até a saída. Há alcovas laterais para esconderijos.
+Do spawn (2,2) à saída (45,45): desce por um segmento vertical, vira por uma junta horizontal, sobe por outro segmento, atravessa pela junta superior e desce pelo último segmento até a saída: uma **porta de aço de usina elétrica** com a placa **ALTA TENSÃO**, luz de aviso vermelha e uma fresta de luz fria — a Electrical Room vem a seguir. Há alcovas laterais para esconderijos.
 
 ## Mecânicas
 

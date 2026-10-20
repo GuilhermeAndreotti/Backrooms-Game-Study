@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applyHotelAction, createHotelState, hotelBlocked, hotelPuzzle, parseHotelAction, HOTEL_PSI_BANDS, type HotelAction, type HotelState, type Pressure } from "./hotel";
 import { HOTEL_ALCOVES, HOTEL_BEVERLY_DOOR, HOTEL_EXIT, HOTEL_RECEPTION, HOTEL_SPAWN, HOTEL_TABLE, HOTEL_VALVES, hotelCardSpot, hotelCenter, hotelFloorAt, hotelRoomPoint, hotelRoomSide, hotelZone } from "../game/levels/hotelLayout";
-import { ABANDONED_OFFICE_LEVEL, HOTEL_LEVEL, LIGHTS_OUT_LEVEL, POOLROOMS_LEVEL, SPACE_LEVEL, nextMainLevel } from "../game/levels/constants";
+import { ABANDONED_OFFICE_LEVEL, FUN_LEVEL, HOTEL_LEVEL, LIGHTS_OUT_LEVEL, POOLROOMS_LEVEL, SPACE_LEVEL, nextMainLevel } from "../game/levels/constants";
 
 const time = 100000;
 const player = (pos: { x: number; z: number }) => ({ ...pos, y: hotelFloorAt(pos.x, pos.z) + 1.6 });
@@ -96,6 +96,7 @@ test("malformed messages and numeric-id regressions are handled explicitly", () 
   for (const value of [null, {}, { kind: "code", code: 1234 }, { kind: "code", code: "12345" }, { kind: "tile", index: -1 }, { kind: "door", index: 0.5 }, { kind: "valve", index: 4, setting: 2 }, { kind: "valve", index: 0, setting: "LOW" }, { kind: "card", index: 4 }, { kind: "card" }]) assert.equal(parseHotelAction(value), null);
   assert.equal(nextMainLevel(ABANDONED_OFFICE_LEVEL), HOTEL_LEVEL);
   assert.equal(nextMainLevel(HOTEL_LEVEL), LIGHTS_OUT_LEVEL);
-  assert.equal(nextMainLevel(LIGHTS_OUT_LEVEL), POOLROOMS_LEVEL);
+  assert.equal(nextMainLevel(LIGHTS_OUT_LEVEL), FUN_LEVEL);
+  assert.equal(nextMainLevel(FUN_LEVEL), POOLROOMS_LEVEL);
   assert.equal(nextMainLevel(POOLROOMS_LEVEL), SPACE_LEVEL);
 });
