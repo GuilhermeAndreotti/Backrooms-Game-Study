@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { weatherCanvas } from "../surfaceTextures";
+import { applySurfaceWeathering } from "../SurfaceShading";
 import type { DecorKit } from "../LevelDecor";
 import type { DynamicLightSource } from "../LightPool";
 import { createOfficeWindowMaterial, setOfficeWindowOutlook, setOfficeWindowState, type OfficeSkyline } from "../officeWindow";
@@ -92,6 +94,17 @@ export class HotelWorld {
     this.ceiling = this.texture("ceiling", 256, 256, g => this.drawCoffer(g), 0.9);
     this.plate = this.texture("plate", 256, 256, g => this.drawPlate(g), 0.55, 0.55);
     this.grate = this.texture("grate", 256, 256, g => this.drawTreadPlate(g), 0.5, 0.6);
+    // World-space stains on the big surfaces, so the damask and the hex
+    // carpet never repeat identically down a corridor (no damp or corner
+    // shading: the hotel isn't laid out on the maze grid those need).
+    const stains: [THREE.Material, "wall" | "floor" | "ceiling", number][] = [
+      [this.hallPaper, "wall", 0x3a1a14], [this.roomPaper, "wall", 0x6a5a40],
+      [this.carpet, "floor", 0x2a1410], [this.parquet, "floor", 0x4a3420],
+      [this.ceiling, "ceiling", 0x8a7a5a],
+    ];
+    for (const [material, kind, stain] of stains) {
+      if (material instanceof THREE.MeshStandardMaterial) applySurfaceWeathering(material, { kind, stain, stainStrength: 0.35, damp: 0, occlusion: 0 }, null);
+    }
   }
 
   // --- Materials and procedural textures --------------------------------------
@@ -101,7 +114,10 @@ export class HotelWorld {
   private texture(key: string, w: number, h: number, draw: (g: CanvasRenderingContext2D) => void, roughness = 0.8, metalness = 0) {
     return this.kit.mat(`hotel_tex_${key}`, () => {
       const c = document.createElement("canvas"); c.width = w; c.height = h;
-      draw(c.getContext("2d")!);
+      const g = c.getContext("2d")!;
+      draw(g);
+      // Age every surface a little: grain and soft blotching (seamless, see weatherCanvas).
+      weatherCanvas(g, { grain: 0.06, blotch: 0.1, seed: key.length * 131 + key.charCodeAt(0) });
       const map = new THREE.CanvasTexture(c); map.colorSpace = THREE.SRGBColorSpace; map.anisotropy = 4; this.kit.track(map);
       return new THREE.MeshStandardMaterial({ map, roughness, metalness });
     });

@@ -10,6 +10,7 @@
  */
 
 import * as THREE from "three";
+import { weatherCanvas } from "./surfaceTextures";
 
 /** Pool floor height relative to the dry floor around it (m). */
 export const POOL_FLOOR_Y = -0.55;
@@ -100,6 +101,7 @@ function poolTileTexture(): THREE.CanvasTexture {
         ctx.fillRect(x + 2, y + 2, tile - 4, tile - 4);
       }
     }
+    weatherCanvas(ctx, { grain: 0.035, blotch: 0.06, seed: 41 });
   }
   tileTexture = new THREE.CanvasTexture(canvas);
   tileTexture.wrapS = tileTexture.wrapT = THREE.RepeatWrapping;
@@ -257,6 +259,7 @@ export function createWallTileMaterial(): THREE.MeshStandardMaterial {
           ctx.fillRect(x + 1, y + 1, tile - 2, tile - 2);
         }
       }
+      weatherCanvas(ctx, { grain: 0.03, blotch: 0.05, seed: 43 });
     }
     wallTileTexture = new THREE.CanvasTexture(canvas);
     wallTileTexture.wrapS = wallTileTexture.wrapT = THREE.RepeatWrapping;

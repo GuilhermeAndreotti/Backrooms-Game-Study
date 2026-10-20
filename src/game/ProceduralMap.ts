@@ -25,7 +25,7 @@ import * as Decor from "./LevelDecor";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { SolidCellGrid, applySurfaceWeathering, SurfaceWeathering } from "./SurfaceShading";
-import { createLevel0CarpetTexture, createLevel0CeilingTexture, createLevel0WallpaperTexture } from "./surfaceTextures";
+import * as Surfaces from "./surfaceTextures";
 import type { OfficeSkyline } from "./officeWindow";
 import { POOL_FLOOR_Y, WATER_SURFACE_Y, createPoolTileMaterial, createWallTileMaterial, createWaterMaterial } from "./Water";
 import { POOL_ROOM_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./poolroomsPuzzle";
@@ -86,6 +86,9 @@ export interface LightFixture {
   gridX: number;
   gridZ: number;
   dust?: THREE.Points;
+  /** Lit/unlit tube materials when not the troffer diffuser's (worlds with their own lamps). */
+  glassOn?: THREE.Material;
+  glassOff?: THREE.Material;
 }
 
 /** Grid width/height per level. Level 0 is larger to fit the key/maze/dual-door gauntlet. */
@@ -138,6 +141,9 @@ function mergeParts(parts: [THREE.BufferGeometry, THREE.Matrix4][]): THREE.Buffe
   baked.forEach((g) => g.dispose());
   return merged;
 }
+
+/** Emissive strength of the Electrical Room panels' indicator lenses. */
+const LEVEL3_LENS_GLOW = 1.6;
 
 /** A colour canvas texture (signs, notes, labels): sRGB, like the colours it was painted with. */
 function srgbTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
@@ -243,7 +249,7 @@ export class ProceduralMap {
   private wallGeo!: THREE.PlaneGeometry;
   private baseGeo!: THREE.BoxGeometry;
   private pillarGeo!: THREE.BoxGeometry;
-  private caseGeo!: THREE.BoxGeometry;
+  private caseGeo!: THREE.BufferGeometry;
   private tubeGeo!: THREE.BufferGeometry;
   private unitBoxGeo!: THREE.BoxGeometry;
   private boilerPipeVerticalGeo!: THREE.CylinderGeometry;
@@ -452,6 +458,8 @@ export class ProceduralMap {
   /** Five deterministic switch cells, in the order used by the network protocol. */
   public level3Switches: [number, number][] = [];
   public level3SwitchesOn = new Set<number>();
+  /** Each panel's glow, so switching it on can turn it green. */
+  private level3SwitchLights: DynamicLightSource[] = [];
   public level3GateOpen = false;
   /** Cells under the low service passage; players must crouch to cross them. */
   public level3LowCorridor = new Set<string>();
@@ -474,10 +482,12 @@ export class ProceduralMap {
         if (mat instanceof THREE.MeshStandardMaterial) {
           mat.color.setHex(0x39ff88);
           mat.emissive.setHex(0x16a34a);
-          mat.emissiveIntensity = 3.5;
+          mat.emissiveIntensity = LEVEL3_LENS_GLOW;
         }
       });
     });
+    const light = this.level3SwitchLights[index];
+    if (light) light.color = 0x39ff88;
   }
 
   /** Releases the Electrical Room's final barrier after every panel is active. */
@@ -1074,125 +1084,19 @@ export class ProceduralMap {
   }
 
   private createWallTexture(): THREE.Texture {
-    return createLevel0WallpaperTexture();
+    return Surfaces.createLevel0WallpaperTexture();
   }
 
 
   private createConcreteWallTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 512;
-    canvas.height = 512;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return new THREE.Texture();
-
-    // Base concrete grey color (much lighter for superior illumination)
-    ctx.fillStyle = "#949494"; 
-    ctx.fillRect(0, 0, 512, 512);
-
-    // Render lots of randomized organic noise/spots for concrete grit and gravel
-    for (let i = 0; i < 4000; i++) {
-      const x = Math.random() * 512;
-      const y = Math.random() * 512;
-      const radius = 0.5 + Math.random() * 1.5;
-      const val = Math.random();
-      if (val < 0.4) {
-        ctx.fillStyle = "rgba(40, 40, 40, 0.15)"; // dark grit
-      } else if (val < 0.8) {
-        ctx.fillStyle = "rgba(220, 220, 220, 0.12)"; // light limestone grit
-      } else {
-        ctx.fillStyle = "rgba(120, 100, 80, 0.08)"; // rusty splash
-      }
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Wet seepage or water leaks staining down the concrete walls
-    for (let i = 0; i < 15; i++) {
-      const startX = Math.random() * 512;
-      const height = 150 + Math.random() * 300;
-      const width = 8 + Math.random() * 25;
-      
-      const grad = ctx.createLinearGradient(startX, 0, startX + width, 0);
-      grad.addColorStop(0, "rgba(45, 40, 35, 0.0)");
-      grad.addColorStop(0.3, "rgba(40, 37, 33, 0.25)"); // damp stain
-      grad.addColorStop(0.7, "rgba(40, 37, 33, 0.25)");
-      grad.addColorStop(1, "rgba(45, 40, 35, 0.0)");
-
-      ctx.fillStyle = grad;
-      ctx.fillRect(startX, 0, width, height);
-    }
-
-    // Concrete block pane seams/joints (horizontal joint running at middle, and 2 vertical panels joints)
-    ctx.strokeStyle = "rgba(30, 30, 30, 0.45)";
-    ctx.lineWidth = 4;
-    
-    // Horizontal seam (middle)
-    ctx.beginPath();
-    ctx.moveTo(0, 256);
-    ctx.lineTo(512, 256);
-    ctx.stroke();
-
-    // Vertical panel joints
-    ctx.beginPath();
-    ctx.moveTo(128, 0);
-    ctx.lineTo(128, 256);
-    ctx.moveTo(384, 0);
-    ctx.lineTo(384, 256);
-    ctx.moveTo(256, 256);
-    ctx.lineTo(256, 512);
-    ctx.stroke();
-
-    // Formwork tie-rod holes in the concrete (standard architectural concrete circles)
-    ctx.fillStyle = "rgba(35, 35, 35, 0.55)";
-    ctx.strokeStyle = "rgba(10, 10, 10, 0.35)";
-    ctx.lineWidth = 1.5;
-    
-    const holes = [
-      [64, 64], [192, 64], [320, 64], [448, 64],
-      [64, 192], [192, 192], [320, 192], [448, 192],
-      [64, 320], [192, 320], [320, 320], [448, 320],
-      [64, 448], [192, 448], [320, 448], [448, 448],
-    ];
-    holes.forEach(([hx, hy]) => {
-      ctx.beginPath();
-      ctx.arc(hx, hy, 4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    });
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 3); // repeat across 4m x 3m wall panel
-    return texture;
+    return Surfaces.createConcreteWallTexture();
   }
+
 
   private createBrickWallTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256; canvas.height = 128;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return new THREE.Texture();
-    ctx.fillStyle = "#633b32";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = "rgba(25, 12, 10, 0.75)";
-    ctx.lineWidth = 3;
-    for (let y = 0; y <= canvas.height; y += 16) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-      const offset = (y / 16) % 2 ? 18 : 0;
-      for (let x = offset; x <= canvas.width; x += 36) {
-        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + 16); ctx.stroke();
-      }
-    }
-    ctx.fillStyle = "rgba(185, 105, 72, 0.18)";
-    for (let i = 0; i < 600; i++) ctx.fillRect(Math.random() * 256, Math.random() * 128, 1 + Math.random() * 3, 1 + Math.random() * 2);
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.wrapS = THREE.RepeatWrapping; texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(3, 2);
-    return texture;
+    return Surfaces.createBrickWallTexture();
   }
+
 
   private createConcreteFloorTexture(): THREE.Texture {
     const canvas = document.createElement("canvas");
@@ -1254,6 +1158,8 @@ export class ProceduralMap {
       ctx.stroke();
     }
 
+    Surfaces.weatherCanvas(ctx, { grain: 0.08, blotch: 0.12, seed: 1101 });
+
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = THREE.RepeatWrapping;
@@ -1263,327 +1169,49 @@ export class ProceduralMap {
   }
 
   private createMetalCeilingTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return new THREE.Texture();
-
-    // Dark grey corrugated iron / steel ceiling base (lighter grey for brightness)
-    ctx.fillStyle = "#808588";
-    ctx.fillRect(0, 0, 256, 256);
-
-    // Draw horizontal slats / corrugated sheet iron pattern
-    for (let y = 0; y < 256; y += 16) {
-      // Draw shadow for 3D depth of slat
-      ctx.fillStyle = "rgba(10, 10, 10, 0.55)";
-      ctx.fillRect(0, y, 256, 4);
-
-      // Draw light highlight on the top ridge of slat
-      ctx.fillStyle = "rgba(230, 230, 230, 0.15)";
-      ctx.fillRect(0, y + 4, 256, 3);
-    }
-
-    // Add metallic texture speckles and rusting along the panel grooves
-    for (let i = 0; i < 800; i++) {
-      const x = Math.random() * 256;
-      const y = Math.random() * 256;
-      ctx.fillStyle = Math.random() > 0.6 ? "rgba(150, 95, 45, 0.12)" : "rgba(30, 30, 30, 0.15)";
-      ctx.fillRect(x, y, 1 + Math.random() * 2, 1 + Math.random() * 2);
-    }
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(8, 8); // nice corrugated frequency
-    return texture;
+    return Surfaces.createMetalCeilingTexture();
   }
+
 
   private createRedCarpetTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 128;
-    canvas.height = 128;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Base red carpet color (damp, dark, dirty blood-red/crimson)
-      ctx.fillStyle = "#591c1c";
-      ctx.fillRect(0, 0, 128, 128);
-
-      // Draw random noise to give it a fibrous/pile carpet texture
-      for (let i = 0; i < 8000; i++) {
-        const x = Math.random() * 128;
-        const y = Math.random() * 128;
-        const size = 1 + Math.random() * 0.8;
-        const tint = Math.random();
-        const color = tint > 0.5 ? "rgba(42, 6, 6, 0.4)" : "rgba(132, 45, 45, 0.22)";
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y, size, size);
-      }
-      
-      // Some slightly larger wet, dirty/stained moisture spots (blackish red)
-      for (let j = 0; j < 6; j++) {
-        const x = Math.random() * 128;
-        const y = Math.random() * 128;
-        const r = 6 + Math.random() * 14;
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
-        grad.addColorStop(0, "rgba(28, 2, 2, 0.52)");
-        grad.addColorStop(1, "rgba(28, 2, 2, 0)");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4); // Repeats over the 4m x 4m cell floor size
-    return texture;
+    return Surfaces.createRedCarpetTexture();
   }
+
 
   private createRustedMetalWallTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 512;
-    canvas.height = 512;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Base dark industrial copperish grey-brown
-      ctx.fillStyle = "#332218";
-      ctx.fillRect(0, 0, 512, 512);
-
-      // Add iron scratches and metal grit noise
-      for (let i = 0; i < 5000; i++) {
-        const x = Math.random() * 512;
-        const y = Math.random() * 512;
-        const radius = 0.5 + Math.random() * 1.5;
-        const tint = Math.random();
-        if (tint < 0.45) {
-          ctx.fillStyle = "rgba(10, 5, 2, 0.4)"; // dark carbon spots
-        } else if (tint < 0.85) {
-          ctx.fillStyle = "rgba(139, 69, 19, 0.25)"; // rusty orange spots
-        } else {
-          ctx.fillStyle = "rgba(180, 180, 180, 0.15)"; // steel silver metallic speckles
-        }
-        ctx.beginPath();
-        ctx.arc(x, y, radius, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Draw rusted steel sheet panels with vertical and horizontal seams
-      ctx.strokeStyle = "rgba(15, 8, 3, 0.8)";
-      ctx.lineWidth = 5;
-      
-      // We will make 4 main panel divisions (2x2 grid)
-      ctx.beginPath();
-      // Horizontal seam
-      ctx.moveTo(0, 256);
-      ctx.lineTo(512, 256);
-      // Vertical seam
-      ctx.moveTo(256, 0);
-      ctx.lineTo(256, 512);
-      ctx.stroke();
-
-      // Draw rivets/bolts at corners of each panel
-      ctx.fillStyle = "#5c3d2e";
-      ctx.strokeStyle = "#1a0f0a";
-      ctx.lineWidth = 1.5;
-      const rivets = [
-        [20, 20], [236, 20], [276, 20], [492, 20],
-        [20, 236], [236, 236], [276, 236], [492, 236],
-        [20, 276], [236, 276], [276, 276], [492, 276],
-        [20, 492], [236, 492], [276, 492], [492, 492]
-      ];
-      rivets.forEach(([rx, ry]) => {
-        ctx.beginPath();
-        ctx.arc(rx, ry, 6, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      });
-
-      // Running rust water leak streaks going down
-      for (let i = 0; i < 20; i++) {
-        const startX = Math.random() * 512;
-        const height = 180 + Math.random() * 320;
-        const width = 6 + Math.random() * 14;
-        
-        const grad = ctx.createLinearGradient(startX, 0, startX + width, 0);
-        grad.addColorStop(0, "rgba(139, 69, 19, 0.0)");
-        grad.addColorStop(0.5, "rgba(120, 40, 5, 0.5)"); // rich thick dripping rust
-        grad.addColorStop(1, "rgba(139, 69, 19, 0.0)");
-        
-        ctx.fillStyle = grad;
-        ctx.fillRect(startX, 0, width, height);
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 3);
-    return texture;
+    return Surfaces.createRustedMetalWallTexture();
   }
+
 
   private createRustedMetalFloorTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Base dark rusted iron floor plate
-      ctx.fillStyle = "#1e130c";
-      ctx.fillRect(0, 0, 256, 256);
-
-      // Industrial grating pattern (metal grid lines)
-      ctx.strokeStyle = "rgba(10, 5, 2, 0.85)";
-      ctx.lineWidth = 2;
-      for (let i = 0; i <= 256; i += 16) {
-        ctx.beginPath();
-        ctx.moveTo(i, 0);
-        ctx.lineTo(i, 256);
-        ctx.moveTo(0, i);
-        ctx.lineTo(256, i);
-        ctx.stroke();
-      }
-
-      // Add lots of rust particles and orange speckles
-      for (let i = 0; i < 3000; i++) {
-        const x = Math.random() * 256;
-        const y = Math.random() * 256;
-        const val = Math.random();
-        if (val < 0.6) {
-          ctx.fillStyle = "rgba(100, 30, 5, 0.35)"; // orange rust
-        } else {
-          ctx.fillStyle = "rgba(20, 15, 10, 0.4)"; // dark soot
-        }
-        ctx.fillRect(x, y, 1.5, 1.5);
-      }
-
-      // Massive dark spills/rust corrosion patches
-      for (let k = 0; k < 8; k++) {
-        const rx = Math.random() * 256;
-        const ry = Math.random() * 256;
-        const size = 15 + Math.random() * 35;
-        const grad = ctx.createRadialGradient(rx, ry, 0, rx, ry, size);
-        grad.addColorStop(0, "rgba(120, 45, 10, 0.6)");
-        grad.addColorStop(0.5, "rgba(70, 25, 5, 0.3)");
-        grad.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(rx, ry, size, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4);
-    return texture;
+    return Surfaces.createRustedMetalFloorTexture();
   }
+
 
   private createRustedMetalCeilingTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Base dark soot grey
-      ctx.fillStyle = "#261c16";
-      ctx.fillRect(0, 0, 256, 256);
-
-      // Corrugated metallic lines/shadows
-      ctx.fillStyle = "rgba(10, 5, 2, 0.75)";
-      for (let x = 0; x < 256; x += 32) {
-        ctx.fillRect(x, 0, 12, 256);
-      }
-
-      // Splashes of reddish orange corrosion and rust
-      for (let i = 0; i < 2000; i++) {
-        const x = Math.random() * 256;
-        const y = Math.random() * 256;
-        if (Math.random() < 0.7) {
-          ctx.fillStyle = "rgba(120, 50, 15, 0.32)";
-        } else {
-          ctx.fillStyle = "rgba(10, 10, 10, 0.5)";
-        }
-        ctx.fillRect(x, y, 2, 2);
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4);
-    return texture;
+    return Surfaces.createRustedMetalCeilingTexture();
   }
+
 
   /** Level G: tired pale grey-green office paint, scuffed at hip height. */
   private createOfficeWallTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.fillStyle = "#b9beb2";
-      ctx.fillRect(0, 0, 256, 256);
-      for (let i = 0; i < 5000; i++) {
-        ctx.fillStyle = Math.random() > 0.5 ? "rgba(90, 96, 88, 0.08)" : "rgba(230, 232, 222, 0.07)";
-        ctx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
-      }
-      // Chair-rail scuff band and a few grime streaks running down
-      ctx.fillStyle = "rgba(70, 72, 66, 0.18)";
-      ctx.fillRect(0, 150, 256, 10);
-      for (let s = 0; s < 5; s++) {
-        const x = Math.random() * 256;
-        const grad = ctx.createLinearGradient(0, 0, 0, 256);
-        grad.addColorStop(0, "rgba(60, 58, 45, 0.16)");
-        grad.addColorStop(1, "rgba(60, 58, 45, 0)");
-        ctx.fillStyle = grad;
-        ctx.fillRect(x, 0, 3 + Math.random() * 6, 120 + Math.random() * 120);
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    return texture;
+    return Surfaces.createOfficeWallTexture();
   }
+
 
   /** Level G: blue-grey commercial carpet tiles. */
   private createOfficeCarpetTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 128;
-    canvas.height = 128;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.fillStyle = "#4a5360";
-      ctx.fillRect(0, 0, 128, 128);
-      for (let i = 0; i < 6000; i++) {
-        ctx.fillStyle = Math.random() > 0.5 ? "rgba(30, 34, 42, 0.25)" : "rgba(120, 130, 145, 0.14)";
-        ctx.fillRect(Math.random() * 128, Math.random() * 128, 1.4, 1.4);
-      }
-      // Tile seams
-      ctx.strokeStyle = "rgba(20, 22, 28, 0.45)";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(0.5, 0.5, 127, 127);
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4);
-    return texture;
+    return Surfaces.createOfficeCarpetTexture();
   }
 
+
   private createCarpetTexture(): THREE.Texture {
-    return createLevel0CarpetTexture();
+    return Surfaces.createLevel0CarpetTexture();
   }
 
 
   private createCeilingTexture(): THREE.Texture {
-    return createLevel0CeilingTexture(this.cellSize);
+    return Surfaces.createLevel0CeilingTexture(this.cellSize);
   }
 
 
@@ -1653,6 +1281,56 @@ export class ProceduralMap {
     return texture;
   }
 
+  /** 128 x 64 diffuser face: base glow, two tube bands along its length, prism stipple, darker rim. */
+  private createDiffuserTexture(): THREE.Texture {
+    const w = 128, h = 64;
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#b8b6ac";
+      ctx.fillRect(0, 0, w, h);
+      for (const v of [0.32, 0.68]) {
+        const band = ctx.createLinearGradient(0, h * (v - 0.2), 0, h * (v + 0.2));
+        band.addColorStop(0, "rgba(255, 255, 250, 0)");
+        band.addColorStop(0.5, "rgba(255, 255, 250, 0.9)");
+        band.addColorStop(1, "rgba(255, 255, 250, 0)");
+        ctx.fillStyle = band;
+        ctx.fillRect(4, h * (v - 0.2), w - 8, h * 0.4);
+      }
+      // Prismatic lens: a fine grid of tiny cones.
+      ctx.fillStyle = "rgba(120, 118, 110, 0.18)";
+      for (let y = 1; y < h; y += 3) for (let x = (y % 2) + 1; x < w; x += 3) ctx.fillRect(x, y, 1, 1);
+      // Light falls off towards the frame; the tube ends are dimmer.
+      const edge = ctx.createLinearGradient(0, 0, w, 0);
+      edge.addColorStop(0, "rgba(70, 68, 60, 0.55)");
+      edge.addColorStop(0.08, "rgba(70, 68, 60, 0)");
+      edge.addColorStop(0.92, "rgba(70, 68, 60, 0)");
+      edge.addColorStop(1, "rgba(70, 68, 60, 0.55)");
+      ctx.fillStyle = edge;
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = "rgba(70, 68, 60, 0.5)";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(1.5, 1.5, w - 3, h - 3);
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    this.sharedTextures.push(texture);
+    return texture;
+  }
+
+  /**
+   * Untextured tube materials for the worlds that model their own lamps
+   * (Level FUN, Level 79): the troffer diffuser texture would smear across
+   * their tube geometry. Same colours the shared ones had before it.
+   */
+  private plainTubeMaterials(): { glassOn: THREE.MeshBasicMaterial; glassOff: THREE.MeshStandardMaterial } {
+    return {
+      glassOn: this.sharedMat("plain_tube_on", () => new THREE.MeshBasicMaterial({ color: 0xfffef0 })),
+      glassOff: this.sharedMat("plain_tube_off", () => new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.5 })),
+    };
+  }
+
   private initMaterials() {
     const hSize = this.cellSize;
     const height = this.level === 7 ? POOLROOMS_WALL_HEIGHT : 3.0;
@@ -1677,7 +1355,15 @@ export class ProceduralMap {
 
     // Recessed troffer: a shallow housing set into the ceiling grid, and the
     // prismatic diffuser under it (the part that lights up and flickers).
-    this.caseGeo = new THREE.BoxGeometry(1.24, 0.04, 0.64);
+    // Housing: a shallow back pan with a 5 cm rim, top at local y = 0 (the
+    // ceiling plane); the diffuser sits recessed inside the rim.
+    this.caseGeo = mergeParts([
+      [new THREE.BoxGeometry(1.24, 0.006, 0.64), new THREE.Matrix4().makeTranslation(0, -0.003, 0)],
+      [new THREE.BoxGeometry(1.24, 0.03, 0.05), new THREE.Matrix4().makeTranslation(0, -0.015, 0.295)],
+      [new THREE.BoxGeometry(1.24, 0.03, 0.05), new THREE.Matrix4().makeTranslation(0, -0.015, -0.295)],
+      [new THREE.BoxGeometry(0.05, 0.03, 0.54), new THREE.Matrix4().makeTranslation(0.595, -0.015, 0)],
+      [new THREE.BoxGeometry(0.05, 0.03, 0.54), new THREE.Matrix4().makeTranslation(-0.595, -0.015, 0)],
+    ]);
 
     this.tubeGeo = new THREE.PlaneGeometry(1.12, 0.52);
     this.tubeGeo.rotateX(Math.PI / 2);
@@ -1805,12 +1491,17 @@ export class ProceduralMap {
     // Fluorescent Tubes
     // Brighter than white: on the filmic levels the diffuser sits above the
     // tone curve's shoulder and blooms. Elsewhere the VHS pass clips it to 1.
-    const glassOn = new THREE.MeshBasicMaterial({ color: 0xfffef0 });
-    glassOn.color.multiplyScalar(3.2);
+    // The troffer's prismatic diffuser: the two tubes show through as soft
+    // bright bands. Kept just above white (not far above it) so the bands and
+    // the darker edges survive the tone curve instead of blooming into a blob.
+    const diffuser = this.createDiffuserTexture();
+    const glassOn = new THREE.MeshBasicMaterial({ color: 0xfffef0, map: diffuser });
+    glassOn.color.multiplyScalar(1.9);
     this.fluorescentGlassOn = glassOn;
 
     this.fluorescentGlassOff = new THREE.MeshStandardMaterial({
-      color: 0x333333,
+      color: 0x5a5a56,
+      map: diffuser,
       roughness: 0.5,
     });
 
@@ -2944,9 +2635,8 @@ export class ProceduralMap {
       seed: this.seed,
       registerLight: (gx, gz, x, y, z, color, intensity, distance, decay) => this.registerLight(gx, gz, x, y, z, color, intensity, distance, decay),
       addObstacle: (gx, gz, x, z, radius) => { this.addObstacle(gx, gz, x, z, radius); },
-      pushFixture: (fixture) => { this.lightFixtures.push(fixture); },
-      glassOn: this.fluorescentGlassOn,
-      glassOff: this.fluorescentGlassOff,
+      pushFixture: (fixture) => { this.lightFixtures.push({ ...this.plainTubeMaterials(), ...fixture }); },
+      ...this.plainTubeMaterials(),
       glow: (color, size, opacity) => this.createItemGlow(color, size, opacity),
     });
   }
@@ -2979,9 +2669,8 @@ export class ProceduralMap {
       seed: this.seed,
       registerLight: (gx, gz, x, y, z, color, intensity, distance, decay) => this.registerLight(gx, gz, x, y, z, color, intensity, distance, decay),
       addObstacle: (gx, gz, x, z, radius) => { this.addObstacle(gx, gz, x, z, radius); },
-      pushFixture: (fixture) => { this.lightFixtures.push(fixture); },
-      glassOn: this.fluorescentGlassOn as THREE.MeshBasicMaterial,
-      glassOff: this.fluorescentGlassOff,
+      pushFixture: (fixture) => { this.lightFixtures.push({ ...this.plainTubeMaterials(), ...fixture }); },
+      ...this.plainTubeMaterials(),
     });
   }
 
@@ -4679,7 +4368,9 @@ export class ProceduralMap {
       if (switchIndex >= 0) {
         const plateMat = this.sharedMat("level3_switch_plate", () => new THREE.MeshStandardMaterial({ color: 0x252525, metalness: 0.8, roughness: 0.35 }));
         const isOn = this.level3SwitchesOn.has(switchIndex);
-        const lightMat = this.sharedMat(`level3_switch_light_${switchIndex}`, () => new THREE.MeshStandardMaterial({ color: isOn ? 0x39ff88 : 0xff3b18, emissive: isOn ? 0x16a34a : 0xff2200, emissiveIntensity: 3.5 }));
+        // Indicator lens: bright, but kept under the tone curve's shoulder so it
+        // stays a saturated red/green instead of blowing out to orange-white.
+        const lightMat = this.sharedMat(`level3_switch_light_${switchIndex}`, () => new THREE.MeshStandardMaterial({ color: isOn ? 0x39ff88 : 0xff3b18, emissive: isOn ? 0x16a34a : 0xff2200, emissiveIntensity: LEVEL3_LENS_GLOW, roughness: 0.3 }));
         const terminalGroup = new THREE.Group();
         const wallSide = [[0, -1], [0, 1], [-1, 0], [1, 0]].find(([dx, dz]) => this.grid[gx + dx]?.[gz + dz] === CellType.SOLID);
         const [wallDx, wallDz] = wallSide ?? [0, -1];
@@ -4689,18 +4380,28 @@ export class ProceduralMap {
         const terminal = new THREE.Mesh(this.sharedGeo("level3_switch_terminal", () => new THREE.BoxGeometry(0.72, 1.15, 0.46)), plateMat);
         terminal.position.set(0, 0.58, 0);
         terminalGroup.add(terminal);
-        const lamp = new THREE.Mesh(this.sharedGeo("level3_switch_lamp", () => new THREE.BoxGeometry(0.36, 0.18, 0.05)), lightMat);
+        // Local -z faces the room. A dark bezel holds the lens, flush on the front.
+        const bezel = new THREE.Mesh(this.sharedGeo("level3_switch_bezel", () => new THREE.BoxGeometry(0.44, 0.24, 0.03)), this.plasticMaterial);
+        bezel.position.set(0, 0.98, -0.24);
+        terminalGroup.add(bezel);
+        const lamp = new THREE.Mesh(this.sharedGeo("level3_switch_lens", () => new THREE.BoxGeometry(0.36, 0.16, 0.02)), lightMat);
         lamp.name = `level3_switch_lamp_${switchIndex}`;
-        lamp.position.set(0, 1.05, -0.24);
+        lamp.position.set(0, 0.98, -0.256);
         terminalGroup.add(lamp);
-        const handle = new THREE.Mesh(this.sharedGeo("level3_switch_handle", () => new THREE.BoxGeometry(0.08, 0.28, 0.1)), this.metalMaterial);
-        handle.position.set(0.72, 0.72, -0.27);
-        handle.rotation.x = -0.35;
+        // The lever, on its mount at the front of the panel.
+        const mount = new THREE.Mesh(this.sharedGeo("level3_switch_mount", () => new THREE.BoxGeometry(0.14, 0.2, 0.04)), this.plasticMaterial);
+        mount.position.set(0.2, 0.6, -0.25);
+        terminalGroup.add(mount);
+        const handle = new THREE.Mesh(this.sharedGeo("level3_switch_handle", () => new THREE.BoxGeometry(0.05, 0.26, 0.05).translate(0, 0.13, 0)), this.metalMaterial);
+        handle.position.set(0.2, 0.6, -0.28);
+        handle.rotation.x = -0.45;
         terminalGroup.add(handle);
         group.add(terminalGroup);
-        const lightX = posX + wallDx * (hSize / 2 - 0.45);
-        const lightZ = posZ + wallDz * (hSize / 2 - 0.45);
-        this.registerLight(gx, gz, lightX, 1.1, lightZ, 0xff3b18, 4.5, 7.0, 1.0);
+        // The panel's glow, half a metre out into the room (not inside the
+        // terminal, where it only blew out the brick around it).
+        const lightX = posX + wallDx * (hSize / 2 - 1.05);
+        const lightZ = posZ + wallDz * (hSize / 2 - 1.05);
+        this.level3SwitchLights[switchIndex] = this.registerLight(gx, gz, lightX, 1.2, lightZ, isOn ? 0x39ff88 : 0xff3b18, 2.0, 5.5, 1.0);
       }
       if (gx === this.level3GateX && gz === this.level3GateZ && !this.level3GateOpen) {
         // A plain wooden door out of place in the brick service halls, sealing
@@ -5531,7 +5232,7 @@ export class ProceduralMap {
       const lampDrop = isPool ? 1.2 : 0;
       const lampScale = isPool ? 5 : 1;
       const caseMesh = new THREE.Mesh(this.caseGeo, this.fluorescentCaseMaterial);
-      caseMesh.position.set(0, height - 0.02 * lampScale - lampDrop, 0);
+      caseMesh.position.set(0, height - lampDrop, 0);
       caseMesh.scale.setScalar(lampScale);
       fixtureGroup.add(caseMesh);
 
@@ -5543,12 +5244,16 @@ export class ProceduralMap {
 
       const glassMaterial = isBurntOut ? this.fluorescentGlassOff : this.fluorescentGlassOn;
       const tubeMesh = new THREE.Mesh(this.tubeGeo, glassMaterial);
-      tubeMesh.position.set(0, height - 0.042 * lampScale - lampDrop, 0);
+      tubeMesh.position.set(0, height - 0.022 * lampScale - lampDrop, 0);
       tubeMesh.scale.setScalar(lampScale);
       fixtureGroup.add(tubeMesh);
 
-      // Point Light with soft, yellow-greenish tint for Level 0, or clean industrial white-grey for Level 1
-      let lightColor = (this.level === 4 || this.level === 9) ? 0xe8f0ff : this.level === 7 ? 0xc9faff : (this.level === 1 ? 0xe6e6e6 : 0xfefdb5);
+      // Tube colour per level: warm-white fluorescent in Level 0's halls (the
+      // yellow is the wallpaper's, not the light's), sodium amber among Pipe
+      // Dreams' rust, warm in the electrical station, cool in the offices,
+      // clean industrial white-grey for Level 1.
+      let lightColor = (this.level === 4 || this.level === 9) ? 0xe8f0ff : this.level === 7 ? 0xc9faff : this.level === 1 ? 0xe6e6e6
+        : this.level === 2 ? 0xffcf96 : this.level === 8 ? 0xffe2b8 : 0xfff0c0;
       let lightIntensity = isBurntOut ? 0.0 : (this.level === 2 ? 2.15 : this.level === 4 ? 1.0 : this.level === 9 ? 1.65 : this.level === 7 ? 1.8 : this.level === 1 ? 1.05 : 1.4); // bright office/pool lighting
 
       // Gild Sector gets gorgeous colorful lighting!
@@ -5560,9 +5265,22 @@ export class ProceduralMap {
         lightIntensity = isBurntOut ? 0.45 : 1.7; // Brighter and always slightly glowing
       }
 
+      // No two tubes the same age: a little dimmer or brighter, drifting green
+      // as they wear or warm as they were replaced. Own stream, so the burn-out
+      // and colour rolls above stay where they always were.
+      if (!isGild && !isPool && !isBurntOut) {
+        const ageRng = new SeededRandom(this.seed + gx * 131 + gz * 197 + 17);
+        lightIntensity *= 0.86 + ageRng.next() * 0.2;
+        const drift = ageRng.next();
+        const tint = new THREE.Color(lightColor).lerp(new THREE.Color(drift < 0.5 ? 0xe4ffd4 : 0xffd8a8), Math.abs(drift - 0.5) * 0.4);
+        lightColor = tint.getHex();
+      }
+
       // The lamp is only *declared* here; the LightPool decides which lamps get
       // a real GPU light, keeping the visible light count small and constant.
-      const light = this.registerLight(gx, gz, posX, fY + height - 0.15 - lampDrop, posZ, lightColor, lightIntensity, isPool ? 30 : 7.5, 1.0);
+      // Hung 30 cm under the diffuser so it also washes the ceiling tiles
+      // around the fixture instead of leaving them dark.
+      const light = this.registerLight(gx, gz, posX, fY + height - (isPool ? 0.15 : 0.3) - lampDrop, posZ, lightColor, lightIntensity, isPool ? 30 : 7.5, 1.0);
 
       // Local floating dust cloud directly under the fluorescent light fixture
       const dustCloud = this.quality.fixtureDustParticles > 0 ? this.createLocalDustCloud() : undefined;
@@ -7172,7 +6890,7 @@ export class ProceduralMap {
         // Lamps the event left dark come back on (only flickering ones restore themselves).
         for (const f of this.lightFixtures) {
           f.light.intensity = f.intensity;
-          f.mesh.material = this.fluorescentGlassOn;
+          f.mesh.material = f.glassOn ?? this.fluorescentGlassOn;
         }
         this.eventCooldown = 30.0 + Math.random() * 25.0; // Cooldown for 30-55 seconds
       }
@@ -7210,12 +6928,12 @@ export class ProceduralMap {
       // The garage's blackouts are floor 3's alone.
       if (this.globalEventState === "blackout" && this.inGarageBlackoutZone(fixture.light.x)) {
         fixture.light.intensity = 0.0;
-        fixture.mesh.material = this.fluorescentGlassOff;
+        fixture.mesh.material = fixture.glassOff ?? this.fluorescentGlassOff;
       } else if (this.globalEventState === "flicker_storm") {
         const flashOn = Math.random() > 0.45;
         // Subtly dim the bulbs rather than dropping them to absolute blackout to reduce strobe strain
         fixture.light.intensity = flashOn ? fixture.intensity : fixture.intensity * 0.35;
-        fixture.mesh.material = flashOn ? this.fluorescentGlassOn : this.fluorescentGlassOff;
+        fixture.mesh.material = flashOn ? fixture.glassOn ?? this.fluorescentGlassOn : fixture.glassOff ?? this.fluorescentGlassOff;
       } else {
         // Normal mode: Standard individual quiet organic flickers
         if (fixture.flickerTimer > 0) {
@@ -7224,12 +6942,12 @@ export class ProceduralMap {
           // Rapid oscillating glow with comfortable visual range
           const flash = Math.random() > 0.4;
           fixture.light.intensity = flash ? fixture.intensity : fixture.intensity * 0.45;
-          fixture.mesh.material = flash ? this.fluorescentGlassOn : this.fluorescentGlassOff;
+          fixture.mesh.material = flash ? fixture.glassOn ?? this.fluorescentGlassOn : fixture.glassOff ?? this.fluorescentGlassOff;
 
           // Reset once timer completes
           if (fixture.flickerTimer <= 0) {
             fixture.light.intensity = fixture.intensity;
-            fixture.mesh.material = this.fluorescentGlassOn;
+            fixture.mesh.material = fixture.glassOn ?? this.fluorescentGlassOn;
           }
         } else {
           // Very rare natural spark flicker probability (0.0125% per frame);

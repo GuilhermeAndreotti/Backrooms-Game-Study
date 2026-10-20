@@ -120,8 +120,8 @@ function transformer(kit: DecorKit, rng: Rng, wz: number): DecorPiece {
   }
   const on = rng.next() < 0.7;
   const led = std(kit, on ? "l3_led_on" : "l3_led_off", on
-    ? { color: 0x39ff88, emissive: 0x16c060, emissiveIntensity: 2.5 }
-    : { color: 0xff3b18, emissive: 0xff2200, emissiveIntensity: 2.5 });
+    ? { color: 0x39ff88, emissive: 0x16c060, emissiveIntensity: 1.6 }
+    : { color: 0xff3b18, emissive: 0xff2200, emissiveIntensity: 1.6 });
   g.add(box(kit, 0.08, 0.08, 0.03, led, 0.45, 1.35, wz + d + 0.01));
   // Heavy cables rising from the top into the ceiling.
   const cable = std(kit, "l3_cable", { color: 0x121212, roughness: 0.9 });

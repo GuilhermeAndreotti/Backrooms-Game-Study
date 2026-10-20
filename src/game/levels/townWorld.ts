@@ -25,6 +25,7 @@
  */
 
 import * as THREE from "three";
+import { weatherCanvas } from "../surfaceTextures";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { DecorKit } from "../LevelDecor";
 import type { DynamicLightSource } from "../LightPool";
@@ -404,7 +405,10 @@ export class TownWorld {
     if (cached) return cached;
     const c = document.createElement("canvas");
     c.width = w; c.height = h;
-    draw(c.getContext("2d")!, w, h);
+    const g = c.getContext("2d")!;
+    draw(g, w, h);
+    // Tiled surfaces get a light version of the shared wear (it is a cartoon town).
+    if (tile) weatherCanvas(g, { grain: 0.04, blotch: 0.07, seed: key.length * 53 + key.charCodeAt(0) });
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = 4;

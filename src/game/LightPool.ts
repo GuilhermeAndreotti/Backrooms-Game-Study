@@ -24,6 +24,9 @@ export interface DynamicLightSource {
   gridZ: number;
 }
 
+/** Metres over which a lamp fades out before its pooled light is handed to another. */
+const SWAP_FADE = 2.5;
+
 /**
  * Fixed-size pool of THREE.PointLight instances shared by the whole level.
  *
@@ -44,9 +47,12 @@ export class LightPool {
   private scene: THREE.Scene;
   private maxRange: number;
 
-  // Scratch buffers for the nearest-K selection, reused every rebind.
+  // Scratch buffers for the nearest-K selection (K+1 slots: the runner-up
+  // decides how close the bound lights are to being swapped out).
   private candidateSources: (DynamicLightSource | null)[] = [];
   private candidateDistances: number[] = [];
+  /** Distance of the nearest source that did not get a light (Infinity if none). */
+  private runnerUpDistance = Infinity;
 
   private rebindTimer = 0;
   private readonly rebindInterval = 0.1; // 10 Hz is imperceptible and ~6x cheaper
@@ -67,6 +73,8 @@ export class LightPool {
       this.candidateSources.push(null);
       this.candidateDistances.push(Infinity);
     }
+    this.candidateSources.push(null);
+    this.candidateDistances.push(Infinity);
   }
 
   public get size(): number {
@@ -88,7 +96,10 @@ export class LightPool {
     }
 
     // Every frame: refresh only the handful of bound lights so flicker,
-    // blackouts and colour changes stay perfectly responsive.
+    // blackouts and colour changes stay perfectly responsive. Each is faded
+    // by how close it is to losing its light, to the runner-up or to the
+    // range limit, so it is already dark when the swap happens: lamps fade
+    // in and out as you walk instead of popping.
     for (let i = 0; i < this.lights.length; i++) {
       const src = this.boundSources[i];
       const light = this.lights[i];
@@ -96,16 +107,19 @@ export class LightPool {
         light.intensity = 0;
         continue;
       }
-      light.intensity = src.intensity;
+      const d = Math.hypot(src.x - playerX, src.z - playerZ);
+      const fade = Math.min(1, Math.max(0, (this.runnerUpDistance - d) / SWAP_FADE), Math.max(0, (this.maxRange - d) / SWAP_FADE));
+      light.intensity = src.intensity * fade;
     }
   }
 
   /** Selects the nearest `size` sources with a non-zero intensity. */
   private rebind(sources: DynamicLightSource[], playerX: number, playerZ: number) {
     const k = this.lights.length;
+    const slots = k + 1;
     const maxRangeSq = this.maxRange * this.maxRange;
 
-    for (let i = 0; i < k; i++) {
+    for (let i = 0; i < slots; i++) {
       this.candidateSources[i] = null;
       this.candidateDistances[i] = Infinity;
     }
@@ -119,9 +133,9 @@ export class LightPool {
       const dz = src.z - playerZ;
       const distSq = dx * dx + dz * dz;
       if (distSq > maxRangeSq) continue;
-      if (distSq >= this.candidateDistances[k - 1]) continue;
+      if (distSq >= this.candidateDistances[slots - 1]) continue;
 
-      let slot = k - 1;
+      let slot = slots - 1;
       while (slot > 0 && this.candidateDistances[slot - 1] > distSq) {
         this.candidateDistances[slot] = this.candidateDistances[slot - 1];
         this.candidateSources[slot] = this.candidateSources[slot - 1];
@@ -130,6 +144,7 @@ export class LightPool {
       this.candidateDistances[slot] = distSq;
       this.candidateSources[slot] = src;
     }
+    this.runnerUpDistance = Math.sqrt(this.candidateDistances[k]);
 
     for (let i = 0; i < k; i++) {
       const src = this.candidateSources[i];
@@ -146,7 +161,7 @@ export class LightPool {
       light.color.setHex(src.color);
       light.distance = src.distance;
       light.decay = src.decay;
-      light.intensity = src.intensity;
+      // Intensity (with its swap fade) is set by update() every frame.
     }
   }
 
