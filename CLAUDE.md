@@ -73,6 +73,8 @@ The client/server protocol is a flat `{ type: ... }` JSON message set (join, upd
 ### Other notable pieces
 
 - `src/game/Quality.ts` / `LightPool.ts` — graphics quality presets and a pooled-light system to bound the number of live dynamic lights (perf-critical given many rooms/props).
+- Colour pipeline: the scene renders into a half-float target and the VHS pass in `GameEngine` does the output transform. Levels listed in `levelGrade()` (the interior maze levels) get exposure + ACES + sRGB encode (`FILMIC`); the others keep the raw linear output their skies/toon shaders were authored against. On filmic levels, tag colour `CanvasTexture`s `SRGBColorSpace` (masks/alpha/light cookies stay linear).
+- `src/game/SurfaceShading.ts` — world-space stains, damp and wall/floor/ceiling contact occlusion injected into the maze's shared surface materials (per-level looks in `WEATHERING`, `ProceduralMap.ts`); `surfaceTextures.ts` holds Level 0's wallpaper/carpet/ceiling textures.
 - `docs/` — player/developer guides: `docs/levels/` (one README per level) and `docs/entities.md`.
 - `src/game/AudioManager.ts` — positional ambient/SFX audio, including procedural monster voice generation.
 - `src/utils/achievements.ts` / `src/types/achievements.ts` — achievement definitions/unlock tracking, localized via `t()`.

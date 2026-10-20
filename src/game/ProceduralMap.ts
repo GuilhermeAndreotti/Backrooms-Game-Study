@@ -22,6 +22,10 @@ import { CAR_COLOR_HEX, GARAGE_DIVIDERS, GARAGE_SAFE_RADIUS, GARAGE_FLOORS, GARA
 import { FunWorld } from "./levels/funWorld";
 import { FUN_EXIT, FUN_RECTS, FUN_SPAWN } from "./levels/funLayout";
 import * as Decor from "./LevelDecor";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
+import { SolidCellGrid, applySurfaceWeathering, SurfaceWeathering } from "./SurfaceShading";
+import { createLevel0CarpetTexture, createLevel0CeilingTexture, createLevel0WallpaperTexture } from "./surfaceTextures";
 import type { OfficeSkyline } from "./officeWindow";
 import { POOL_FLOOR_Y, WATER_SURFACE_Y, createPoolTileMaterial, createWallTileMaterial, createWaterMaterial } from "./Water";
 import { POOL_ROOM_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./poolroomsPuzzle";
@@ -119,6 +123,70 @@ export function gridSizeForLevel(level: number): number {
   return level === 0 ? 64 : 48;
 }
 
+/**
+ * Bakes several transformed primitives into one geometry, so a prop made of
+ * many parts in one material costs a single draw call.
+ */
+function mergeParts(parts: [THREE.BufferGeometry, THREE.Matrix4][]): THREE.BufferGeometry {
+  const baked = parts.map(([geo, matrix]) => {
+    const flat = geo.index ? geo.toNonIndexed() : geo;
+    flat.applyMatrix4(matrix);
+    if (flat !== geo) geo.dispose();
+    return flat;
+  });
+  const merged = mergeGeometries(baked, false);
+  baked.forEach((g) => g.dispose());
+  return merged;
+}
+
+/** A colour canvas texture (signs, notes, labels): sRGB, like the colours it was painted with. */
+function srgbTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+type WeatheringLook = Record<"wall" | "floor" | "ceiling", Omit<SurfaceWeathering, "kind">>;
+
+/**
+ * Per content level: how the shared wall/floor/ceiling materials age (see
+ * SurfaceShading.ts). Levels with their own worlds (pool, hotel, FUN, town,
+ * space, lobby) are not listed and keep their surfaces untouched.
+ */
+const WEATHERING: Partial<Record<number, WeatheringLook>> = (() => {
+  const yellow: WeatheringLook = {
+    wall: { stain: 0x9c8248, stainStrength: 0.5, damp: 1, occlusion: 0.75 },
+    floor: { stain: 0x6e5c34, stainStrength: 0.55, damp: 1, occlusion: 0.7 },
+    ceiling: { stain: 0xb09a68, stainStrength: 0.45, damp: 1, occlusion: 0.6 },
+  };
+  const office: WeatheringLook = {
+    wall: { stain: 0xb8b090, stainStrength: 0.35, damp: 0.45, occlusion: 0.7 },
+    floor: { stain: 0x707680, stainStrength: 0.35, damp: 0.5, occlusion: 0.7 },
+    ceiling: { stain: 0xb0a888, stainStrength: 0.35, damp: 0.6, occlusion: 0.6 },
+  };
+  return {
+    0: yellow,
+    3: yellow, // Lights Out: Level 0's halls with the power cut
+    1: {
+      wall: { stain: 0x6e665a, stainStrength: 0.55, damp: 0.8, occlusion: 0.75 },
+      floor: { stain: 0x5e5a52, stainStrength: 0.5, damp: 0.7, occlusion: 0.7 },
+      ceiling: { stain: 0x807466, stainStrength: 0.4, damp: 0.5, occlusion: 0.6 },
+    },
+    2: {
+      wall: { stain: 0x7a4426, stainStrength: 0.55, damp: 0.7, occlusion: 0.8 },
+      floor: { stain: 0x5a3a24, stainStrength: 0.5, damp: 0.6, occlusion: 0.75 },
+      ceiling: { stain: 0x6a3c24, stainStrength: 0.45, damp: 0.6, occlusion: 0.65 },
+    },
+    8: {
+      wall: { stain: 0x5e4a40, stainStrength: 0.5, damp: 0.6, occlusion: 0.75 },
+      floor: { stain: 0x5a5046, stainStrength: 0.45, damp: 0.6, occlusion: 0.7 },
+      ceiling: { stain: 0x6a5e52, stainStrength: 0.4, damp: 0.5, occlusion: 0.6 },
+    },
+    4: office,
+    9: office,
+  };
+})();
+
 /** A ground-level box/crate the player can push aside with E. */
 export interface MovableProp {
   id: string;
@@ -176,10 +244,8 @@ export class ProceduralMap {
   private baseGeo!: THREE.BoxGeometry;
   private pillarGeo!: THREE.BoxGeometry;
   private caseGeo!: THREE.BoxGeometry;
-  private tubeGeo!: THREE.CylinderGeometry;
+  private tubeGeo!: THREE.BufferGeometry;
   private unitBoxGeo!: THREE.BoxGeometry;
-  private barrelCylinderGeo!: THREE.CylinderGeometry;
-  private barrelRimGeo!: THREE.TorusGeometry;
   private boilerPipeVerticalGeo!: THREE.CylinderGeometry;
   private boilerPipeElbowGeo!: THREE.TorusGeometry;
   private boilerDialPlateGeo!: THREE.CylinderGeometry;
@@ -197,11 +263,6 @@ export class ProceduralMap {
   // Prop and divider geometries & materials for reuse
   private dividerGeo!: THREE.BoxGeometry;
   private partitionBaseGeo!: THREE.BoxGeometry;
-  private chairSeatGeo!: THREE.BoxGeometry;
-  private chairBackGeo!: THREE.BoxGeometry;
-  private chairStemGeo!: THREE.CylinderGeometry;
-  private chairLegGeo!: THREE.BoxGeometry;
-  private boxGeo!: THREE.BoxGeometry;
 
   private fabricMaterial!: THREE.Material;
   private plasticMaterial!: THREE.Material;
@@ -602,6 +663,41 @@ export class ProceduralMap {
     if (this.level === OLD_TOWN_CONTENT_LEVEL) this.town = this.createTownWorld();
     this.generateGrid();
     this.findExitPath();
+    this.applyWeathering();
+  }
+
+  /** Solid-cell map read by the weathered surfaces' corner shading. */
+  private solidGrid: SolidCellGrid | null = null;
+
+  /**
+   * Maze levels: world-space stains, damp and contact shading on the shared
+   * wall/floor/ceiling materials (SurfaceShading.ts). Needs the finished
+   * grid, so it runs after generation; the materials compile on first draw.
+   */
+  private applyWeathering() {
+    const look = WEATHERING[this.level];
+    if (!look) return;
+    if (!this.solidGrid) {
+      this.solidGrid = new SolidCellGrid((gx, gz) => this.grid[gx][gz] === CellType.SOLID, this.gridSize, this.cellSize, 3.0);
+      this.sharedTextures.push(this.solidGrid.texture);
+    }
+    // The low preset (no surface relief either) gets the cheaper shader variant.
+    const lite = !this.quality.surfaceRelief;
+    const surfaces: [THREE.Material, "wall" | "floor" | "ceiling"][] = [
+      [this.wallMaterial, "wall"],
+      [this.carpetMaterial, "floor"],
+      [this.redCarpetMaterial, "floor"],
+      [this.ceilingMaterial, "ceiling"],
+    ];
+    for (const [material, kind] of surfaces) {
+      if (material instanceof THREE.MeshStandardMaterial) applySurfaceWeathering(material, { kind, ...look[kind] }, this.solidGrid, lite);
+    }
+  }
+
+  /** Re-reads `quality` after the engine switched presets (shader variants, detail distance). */
+  public refreshQuality() {
+    this.applyWeathering();
+    this.lastCulledX = -9999; // re-evaluate detail visibility on the next culling pass
   }
 
   /**
@@ -885,6 +981,7 @@ export class ProceduralMap {
       }
     }
     const paperTex = new THREE.CanvasTexture(canvas);
+    paperTex.colorSpace = THREE.SRGBColorSpace;
     const paperMat = new THREE.MeshBasicMaterial({ map: paperTex, side: THREE.DoubleSide });
     const paper = new THREE.Mesh(this.paperGeo, paperMat);
     paper.rotation.x = -Math.PI / 2;
@@ -977,65 +1074,9 @@ export class ProceduralMap {
   }
 
   private createWallTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Base yellowish color
-      ctx.fillStyle = "#cdc38d";
-      ctx.fillRect(0, 0, 256, 256);
-
-      // Subtle noise/dirt overlay for rotting damp walls
-      for (let i = 0; i < 5000; i++) {
-        const x = Math.random() * 256;
-        const y = Math.random() * 256;
-        const size = Math.random() * 1.5;
-        const opacity = Math.random() * 0.12;
-        ctx.fillStyle = `rgba(80, 70, 40, ${opacity})`;
-        ctx.fillRect(x, y, size, size);
-      }
-
-      // Vertical stripe/pattern lines (classic Backrooms wallpaper)
-      ctx.strokeStyle = "rgba(100, 90, 50, 0.22)";
-      ctx.lineWidth = 1.5;
-      for (let x = 8; x < 256; x += 16) {
-        // Draw elegant vertical wallpaper lines
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, 256);
-        ctx.stroke();
-
-        // Draw vertical dotted / dashes
-        ctx.beginPath();
-        ctx.strokeStyle = "rgba(80, 72, 36, 0.15)";
-        ctx.setLineDash([4, 12]);
-        ctx.moveTo(x - 4, 0);
-        ctx.lineTo(x - 4, 256);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.strokeStyle = "rgba(100, 90, 50, 0.22)";
-      }
-
-      // Horizontal subtle gradient damp stains (wallpaper moisture)
-      for (let j = 0; j < 3; j++) {
-        const stainY = Math.random() * 200;
-        const stainH = 30 + Math.random() * 40;
-        const grad = ctx.createLinearGradient(0, stainY, 0, stainY + stainH);
-        grad.addColorStop(0, "rgba(90, 75, 45, 0.16)");
-        grad.addColorStop(0.5, "rgba(90, 75, 45, 0.06)");
-        grad.addColorStop(1, "rgba(90, 75, 45, 0.0)");
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, stainY, 256, stainH);
-      }
-    }
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 3); // Repeats perfectly to cover cells which are 4m wide x 3m high
-    return texture;
+    return createLevel0WallpaperTexture();
   }
+
 
   private createConcreteWallTexture(): THREE.Texture {
     const canvas = document.createElement("canvas");
@@ -1121,6 +1162,7 @@ export class ProceduralMap {
     });
 
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(4, 3); // repeat across 4m x 3m wall panel
@@ -1146,6 +1188,7 @@ export class ProceduralMap {
     ctx.fillStyle = "rgba(185, 105, 72, 0.18)";
     for (let i = 0; i < 600; i++) ctx.fillRect(Math.random() * 256, Math.random() * 128, 1 + Math.random() * 3, 1 + Math.random() * 2);
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = THREE.RepeatWrapping; texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(3, 2);
     return texture;
@@ -1180,21 +1223,18 @@ export class ProceduralMap {
       ctx.fill();
     }
 
-    // Wet moisture stains and dark fluid puddle rings (oil spots!)
-    for (let i = 0; i < 8; i++) {
-      const rx = Math.random() * 512;
-      const ry = Math.random() * 512;
-      const rSize = 25 + Math.random() * 60;
-      ctx.fillStyle = "rgba(35, 30, 25, 0.22)"; // organic brown spill
-      ctx.beginPath();
-      ctx.arc(rx, ry, rSize, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Core of puddle (even darker oil spot)
-      ctx.fillStyle = "rgba(20, 20, 20, 0.25)";
-      ctx.beginPath();
-      ctx.arc(rx + Math.random() * 10 - 5, ry + Math.random() * 10 - 5, rSize * 0.5, 0, Math.PI * 2);
-      ctx.fill();
+    // A few soft oil drips. Kept faint and few: the big stains come from the
+    // world-space weathering (SurfaceShading.ts), which never repeats.
+    for (let i = 0; i < 4; i++) {
+      const rx = 40 + Math.random() * 432;
+      const ry = 40 + Math.random() * 432;
+      const rSize = 12 + Math.random() * 26;
+      const grad = ctx.createRadialGradient(rx, ry, 0, rx, ry, rSize);
+      grad.addColorStop(0, "rgba(22, 20, 18, 0.22)");
+      grad.addColorStop(0.6, "rgba(30, 27, 22, 0.12)");
+      grad.addColorStop(1, "rgba(35, 30, 25, 0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(rx - rSize, ry - rSize, rSize * 2, rSize * 2);
     }
 
     // Structural concrete floor cracks! Very industrial
@@ -1215,9 +1255,10 @@ export class ProceduralMap {
     }
 
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4);
+    texture.repeat.set(2, 2); // 2 m per repeat
     return texture;
   }
 
@@ -1252,6 +1293,7 @@ export class ProceduralMap {
     }
 
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(8, 8); // nice corrugated frequency
@@ -1294,6 +1336,7 @@ export class ProceduralMap {
       }
     }
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(4, 4); // Repeats over the 4m x 4m cell floor size
@@ -1375,6 +1418,7 @@ export class ProceduralMap {
       }
     }
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(4, 3);
@@ -1432,6 +1476,7 @@ export class ProceduralMap {
       }
     }
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(4, 4);
@@ -1467,6 +1512,7 @@ export class ProceduralMap {
       }
     }
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(4, 4);
@@ -1499,6 +1545,7 @@ export class ProceduralMap {
       }
     }
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     return texture;
@@ -1523,6 +1570,7 @@ export class ProceduralMap {
       ctx.strokeRect(0.5, 0.5, 127, 127);
     }
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(4, 4);
@@ -1530,103 +1578,78 @@ export class ProceduralMap {
   }
 
   private createCarpetTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 128;
-    canvas.height = 128;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Base carpet color (damp moldy yellow-brown pile)
-      ctx.fillStyle = "#82734a";
-      ctx.fillRect(0, 0, 128, 128);
-
-      // Draw random noise to give it a fibrous/pile carpet texture
-      for (let i = 0; i < 8000; i++) {
-        const x = Math.random() * 128;
-        const y = Math.random() * 128;
-        const size = 1 + Math.random() * 0.8;
-        const tint = Math.random();
-        const color = tint > 0.5 ? "rgba(65, 55, 30, 0.22)" : "rgba(150, 135, 95, 0.15)";
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y, size, size);
-      }
-      
-      // Some slightly larger wet, rotten moldy moisture spots
-      for (let j = 0; j < 6; j++) {
-        const x = Math.random() * 128;
-        const y = Math.random() * 128;
-        const r = 6 + Math.random() * 14;
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
-        grad.addColorStop(0, "rgba(55, 45, 25, 0.38)");
-        grad.addColorStop(1, "rgba(55, 45, 25, 0)");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4); // Repeats over the 4m x 4m cell floor size
-    return texture;
+    return createLevel0CarpetTexture();
   }
+
 
   private createCeilingTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 128;
-    canvas.height = 128;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Off-white acoustic tile ceiling base
-      ctx.fillStyle = "#cfcbb7";
-      ctx.fillRect(0, 0, 128, 128);
-
-      // Acoustic dots and texture holes
-      for (let i = 0; i < 400; i++) {
-        const x = Math.random() * 128;
-        const y = Math.random() * 128;
-        const size = 0.5 + Math.random() * 1.5;
-        ctx.fillStyle = "rgba(60, 58, 50, 0.32)";
-        ctx.fillRect(x, y, size, size);
-      }
-
-      // Tile borders/grid lines to shape 2x2 grid panels in a cell
-      ctx.strokeStyle = "rgba(80, 78, 70, 0.2)";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(0, 0, 128, 128);
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4); // Fits nicely in the 4m x 4m cell ceiling size
-    return texture;
+    return createLevel0CeilingTexture(this.cellSize);
   }
 
+
   private createCardboardTexture(): THREE.Texture {
+    const size = 256;
     const canvas = document.createElement("canvas");
-    canvas.width = 128;
-    canvas.height = 128;
+    canvas.width = canvas.height = size;
     const ctx = canvas.getContext("2d");
     if (ctx) {
       // Kraft paper cardboard brown base
       ctx.fillStyle = "#ae8d63";
-      ctx.fillRect(0, 0, 128, 128);
-      
-      // Draw darker fiber lines for packing box texture
-      ctx.fillStyle = "rgba(120, 95, 60, 0.25)";
-      for (let i = 0; i < 600; i++) {
-        const x = Math.random() * 128;
-        const y = Math.random() * 128;
-        const w = 1 + Math.random() * 20;
-        ctx.fillRect(x, y, w, 1);
+      ctx.fillRect(0, 0, size, size);
+
+      // Corrugation showing through the liner: faint vertical flutes
+      for (let x = 0; x < size; x += 6) {
+        ctx.fillStyle = "rgba(255, 235, 200, 0.06)";
+        ctx.fillRect(x, 0, 3, size);
+        ctx.fillStyle = "rgba(90, 66, 36, 0.06)";
+        ctx.fillRect(x + 3, 0, 2, size);
       }
 
-      // Draw cardboard borders
-      ctx.strokeStyle = "rgba(90, 70, 45, 0.4)";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(0, 0, 128, 128);
+      // Fibres in the paper
+      ctx.fillStyle = "rgba(120, 95, 60, 0.22)";
+      for (let i = 0; i < 900; i++) {
+        ctx.fillRect(Math.random() * size, Math.random() * size, 1 + Math.random() * 18, 1);
+      }
+
+      // Scuffs and a few damp blotches
+      for (let i = 0; i < 6; i++) {
+        const x = Math.random() * size, y = Math.random() * size, r = 8 + Math.random() * 26;
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
+        grad.addColorStop(0, "rgba(80, 58, 30, 0.22)");
+        grad.addColorStop(1, "rgba(80, 58, 30, 0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - r, y - r, r * 2, r * 2);
+      }
+
+      // A faded shipping stamp: "this side up" arrows and a code box
+      ctx.save();
+      ctx.globalAlpha = 0.38;
+      ctx.strokeStyle = "#3b2a1a";
+      ctx.fillStyle = "#3b2a1a";
+      ctx.lineWidth = 3;
+      for (const ax of [34, 50]) {
+        ctx.beginPath();
+        ctx.moveTo(ax, 62); ctx.lineTo(ax, 36);
+        ctx.moveTo(ax - 6, 44); ctx.lineTo(ax, 35); ctx.lineTo(ax + 6, 44);
+        ctx.stroke();
+      }
+      ctx.strokeRect(150, 176, 72, 30);
+      ctx.fillRect(158, 184, 56, 4);
+      ctx.fillRect(158, 194, 38, 4);
+      ctx.restore();
+
+      // Crushed, darkened edges all round (each face of the box is the whole canvas)
+      const edge = 18;
+      for (const [x0, y0, x1, y1, w, h] of [[0, 0, edge, 0, edge, size], [size, 0, size - edge, 0, edge, size], [0, 0, 0, edge, size, edge], [0, size, 0, size - edge, size, edge]] as const) {
+        const grad = ctx.createLinearGradient(x0, y0, x1, y1);
+        grad.addColorStop(0, "rgba(70, 50, 28, 0.5)");
+        grad.addColorStop(1, "rgba(70, 50, 28, 0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), w, h);
+      }
     }
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     return texture;
   }
 
@@ -1652,30 +1675,19 @@ export class ProceduralMap {
 
     this.pillarGeo = new THREE.BoxGeometry(0.8, height, 0.8);
 
-    this.caseGeo = new THREE.BoxGeometry(1.2, 0.1, 0.4);
+    // Recessed troffer: a shallow housing set into the ceiling grid, and the
+    // prismatic diffuser under it (the part that lights up and flickers).
+    this.caseGeo = new THREE.BoxGeometry(1.24, 0.04, 0.64);
 
-    this.tubeGeo = new THREE.CylinderGeometry(0.04, 0.04, 1.0, 8);
-    this.tubeGeo.rotateZ(Math.PI / 2);
+    this.tubeGeo = new THREE.PlaneGeometry(1.12, 0.52);
+    this.tubeGeo.rotateX(Math.PI / 2);
 
     // Divider Geometries (office partition wall): thickness=0.08m, height=2.3m, depth=1.8m
     this.dividerGeo = new THREE.BoxGeometry(0.08, 2.3, 1.8);
     this.partitionBaseGeo = new THREE.BoxGeometry(0.1, 0.12, 1.8);
 
-    // Office Chairs geometries (low poly for extreme FPS)
-    this.chairSeatGeo = new THREE.BoxGeometry(0.55, 0.08, 0.55);
-    this.chairBackGeo = new THREE.BoxGeometry(0.5, 0.5, 0.08);
-    this.chairStemGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.45, 6);
-    this.chairLegGeo = new THREE.BoxGeometry(0.55, 0.03, 0.05);
-
-    // Cardboard boxes (brown shipment parcels)
-    this.boxGeo = new THREE.BoxGeometry(0.65, 0.65, 0.65);
-
     // Unit 1x1x1 box geometry used for scaling to prevent expensive dynamic BoxGeometry generation
     this.unitBoxGeo = new THREE.BoxGeometry(1, 1, 1);
-
-    // Industrial Barrel geometries (low segment count for performance)
-    this.barrelCylinderGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.9, 10);
-    this.barrelRimGeo = new THREE.TorusGeometry(0.33, 0.02, 4, 10);
 
     // Boiler parts (very low polygon counts)
     this.boilerPipeVerticalGeo = new THREE.CylinderGeometry(0.065, 0.065, 0.6, 6);
@@ -1788,19 +1800,27 @@ export class ProceduralMap {
     this.addSurfaceDetail(this.carpetMaterial, 1.2);
     this.addSurfaceDetail(this.redCarpetMaterial, 1.2);
     this.addSurfaceDetail(this.ceilingMaterial, 0.8);
+    this.addSurfaceDetail(this.cardboardBoxMaterial, 0.6);
 
     // Fluorescent Tubes
-    this.fluorescentGlassOn = new THREE.MeshBasicMaterial({
-      color: 0xfffef0,
-    });
+    // Brighter than white: on the filmic levels the diffuser sits above the
+    // tone curve's shoulder and blooms. Elsewhere the VHS pass clips it to 1.
+    const glassOn = new THREE.MeshBasicMaterial({ color: 0xfffef0 });
+    glassOn.color.multiplyScalar(3.2);
+    this.fluorescentGlassOn = glassOn;
 
     this.fluorescentGlassOff = new THREE.MeshStandardMaterial({
       color: 0x333333,
       roughness: 0.5,
     });
 
-    this.fluorescentCaseMaterial = new THREE.MeshPhongMaterial({
-      color: 0x222222,
+    // Painted sheet steel: off-white in the offices and Level 0's tile grid,
+    // dark and grimy in the industrial levels.
+    const industrial = this.level === 1 || this.level === 2 || this.level === 8;
+    this.fluorescentCaseMaterial = new THREE.MeshStandardMaterial({
+      color: industrial ? 0x2c2a26 : 0xd8d4c4,
+      roughness: industrial ? 0.7 : 0.55,
+      metalness: industrial ? 0.4 : 0.1,
     });
 
     // Puddle, leak, drop and ripple assets for damp areas (Backrooms Level 0 classic moisture)
@@ -1831,10 +1851,15 @@ export class ProceduralMap {
       polygonOffsetFactor: -1,
     });
 
-    this.leakStainMaterial = new THREE.MeshBasicMaterial({
-      color: 0x302613,      // very dark water damage
+    // Water damage soaked into the tile above each drip: lit like the ceiling
+    // (so it never glows in the dark) and fading out at a ragged edge.
+    this.leakStainMaterial = new THREE.MeshStandardMaterial({
+      color: 0x3a2c14,
+      roughness: 0.95,
       transparent: true,
-      opacity: 0.72,
+      opacity: 0.8,
+      depthWrite: false,
+      alphaMap: (this.puddleMaterial as THREE.MeshStandardMaterial).alphaMap,
     });
 
     this.dropMaterial = new THREE.MeshBasicMaterial({
@@ -3028,6 +3053,7 @@ export class ProceduralMap {
         ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i + 64, 64); ctx.stroke();
       }
       const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
       this.sharedTextures.push(tex);
       return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, metalness: 0.15 });
@@ -4186,7 +4212,7 @@ export class ProceduralMap {
         ctx.fillStyle = "rgba(42, 96, 96, 0.18)";
         for (let i = 0; i < 18; i++) ctx.fillRect((i * 73) % 256, (i * 131) % 256, 14, 3);
       }
-      const clueMark = new THREE.Mesh(new THREE.PlaneGeometry(1.25, 1.25), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, opacity: 0.68 }));
+      const clueMark = new THREE.Mesh(new THREE.PlaneGeometry(1.25, 1.25), new THREE.MeshBasicMaterial({ map: srgbTexture(canvas), transparent: true, opacity: 0.68 }));
       clueMark.rotation.x = -Math.PI / 2;
       clueMark.position.set(posX, POOL_FLOOR_Y + 0.012, posZ);
       group.add(clueMark);
@@ -4577,6 +4603,7 @@ export class ProceduralMap {
         g.fillStyle = grad;
         g.fillRect(0, 0, 8, 256);
         const tex = new THREE.CanvasTexture(c);
+        tex.colorSpace = THREE.SRGBColorSpace;
         this.sharedTextures.push(tex);
         return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95 });
       });
@@ -4742,7 +4769,7 @@ export class ProceduralMap {
         const symbolCanvas = document.createElement("canvas"); symbolCanvas.width = symbolCanvas.height = 128;
         const symbolCtx = symbolCanvas.getContext("2d");
         if (symbolCtx) { symbolCtx.fillStyle = "#d8f2f2"; symbolCtx.fillRect(0, 0, 128, 128); symbolCtx.fillStyle = "#0d6073"; symbolCtx.font = "bold 84px sans-serif"; symbolCtx.textAlign = "center"; symbolCtx.fillText(this.poolValveSymbols[valveIndex % this.poolValvesPerRoom], 64, 92); }
-        const symbol = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.3), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(symbolCanvas) }));
+        const symbol = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.3), new THREE.MeshBasicMaterial({ map: srgbTexture(symbolCanvas) }));
         symbol.position.set(0, 1.62, wz + 0.08); valve.add(symbol);
         if (this.poolTurned.has(valveIndex)) {
           wheelMat.color.setHex(0x54f4d0); wheelMat.emissive.setHex(0x167c6e);
@@ -4776,6 +4803,7 @@ export class ProceduralMap {
           for (let x = 8; x < 128; x += 19) ctx.fillRect(x, 0, 1, 128);
         }
         const map = new THREE.CanvasTexture(canvas);
+        map.colorSpace = THREE.SRGBColorSpace;
         this.sharedTextures.push(map);
         return new THREE.MeshStandardMaterial({ map, roughness: 0.45, metalness: 0.7 });
       });
@@ -4811,6 +4839,7 @@ export class ProceduralMap {
         const ctx = canvas.getContext("2d");
         if (ctx) { ctx.fillStyle = "#0b1a10"; ctx.fillRect(0, 0, 128, 128); ctx.fillStyle = "#4dff8a"; ctx.font = "bold 96px monospace"; ctx.textAlign = "center"; ctx.fillText("G", 64, 100); }
         const map = new THREE.CanvasTexture(canvas);
+        map.colorSpace = THREE.SRGBColorSpace;
         this.sharedTextures.push(map);
         return new THREE.MeshBasicMaterial({ map });
       });
@@ -4914,7 +4943,7 @@ export class ProceduralMap {
           ctx.fillStyle = "#241a16"; ctx.font = "bold 25px monospace"; ctx.fillText("AVISO MEG", 28, 48);
           ctx.font = "18px monospace"; ctx.fillText("Encontre os 5 paineis", 28, 94); ctx.fillText("de luz para abrir a", 28, 124); ctx.fillText("porta de barras.", 28, 154);
         }
-        const note = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 0.72), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), side: THREE.DoubleSide }));
+        const note = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 0.72), new THREE.MeshBasicMaterial({ map: srgbTexture(canvas), side: THREE.DoubleSide }));
         note.position.set(posX, 1.35, posZ - hSize / 2 + 0.03); group.add(note);
       }
     }
@@ -5477,6 +5506,7 @@ export class ProceduralMap {
 
     // 5b. LEVEL FURNITURE — Level 3's machinery, Level 4's office leftovers, the Poolrooms' fittings.
     this.placeLevelDecor(group, gx, gz, posX, posZ, cellType, height);
+    this.placeBuildingFittings(group, gx, gz, posX, posZ, height);
 
     // 6. FLUORESCENT LIGHT LUMINAIRE FIXTURE (Deterministic placement)
     // Place a fluorescent lightbox on the ceiling. (45% probability on corridor cells or room centers)
@@ -5495,17 +5525,17 @@ export class ProceduralMap {
     if (shouldSpawnLight && !(gx === this.exitGridX && gz === this.exitGridZ)) {
       const fixtureGroup = new THREE.Group();
 
-      // Black metal industrial bracket
+      // Troffer housing, flush with the ceiling.
       // Poolrooms: huge ceiling panels hung just under the fog bank, so they read from far away.
       const isPool = this.level === 7;
       const lampDrop = isPool ? 1.2 : 0;
       const lampScale = isPool ? 5 : 1;
       const caseMesh = new THREE.Mesh(this.caseGeo, this.fluorescentCaseMaterial);
-      caseMesh.position.set(0, height - 0.05 - lampDrop, 0);
+      caseMesh.position.set(0, height - 0.02 * lampScale - lampDrop, 0);
       caseMesh.scale.setScalar(lampScale);
       fixtureGroup.add(caseMesh);
 
-      // Glowing tube glass tube cylinder
+      // The diffuser, just under the housing
       const lightRng = new SeededRandom(this.seed + gx * 41 + gz * 61);
       const burntRoll = lightRng.next();
       const isBurntOut = (this.level === 1 && burntRoll < 0.38) // 38% burnt out rate in warehouse Level 1!
@@ -5513,7 +5543,7 @@ export class ProceduralMap {
 
       const glassMaterial = isBurntOut ? this.fluorescentGlassOff : this.fluorescentGlassOn;
       const tubeMesh = new THREE.Mesh(this.tubeGeo, glassMaterial);
-      tubeMesh.position.set(0, height - 0.08 - lampDrop - (isPool ? 0.2 : 0), 0);
+      tubeMesh.position.set(0, height - 0.042 * lampScale - lampDrop, 0);
       tubeMesh.scale.setScalar(lampScale);
       fixtureGroup.add(tubeMesh);
 
@@ -6284,6 +6314,30 @@ export class ProceduralMap {
     return folder;
   }
 
+  /**
+   * Level 0's halls (and Lights Out, the same halls unpowered) and the
+   * Abandoned Office: outlets, grilles, detectors (LevelDecor). A separate
+   * per-cell stream, so the props and lamps drawn from the cell's other
+   * streams land exactly where they always did.
+   */
+  private placeBuildingFittings(group: THREE.Group, gx: number, gz: number, posX: number, posZ: number, height: number) {
+    if (this.level !== 0 && this.level !== 3 && this.level !== 9) return;
+    if (this.isKeepClearCell(gx, gz) || this.isPitHole(gx, gz)) return;
+    const rng = new SeededRandom(this.seed + gx * 5297 + gz * 7307 + 911);
+    const fittings = Decor.ceilingAndWallFittings(this.levelDecorKit(), rng, {
+      half: this.cellSize / 2,
+      height,
+      walls: this.wallSidesOf(gx, gz),
+      outlets: this.level !== 9,
+    });
+    if (!fittings) return;
+    fittings.position.set(posX, 0, posZ);
+    group.add(fittings);
+    // Small enough to vanish into the fog long before the cell does: the
+    // culling pass hides them beyond detailDistance.
+    group.userData.details = fittings;
+  }
+
   /** Solid neighbours of a cell, as outward unit steps. */
   private wallSidesOf(gx: number, gz: number): [number, number][] {
     const sides: [number, number][] = [];
@@ -6353,6 +6407,7 @@ export class ProceduralMap {
         ctx.fillText(t("sign.emergencyExit"), 128, 40);
       }
       const signTex = new THREE.CanvasTexture(canvas);
+      signTex.colorSpace = THREE.SRGBColorSpace;
       this.sharedTextures.push(signTex);
       const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.3), new THREE.MeshBasicMaterial({ map: signTex }));
       sign.position.set(0, 2.45, edgeZ - 0.07);
@@ -6567,38 +6622,40 @@ export class ProceduralMap {
   private createChairMesh(rng: SeededRandom, isTipped: boolean, isFloating: boolean): THREE.Group {
     const chair = new THREE.Group();
 
-    // Four-star rolling legs base (low poly)
-    const leg1 = new THREE.Mesh(this.chairLegGeo, this.plasticMaterial);
-    leg1.position.set(0, 0.015, 0);
-    chair.add(leg1);
+    // Three merged parts, one per material: a five-star base on casters with
+    // armrests and the back spine, the gas-lift column, and the cushions.
+    const frame = new THREE.Mesh(this.sharedGeo("chair_frame", () => {
+      const parts: [THREE.BufferGeometry, THREE.Matrix4][] = [];
+      const m = (x: number, y: number, z: number, ry = 0, rz = 0) =>
+        new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, ry, rz)), new THREE.Vector3(1, 1, 1));
+      parts.push([new THREE.CylinderGeometry(0.055, 0.065, 0.06, 10), m(0, 0.1, 0)]);
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        const [cx, cz] = [Math.cos(a), Math.sin(a)];
+        // Leg: sloping down from the hub to the caster.
+        parts.push([new THREE.BoxGeometry(0.29, 0.035, 0.045), m(cx * 0.16, 0.075, cz * 0.16, -a, -0.12)]);
+        parts.push([new THREE.CylinderGeometry(0.026, 0.026, 0.035, 8).rotateX(Math.PI / 2), m(cx * 0.3, 0.026, cz * 0.3, -a + Math.PI / 2)]);
+      }
+      parts.push([new THREE.BoxGeometry(0.3, 0.03, 0.3), m(0, 0.41, 0)]); // seat plate
+      parts.push([new THREE.BoxGeometry(0.06, 0.38, 0.03), m(0, 0.6, -0.27)]); // back spine
+      for (const side of [-1, 1]) {
+        parts.push([new THREE.BoxGeometry(0.035, 0.2, 0.04), m(side * 0.27, 0.56, -0.02)]);
+        parts.push([new THREE.BoxGeometry(0.06, 0.03, 0.26), m(side * 0.27, 0.675, 0.0)]);
+      }
+      return mergeParts(parts);
+    }), this.plasticMaterial);
+    chair.add(frame);
 
-    const leg2 = new THREE.Mesh(this.chairLegGeo, this.plasticMaterial);
-    leg2.rotateY(Math.PI / 2);
-    leg2.position.set(0, 0.015, 0);
-    chair.add(leg2);
-
-    // Hydraulic stem cylinder
-    const stem = new THREE.Mesh(this.chairStemGeo, this.metalMaterial);
-    stem.position.set(0, 0.23, 0);
+    const stem = new THREE.Mesh(this.sharedGeo("chair_stem", () => new THREE.CylinderGeometry(0.024, 0.03, 0.3, 8).translate(0, 0.27, 0)), this.metalMaterial);
     chair.add(stem);
 
-    // Padding seat cushion
-    const seat = new THREE.Mesh(this.chairSeatGeo, this.fabricMaterial);
-    seat.position.set(0, 0.46, 0);
-    seat.castShadow = true;
-    chair.add(seat);
-
-    // Seat back support bar (metal support)
-    const backBar = new THREE.Mesh(this.unitBoxGeo, this.metalMaterial);
-    backBar.scale.set(0.1, 0.45, 0.06);
-    backBar.position.set(0, 0.72, -0.22);
-    chair.add(backBar);
-
-    // Backrest pad
-    const backrest = new THREE.Mesh(this.chairBackGeo, this.fabricMaterial);
-    backrest.position.set(0, 0.95, -0.25);
-    backrest.castShadow = true;
-    chair.add(backrest);
+    const cushions = new THREE.Mesh(this.sharedGeo("chair_cushions", () => mergeParts([
+      [new RoundedBoxGeometry(0.5, 0.08, 0.48, 2, 0.03), new THREE.Matrix4().makeTranslation(0, 0.465, 0.01)],
+      [new RoundedBoxGeometry(0.46, 0.52, 0.07, 2, 0.03), new THREE.Matrix4().compose(
+        new THREE.Vector3(0, 0.88, -0.27), new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.1, 0, 0)), new THREE.Vector3(1, 1, 1))],
+    ])), this.fabricMaterial);
+    cushions.castShadow = true;
+    chair.add(cushions);
 
     // If it's tipped over, we rotate the whole chair group onto its side (e.g. 80-90 degrees pitch/roll)
     if (isTipped) {
@@ -6667,31 +6724,20 @@ export class ProceduralMap {
   private createCardboardBoxMesh(rng: SeededRandom): THREE.Group {
     const boxGroup = new THREE.Group();
 
-    // Core box
-    const mainBox = new THREE.Mesh(this.boxGeo, this.cardboardBoxMaterial);
+    // Core box, its edges slightly rounded and crushed
+    const mainBox = new THREE.Mesh(this.sharedGeo("cardboard_box", () => new RoundedBoxGeometry(0.65, 0.65, 0.65, 1, 0.015)), this.cardboardBoxMaterial);
     mainBox.position.set(0, 0.325, 0);
     mainBox.castShadow = true;
     mainBox.receiveShadow = true;
     boxGroup.add(mainBox);
 
-    // Packing tape stripe running across top and sides using unitBoxGeo scaled
-    const tapeTop = new THREE.Mesh(this.unitBoxGeo, this.tapeMaterial);
-    tapeTop.scale.set(0.08, 0.012, 0.66);
-    tapeTop.position.set(0, 0.655, 0);
-    boxGroup.add(tapeTop);
-
-    // Front/Back tape sides
-    // Front tape side
-    const tapeFront = new THREE.Mesh(this.unitBoxGeo, this.tapeMaterial);
-    tapeFront.scale.set(0.08, 0.4, 0.012);
-    tapeFront.position.set(0, 0.45, 0.33);
-    boxGroup.add(tapeFront);
-
-    // Back tape side
-    const tapeBack = new THREE.Mesh(this.unitBoxGeo, this.tapeMaterial);
-    tapeBack.scale.set(0.08, 0.4, 0.012);
-    tapeBack.position.set(0, 0.45, -0.33);
-    boxGroup.add(tapeBack);
+    // Packing tape over the top seam and down the front and back, as one mesh
+    const tape = new THREE.Mesh(this.sharedGeo("cardboard_tape", () => mergeParts([
+      [new THREE.BoxGeometry(0.08, 0.004, 0.652), new THREE.Matrix4().makeTranslation(0, 0.652, 0)],
+      [new THREE.BoxGeometry(0.08, 0.2, 0.004), new THREE.Matrix4().makeTranslation(0, 0.55, 0.326)],
+      [new THREE.BoxGeometry(0.08, 0.2, 0.004), new THREE.Matrix4().makeTranslation(0, 0.55, -0.326)],
+    ])), this.tapeMaterial);
+    boxGroup.add(tape);
 
     return boxGroup;
   }
@@ -6710,28 +6756,23 @@ export class ProceduralMap {
       metalness: 0.88
     }));
 
-    // Main barrel cylinder using shared geometry
-    const body = new THREE.Mesh(this.barrelCylinderGeo, drumMaterial);
-    body.position.set(0, 0.45, 0);
+    // Body, rolling hoops, chimes at both ends and the two bung caps, as one mesh
+    const body = new THREE.Mesh(this.sharedGeo("drum_body", () => {
+      const ring = (y: number, r: number, tube: number): [THREE.BufferGeometry, THREE.Matrix4] =>
+        [new THREE.TorusGeometry(r, tube, 4, 16).rotateX(Math.PI / 2), new THREE.Matrix4().makeTranslation(0, y, 0)];
+      return mergeParts([
+        [new THREE.CylinderGeometry(0.32, 0.32, 0.88, 16), new THREE.Matrix4().makeTranslation(0, 0.45, 0)],
+        ring(0.3, 0.327, 0.016),
+        ring(0.6, 0.327, 0.016),
+        ring(0.012, 0.318, 0.014),
+        ring(0.888, 0.318, 0.014),
+        [new THREE.CylinderGeometry(0.035, 0.035, 0.02, 8), new THREE.Matrix4().makeTranslation(0.19, 0.898, 0.05)],
+        [new THREE.CylinderGeometry(0.022, 0.022, 0.02, 8), new THREE.Matrix4().makeTranslation(-0.2, 0.898, -0.04)],
+      ]);
+    }), drumMaterial);
     body.castShadow = true;
     body.receiveShadow = true;
     drum.add(body);
-
-    // Dynamic metallic structural reinforcement rings (ribs of the oil drum) using shared geometry
-    const rim1 = new THREE.Mesh(this.barrelRimGeo, drumMaterial);
-    rim1.position.set(0, 0.18, 0);
-    rim1.rotation.x = Math.PI / 2;
-    drum.add(rim1);
-
-    const rim2 = new THREE.Mesh(this.barrelRimGeo, drumMaterial);
-    rim2.position.set(0, 0.45, 0);
-    rim2.rotation.x = Math.PI / 2;
-    drum.add(rim2);
-
-    const rim3 = new THREE.Mesh(this.barrelRimGeo, drumMaterial);
-    rim3.position.set(0, 0.72, 0);
-    rim3.rotation.x = Math.PI / 2;
-    drum.add(rim3);
 
     return drum;
   }
@@ -6755,43 +6796,30 @@ export class ProceduralMap {
       metalness: 0.75
     }));
 
-    // Main rigid metal core box using scaled unitBoxGeo
-    const core = new THREE.Mesh(this.unitBoxGeo, panelMaterial);
-    core.scale.set(0.78, 0.78, 0.78);
-    core.position.set(0, 0.39, 0);
+    // Inset steel panels
+    const core = new THREE.Mesh(this.sharedGeo("crate_core", () => new THREE.BoxGeometry(0.76, 0.76, 0.76).translate(0, 0.39, 0)), panelMaterial);
     core.castShadow = true;
     core.receiveShadow = true;
     crate.add(core);
 
-    // Frame struts (horizontal and vertical borders creating paneling look)
-    // Corner struts using scaled unitBoxGeo
-    const positions = [
-      [-0.39, 0.39, -0.39],
-      [0.39, 0.39, -0.39],
-      [-0.39, 0.39, 0.39],
-      [0.39, 0.39, 0.39],
-    ];
-    positions.forEach(([cx, cy, cz]) => {
-      const strut = new THREE.Mesh(this.unitBoxGeo, crateMaterial);
-      strut.scale.set(0.1, 0.8, 0.1);
-      strut.position.set(cx, cy, cz);
-      crate.add(strut);
-    });
-
-    // Cross braces on the crate faces representing industrial reinforced framing
-    // Front cross
-    const frontCross = new THREE.Mesh(this.unitBoxGeo, crateMaterial);
-    frontCross.scale.set(0.04, 1.05, 0.04);
-    frontCross.rotation.z = Math.PI / 4;
-    frontCross.position.set(0, 0.39, 0.395);
-    crate.add(frontCross);
-
-    // Back cross
-    const backCross = new THREE.Mesh(this.unitBoxGeo, crateMaterial);
-    backCross.scale.set(0.04, 1.05, 0.04);
-    backCross.rotation.z = -Math.PI / 4;
-    backCross.position.set(0, 0.39, -0.395);
-    crate.add(backCross);
+    // The whole angle-iron frame (corner posts, top and bottom rails, the
+    // diagonal braces on two faces) as one mesh
+    const frame = new THREE.Mesh(this.sharedGeo("crate_frame", () => {
+      const parts: [THREE.BufferGeometry, THREE.Matrix4][] = [];
+      const at = (x: number, y: number, z: number, rz = 0) =>
+        new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, rz)), new THREE.Vector3(1, 1, 1));
+      for (const [cx, cz] of [[-0.37, -0.37], [0.37, -0.37], [-0.37, 0.37], [0.37, 0.37]]) {
+        parts.push([new THREE.BoxGeometry(0.07, 0.8, 0.07), at(cx, 0.4, cz)]);
+      }
+      for (const y of [0.035, 0.765]) {
+        for (const z of [-0.37, 0.37]) parts.push([new THREE.BoxGeometry(0.8, 0.06, 0.06), at(0, y, z)]);
+        for (const x of [-0.37, 0.37]) parts.push([new THREE.BoxGeometry(0.06, 0.06, 0.8), at(x, y, 0)]);
+      }
+      parts.push([new THREE.BoxGeometry(0.035, 1.0, 0.035), at(0, 0.4, 0.385, Math.PI / 4)]);
+      parts.push([new THREE.BoxGeometry(0.035, 1.0, 0.035), at(0, 0.4, -0.385, -Math.PI / 4)]);
+      return mergeParts(parts);
+    }), crateMaterial);
+    crate.add(frame);
 
     return crate;
   }
@@ -7365,6 +7393,7 @@ export class ProceduralMap {
 
     const hSize = this.cellSize;
     const maxVisibleDistanceSq = this.maxVisibleDistance * this.maxVisibleDistance;
+    const detailDistanceSq = (this.maxVisibleDistance * 0.6) ** 2;
 
     const pGx = Math.floor(playerX / hSize);
     const pGz = Math.floor(playerZ / hSize);
@@ -7408,6 +7437,8 @@ export class ProceduralMap {
           if (!cellGroup.visible) {
             cellGroup.visible = true;
           }
+          const details: THREE.Object3D | undefined = cellGroup.userData.details;
+          if (details) details.visible = distSq <= detailDistanceSq;
 
           if (!cellGroup.userData.aabb) {
             const fY = this.floorHeight[gx]?.[gz] ?? 0;
@@ -7683,14 +7714,7 @@ export class ProceduralMap {
     // Dispose prop geometries
     if (this.dividerGeo) this.dividerGeo.dispose();
     if (this.partitionBaseGeo) this.partitionBaseGeo.dispose();
-    if (this.chairSeatGeo) this.chairSeatGeo.dispose();
-    if (this.chairBackGeo) this.chairBackGeo.dispose();
-    if (this.chairStemGeo) this.chairStemGeo.dispose();
-    if (this.chairLegGeo) this.chairLegGeo.dispose();
-    if (this.boxGeo) this.boxGeo.dispose();
     if (this.unitBoxGeo) this.unitBoxGeo.dispose();
-    if (this.barrelCylinderGeo) this.barrelCylinderGeo.dispose();
-    if (this.barrelRimGeo) this.barrelRimGeo.dispose();
     if (this.boilerPipeVerticalGeo) this.boilerPipeVerticalGeo.dispose();
     if (this.boilerPipeElbowGeo) this.boilerPipeElbowGeo.dispose();
     if (this.boilerDialPlateGeo) this.boilerDialPlateGeo.dispose();

@@ -230,7 +230,30 @@ function levelAtmosphere(level: number, funStage: FunStage = 0) {
     case POOLROOMS_LEVEL: // Classic Poolrooms: bright cyan tiles and clear water
       return { ambientColor: 0xfff8e6, ambientIntensity: 3.2, fogColor: 0xd9e8d2, dimmedFogColor: 0x5e7f78 };
     default: // Level 0: classic yellow
-      return { ambientColor: 0xeae2c2, ambientIntensity: 1.05, fogColor: 0xede4c0, dimmedFogColor: 0x5c5740 };
+      return { ambientColor: 0xeae2c2, ambientIntensity: 1.05, fogColor: 0xd2bf80, dimmedFogColor: 0x5c5740 };
+  }
+}
+
+/**
+ * How the VHS pass turns the scene's linear light into screen colour.
+ *
+ * `filmic` levels get exposure, an ACES curve and a proper sRGB encode: light
+ * falls off smoothly, lamps roll off instead of clipping, and the dark end
+ * keeps its gradients. The open-air and cartoon levels were art-directed
+ * against the raw linear output (their skies and toon shaders write display
+ * colours directly) and keep it.
+ */
+function levelGrade(level: number): { filmic: boolean; exposure: number } {
+  switch (level) {
+    case 0: return { filmic: true, exposure: 0.85 };
+    case 1: return { filmic: true, exposure: 0.9 };
+    case 2: return { filmic: true, exposure: 0.85 };
+    case ELECTRICAL_ROOM_LEVEL: return { filmic: true, exposure: 0.75 };
+    case ABANDONED_OFFICE_LEVEL: return { filmic: true, exposure: 0.85 };
+    // Its darkness used to come from the raw linear output; keep it that dark.
+    case LIGHTS_OUT_LEVEL: return { filmic: true, exposure: 0.3 };
+    case LEVEL_G: return { filmic: true, exposure: 0.85 };
+    default: return { filmic: false, exposure: 1 };
   }
 }
 
@@ -709,11 +732,17 @@ export class GameEngine {
   private initVHSPostProcessing() {
     const { width: targetW, height: targetH } = this.getSceneBufferSize();
 
-    // 1. Create WebGLRenderTarget for capturing the main 3D scene output
+    // 1. Create WebGLRenderTarget for capturing the main 3D scene output.
+    // Half-float where the GPU can render to it (almost all WebGL2 devices):
+    // the scene is linear light, and 8 bits per channel bands badly in the
+    // dark gradients and clips every lamp at 1.0 before the tone curve.
+    const ext = this.renderer.extensions;
+    const hdr = ext.has("EXT_color_buffer_float") || ext.has("EXT_color_buffer_half_float");
     this.vhsRenderTarget = new THREE.WebGLRenderTarget(targetW, targetH, {
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat
+      format: THREE.RGBAFormat,
+      type: hdr ? THREE.HalfFloatType : THREE.UnsignedByteType,
     });
 
     // 2. Setup the post-processing orthographic scene and camera for full screen quad rendering
@@ -738,7 +767,37 @@ export class GameEngine {
       uniform float uDread;
       uniform float uFlash;
       uniform float uBlack;
+      uniform float uExposure;
       varying vec2 vUv;
+
+      // The scene as the rest of the pass expects it: exposed linear light on
+      // filmic levels, and the old clipped 0..1 values everywhere else.
+      vec3 sceneAt(vec2 p) {
+        vec3 c = texture2D(tDiffuse, p).rgb;
+        #ifdef FILMIC
+        return c * uExposure;
+        #else
+        return min(c, vec3(1.0));
+        #endif
+      }
+
+      // Light above the halation threshold at p. Capped, so an HDR lamp
+      // blooms about as far as a clipped one did instead of swallowing its
+      // own shape.
+      vec3 glowTap(vec2 p) {
+        return clamp(sceneAt(p) - 0.68, 0.0, 0.9);
+      }
+
+      #ifdef FILMIC
+      // ACES filmic fit (Narkowicz): a soft toe that keeps the blacks deep and
+      // a shoulder that rolls lamps off instead of clipping them.
+      vec3 acesFilm(vec3 x) {
+        return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+      }
+      vec3 linearToSRGB(vec3 c) {
+        return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+      }
+      #endif
 
       float random(vec2 p) {
         return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
@@ -775,9 +834,9 @@ export class GameEngine {
         float shiftAmt = 0.0012 + distFromCenter * 0.0018 + (0.016 * insanity) + 0.009 * uDread + 0.035 * uFlash;
         vec2 rgbShift = vec2(shiftAmt, 0.0);
         
-        float r = texture2D(tDiffuse, uv - rgbShift).r;
-        float g = texture2D(tDiffuse, uv).g;
-        float b = texture2D(tDiffuse, uv + rgbShift).b;
+        float r = sceneAt(uv - rgbShift).r;
+        float g = sceneAt(uv).g;
+        float b = sceneAt(uv + rgbShift).b;
         vec3 color = vec3(r, g, b);
 
         #ifdef CAMERA_FX
@@ -786,15 +845,19 @@ export class GameEngine {
         // low-res scene buffer, only above a soft threshold.
         vec2 px = 1.0 / uResolution;
         vec3 glow = vec3(0.0);
-        glow += max(texture2D(tDiffuse, uv + vec2( 2.5,  0.0) * px).rgb - 0.68, 0.0);
-        glow += max(texture2D(tDiffuse, uv + vec2(-2.5,  0.0) * px).rgb - 0.68, 0.0);
-        glow += max(texture2D(tDiffuse, uv + vec2( 0.0,  2.5) * px).rgb - 0.68, 0.0);
-        glow += max(texture2D(tDiffuse, uv + vec2( 0.0, -2.5) * px).rgb - 0.68, 0.0);
-        glow += max(texture2D(tDiffuse, uv + vec2( 4.5,  4.5) * px).rgb - 0.68, 0.0);
-        glow += max(texture2D(tDiffuse, uv + vec2(-4.5,  4.5) * px).rgb - 0.68, 0.0);
-        glow += max(texture2D(tDiffuse, uv + vec2( 4.5, -4.5) * px).rgb - 0.68, 0.0);
-        glow += max(texture2D(tDiffuse, uv + vec2(-4.5, -4.5) * px).rgb - 0.68, 0.0);
+        glow += glowTap(uv + vec2( 2.5,  0.0) * px);
+        glow += glowTap(uv + vec2(-2.5,  0.0) * px);
+        glow += glowTap(uv + vec2( 0.0,  2.5) * px);
+        glow += glowTap(uv + vec2( 0.0, -2.5) * px);
+        glow += glowTap(uv + vec2( 4.5,  4.5) * px);
+        glow += glowTap(uv + vec2(-4.5,  4.5) * px);
+        glow += glowTap(uv + vec2( 4.5, -4.5) * px);
+        glow += glowTap(uv + vec2(-4.5, -4.5) * px);
         color += glow * vec3(0.2, 0.19, 0.16);
+        #endif
+
+        #ifdef FILMIC
+        color = linearToSRGB(acesFilm(color));
         #endif
 
         // C. OVERLAID CRT SCANLINES (Drastically softened and static to ensure excellent display readability)
@@ -847,11 +910,12 @@ export class GameEngine {
         uSanity: { value: 1.0 },
         uDread: { value: 0 },
         uFlash: { value: 0 },
-        uBlack: { value: 0 }
+        uBlack: { value: 0 },
+        uExposure: { value: 1 },
       },
       vertexShader: vertexShader,
       fragmentShader: fragmentShader,
-      defines: this.quality.bloom ? { CAMERA_FX: "" } : {},
+      defines: this.vhsDefines(),
       depthWrite: false,
       depthTest: false
     });
@@ -860,6 +924,26 @@ export class GameEngine {
     const quadGeo = new THREE.PlaneGeometry(2, 2);
     const quadMesh = new THREE.Mesh(quadGeo, this.vhsMaterial);
     this.vhsScene.add(quadMesh);
+  }
+
+  private vhsDefines(): Record<string, string> {
+    const defines: Record<string, string> = {};
+    if (this.quality.bloom) defines.CAMERA_FX = "";
+    if (levelGrade(this.level).filmic) defines.FILMIC = "";
+    return defines;
+  }
+
+  /** Points the VHS pass at the current level's grade and quality preset (recompiles only on a change). */
+  private applyLevelGrade() {
+    if (!this.vhsMaterial) return;
+    this.vhsMaterial.uniforms.uExposure.value = levelGrade(this.level).exposure;
+    const next = this.vhsDefines();
+    const current = this.vhsMaterial.defines ?? {};
+    const same = Object.keys(next).length === Object.keys(current).length && Object.keys(next).every((k) => k in current);
+    if (!same) {
+      this.vhsMaterial.defines = next;
+      this.vhsMaterial.needsUpdate = true;
+    }
   }
 
   /**
@@ -877,6 +961,7 @@ export class GameEngine {
     const atmosphere = levelAtmosphere(this.level, this.funDirector?.stage ?? 0);
     this.scene.background = new THREE.Color(atmosphere.fogColor);
     this.scene.fog = new THREE.FogExp2(atmosphere.fogColor, this.fogDensityFor(this.level));
+    this.applyLevelGrade();
 
     this.ambientLight = new THREE.AmbientLight(atmosphere.ambientColor, atmosphere.ambientIntensity);
     this.scene.add(this.ambientLight);
@@ -1010,16 +1095,14 @@ export class GameEngine {
       this.flashlight.castShadow = this.quality.shadows;
     }
     this.applySceneBufferSize();
-    if (this.vhsMaterial && this.quality.bloom !== ("CAMERA_FX" in this.vhsMaterial.defines)) {
-      this.vhsMaterial.defines = this.quality.bloom ? { CAMERA_FX: "" } : {};
-      this.vhsMaterial.needsUpdate = true;
-    }
+    this.applyLevelGrade();
 
     // Streaming radius and fog follow the preset; force a re-cull so the change
     // takes effect without waiting for the player to walk another 2.5m.
     if (this.map && this.player) {
       this.map.quality = this.quality;
       this.map.maxVisibleDistance = this.quality.viewDistance * (this.level === 1 ? 1.15 : 1.0);
+      this.map.refreshQuality();
       this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z, true);
     }
     if (this.scene.fog instanceof THREE.FogExp2) {
@@ -2927,6 +3010,7 @@ export class GameEngine {
     this.teardownHotel();
     this.teardownLevelG();
     this.level = level;
+    this.applyLevelGrade();
     this.level4DoorOpen = false;
     this.megKnown = [false, false, false];
     this.officeThunderIn = 6 + Math.random() * 8;

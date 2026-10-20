@@ -26,7 +26,8 @@ import * as THREE from "three";
 /** Radiance of each part of the fake room, relative to the ambient tint. */
 const CEILING = 1.45;
 const WALLS = 0.85;
-const FLOOR = 0.3;
+/** Carpet and lower walls bounce a fair share back up, so ceilings don't go black. */
+const FLOOR = 0.5;
 const STRIPS = 5.0;
 
 export class RoomEnvironment {
