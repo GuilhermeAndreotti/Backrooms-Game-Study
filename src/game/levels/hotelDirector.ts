@@ -44,13 +44,26 @@ export class HotelDirector {
 
   constructor(readonly world: HotelWorld, private host: HotelHost) { host.sync(); }
   get now() { return Date.now() + this.clockOffset; }
+  private clockSynced = false;
+  /**
+   * Server time from a message stamped `now`. Each sample reads late by that message's
+   * latency, so the largest offset (the fastest message) is the best one: jump up to it,
+   * drift down only slowly, and the hotel's clock doesn't wobble with every packet.
+   */
+  private syncClock(now: number) {
+    const sample = now - Date.now();
+    this.clockOffset = !this.clockSynced || sample > this.clockOffset ? sample : this.clockOffset + (sample - this.clockOffset) * 0.05;
+    this.clockSynced = true;
+  }
   get blackout() { return this.world.state.stairAt > this.now; }
-  get immune() { return this.blackout || this.world.state.exitOpen || !this.world.ready; }
+  get immune() { return this.world.calm; }
+  /** The explorer the Bellman appeared for (the AI walks him to them, not to whoever is nearest). */
+  get bellmanTargetId() { return this.runtime.mode ? this.runtime.target : ""; }
 
   applyState(state: HotelState, now: number, runtime?: HotelWorldState) {
     if (state.epoch < this.world.state.epoch || this.world.ready && state.epoch === this.world.state.epoch && state.revision < this.world.state.revision) return;
     const previous = this.world.state, wasReady = this.world.ready;
-    this.clockOffset = now - Date.now();
+    this.syncClock(now);
     this.world.state = state; this.world.ready = true; this.world.now = this.now;
     if (runtime) this.runtime = { ...runtime, dwell: { ...runtime.dwell } };
     if (state.collected > previous.collected) this.host.audio.playHotelSound("bell");
@@ -64,7 +77,7 @@ export class HotelDirector {
   }
   applyWorld(world: HotelWorldState, now: number) {
     if (world.at < this.runtime.at && this.world.ready) return;
-    this.clockOffset = now - Date.now();
+    this.syncClock(now);
     this.runtime = { ...world, dwell: { ...world.dwell } };
   }
   private near(p: HotelObserver, pos: { x: number; z: number }, range = 4.5) {
@@ -111,9 +124,10 @@ export class HotelDirector {
     const { cards, order } = this.world.puzzle, found = this.world.state.cards;
     return order.map((i, slot) => `${["I", "II", "III", "IV"][slot]} ${cards[i].suit} ${found & (1 << i) ? cards[i].digit : "?"}`).join(" · ");
   }
-  /** Gauge reading beside valve `index` and its current setting. */
-  valveInfo(index: number): { psi: number; setting: Pressure | null } {
-    return { psi: this.world.puzzle.psi[index], setting: this.world.state.valves[index] };
+  /** Gauge reading beside valve `index`, its current setting and whether that setting is the right one. */
+  valveInfo(index: number): { psi: number; setting: Pressure | null; correct: boolean } {
+    const setting = this.world.state.valves[index];
+    return { psi: this.world.puzzle.psi[index], setting, correct: setting === this.world.puzzle.valves[index] };
   }
   /** What the group should do next: a title line and a hint line, shared by every explorer (all from room state). */
   objective(): string | null {
@@ -168,7 +182,7 @@ export class HotelDirector {
   private observed(pos: { x: number; z: number }, observers: HotelObserver[]) {
     return observers.some(p => {
       const dx = pos.x - p.x, dz = pos.z - p.z, distance = Math.hypot(dx, dz);
-      return distance < 7 || distance < 45 && (dx * p.lookX + dz * p.lookZ) / distance > -0.2
+      return distance < 4 || distance < 45 && (dx * p.lookX + dz * p.lookZ) / distance > -0.2
         && hotelSightClear(p.x, p.z, pos.x, pos.z, (x, z) => this.world.isBlocked(x, z));
     });
   }
@@ -204,9 +218,12 @@ export class HotelDirector {
         const solved = zone === "hall" ? s.beverlyOpen : zone === "beverly" ? !!s.stairAt : zone === "boiler" ? s.exitOpen : false;
         const lingered = solved && now - (w.dwell[target.id]?.since ?? now) > 80000;
         if (now > w.until - BELLMAN_STAY + 7000 && (noisy || lingered || this.world.state.steamUntil > now)) w.mode = 2;
-        // ...and is gone a few seconds after he's out of sight again (or once his time is up), never in plain view.
+        // ...and is gone a few seconds after he's out of sight again (or once his time is up), never in
+        // plain view. He stops beyond observed()'s always-near radius, so standing by him can't keep
+        // him forever; 15 s past his time he goes as soon as nobody is looking right at him.
         const lost = w.lastSeen > 0 && now - w.lastSeen > 6000;
-        if ((now > w.until || lost) && !this.observed(pos, observers)) {
+        const gone = (lost || now > w.until) && !this.observed(pos, observers);
+        if (gone || now > w.until + 15000 && !this.seen(pos, observers)) {
           w.mode = 0; w.nextAt = now + BELLMAN_INTERVAL; w.target = "";
         }
       } else if (w.mode) { w.mode = 0; w.nextAt = now + BELLMAN_INTERVAL; }
@@ -221,6 +238,7 @@ export class HotelDirector {
   }
   update(delta: number) {
     const now = this.now, p = this.host.player(), s = this.world.state;
+    this.world.setPlayerPosition(p.x, p.z);
     if (!this.world.ready) { if (now > this.nextSync) { this.nextSync = now + 1500; this.host.sync(); } return; }
     const observers = this.host.observers();
     const bellman = this.host.entities().find(e => e.type === EntityType.BELLMAN);

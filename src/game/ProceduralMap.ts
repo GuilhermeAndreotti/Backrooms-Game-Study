@@ -3537,7 +3537,7 @@ export class ProceduralMap {
         }
         // Level FUN's doors: a shut one fills its whole cell.
         if (this.fun && this.fun.isGateClosed(gx, gz)) return true;
-        if (this.hotel?.isBlocked(gx, gz)) return true;
+        if (this.hotel?.blocksMovement(gx, gz)) return true;
         // Level 94's gates likewise (the barricade, the portcullis, the King's door).
         if (this.town && this.town.isBlocked(gx, gz)) return true;
         if (!ignorePoolGate && this.isPoolCellBlocked(gx, gz)) return true;

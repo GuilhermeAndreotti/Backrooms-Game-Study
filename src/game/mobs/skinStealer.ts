@@ -14,6 +14,8 @@
  */
 
 import * as THREE from "three";
+import { bake, hand } from "./anatomy";
+import { torsoGeometry } from "./creatureSkin";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
 import { animateBiped } from "./anim";
@@ -33,40 +35,79 @@ export const skinStealer: MobDefinition = {
     const V = ctx.V;
     const suitMat = new THREE.MeshStandardMaterial({ color: 0xb39a3c, roughness: 0.85 });
     ctx.addTintMaterial(suitMat);
+    // Rubber: gloves, boots, belt, the filter pack.
+    const trimMat = ctx.smat("stealer_trim", () => new THREE.MeshStandardMaterial({ color: 0x23221d, roughness: 0.55 }));
 
     const spine = ctx.joint("spine", 0, -0.36, 0);
-    const torso = new THREE.Mesh(ctx.sgeo("stealer_torso", () => new THREE.CylinderGeometry(0.19, 0.23, 0.55, 8)), suitMat);
+    const torso = new THREE.Mesh(ctx.sgeo("stealer_torso", () => torsoGeometry(0.21, 0.19, 0.55)), suitMat);
     torso.position.set(0, -0.1, 0);
     ctx.put(spine, torso);
+    // Baggy suit: puffed shoulders and a sagging seat.
+    bake(ctx, spine, suitMat, "stealer_suit", (p) => {
+      for (const s of [-1, 1]) p.blob(V(s * 0.2, 0.1, 0), 0.085, [1, 0.9, 1]);
+      p.blob(V(0, -0.36, -0.03), 0.17, [1.15, 0.6, 0.95]);
+    });
+    // The kit a real explorer would carry: belt, zip, collar ring, a filter
+    // pack with twin canisters and a hose up to the hood.
+    bake(ctx, spine, trimMat, "stealer_kit", (p) => {
+      p.lathe(V(0, -0.33, 0), [[0.2, -0.025], [0.212, -0.015], [0.212, 0.015], [0.2, 0.025]]);
+      p.lathe(V(0, 0.17, 0), [[0.11, -0.02], [0.13, -0.01], [0.13, 0.015], [0.115, 0.025]]);
+      p.limb(V(0, 0.14, 0.205), V(0, -0.3, 0.19), 0.008, 1, 5);
+      p.box(V(0, -0.06, -0.24), [0.26, 0.34, 0.1]);
+      for (const s of [-1, 1]) p.limb(V(s * 0.075, -0.24, -0.3), V(s * 0.075, 0.08, -0.3), 0.048, 1);
+      p.chain([V(0.075, 0.1, -0.3), V(0.16, 0.2, -0.2), V(0.13, 0.28, 0.02), V(0.06, 0.3, 0.12)], 0.016, 0.016);
+    });
 
-    // Arms — left notably longer, per the original design
-    const armL = ctx.joint("armL", -0.17, 0.1, 0, spine);
-    ctx.limbIn(armL, suitMat, V(-0.17, 0.1, 0), V(-0.55, -0.35, 0.05), 0.055);
-    const foreL = ctx.joint("foreL", -0.55, -0.35, 0.05, armL);
-    ctx.limbIn(foreL, suitMat, V(-0.55, -0.35, 0.05), V(-0.62, -0.8, 0.08), 0.045);
-    const armR = ctx.joint("armR", 0.17, 0.1, 0, spine);
-    ctx.limbIn(armR, suitMat, V(0.17, 0.1, 0), V(0.5, -0.15, 0), 0.055);
-    const foreR = ctx.joint("foreR", 0.5, -0.15, 0, armR);
-    ctx.limbIn(foreR, suitMat, V(0.5, -0.15, 0), V(0.6, -0.62, 0), 0.045);
+    // Arms — left notably longer, per the original design — in gloves whose
+    // fingers are longer than any hand inside them could be.
+    const arms: [string, string, THREE.Vector3, THREE.Vector3, THREE.Vector3, number][] = [
+      ["armL", "foreL", V(-0.17, 0.1, 0), V(-0.55, -0.35, 0.05), V(-0.62, -0.8, 0.08), 0.22],
+      ["armR", "foreR", V(0.17, 0.1, 0), V(0.5, -0.15, 0), V(0.6, -0.62, 0), 0.17],
+    ];
+    for (const [armName, foreName, shoulder, elbow, wrist, fingerLen] of arms) {
+      const s = Math.sign(shoulder.x);
+      const arm = ctx.joint(armName, shoulder.x, shoulder.y, shoulder.z, spine);
+      ctx.limbIn(arm, suitMat, shoulder, elbow, 0.058, 0.9);
+      const fore = ctx.joint(foreName, elbow.x, elbow.y, elbow.z, arm);
+      ctx.limbIn(fore, suitMat, elbow, wrist, 0.05, 0.85);
+      bake(ctx, fore, trimMat, `stealer_glove_${s}`, (p) => {
+        const cuff = wrist.clone().lerp(elbow, 0.12);
+        p.limb(cuff, wrist, 0.052, 0.85);
+        hand(p, { wrist, dir: wrist.clone().sub(elbow), across: V(0, 0, s), fingers: 4, len: fingerLen, r: 0.016, curl: 0.35 });
+      });
+    }
 
-    // Legs: hip -> knee -> foot on the floor
+    // Legs: hip -> knee -> heavy boots on the floor
     for (const side of [-1, 1]) {
       const n = side < 0 ? "L" : "R";
       const leg = ctx.joint(`leg${n}`, side * 0.1, -0.38, 0);
-      ctx.limbIn(leg, suitMat, V(side * 0.1, -0.38, 0), V(side * 0.12, -0.84, 0.03), 0.07);
+      ctx.limbIn(leg, suitMat, V(side * 0.1, -0.38, 0), V(side * 0.12, -0.84, 0.03), 0.075, 0.85);
       const shin = ctx.joint(`shin${n}`, side * 0.12, -0.84, 0.03, leg);
-      ctx.limbIn(shin, suitMat, V(side * 0.12, -0.84, 0.03), V(side * 0.14, -1.33, 0), 0.06);
+      ctx.limbIn(shin, suitMat, V(side * 0.12, -0.84, 0.03), V(side * 0.135, -1.12, 0.01), 0.065, 0.95);
+      bake(ctx, shin, trimMat, `stealer_boot_${side}`, (p) => {
+        p.limb(V(side * 0.135, -1.1, 0.01), V(side * 0.14, -1.28, 0.0), 0.07, 1);
+        p.blob(V(side * 0.14, -1.29, 0.07), 0.068, [1, 0.6, 1.55]);
+      });
     }
 
+    // The face: pale skin worn like a mask, almost right — brow, nose,
+    // cheekbones and chin all slightly too sharp — on a slack neck.
     const head = ctx.joint("head", 0, 0.22, 0, spine);
-    const headMat = ctx.smat("stealer_head", () => new THREE.MeshStandardMaterial({ color: 0xe5e1da, roughness: 0.6 }));
-    const skull = new THREE.Mesh(ctx.sgeo("stealer_head_geo", () => new THREE.SphereGeometry(0.16, 10, 8)), headMat);
+    const headMat = ctx.smat("stealer_head", () => new THREE.MeshStandardMaterial({ color: 0xd9d2c5, roughness: 0.55 }));
+    const skull = new THREE.Mesh(ctx.sgeo("stealer_head_geo", () => new THREE.SphereGeometry(0.16, 16, 12)), headMat);
     skull.position.set(0, 0.38, 0);
     ctx.put(head, skull);
+    bake(ctx, head, headMat, "stealer_face", (p) => {
+      p.limb(V(0, 0.18, 0), V(0, 0.29, 0.03), 0.07, 0.9);
+      p.limb(V(-0.065, 0.432, 0.13), V(0.065, 0.432, 0.13), 0.02, 1);
+      p.limb(V(0, 0.42, 0.155), V(0, 0.37, 0.172), 0.019, 0.8);
+      for (const s of [-1, 1]) p.blob(V(s * 0.072, 0.37, 0.118), 0.032, [1, 0.75, 0.9]);
+      p.blob(V(0, 0.29, 0.12), 0.042, [1, 0.8, 0.9]);
+    });
 
     // Sagging hood — a squashed half-dome sitting slightly back on the head
     const hoodMat = ctx.smat("stealer_hood", () => new THREE.MeshStandardMaterial({ color: 0x85722b, roughness: 0.9, side: THREE.DoubleSide }));
-    const hood = new THREE.Mesh(ctx.sgeo("stealer_hood_geo", () => new THREE.SphereGeometry(0.19, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.6)), hoodMat);
+    const hood = new THREE.Mesh(ctx.sgeo("stealer_hood_geo", () => new THREE.SphereGeometry(0.19, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.6)), hoodMat);
     hood.position.set(0, 0.42, -0.02);
     hood.rotation.x = 0.15;
     ctx.put(head, hood);
@@ -78,7 +119,7 @@ export const skinStealer: MobDefinition = {
     mouth.position.set(0, 0.31, 0.14);
     ctx.put(jaw, mouth);
 
-    const eyeGeo = ctx.sgeo("stealer_eye_geo", () => new THREE.SphereGeometry(0.022, 6, 6));
+    const eyeGeo = ctx.sgeo("stealer_eye_geo", () => new THREE.SphereGeometry(0.022, 8, 6));
     const calmMat = ctx.smat("stealer_calm_eye", () => new THREE.MeshStandardMaterial({ color: 0x0c0a09 }));
     const calm = new THREE.Group();
     const cL = new THREE.Mesh(eyeGeo, calmMat); cL.position.set(-0.05, 0.4, 0.14); calm.add(cL);

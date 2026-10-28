@@ -18,6 +18,7 @@
  */
 
 import * as THREE from "three";
+import { bake } from "./anatomy";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
 import { animateBiped } from "./anim";
@@ -45,27 +46,50 @@ export const sombra: MobDefinition = {
 
   build(ctx) {
     const V = ctx.V;
-    const mat = ctx.smat("sombra_body", () => new THREE.MeshStandardMaterial({ color: 0x030303, roughness: 1.0, metalness: 0 }));
+    // Wet, tar-black: it should catch a glint of the flashlight and nothing else.
+    const mat = ctx.smat("sombra_body", () => new THREE.MeshStandardMaterial({ color: 0x040404, roughness: 0.35, metalness: 0 }));
 
-    // A simple, featureless humanoid mass — deliberately low detail, so it
-    // reads as a shapeless dark blob rather than a creature with anatomy.
+    // A shapeless humanoid mass — no anatomy, just a lumpy, sagging body
+    // with strands of itself hanging off it, so it reads as something
+    // poured rather than a creature with bones.
     const spine = ctx.joint("spine", 0, -0.4, 0);
-    ctx.limbIn(spine, mat, V(0, 0.45, 0), V(0, -0.4, 0), 0.19, 0.85);
+    bake(ctx, spine, mat, "sombra_mass", (p) => {
+      p.limb(V(0, 0.45, 0), V(0, -0.4, 0), 0.19, 0.85);
+      p.blob(V(0.05, 0.2, 0.06), 0.17, [1.1, 1, 0.9]);
+      p.blob(V(-0.07, -0.05, -0.04), 0.18, [1, 1.1, 0.9]);
+      p.blob(V(0.02, -0.32, 0.02), 0.19, [1.15, 0.8, 1]);
+      p.blob(V(-0.1, 0.36, -0.02), 0.11);
+      // Strands of tar drooping off the trunk.
+      for (const [x, z, len] of [[0.14, 0.08, 0.35], [-0.16, -0.05, 0.45], [0.05, -0.15, 0.3], [-0.04, 0.16, 0.25]] as const) {
+        p.chain([V(x, 0.0, z), V(x * 1.15, -0.2, z * 1.1), V(x * 1.2, -len, z * 1.15)], 0.035, 0.008);
+      }
+    });
     for (const side of [-1, 1]) {
       const n = side < 0 ? "L" : "R";
       const arm = ctx.joint(`arm${n}`, side * 0.02, 0.35, 0, spine);
       ctx.limbIn(arm, mat, V(side * 0.02, 0.35, 0), V(side * 0.18, 0.02, 0.03), 0.09);
       const fore = ctx.joint(`fore${n}`, side * 0.18, 0.02, 0.03, arm);
       ctx.limbIn(fore, mat, V(side * 0.18, 0.02, 0.03), V(side * 0.28, -0.3, 0.05), 0.08);
+      // Fingers that run like melting wax, and a drip off the elbow.
+      bake(ctx, fore, mat, `sombra_hand_${side}`, (p) => {
+        for (let f = 0; f < 4; f++) {
+          const o = (f - 1.5) * 0.025;
+          p.chain([V(side * 0.28, -0.3, 0.05 + o), V(side * (0.3 + Math.abs(o)), -0.45, 0.07 + o * 1.4), V(side * (0.31 + Math.abs(o)), -0.58 - f * 0.02, 0.08 + o * 1.6)], 0.022, 0.004);
+        }
+        p.chain([V(side * 0.19, 0.0, 0.0), V(side * 0.2, -0.2, -0.02), V(side * 0.2, -0.32, -0.03)], 0.03, 0.006);
+      });
       const leg = ctx.joint(`leg${n}`, side * 0.06, -0.4, 0);
       ctx.limbIn(leg, mat, V(side * 0.06, -0.4, 0), V(side * 0.08, -0.86, 0.02), 0.11);
       const shin = ctx.joint(`shin${n}`, side * 0.08, -0.86, 0.02, leg);
-      ctx.limbIn(shin, mat, V(side * 0.08, -0.86, 0.02), V(side * 0.1, -1.33, 0), 0.1);
+      ctx.limbIn(shin, mat, V(side * 0.08, -0.86, 0.02), V(side * 0.1, -1.28, 0), 0.1, 1.15);
+      // It doesn't stand on feet: it pools where it touches the floor.
+      bake(ctx, shin, mat, `sombra_pool_${side}`, (p) => p.blob(V(side * 0.1, -1.31, 0.03), 0.14, [1.1, 0.18, 1.3]));
     }
 
     const head = ctx.joint("head", 0, 0.45, 0, spine);
-    const skull = new THREE.Mesh(ctx.sgeo("sombra_head", () => new THREE.SphereGeometry(0.17, 8, 6)), mat);
-    skull.position.set(0, 0.58, 0);
+    const skull = new THREE.Mesh(ctx.sgeo("sombra_head", () => new THREE.SphereGeometry(0.17, 16, 12)), mat);
+    skull.position.set(0, 0.58, 0.02);
+    skull.scale.set(0.95, 1.1, 1);
     ctx.put(head, skull);
   },
 

@@ -57,6 +57,8 @@ export const enUS: Record<MessageKey, string> = {
   "hotel.valveChart": "Below 60 PSI → HIGH · 60 to 120 → MEDIUM · Above 120 → LOW",
   "hotel.valveCurrent": "Current setting: {setting}",
   "hotel.valveUnset": "none",
+  "hotel.valveRight": "Pressure steady. This valve is set right.",
+  "hotel.valveWrong": "Wrong pressure! Steam is about to vent — check the gauge against the chart.",
   "hotel.close": "Close · ESC / E",
   "game.resumeClick": "Click to return to the game",
   "game.resumeEsc": "ESC opens the pause menu",

@@ -7,7 +7,7 @@ export interface HotelPanelInfo {
   /** Reception code as the room has found it ("I ♠ 7 · II ♦ ? ..."). */
   hint: string | null;
   /** The valve's gauge reading and current setting (valve panels only). */
-  valve: { psi: number; setting: Pressure | null } | null;
+  valve: { psi: number; setting: Pressure | null; correct: boolean } | null;
 }
 
 const SETTINGS = ["LOW", "MEDIUM", "HIGH"] as const;
@@ -70,7 +70,10 @@ export function HotelPanelModal({ panel, feedback, info, onSubmit, onClose }: {
           {SETTINGS.map((label, i) => <button key={label} type="button" aria-pressed={setting === i} onClick={() => setSetting(i as Pressure)} className={`flex-1 border p-3 ${setting === i ? "bg-[#aa854d] text-black" : "border-[#aa854d]"}`}>{label}</button>)}
         </div>
       </>}
-      <p aria-live="polite" className="my-3 min-h-10 text-sm">{feedback !== "idle" ? t(`hotel.${feedback}`) : ""}</p>
+      <p aria-live="polite" className="my-3 min-h-10 text-sm">{feedback === "idle" ? ""
+        // A turned valve says whether the pressure is now right (read fresh: the snapshot came in just before the reply).
+        : feedback === "accepted" && panel.kind === "valve" ? t(info().valve?.correct ? "hotel.valveRight" : "hotel.valveWrong")
+        : t(`hotel.${feedback}`)}</p>
       <button disabled={feedback === "pending" || panel.kind === "code" && code.length !== 4 || panel.kind === "valve" && valve?.setting === setting} className="w-full bg-[#aa854d] p-3 font-bold text-black disabled:opacity-40">{t("hotel.confirm")}</button>
       <button type="button" onClick={onClose} className="mt-3 w-full p-2">{t("hotel.close")}</button>
     </form>

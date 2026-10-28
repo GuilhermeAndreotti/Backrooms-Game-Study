@@ -8,6 +8,7 @@
  */
 
 import * as THREE from "three";
+import { bake, Parts, teeth } from "./anatomy";
 import { EntityType } from "../../shared/entityTypes";
 import { CellType } from "../ProceduralMap";
 import { MobDefinition } from "./types";
@@ -27,15 +28,43 @@ export const clump: MobDefinition = {
   forcedChaseSpeed: 3.3,
 
   build(ctx) {
-    const coreMat = ctx.smat("clump_core", () => new THREE.MeshStandardMaterial({ color: 0x1e0b12, emissive: 0x4a1029, emissiveIntensity: 0.35, roughness: 0.8 }));
-    // The core rolls as one mass; each spike wiggles on its own root pivot.
+    const V = ctx.V;
+    const coreMat = ctx.smat("clump_core", () => new THREE.MeshStandardMaterial({ color: 0x3a141c, emissive: 0x4a1029, emissiveIntensity: 0.18, roughness: 0.45 }));
+    const veinMat = ctx.smat("clump_vein", () => new THREE.MeshStandardMaterial({ color: 0x1c0610, roughness: 0.4 }));
+    const boneMat = ctx.smat("clump_claw", () => new THREE.MeshStandardMaterial({ color: 0xb5a58a, roughness: 0.5 }));
+    const mawMat = ctx.smat("clump_maw", () => new THREE.MeshStandardMaterial({ color: 0x0c0204, roughness: 1 }));
+
+    // The core rolls as one mass; each limb wiggles on its own root pivot.
+    // A knot of fused flesh, lumpy and veined, with two mouths in it.
     const core = ctx.joint("core", 0, 0, 0);
     const pulse = ctx.joint("blob", 0, 0, 0, core);
-    ctx.put(pulse, new THREE.Mesh(ctx.sgeo("clump_core_geo", () => new THREE.SphereGeometry(0.34, 12, 10)), coreMat));
-
-    const spikeMat = ctx.smat("clump_spike", () => new THREE.MeshStandardMaterial({ color: 0x2e111a, roughness: 0.9 }));
-    const clawMat = ctx.smat("clump_claw", () => new THREE.MeshStandardMaterial({ color: 0x4a1d2d, roughness: 0.7 }));
-    const clawGeo = ctx.sgeo("clump_claw_geo", () => new THREE.SphereGeometry(0.035, 6, 6));
+    bake(ctx, pulse, coreMat, "clump_flesh", (p) => {
+      p.blob(V(0, 0, 0), 0.3, [1, 0.95, 1], [0, 0, 0], [16, 12]);
+      const lumps: [number, number, number, number][] = [
+        [0.17, 0.12, 0.08, 0.17], [-0.15, 0.1, -0.12, 0.18], [0.05, -0.16, 0.16, 0.16],
+        [-0.1, -0.12, 0.12, 0.15], [0.12, -0.05, -0.18, 0.17], [-0.05, 0.2, 0.05, 0.14],
+      ];
+      for (const [x, y, z, r] of lumps) p.blob(V(x, y, z), r, [1, 0.9, 1.05]);
+    });
+    bake(ctx, pulse, veinMat, "clump_veins", (p) => {
+      for (let i = 0; i < 6; i++) {
+        const a = i * 1.05, b = i * 0.7;
+        const pts = [0, 1, 2, 3].map((k) => {
+          const t = a + k * 0.45;
+          return V(Math.cos(t) * Math.cos(b + k * 0.2) * 0.32, Math.sin(b + k * 0.2) * 0.3, Math.sin(t) * Math.cos(b + k * 0.2) * 0.32);
+        });
+        p.chain(pts, 0.012, 0.007, 5);
+      }
+    });
+    // Two maws, ringed with teeth.
+    bake(ctx, pulse, mawMat, "clump_maws", (p) => {
+      p.blob(V(0.0, 0.02, 0.29), 0.09, [1.3, 0.55, 0.5]);
+      p.blob(V(-0.24, -0.08, -0.17), 0.07, [1.2, 0.5, 0.5], [0, -2.2, 0]);
+    });
+    bake(ctx, pulse, boneMat, "clump_teeth", (p) => {
+      teeth(p, V(0, 0.055, 0.31), 0.09, 0.03, 9, 0.035, false, 0.009);
+      teeth(p, V(0, -0.015, 0.31), 0.085, 0.03, 8, 0.03, true, 0.009);
+    });
 
     for (let i = 0; i < SPIKES; i++) {
       // Deterministic even spread (golden-angle spiral over the sphere) so every
@@ -45,16 +74,20 @@ export const clump: MobDefinition = {
       const phi = Math.PI * (1 + Math.sqrt(5)) * i;
       const dir = ctx.V(Math.sin(theta) * Math.cos(phi), Math.cos(theta), Math.sin(theta) * Math.sin(phi));
       const len = 0.3 + ((i * 37) % 10) / 40; // 0.3 - 0.55, stable per-index jitter
-      const start = dir.clone().multiplyScalar(0.3);
+      const start = dir.clone().multiplyScalar(0.27);
       const mid = dir.clone().multiplyScalar(0.3 + len * 0.55);
       const end = dir.clone().multiplyScalar(0.3 + len);
+      // Arm-like limbs: thick where they root, a knuckle at the bend, a hooked claw.
       const spike = ctx.joint(`spike${i}`, start.x, start.y, start.z, core);
-      ctx.limbIn(spike, spikeMat, start, mid, 0.028, 0.85);
+      ctx.limbIn(spike, coreMat, start, mid, 0.04, 0.6);
       // Second segment: every limb bends once, like a finger.
       const tip = ctx.joint(`tip${i}`, mid.x, mid.y, mid.z, spike);
-      ctx.limbIn(tip, spikeMat, mid, end, 0.024);
-      const claw = new THREE.Mesh(clawGeo, clawMat);
-      claw.position.copy(end);
+      ctx.limbIn(tip, coreMat, mid, end, 0.022, 0.75);
+      const claw = new THREE.Mesh(ctx.sgeo(`clump_claw_${i}`, () => {
+        const p = new Parts();
+        p.spike(end, end.clone().addScaledVector(dir, 0.09).add(V(0, -0.02, 0)), 0.016, 6);
+        return p.merge();
+      }), boneMat);
       ctx.put(tip, claw);
     }
   },

@@ -22,6 +22,7 @@
  */
 
 import * as THREE from "three";
+import { bake, vertebrae } from "./anatomy";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
 import { animateBiped, rot, rx } from "./anim";
@@ -77,11 +78,17 @@ export const alien: MobDefinition = {
       ctx.limbIn(spine, bone, V(side * 0.06, 0.48, -0.06), V(side * 0.16, 0.72, -0.36), 0.03, 0.5);
     }
 
+    // A ridge of vertebrae, each with a hooked spine, down the curve of the back, and a narrow pelvis.
+    bake(ctx, spine, bone, "alien_ridge", (p) => {
+      vertebrae(p, V(0, 0.64, 0.0), V(0, 0.08, -0.17), 9, 0.03, 0.05);
+      p.blob(V(0, 0.0, -0.02), 0.11, [1.35, 0.6, 0.9]);
+    });
+
     // Head: a long, eyeless skull swept back over the shoulders, with a hinged jaw.
     const head = ctx.joint("head", 0, 0.8, 0.18, spine);
     ctx.limbIn(head, hide, V(0, 0.72, 0.12), V(0, 0.88, 0.24), 0.06);
     ctx.limbIn(head, sheen, V(0, 0.9, 0.42), V(0, 1.12, -0.28), 0.12, 0.35);
-    const face = new THREE.Mesh(ctx.sgeo("alien_face", () => new THREE.SphereGeometry(0.11, 10, 8)), hide);
+    const face = new THREE.Mesh(ctx.sgeo("alien_face", () => new THREE.SphereGeometry(0.11, 16, 12)), hide);
     face.scale.set(0.9, 0.8, 1.2);
     face.position.set(0, 0.88, 0.38);
     ctx.put(head, face);

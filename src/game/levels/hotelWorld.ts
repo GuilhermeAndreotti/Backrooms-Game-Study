@@ -33,6 +33,14 @@ const isReception = (gx: number, gz: number) => gx >= 2 && gx <= 8 && gz >= 2 &&
 /** Guest room window glass (m) and its sill height. */
 const GLASS_W = 2.2, GLASS_H = 2.0, GLASS_SILL = 0.8;
 
+/** Ceiling height above a cell's floor. */
+const cellHeight = (zone: HotelZone | null) => zone === "beverly" ? 7 : zone === "boiler" ? 5 : 4;
+/** World height of a cell's ceiling (it hangs flat at its centre's floor height + cellHeight). */
+function ceilingTop(gx: number, gz: number) {
+  const c = hotelCenter(gx, gz);
+  return hotelFloorAt(c.x, c.z) + cellHeight(hotelZone(gx, gz));
+}
+
 /** A cell-streamed hotel: all assets share the map's geometry/material lifetime. */
 export class HotelWorld {
   readonly seed: number;
@@ -85,15 +93,17 @@ export class HotelWorld {
     this.cream = this.mat("plaster", 0xd2c4a4, 0.8);
     this.red = this.mat("velvet", 0x6e1d26, 0.95);
     this.linen = this.mat("linen", 0xe6dfcf, 0.9);
-    this.wood = this.texture("wood", 256, 256, g => this.drawWood(g), 0.55);
-    this.hallPaper = this.texture("hall_paper", 256, 512, g => this.drawDamask(g), 0.75);
-    this.roomPaper = this.texture("room_paper", 256, 512, g => this.drawStripes(g), 0.8);
-    this.carpet = this.texture("carpet", 512, 512, g => this.drawHexCarpet(g), 1);
-    this.parquet = this.texture("parquet", 256, 256, g => this.drawParquet(g), 0.6);
-    this.marble = this.texture("marble", 512, 512, g => this.drawMarble(g), 0.25, 0.05);
-    this.ceiling = this.texture("ceiling", 256, 256, g => this.drawCoffer(g), 0.9);
-    this.plate = this.texture("plate", 256, 256, g => this.drawPlate(g), 0.55, 0.55);
-    this.grate = this.texture("grate", 256, 256, g => this.drawTreadPlate(g), 0.5, 0.6);
+    // Each texture tiles at a fixed real size (metres, width x height), so a narrow panel
+    // beside a doorway shows the same wallpaper as the 4 m wall next to it.
+    this.wood = this.texture("wood", 256, 256, [1.5, 1.5], g => this.drawWood(g), 0.55);
+    this.hallPaper = this.texture("hall_paper", 256, 512, [1.5, 3], g => this.drawDamask(g), 0.75);
+    this.roomPaper = this.texture("room_paper", 256, 512, [1.5, 3], g => this.drawStripes(g), 0.8);
+    this.carpet = this.texture("carpet", 512, 512, [4, 4], g => this.drawHexCarpet(g), 1);
+    this.parquet = this.texture("parquet", 256, 256, [4, 4], g => this.drawParquet(g), 0.6);
+    this.marble = this.texture("marble", 512, 512, [4, 4], g => this.drawMarble(g), 0.25, 0.05);
+    this.ceiling = this.texture("ceiling", 256, 256, [4, 4], g => this.drawCoffer(g), 0.9);
+    this.plate = this.texture("plate", 256, 256, [4, 4], g => this.drawPlate(g), 0.55, 0.55);
+    this.grate = this.texture("grate", 256, 256, [4, 4], g => this.drawTreadPlate(g), 0.5, 0.6);
     // World-space stains on the big surfaces, so the damask and the hex
     // carpet never repeat identically down a corridor (no damp or corner
     // shading: the hotel isn't laid out on the maze grid those need).
@@ -111,7 +121,8 @@ export class HotelWorld {
   private mat(key: string, color: number, roughness = 0.8, metalness = 0) {
     return this.kit.mat(`hotel_${key}`, () => new THREE.MeshStandardMaterial({ color, roughness, metalness }));
   }
-  private texture(key: string, w: number, h: number, draw: (g: CanvasRenderingContext2D) => void, roughness = 0.8, metalness = 0) {
+  /** A seamless canvas texture repeating every `tile` metres on box faces (see box(), whose UVs are in metres). */
+  private texture(key: string, w: number, h: number, tile: [number, number], draw: (g: CanvasRenderingContext2D) => void, roughness = 0.8, metalness = 0) {
     return this.kit.mat(`hotel_tex_${key}`, () => {
       const c = document.createElement("canvas"); c.width = w; c.height = h;
       const g = c.getContext("2d")!;
@@ -119,6 +130,7 @@ export class HotelWorld {
       // Age every surface a little: grain and soft blotching (seamless, see weatherCanvas).
       weatherCanvas(g, { grain: 0.06, blotch: 0.1, seed: key.length * 131 + key.charCodeAt(0) });
       const map = new THREE.CanvasTexture(c); map.colorSpace = THREE.SRGBColorSpace; map.anisotropy = 4; this.kit.track(map);
+      map.wrapS = map.wrapT = THREE.RepeatWrapping; map.repeat.set(1 / tile[0], 1 / tile[1]);
       return new THREE.MeshStandardMaterial({ map, roughness, metalness });
     });
   }
@@ -164,7 +176,7 @@ export class HotelWorld {
     for (let i = 0; i < 70; i++) {
       const y = rng() * 256, amp = 2 + rng() * 5, phase = rng() * 6;
       g.strokeStyle = rng() < 0.5 ? "rgba(20,8,4,0.45)" : "rgba(120,62,36,0.35)"; g.lineWidth = 0.6 + rng() * 1.6;
-      g.beginPath(); for (let x = 0; x <= 256; x += 8) g.lineTo(x, y + Math.sin(x / 40 + phase) * amp); g.stroke();
+      g.beginPath(); for (let x = 0; x <= 256; x += 8) g.lineTo(x, y + Math.sin(x / 128 * Math.PI * 2 + phase) * amp); g.stroke();
     }
   }
   private drawParquet(g: CanvasRenderingContext2D) {
@@ -230,7 +242,14 @@ export class HotelWorld {
 
   // --- Primitives -----------------------------------------------------------
   private box(w: number, h: number, d: number, mat: THREE.Material, x = 0, y = 0, z = 0) {
-    const mesh = new THREE.Mesh(this.kit.geo(`hotel_box_${w}_${h}_${d}`, () => new THREE.BoxGeometry(w, h, d)), mat);
+    const mesh = new THREE.Mesh(this.kit.geo(`hotel_box_${w}_${h}_${d}`, () => {
+      // UVs in metres (faces in BoxGeometry order: ±x, ±y, ±z, four vertices each), so
+      // textures keep their real scale whatever the box size; texture() sets the repeat.
+      const geo = new THREE.BoxGeometry(w, h, d), uv = geo.getAttribute("uv");
+      const sizes = [[d, h], [d, h], [w, d], [w, d], [w, h], [w, h]];
+      for (let i = 0; i < uv.count; i++) { const [su, sv] = sizes[Math.floor(i / 4)]; uv.setXY(i, uv.getX(i) * su, uv.getY(i) * sv); }
+      return geo;
+    }), mat);
     mesh.position.set(x, y, z); mesh.receiveShadow = true; return mesh;
   }
   private cylinder(r: number, h: number, mat: THREE.Material, x = 0, y = 0, z = 0, top = r) {
@@ -242,7 +261,7 @@ export class HotelWorld {
    * oriented copy for free-standing plates people walk around.
    */
   private sign(text: string, w = 2, h = 0.8, paper = false, maxFont = 72, twoSided = false): THREE.Object3D {
-    const material = this.kit.mat(`hotel_text_${text}_${paper}_${maxFont}`, () => {
+    const material = this.kit.mat(`hotel_text_${text}_${w}_${h}_${paper}_${maxFont}`, () => {
       const c = document.createElement("canvas"); c.width = 768; c.height = Math.max(192, Math.round(768 * h / w));
       const g = c.getContext("2d")!; g.fillStyle = paper ? "#e5d5af" : "#20120c"; g.fillRect(0, 0, c.width, c.height);
       g.strokeStyle = paper ? "#513824" : "#c9a65e"; g.lineWidth = 8; g.strokeRect(12, 12, c.width - 24, c.height - 24);
@@ -585,7 +604,7 @@ export class HotelWorld {
   createCell(gx: number, gz: number): THREE.Group {
     const g = new THREE.Group(), zone = hotelZone(gx, gz);
     if (!zone) return g;
-    const p = hotelCenter(gx, gz), floor = hotelFloorAt(p.x, p.z), h = zone === "beverly" ? 7 : zone === "boiler" ? 5 : 4;
+    const p = hotelCenter(gx, gz), floor = hotelFloorAt(p.x, p.z), h = cellHeight(zone);
     g.position.set(p.x, floor, p.z);
     g.userData.aabb = new THREE.Box3(new THREE.Vector3(p.x - 2.2, floor - 1, p.z - 2.2), new THREE.Vector3(p.x + 2.2, floor + h + 1, p.z + 2.2));
     const industrial = zone === "boiler" || zone === "stairs";
@@ -608,9 +627,17 @@ export class HotelWorld {
     // Walls wherever the neighbour is outside the hotel.
     const paper = industrial ? this.plate : guest ? this.roomPaper : this.hallPaper;
     for (const [dx, dz, yaw] of [[0, -1, 0], [0, 1, Math.PI], [-1, 0, Math.PI / 2], [1, 0, -Math.PI / 2]]) {
-      if (hotelZone(gx + dx, gz + dz)) continue;
+      if (hotelZone(gx + dx, gz + dz)) {
+        // Open to a lower-ceilinged part of the hotel (hall -> Beverly Room, the stairs, the
+        // Boiler Room, the exit corridor): wall in the space between the two ceilings.
+        const drop = floor + h - ceilingTop(gx + dx, gz + dz);
+        if (drop > 0.05) { const header = this.box(4, drop + 0.12, 0.16, paper, dx * 2, h - drop / 2, dz * 2); header.rotation.y = yaw; g.add(header); }
+        continue;
+      }
       const wall = new THREE.Group(); wall.position.set(dx * 2, 0, dz * 2); wall.rotation.y = yaw;
-      wall.add(this.box(4, h, 0.16, paper, 0, h / 2));
+      // On the stairs the floor drops away inside the cell: the wall reaches below it.
+      if (zone === "stairs") wall.add(this.box(4, h + 1, 0.16, paper, 0, (h - 1) / 2));
+      else wall.add(this.box(4, h, 0.16, paper, 0, h / 2));
       if (industrial) {
         for (const py of [h - 0.9, h - 0.45]) { const pipe = this.cylinder(0.12, 4, this.brass, 0, py, 0.25); pipe.rotation.z = Math.PI / 2; wall.add(pipe); }
       } else {
@@ -710,8 +737,15 @@ export class HotelWorld {
       const d = this.door(label, { width: 1.8, height: 2.6, double: true, industrial: gateIndustrial, swing: alcove >= 0 && HOTEL_ALCOVES[alcove].axis === "z" ? -1 : 1 });
       holder.add(d.group);
       // A shut alcove that is not part of the puzzle yet reads as plain wall.
-      const blank = alcove >= 0 ? this.box(1.8, 2.6, 0.16, this.hallPaper, 0, 1.3) : null;
-      if (blank) holder.add(blank);
+      // It fills the doorway's whole hole (opening + 0.2 by door height + 0.1) and carries the
+      // same wainscot and brass rails as the wall around it, so nothing gives the door away.
+      let blank: THREE.Group | null = null;
+      if (alcove >= 0) {
+        blank = new THREE.Group(); holder.add(blank);
+        blank.add(this.box(2, 2.7, 0.16, this.hallPaper, 0, 1.35));
+        blank.add(this.box(2, 1, 0.22, this.wood, 0, 0.5));
+        for (const y of [0.1, 1, h - 0.2]) blank.add(this.box(2, 0.055, 0.26, this.brass, 0, y));
+      }
       this.doors.push({ mesh: d.group, blank, leaves: d.leaves, gx, gz, open: 0, alcove });
       if (alcove >= 0) {
         // Hall side of the doorway: +z for the north alcoves, -x for the east ones.
@@ -846,6 +880,24 @@ export class HotelWorld {
     face.position.z = 0.045; g.add(face);
     return g;
   }
+  /** Blackout, open exit or no snapshot yet: the mobs keep wandering but neither hunt nor catch. */
+  get calm() { return !this.ready || this.state.exitOpen || this.state.stairAt > this.now; }
+  /** Where the local explorer stands (set every frame by the director). */
+  private playerX = -1;
+  private playerZ = -1;
+  setPlayerPosition(x: number, z: number) { this.playerX = x; this.playerZ = z; }
+  /**
+   * Physical collision. Steam keeps everyone out of its passage but never traps whoever
+   * it caught there (or brushing its edge): they can always walk out of it.
+   */
+  blocksMovement(gx: number, gz: number) {
+    if (!this.isBlocked(gx, gz)) return false;
+    if (!HOTEL_STEAM.some(s => s.gx === gx && s.gz === gz)) return true;
+    // Just under the explorer's 0.42 m collision radius: only a body already overlapping the passage
+    // (an accepted position, so it was there before the steam) is let through.
+    const r = 0.41, inX = gx >= Math.floor((this.playerX - r) / 4) && gx <= Math.floor((this.playerX + r) / 4);
+    return !(inX && gz >= Math.floor((this.playerZ - r) / 4) && gz <= Math.floor((this.playerZ + r) / 4));
+  }
   isBlocked(gx: number, gz: number) { return !this.ready || this.departed && gx === 40 && gz === 43 || hotelBlocked(this.state, gx, gz, this.now); }
   update(now: number, delta: number, blackout: boolean, flicker: number, decor: number) {
     this.now = now;
@@ -868,7 +920,8 @@ export class HotelWorld {
     if (this.key) this.key.visible = this.state.boxOpen && !this.state.key;
     if (this.boxLid) this.boxLid.rotation.x = this.state.boxOpen ? -1.15 : 0;
     this.wheels.forEach((w, i) => { w.rotation.z = -(this.state.valves[i] ?? 0) * Math.PI / 3; });
-    this.needles.forEach((w, i) => { w.rotation.z = (1 - (this.state.valves[i] ?? 0)) * Math.PI / 3; });
+    // An untouched valve's needle lies flat across the dial, reading no setting (not LOW).
+    this.needles.forEach((w, i) => { const v = this.state.valves[i]; w.rotation.z = v === null ? Math.PI / 2 : (1 - v) * Math.PI / 3; });
     const steaming = now >= this.state.steamAt && now < this.state.steamUntil;
     this.steam.forEach((s, index) => { s.visible = steaming; s.children.forEach((c, i) => { c.rotation.y = now * 0.001 + i; c.scale.setScalar(0.85 + Math.sin(now * 0.004 + i + index) * 0.2); }); });
     // Unease is a slow, shallow sway of the lamps (about 1 Hz, never below 60%),

@@ -1408,10 +1408,18 @@ export class GameEngine {
         const canBeCaught = !this.isDead && !this.kingGrab && !this.townDirector?.immune;
 
         this.entities.forEach(entity => {
-          if (this.hotelDirector && (this.hotelDirector.immune || entity.type === EntityType.BELLMAN && this.map.hotel?.bellmanMode === 0)) return;
+          // The Terror Hotel's Bellman isn't there between appearances. Its blackout and open exit only
+          // calm the mobs (see HotelWorld.calm) and suspend catches: they keep wandering and animating.
+          if (this.hotelDirector && entity.type === EntityType.BELLMAN && this.map.hotel?.bellmanMode === 0) return;
           if (aiTargets) {
+            // The Bellman walks up to the explorer he appeared for.
+            // (AI targets call the local explorer "local"; the director uses its player id.)
+            const bellmanId = this.hotelDirector && entity.type === EntityType.BELLMAN ? this.hotelDirector.bellmanTargetId : "";
+            const bellmanTarget = bellmanId ? aiTargets.find(tgt => tgt.id === (bellmanId === this.localPlayerId ? "local" : bellmanId)) : undefined;
             // Hunt whichever explorer is closest (on Level G, visible ones first).
-            const { target, distSq: entityDistSq } = this.level === LEVEL_G || this.level === OLD_TOWN_LEVEL
+            const { target, distSq: entityDistSq } = bellmanTarget
+              ? { target: bellmanTarget, distSq: (bellmanTarget.x - entity.mesh.position.x) ** 2 + (bellmanTarget.z - entity.mesh.position.z) ** 2 }
+              : this.level === LEVEL_G || this.level === OLD_TOWN_LEVEL
               ? nearestHuntable(aiTargets, entity.mesh.position.x, entity.mesh.position.z)
               : entity.type === EntityType.ALIEN
                 ? nearestSeenByAlien(aiTargets, entity)

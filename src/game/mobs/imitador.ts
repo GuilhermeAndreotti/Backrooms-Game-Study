@@ -20,6 +20,8 @@
  */
 
 import * as THREE from "three";
+import { bake, hand } from "./anatomy";
+import { torsoGeometry } from "./creatureSkin";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
 import { animateBiped } from "./anim";
@@ -40,37 +42,63 @@ export const imitador: MobDefinition = {
 
   build(ctx) {
     const V = ctx.V;
+    // Clothes (retinted darker on reveal), a grey, bloodless skin, worn boots.
     const bodyMat = new THREE.MeshStandardMaterial({ color: 0x3a3630, roughness: 0.85 });
     ctx.addTintMaterial(bodyMat);
+    const skinMat = ctx.smat("imitador_skin", () => new THREE.MeshStandardMaterial({ color: 0x8c857a, roughness: 0.6 }));
+    const bootMat = ctx.smat("imitador_boot", () => new THREE.MeshStandardMaterial({ color: 0x1c1915, roughness: 0.6 }));
 
-    // Plain humanoid silhouette — deliberately generic, could pass for "just another explorer."
+    // Plain humanoid silhouette — deliberately generic, could pass for "just
+    // another explorer": a hooded jacket, a backpack, trousers and boots.
     const spine = ctx.joint("spine", 0, -0.3, 0);
-    const torso = new THREE.Mesh(ctx.sgeo("imitador_torso", () => new THREE.CylinderGeometry(0.18, 0.2, 0.5, 8)), bodyMat);
+    const torso = new THREE.Mesh(ctx.sgeo("imitador_torso", () => torsoGeometry(0.2, 0.17, 0.5)), bodyMat);
     torso.position.set(0, -0.05, 0);
     ctx.put(spine, torso);
+    bake(ctx, spine, bodyMat, "imitador_jacket", (p) => {
+      for (const s of [-1, 1]) p.blob(V(s * 0.17, 0.13, 0), 0.07, [1, 0.85, 1]);
+      p.blob(V(0, 0.19, -0.1), 0.12, [1.2, 0.6, 0.7]); // the hood, down on the shoulders
+      p.box(V(0, -0.02, -0.2), [0.24, 0.32, 0.1]); // backpack
+      p.lathe(V(0, -0.3, 0), [[0.17, -0.03], [0.18, 0], [0.17, 0.03]]); // waistband
+    });
+
     for (const side of [-1, 1]) {
       const n = side < 0 ? "L" : "R";
-      const arm = ctx.joint(`arm${n}`, side * 0.16, 0.12, 0, spine);
-      ctx.limbIn(arm, bodyMat, V(side * 0.16, 0.12, 0), V(side * 0.2, -0.16, 0.01), 0.05);
-      const fore = ctx.joint(`fore${n}`, side * 0.2, -0.16, 0.01, arm);
-      ctx.limbIn(fore, bodyMat, V(side * 0.2, -0.16, 0.01), V(side * 0.22, -0.46, 0.03), 0.043);
+      const shoulder = V(side * 0.16, 0.12, 0), elbow = V(side * 0.2, -0.16, 0.01), wrist = V(side * 0.22, -0.46, 0.03);
+      const arm = ctx.joint(`arm${n}`, shoulder.x, shoulder.y, shoulder.z, spine);
+      ctx.limbIn(arm, bodyMat, shoulder, elbow, 0.055, 0.9);
+      const fore = ctx.joint(`fore${n}`, elbow.x, elbow.y, elbow.z, arm);
+      ctx.limbIn(fore, bodyMat, elbow, wrist.clone().lerp(elbow, 0.1), 0.048, 0.9);
+      bake(ctx, fore, skinMat, `imitador_hand_${side}`, (p) => hand(p, { wrist, dir: wrist.clone().sub(elbow), across: V(0, 0, side), fingers: 4, len: 0.09, r: 0.012, curl: 0.45 }));
       const leg = ctx.joint(`leg${n}`, side * 0.09, -0.3, 0);
-      ctx.limbIn(leg, bodyMat, V(side * 0.09, -0.3, 0), V(side * 0.1, -0.8, 0.02), 0.07);
+      ctx.limbIn(leg, bodyMat, V(side * 0.09, -0.3, 0), V(side * 0.1, -0.8, 0.02), 0.075, 0.85);
       const shin = ctx.joint(`shin${n}`, side * 0.1, -0.8, 0.02, leg);
-      ctx.limbIn(shin, bodyMat, V(side * 0.1, -0.8, 0.02), V(side * 0.12, -1.33, 0), 0.06);
+      ctx.limbIn(shin, bodyMat, V(side * 0.1, -0.8, 0.02), V(side * 0.115, -1.15, 0.01), 0.062, 0.95);
+      bake(ctx, shin, bootMat, `imitador_boot_${side}`, (p) => {
+        p.limb(V(side * 0.115, -1.12, 0.01), V(side * 0.12, -1.28, 0), 0.064, 1);
+        p.blob(V(side * 0.12, -1.295, 0.06), 0.062, [1, 0.6, 1.5]);
+      });
     }
 
+    // A face with every feature smoothed nearly away: brow, nose and chin are
+    // only suggestions, and where the eyes should be the skin is closed over.
     const head = ctx.joint("head", 0, 0.2, 0, spine);
-    const skull = new THREE.Mesh(ctx.sgeo("imitador_head", () => new THREE.SphereGeometry(0.15, 10, 8)), bodyMat);
+    const skull = new THREE.Mesh(ctx.sgeo("imitador_head", () => new THREE.SphereGeometry(0.15, 16, 12)), skinMat);
     skull.position.set(0, 0.32, 0);
     ctx.put(head, skull);
+    bake(ctx, head, skinMat, "imitador_face", (p) => {
+      p.limb(V(0, 0.15, 0), V(0, 0.24, 0.02), 0.06, 0.95);
+      p.limb(V(-0.06, 0.365, 0.12), V(0.06, 0.365, 0.12), 0.022, 1);
+      p.limb(V(0, 0.35, 0.145), V(0, 0.31, 0.158), 0.016, 0.8);
+      p.blob(V(0, 0.235, 0.11), 0.04, [1, 0.8, 0.9]);
+      for (const s of [-1, 1]) p.blob(V(s * 0.145, 0.32, 0), 0.025, [0.5, 1, 0.8]); // ears
+    });
 
     // Calm: no eyes at all — their absence is the "off" detail up close.
     const calm = new THREE.Group();
     ctx.put(head, calm);
 
     // Hostile: eyes snap open, wide and glowing, once revealed.
-    const eyeGeo = ctx.sgeo("imitador_eye_geo", () => new THREE.SphereGeometry(0.026, 6, 6));
+    const eyeGeo = ctx.sgeo("imitador_eye_geo", () => new THREE.SphereGeometry(0.026, 8, 6));
     const eyeMat = ctx.smat("imitador_eye", () => new THREE.MeshStandardMaterial({ color: 0xa855f7, emissive: 0x9333ea, emissiveIntensity: 1.7 }));
     const hostile = new THREE.Group();
     const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(-0.055, 0.34, 0.13); hostile.add(eL);
