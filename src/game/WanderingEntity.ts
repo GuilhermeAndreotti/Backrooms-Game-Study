@@ -5,6 +5,7 @@
 
 import { t } from "../i18n";
 import * as THREE from "three";
+import { applyCreatureSkin, roundedLimbGeometry } from "./mobs/creatureSkin";
 import { ProceduralMap, CellType } from "./ProceduralMap";
 import { EntityType } from "../shared/entityTypes";
 import { MOB_DEFS } from "./mobs/registry";
@@ -209,7 +210,8 @@ export class WanderingEntity {
   }
   private smat<T extends THREE.Material>(key: string, build: () => T): T {
     let m = WanderingEntity.matCache.get(key) as T | undefined;
-    if (!m) { m = build(); WanderingEntity.matCache.set(key, m); }
+    // Plain body materials get the procedural hide (eyes, glows and glass are left alone).
+    if (!m) { m = applyCreatureSkin(build()); WanderingEntity.matCache.set(key, m); }
     return m;
   }
 
@@ -224,10 +226,12 @@ export class WanderingEntity {
   /** A tapered limb/spike mesh running from world-local point `a` to `b`. */
   private limbBetween(mat: THREE.Material, a: THREE.Vector3, b: THREE.Vector3, radius: number, taper = 0.75): THREE.Mesh {
     const dir = new THREE.Vector3().subVectors(b, a);
-    const len = dir.length() || 0.001;
-    const geo = this.sgeo(`limb_${radius}_${taper}`, () => new THREE.CylinderGeometry(radius * taper, radius, 1, 5));
+    // Built at its real length (to the centimetre, so a body's limbs still share
+    // geometry) with rounded ends centred on a and b: limbs meeting at a joint
+    // overlap into a smooth knee or elbow.
+    const cm = Math.max(1, Math.round(dir.length() * 100));
+    const geo = this.sgeo(`limb_${radius}_${taper}_${cm}`, () => roundedLimbGeometry(radius, taper, cm / 100));
     const m = new THREE.Mesh(geo, mat);
-    m.scale.set(1, len, 1);
     m.position.copy(a).addScaledVector(dir, 0.5); // centred between a and b
     m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
     m.castShadow = true;
@@ -261,7 +265,7 @@ export class WanderingEntity {
       smat: (key, build) => this.smat(key, build),
       limbBetween: (mat, a, b, radius, taper) => this.limbBetween(mat, a, b, radius, taper),
       V: (x, y, z) => this.V(x, y, z),
-      addTintMaterial: (m) => { this.tintMaterials.push(m); },
+      addTintMaterial: (m) => { this.tintMaterials.push(applyCreatureSkin(m)); },
       setCalmHostileEyes: (calm, hostile) => { this.calmEyes = calm; this.hostileEyes = hostile; },
       setKingEyeMaterial: (m) => { this.kingEyeMaterial = m; },
       joints,

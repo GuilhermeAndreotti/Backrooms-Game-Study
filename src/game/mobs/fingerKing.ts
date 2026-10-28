@@ -86,7 +86,7 @@ export const fingerKing: MobDefinition = {
 
     // --- Torso: narrow-waisted, flattened, shoulders at different heights
     const spine = ctx.joint("spine", 0, 0.04, 0);
-    const torso = new THREE.Mesh(ctx.sgeo("king2_torso", () => new THREE.CylinderGeometry(0.2, 0.11, 0.7, 10)), suitMat);
+    const torso = new THREE.Mesh(ctx.sgeo("king2_torso", () => new THREE.CylinderGeometry(0.2, 0.11, 0.7, 14)), suitMat);
     torso.position.set(0, 0.39, 0);
     torso.scale.set(1, 1, 0.7);
     ctx.put(spine, torso);

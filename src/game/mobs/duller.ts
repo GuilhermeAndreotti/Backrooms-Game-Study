@@ -10,6 +10,7 @@
  */
 
 import * as THREE from "three";
+import { bake, hand, ribcage } from "./anatomy";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
 import { lookAtPlayer, rot, rx } from "./anim";
@@ -31,27 +32,45 @@ export const duller: MobDefinition = {
       roughness: 0.6, metalness: 0.1, transparent: true, opacity: 0.82,
     });
     ctx.addTintMaterial(mat);
+    // Darker hollows (sockets, mouth) inside the glow.
+    const hollowMat = ctx.smat("duller_hollow", () => new THREE.MeshStandardMaterial({ color: 0x02040a, roughness: 1, transparent: true, opacity: 0.9 }));
 
+    // A drowned, wasted body: ribs and collarbones under the glow.
     const spine = ctx.joint("spine", 0, -0.35, 0);
-    ctx.limbIn(spine, mat, V(0, 0.35, 0), V(0, -0.35, 0), 0.11);
-    // Arms, bent and trailing
+    bake(ctx, spine, mat, "duller_trunk", (p) => {
+      p.chain([V(0, -0.38, 0), V(0, -0.05, 0.02), V(0, 0.32, 0)], 0.09, 0.1);
+      ribcage(p, { c: V(0, 0.14, 0.02), w: 0.12, d: 0.09, h: 0.12, ribs: 5, r: 0.012 });
+      for (const s of [-1, 1]) p.limb(V(0, 0.31, 0.06), V(s * 0.14, 0.3, 0.0), 0.016, 0.9);
+      p.limb(V(0, 0.32, 0), V(0, 0.42, 0.01), 0.04, 0.9);
+    });
+
+    // Arms, bent and trailing, on long, slack hands
     for (const side of [-1, 1]) {
       const n = side < 0 ? "L" : "R";
+      const elbow = V(side * 0.32, 0.05, 0.1), wrist = V(side * 0.22, -0.25, 0.2);
       const arm = ctx.joint(`arm${n}`, 0, 0.3, 0, spine);
-      ctx.limbIn(arm, mat, V(0, 0.3, 0), V(side * 0.32, 0.05, 0.1), 0.05);
-      const fore = ctx.joint(`fore${n}`, side * 0.32, 0.05, 0.1, arm);
-      ctx.limbIn(fore, mat, V(side * 0.32, 0.05, 0.1), V(side * 0.22, -0.25, 0.2), 0.045);
-      // Legs, dangling loosely below (Duller floats, feet don't touch ground)
+      ctx.limbIn(arm, mat, V(side * 0.13, 0.3, 0), elbow, 0.042, 0.8);
+      const fore = ctx.joint(`fore${n}`, elbow.x, elbow.y, elbow.z, arm);
+      ctx.limbIn(fore, mat, elbow, wrist, 0.035, 0.8);
+      bake(ctx, fore, mat, `duller_hand_${side}`, (p) => hand(p, { wrist, dir: wrist.clone().sub(elbow), across: V(0, 0, side), fingers: 4, len: 0.15, r: 0.01, curl: 0.25 }));
+      // Legs, dangling loosely below (Duller floats, feet don't touch ground),
+      // thinning away to nothing.
       const leg = ctx.joint(`leg${n}`, side * 0.04, -0.35, 0);
-      ctx.limbIn(leg, mat, V(side * 0.04, -0.35, 0), V(side * 0.12, -0.56, 0.03), 0.06);
+      ctx.limbIn(leg, mat, V(side * 0.06, -0.35, 0), V(side * 0.12, -0.56, 0.03), 0.06, 0.8);
       const shin = ctx.joint(`shin${n}`, side * 0.12, -0.56, 0.03, leg);
-      ctx.limbIn(shin, mat, V(side * 0.12, -0.56, 0.03), V(side * 0.2, -0.78, 0.05), 0.05);
+      ctx.limbIn(shin, mat, V(side * 0.12, -0.56, 0.03), V(side * 0.2, -0.86, 0.05), 0.048, 0.15);
     }
 
+    // A drowned face: sunken sockets and a mouth hanging open, all hollow.
     const head = ctx.joint("head", 0, 0.4, 0, spine);
-    const skull = new THREE.Mesh(ctx.sgeo("duller_head", () => new THREE.SphereGeometry(0.15, 10, 8)), mat);
+    const skull = new THREE.Mesh(ctx.sgeo("duller_head", () => new THREE.SphereGeometry(0.15, 16, 12)), mat);
     skull.position.set(0, 0.53, 0);
+    skull.scale.set(0.9, 1.1, 1);
     ctx.put(head, skull);
+    bake(ctx, head, hollowMat, "duller_hollows", (p) => {
+      for (const s of [-1, 1]) p.blob(V(s * 0.05, 0.56, 0.125), 0.03, [1, 1.2, 0.6]);
+      p.blob(V(0, 0.46, 0.125), 0.028, [0.9, 1.6, 0.6]);
+    });
   },
 
   animate(ctx) {

@@ -19,6 +19,7 @@
  */
 
 import * as THREE from "three";
+import { bake, hand, ribcage } from "./anatomy";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
 import { animateBiped } from "./anim";
@@ -45,49 +46,71 @@ export const observador: MobDefinition = {
 
   build(ctx) {
     const V = ctx.V;
-    const skinMat = ctx.smat("observador_skin", () => new THREE.MeshStandardMaterial({ color: 0x241f2e, roughness: 0.75 }));
+    const skinMat = ctx.smat("observador_skin", () => new THREE.MeshStandardMaterial({ color: 0x2a2433, roughness: 0.6 }));
+    const lidMat = ctx.smat("observador_lid", () => new THREE.MeshStandardMaterial({ color: 0x12080c, roughness: 0.45 }));
 
-    // Tall, thin torso
+    // Tall, thin torso: a narrow ribcage over a pinched belly, bony shoulders.
     const spine = ctx.joint("spine", 0, -0.5, 0);
-    ctx.limbIn(spine, skinMat, V(0, 0.6, 0), V(0, -0.5, 0), 0.16);
-    // Long thin arms hanging at the sides; long thin legs
+    bake(ctx, spine, skinMat, "observador_trunk", (p) => {
+      p.blob(V(0, -0.48, 0), 0.1, [1.3, 0.7, 1]);
+      p.chain([V(0, -0.5, 0), V(0, -0.05, 0.01), V(0, 0.3, 0.01), V(0, 0.55, 0)], 0.12, 0.13);
+      ribcage(p, { c: V(0, 0.25, 0.005), w: 0.14, d: 0.12, h: 0.17, ribs: 7, r: 0.011 });
+      for (const s of [-1, 1]) p.blob(V(s * 0.11, 0.46, 0), 0.055, [1, 0.8, 1]);
+      p.limb(V(0, 0.55, 0), V(0, 0.66, 0.01), 0.05, 0.9);
+    });
+
+    // Long thin arms hanging at the sides on hands of long, jointed fingers;
+    // long thin legs on narrow feet.
     for (const side of [-1, 1]) {
       const n = side < 0 ? "L" : "R";
-      const arm = ctx.joint(`arm${n}`, side * 0.1, 0.45, 0, spine);
-      ctx.limbIn(arm, skinMat, V(side * 0.1, 0.45, 0), V(side * 0.14, -0.05, 0.03), 0.05);
-      const fore = ctx.joint(`fore${n}`, side * 0.14, -0.05, 0.03, arm);
-      ctx.limbIn(fore, skinMat, V(side * 0.14, -0.05, 0.03), V(side * 0.16, -0.58, 0.05), 0.045);
+      const shoulder = V(side * 0.12, 0.45, 0), elbow = V(side * 0.15, -0.05, 0.03), wrist = V(side * 0.16, -0.58, 0.05);
+      const arm = ctx.joint(`arm${n}`, shoulder.x, shoulder.y, shoulder.z, spine);
+      ctx.limbIn(arm, skinMat, shoulder, elbow, 0.045, 0.8);
+      const fore = ctx.joint(`fore${n}`, elbow.x, elbow.y, elbow.z, arm);
+      ctx.limbIn(fore, skinMat, elbow, wrist, 0.038, 0.75);
+      bake(ctx, fore, skinMat, `observador_hand_${side}`, (p) => hand(p, { wrist, dir: wrist.clone().sub(elbow), across: V(0, 0, side), fingers: 4, len: 0.21, r: 0.011, curl: 0.4 }));
       const leg = ctx.joint(`leg${n}`, side * 0.06, -0.5, 0);
-      ctx.limbIn(leg, skinMat, V(side * 0.06, -0.5, 0), V(side * 0.08, -1.0, 0.03), 0.07);
+      ctx.limbIn(leg, skinMat, V(side * 0.06, -0.5, 0), V(side * 0.08, -1.0, 0.03), 0.065, 0.75);
       const shin = ctx.joint(`shin${n}`, side * 0.08, -1.0, 0.03, leg);
-      ctx.limbIn(shin, skinMat, V(side * 0.08, -1.0, 0.03), V(side * 0.1, -1.5, 0), 0.06);
+      bake(ctx, shin, skinMat, `observador_shin_${side}`, (p) => {
+        p.limb(V(side * 0.08, -1.0, 0.03), V(side * 0.1, -1.46, 0), 0.05, 0.7);
+        p.blob(V(side * 0.1, -1.485, 0.06), 0.035, [1, 0.5, 2.4]);
+      });
     }
 
-    // Elongated head
+    // Elongated head, faceless but for a lipless slit of a mouth.
     const head = ctx.joint("head", 0, 0.62, 0, spine);
-    const skull = new THREE.Mesh(ctx.sgeo("observador_head", () => new THREE.SphereGeometry(0.16, 10, 8)), skinMat);
+    const skull = new THREE.Mesh(ctx.sgeo("observador_head", () => new THREE.SphereGeometry(0.16, 16, 12)), skinMat);
     skull.position.set(0, 0.78, 0);
     skull.scale.set(0.85, 1.3, 0.85);
     ctx.put(head, skull);
+    bake(ctx, head, lidMat, "observador_mouth", (p) => p.box(V(0, 0.7, 0.125), [0.07, 0.008, 0.02]));
 
     // Small eyes scattered deterministically over the torso/head (golden-angle
     // spiral, same technique CLUMP uses for its spikes, so it looks identical
-    // on every instance). Each sits on its own pivot so it can blink.
+    // on every instance), each set in the skin of the torso inside a dark,
+    // wet lid. Each sits on its own pivot so it can blink.
     const eyeMat = ctx.smat("observador_eye", () => new THREE.MeshStandardMaterial({ color: 0xfef9c3, emissive: 0xfde68a, emissiveIntensity: 1.3 }));
-    const eyeGeo = ctx.sgeo("observador_eye_geo", () => new THREE.SphereGeometry(0.02, 6, 6));
+    const eyeGeo = ctx.sgeo("observador_eye_geo", () => new THREE.SphereGeometry(0.02, 8, 6));
+    const spots: THREE.Vector3[] = [];
     for (let i = 0; i < EYES; i++) {
       const t = i / EYES;
       const theta = Math.acos(1 - 2 * t);
       const phi = Math.PI * (1 + Math.sqrt(5)) * i;
-      const r = 0.14 + ((i * 53) % 7) / 60;
       const y = 0.15 + Math.cos(theta) * 0.35;
-      const x = Math.sin(theta) * Math.cos(phi) * r;
-      const z = Math.sin(theta) * Math.sin(phi) * r;
-      const socket = ctx.joint(`eye${i}`, x, y, z, spine);
-      const eye = new THREE.Mesh(eyeGeo, eyeMat);
-      eye.position.set(x, y, z);
-      ctx.put(socket, eye);
+      // On the trunk's surface (its radius is ~0.13-0.15 over this span).
+      const r = 0.145 + ((i * 53) % 7) / 400;
+      spots.push(V(Math.cos(phi) * r, y, Math.sin(phi) * r));
     }
+    bake(ctx, spine, lidMat, "observador_lids", (p) => {
+      for (const s of spots) p.blob(s.clone().multiplyScalar(0.99).setY(s.y), 0.03, [1, 0.75, 1]);
+    });
+    spots.forEach((s, i) => {
+      const socket = ctx.joint(`eye${i}`, s.x, s.y, s.z, spine);
+      const eye = new THREE.Mesh(eyeGeo, eyeMat);
+      eye.position.copy(s).setX(s.x * 1.06).setZ(s.z * 1.06);
+      ctx.put(socket, eye);
+    });
   },
 
   animate(ctx) {

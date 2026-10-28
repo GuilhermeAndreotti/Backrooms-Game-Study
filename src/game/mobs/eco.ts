@@ -21,6 +21,7 @@
  */
 
 import * as THREE from "three";
+import { bake, hand, ribcage, vertebrae } from "./anatomy";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
 import { animateBiped } from "./anim";
@@ -46,36 +47,63 @@ export const eco: MobDefinition = {
 
   build(ctx) {
     const V = ctx.V;
-    const mat = ctx.smat("eco_body", () => new THREE.MeshStandardMaterial({ color: 0x1a1620, roughness: 0.9, metalness: 0.05 }));
+    const mat = ctx.smat("eco_body", () => new THREE.MeshStandardMaterial({ color: 0x1d1a22, roughness: 0.7, metalness: 0.05 }));
 
-    // Twisted spine, tilted off-centre — an intentionally "irregular" silhouette.
+    // Twisted spine, tilted off-centre — an intentionally "irregular"
+    // silhouette: a starved trunk, ribs pressing through, one shoulder high.
     const spine = ctx.joint("spine", -0.05, -0.32, 0.05);
-    ctx.limbIn(spine, mat, V(0.04, 0.32, -0.02), V(-0.06, -0.32, 0.05), 0.1);
-    // Asymmetric, oddly bent limbs — no two the same length or angle.
-    const armR = ctx.joint("armR", 0.02, 0.28, -0.02, spine);
-    ctx.limbIn(armR, mat, V(0.02, 0.28, -0.02), V(0.38, 0.12, 0.18), 0.045);
-    const foreR = ctx.joint("foreR", 0.38, 0.12, 0.18, armR);
-    ctx.limbIn(foreR, mat, V(0.38, 0.12, 0.18), V(0.3, -0.28, 0.35), 0.04);
-    const armL = ctx.joint("armL", 0.0, 0.25, -0.02, spine);
-    ctx.limbIn(armL, mat, V(0.0, 0.25, -0.02), V(-0.4, -0.05, -0.22), 0.045);
-    const foreL = ctx.joint("foreL", -0.4, -0.05, -0.22, armL);
-    ctx.limbIn(foreL, mat, V(-0.4, -0.05, -0.22), V(-0.5, -0.5, -0.1), 0.04);
-    // Legs, mismatched — one shorter, so it limps.
-    const legL = ctx.joint("legL", -0.06, -0.32, 0.05);
-    ctx.limbIn(legL, mat, V(-0.06, -0.32, 0.05), V(-0.12, -0.82, 0.08), 0.06);
-    const shinL = ctx.joint("shinL", -0.12, -0.82, 0.08, legL);
-    ctx.limbIn(shinL, mat, V(-0.12, -0.82, 0.08), V(-0.18, -1.33, 0.1), 0.05);
-    const legR = ctx.joint("legR", 0.0, -0.32, 0.05);
-    ctx.limbIn(legR, mat, V(0.0, -0.32, 0.05), V(0.1, -0.74, -0.05), 0.06);
-    const shinR = ctx.joint("shinR", 0.1, -0.74, -0.05, legR);
-    ctx.limbIn(shinR, mat, V(0.1, -0.74, -0.05), V(0.14, -1.2, -0.08), 0.05);
+    bake(ctx, spine, mat, "eco_trunk", (p) => {
+      p.blob(V(-0.06, -0.32, 0.05), 0.09, [1.4, 0.7, 1]);
+      p.chain([V(-0.06, -0.3, 0.05), V(-0.02, 0.0, 0.03), V(0.03, 0.18, 0.0), V(0.04, 0.3, -0.02)], 0.085, 0.1);
+      ribcage(p, { c: V(0.0, 0.12, 0.02), w: 0.12, d: 0.085, h: 0.1, ribs: 5, r: 0.011 });
+      p.blob(V(0.04, 0.29, -0.03), 0.05, [1, 0.8, 1]); // right shoulder, hunched up
+      p.blob(V(-0.03, 0.24, -0.03), 0.045, [1, 0.8, 1]);
+      vertebrae(p, V(-0.07, -0.25, -0.04), V(0.03, 0.3, -0.09), 8, 0.018);
+      p.chain([V(0.04, 0.3, -0.02), V(0.035, 0.38, -0.03)], 0.04, 0.035);
+    });
 
-    // Featureless head — smooth, elongated, no face.
+    // Asymmetric, oddly bent limbs — no two the same length or angle — on
+    // hands with too many, too-long fingers.
+    const arms: [string, string, THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3][] = [
+      ["armR", "foreR", V(0.02, 0.28, -0.02), V(0.38, 0.12, 0.18), V(0.3, -0.28, 0.35), V(1, 0, 0)],
+      ["armL", "foreL", V(0.0, 0.25, -0.02), V(-0.4, -0.05, -0.22), V(-0.5, -0.5, -0.1), V(0, 0, -1)],
+    ];
+    for (const [armName, foreName, shoulder, elbow, wrist, across] of arms) {
+      const arm = ctx.joint(armName, shoulder.x, shoulder.y, shoulder.z, spine);
+      ctx.limbIn(arm, mat, shoulder, elbow, 0.045, 0.8);
+      const fore = ctx.joint(foreName, elbow.x, elbow.y, elbow.z, arm);
+      ctx.limbIn(fore, mat, elbow, wrist, 0.04, 0.8);
+      bake(ctx, fore, mat, `eco_${armName}_hand`, (p) => hand(p, { wrist, dir: wrist.clone().sub(elbow), across, fingers: 6, len: 0.17, r: 0.01, curl: 0.7 }));
+    }
+
+    // Legs, mismatched — one shorter, so it limps — with long, splayed feet.
+    const legs: [string, string, THREE.Vector3, THREE.Vector3, THREE.Vector3][] = [
+      ["legL", "shinL", V(-0.06, -0.32, 0.05), V(-0.12, -0.82, 0.08), V(-0.18, -1.3, 0.1)],
+      ["legR", "shinR", V(0.0, -0.32, 0.05), V(0.1, -0.74, -0.05), V(0.14, -1.17, -0.08)],
+    ];
+    for (const [legName, shinName, hip, knee, ankle] of legs) {
+      const leg = ctx.joint(legName, hip.x, hip.y, hip.z);
+      ctx.limbIn(leg, mat, hip, knee, 0.06, 0.8);
+      const shin = ctx.joint(shinName, knee.x, knee.y, knee.z, leg);
+      bake(ctx, shin, mat, `eco_${legName}_shin`, (p) => {
+        p.limb(knee, ankle, 0.048, 0.75);
+        p.limb(ankle, V(ankle.x, ankle.y - 0.02, ankle.z + 0.14), 0.03, 0.6);
+        for (const t of [-1, 1]) p.limb(V(ankle.x, ankle.y - 0.02, ankle.z + 0.1), V(ankle.x + t * 0.04, ankle.y - 0.03, ankle.z + 0.2), 0.012, 0.6);
+      });
+    }
+
+    // Featureless head — smooth, elongated, no face — though the skin is
+    // stretched so tight the brow and the bridge of a nose show through.
     const head = ctx.joint("head", 0.03, 0.36, -0.03, spine);
-    const skull = new THREE.Mesh(ctx.sgeo("eco_head", () => new THREE.SphereGeometry(0.135, 10, 8)), mat);
+    const skull = new THREE.Mesh(ctx.sgeo("eco_head", () => new THREE.SphereGeometry(0.135, 16, 12)), mat);
     skull.position.set(0.05, 0.48, -0.04);
     skull.scale.set(0.9, 1.15, 0.95);
     ctx.put(head, skull);
+    bake(ctx, head, mat, "eco_face", (p) => {
+      p.limb(V(-0.0, 0.52, 0.075), V(0.1, 0.52, 0.075), 0.018, 1);
+      p.limb(V(0.05, 0.51, 0.09), V(0.05, 0.45, 0.1), 0.014, 0.8);
+      p.blob(V(0.05, 0.4, 0.07), 0.035, [1, 0.6, 0.8]);
+    });
   },
 
   animate(ctx) {
