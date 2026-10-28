@@ -5319,10 +5319,12 @@ export class ProceduralMap {
     const isSpawnZone = (gx < 5 && gz < 5);
     const isExitZone = this.isKeepClearCell(gx, gz);
 
-    // Levels 3 and 4 (content ids 8/9) get them too, but thinner on the ground
+    // Lights Out (content id 3) is a perfect maze: every corridor cell may be
+    // the only route forward, so even a wall-attached divider must stay out.
+    // Levels 3 and 4 (content ids 8/9) get dividers too, but thinner on the ground
     // than Level 0, and never where a puzzle fixture, prop or doorway needs room.
     const officeLike = this.level === 8 || this.level === 9;
-    if (this.level !== 1 && this.level !== 4 && this.level !== 7 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone
+    if (this.level !== 1 && this.level !== 3 && this.level !== 4 && this.level !== 7 && this.level !== LOBBY_LEVEL && !isSpawnZone && !isExitZone
       && (cellType === CellType.CORRIDOR || cellType === CellType.ROOM_SMALL || cellType === CellType.ROOM_LARGE)
       && (!officeLike || this.dividerAllowed(gx, gz, cellType))) {
       const wallRng = new SeededRandom(this.seed + gx * 11 + gz * 23);
@@ -5386,6 +5388,8 @@ export class ProceduralMap {
       }
 
       // 8. ABANDONED FURNITURE & SPOOKY GLITCHING PROPS ("cadeiras, caixas e objetos flutuando")
+      // Unlike Level 0's broad halls, Lights Out has a single-cell-wide perfect
+      // maze. Chairs, chair pyramids and boxes can seal its only route to the exit.
       const isLandmarkPyramid = (this.level === 0 && gx === this.chairPyramidX && gz === this.chairPyramidZ);
       const propRng = new SeededRandom(this.seed + gx * 17 + gz * 47);
 
@@ -5408,7 +5412,7 @@ export class ProceduralMap {
             gridZ: gz,
           });
         }
-      } else if (this.level !== 8 && this.level !== 9 && !(this.garage && (garageKeepClear(this.garage, gx, gz) || garageFloorAt(gx) === 1)) && propRng.next() < (this.level === 1 ? 0.075 : 0.22)) {
+      } else if (this.level !== 3 && this.level !== 8 && this.level !== 9 && !(this.garage && (garageKeepClear(this.garage, gx, gz) || garageFloorAt(gx) === 1)) && propRng.next() < (this.level === 1 ? 0.075 : 0.22)) {
         const propRoll = propRng.next();
         
         if (this.level === 1) {
