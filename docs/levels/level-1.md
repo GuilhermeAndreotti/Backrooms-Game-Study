@@ -41,7 +41,7 @@ O andar agenda seus próprios **blackouts** forçados. No escuro:
 - **Ficar parado**, ou alcançar um círculo de luz (raio seguro ≈ 2,6 m), é seguro.
 - Quando as luzes voltam, os Smilers recuam.
 
-A saída fica na outra ponta do andar.
+A saída fica na outra ponta do andar: a **boca de um cano gigante** saindo da parede, com flange aparafusada e um calor alaranjado lá dentro — a entrada do Pipe Dreams.
 
 ### No radar
 

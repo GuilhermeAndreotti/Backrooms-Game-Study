@@ -22,8 +22,11 @@ import { CAR_COLOR_HEX, GARAGE_DIVIDERS, GARAGE_SAFE_RADIUS, GARAGE_FLOORS, GARA
 import { FunWorld } from "./levels/funWorld";
 import { FUN_EXIT, FUN_RECTS, FUN_SPAWN } from "./levels/funLayout";
 import * as Decor from "./LevelDecor";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
+import { SolidCellGrid, applySurfaceWeathering, SurfaceWeathering } from "./SurfaceShading";
+import * as Surfaces from "./surfaceTextures";
 import type { OfficeSkyline } from "./officeWindow";
-import * as Fun from "./LevelFunModels";
 import { POOL_FLOOR_Y, WATER_SURFACE_Y, createPoolTileMaterial, createWallTileMaterial, createWaterMaterial } from "./Water";
 import { POOL_ROOM_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./poolroomsPuzzle";
 
@@ -66,6 +69,14 @@ export enum CellType {
   WATER_ROOM = 8, // Level 7's flooded pool cells — own value rather than folded into ROOM_LARGE/PIT_ROOM, since it needs its own hazard-exposure timer and swim-not-fall physics (same reasoning RED_ROOM already got its own value for)
 }
 
+/** Level 0's pit rooms: half the side (metres) of the square shaft cut into a pit cell (4 m) — a ~0.55 m ledge is left around it. */
+export const PIT_HOLE_HALF = 1.45;
+/** Places a pooled light at a point of a level exit's local frame (see buildPipeMouthExit and friends). */
+type ExitLight = (lx: number, y: number, lz: number, color: number, intensity: number, distance: number) => void;
+
+/** How deep the shafts are drawn; fog swallows them long before the bottom. */
+const PIT_DEPTH = 40;
+
 export interface LightFixture {
   mesh: THREE.Mesh;
   /** Pooled light request; no GPU light is owned by the fixture itself. */
@@ -75,6 +86,9 @@ export interface LightFixture {
   gridX: number;
   gridZ: number;
   dust?: THREE.Points;
+  /** Lit/unlit tube materials when not the troffer diffuser's (worlds with their own lamps). */
+  glassOn?: THREE.Material;
+  glassOff?: THREE.Material;
 }
 
 /** Grid width/height per level. Level 0 is larger to fit the key/maze/dual-door gauntlet. */
@@ -111,6 +125,73 @@ export function gridSizeForLevel(level: number): number {
   if (level === 3 || level === 8 || level === 9) return 48;
   return level === 0 ? 64 : 48;
 }
+
+/**
+ * Bakes several transformed primitives into one geometry, so a prop made of
+ * many parts in one material costs a single draw call.
+ */
+function mergeParts(parts: [THREE.BufferGeometry, THREE.Matrix4][]): THREE.BufferGeometry {
+  const baked = parts.map(([geo, matrix]) => {
+    const flat = geo.index ? geo.toNonIndexed() : geo;
+    flat.applyMatrix4(matrix);
+    if (flat !== geo) geo.dispose();
+    return flat;
+  });
+  const merged = mergeGeometries(baked, false);
+  baked.forEach((g) => g.dispose());
+  return merged;
+}
+
+/** Emissive strength of the Electrical Room panels' indicator lenses. */
+const LEVEL3_LENS_GLOW = 1.6;
+
+/** A colour canvas texture (signs, notes, labels): sRGB, like the colours it was painted with. */
+function srgbTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+type WeatheringLook = Record<"wall" | "floor" | "ceiling", Omit<SurfaceWeathering, "kind">>;
+
+/**
+ * Per content level: how the shared wall/floor/ceiling materials age (see
+ * SurfaceShading.ts). Levels with their own worlds (pool, hotel, FUN, town,
+ * space, lobby) are not listed and keep their surfaces untouched.
+ */
+const WEATHERING: Partial<Record<number, WeatheringLook>> = (() => {
+  const yellow: WeatheringLook = {
+    wall: { stain: 0x9c8248, stainStrength: 0.5, damp: 1, occlusion: 0.75 },
+    floor: { stain: 0x6e5c34, stainStrength: 0.55, damp: 1, occlusion: 0.7 },
+    ceiling: { stain: 0xb09a68, stainStrength: 0.45, damp: 1, occlusion: 0.6 },
+  };
+  const office: WeatheringLook = {
+    wall: { stain: 0xb8b090, stainStrength: 0.35, damp: 0.45, occlusion: 0.7 },
+    floor: { stain: 0x707680, stainStrength: 0.35, damp: 0.5, occlusion: 0.7 },
+    ceiling: { stain: 0xb0a888, stainStrength: 0.35, damp: 0.6, occlusion: 0.6 },
+  };
+  return {
+    0: yellow,
+    3: yellow, // Lights Out: Level 0's halls with the power cut
+    1: {
+      wall: { stain: 0x6e665a, stainStrength: 0.55, damp: 0.8, occlusion: 0.75 },
+      floor: { stain: 0x5e5a52, stainStrength: 0.5, damp: 0.7, occlusion: 0.7 },
+      ceiling: { stain: 0x807466, stainStrength: 0.4, damp: 0.5, occlusion: 0.6 },
+    },
+    2: {
+      wall: { stain: 0x7a4426, stainStrength: 0.55, damp: 0.7, occlusion: 0.8 },
+      floor: { stain: 0x5a3a24, stainStrength: 0.5, damp: 0.6, occlusion: 0.75 },
+      ceiling: { stain: 0x6a3c24, stainStrength: 0.45, damp: 0.6, occlusion: 0.65 },
+    },
+    8: {
+      wall: { stain: 0x5e4a40, stainStrength: 0.5, damp: 0.6, occlusion: 0.75 },
+      floor: { stain: 0x5a5046, stainStrength: 0.45, damp: 0.6, occlusion: 0.7 },
+      ceiling: { stain: 0x6a5e52, stainStrength: 0.4, damp: 0.5, occlusion: 0.6 },
+    },
+    4: office,
+    9: office,
+  };
+})();
 
 /** A ground-level box/crate the player can push aside with E. */
 export interface MovableProp {
@@ -168,13 +249,9 @@ export class ProceduralMap {
   private wallGeo!: THREE.PlaneGeometry;
   private baseGeo!: THREE.BoxGeometry;
   private pillarGeo!: THREE.BoxGeometry;
-  private caseGeo!: THREE.BoxGeometry;
-  private tubeGeo!: THREE.CylinderGeometry;
+  private caseGeo!: THREE.BufferGeometry;
+  private tubeGeo!: THREE.BufferGeometry;
   private unitBoxGeo!: THREE.BoxGeometry;
-  private pitGeoWall!: THREE.PlaneGeometry;
-  private pitGeoFloor!: THREE.PlaneGeometry;
-  private barrelCylinderGeo!: THREE.CylinderGeometry;
-  private barrelRimGeo!: THREE.TorusGeometry;
   private boilerPipeVerticalGeo!: THREE.CylinderGeometry;
   private boilerPipeElbowGeo!: THREE.TorusGeometry;
   private boilerDialPlateGeo!: THREE.CylinderGeometry;
@@ -192,11 +269,6 @@ export class ProceduralMap {
   // Prop and divider geometries & materials for reuse
   private dividerGeo!: THREE.BoxGeometry;
   private partitionBaseGeo!: THREE.BoxGeometry;
-  private chairSeatGeo!: THREE.BoxGeometry;
-  private chairBackGeo!: THREE.BoxGeometry;
-  private chairStemGeo!: THREE.CylinderGeometry;
-  private chairLegGeo!: THREE.BoxGeometry;
-  private boxGeo!: THREE.BoxGeometry;
 
   private fabricMaterial!: THREE.Material;
   private plasticMaterial!: THREE.Material;
@@ -307,6 +379,9 @@ export class ProceduralMap {
   public secretGridZ = -1;
   /** The Electrical Room's way out: a nook in its north wall with a door to Level 94's town. -1 if none. */
   public townExitX = -1;
+  /** The Level 94 door's daylight view and swinging leaf (opened when the Poolrooms drain). */
+  private townDoorView: THREE.Object3D | null = null;
+  private townDoorHinge: THREE.Object3D | null = null;
   public townExitZ = -1;
 
   // --- Level 0: secret office door leading to Level G ---------------------
@@ -383,6 +458,8 @@ export class ProceduralMap {
   /** Five deterministic switch cells, in the order used by the network protocol. */
   public level3Switches: [number, number][] = [];
   public level3SwitchesOn = new Set<number>();
+  /** Each panel's glow, so switching it on can turn it green. */
+  private level3SwitchLights: DynamicLightSource[] = [];
   public level3GateOpen = false;
   /** Cells under the low service passage; players must crouch to cross them. */
   public level3LowCorridor = new Set<string>();
@@ -405,10 +482,12 @@ export class ProceduralMap {
         if (mat instanceof THREE.MeshStandardMaterial) {
           mat.color.setHex(0x39ff88);
           mat.emissive.setHex(0x16a34a);
-          mat.emissiveIntensity = 3.5;
+          mat.emissiveIntensity = LEVEL3_LENS_GLOW;
         }
       });
     });
+    const light = this.level3SwitchLights[index];
+    if (light) light.color = 0x39ff88;
   }
 
   /** Releases the Electrical Room's final barrier after every panel is active. */
@@ -446,15 +525,6 @@ export class ProceduralMap {
   /** Hidden convergence door from Abandoned Office to Level G. */
   public abandonedSecretX = -1;
   public abandonedSecretZ = -1;
-  /**
-   * Hidden office birthday party: a fixed cake cell (eat it to leave for
-   * Level FUN) plus every cell of the little room around it, kept clear of
-   * dividers/desks/random props the same way abandonedSecretX's nook is.
-   * Deliberately nowhere near level4DoorX/Z, the ordinary exit.
-   */
-  public funCakeX = -1;
-  public funCakeZ = -1;
-  public funPartyCells: { gx: number; gz: number }[] = [];
 
   /** Level G sector of a cell: 1 reception, 2 archive, 3 main room, 0 corridors. */
   public levelGSectorOf(gx: number, gz: number): 0 | 1 | 2 | 3 {
@@ -462,6 +532,33 @@ export class ProceduralMap {
     if (gz <= 7 && gx <= 6) return 1;
     if (gz <= 7 && gx >= 10) return 2;
     return 0;
+  }
+
+  /**
+   * Level 0's pit rooms: whether this cell's floor is cut by a shaft. Doorway
+   * cells (opening onto anything but their own room or a wall) keep a floor,
+   * so nobody drops in on the threshold.
+   */
+  public isPitHole(gx: number, gz: number): boolean {
+    if (this.grid[gx]?.[gz] !== CellType.PIT_ROOM) return false;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const n = this.grid[gx + dx]?.[gz + dz];
+      if (n !== CellType.PIT_ROOM && n !== CellType.SOLID) return false;
+    }
+    return true;
+  }
+
+  /** Whether a world point is over a pit shaft (`inset` shrinks the opening: how far past the edge counts). */
+  public isOverPit(x: number, z: number, inset = 0): boolean {
+    const gx = Math.floor(x / this.cellSize), gz = Math.floor(z / this.cellSize);
+    if (!this.isPitHole(gx, gz)) return false;
+    const half = PIT_HOLE_HALF - inset;
+    return Math.abs(x - (gx + 0.5) * this.cellSize) < half && Math.abs(z - (gz + 0.5) * this.cellSize) < half;
+  }
+
+  /** Centre of the pit shaft under a world point (for the fall to drift into). */
+  public pitCenterAt(x: number, z: number): [number, number] {
+    return [(Math.floor(x / this.cellSize) + 0.5) * this.cellSize, (Math.floor(z / this.cellSize) + 0.5) * this.cellSize];
   }
 
   /** Cells monsters may walk into: not walls, and not Level G's exit while it's locked. */
@@ -576,6 +673,41 @@ export class ProceduralMap {
     if (this.level === OLD_TOWN_CONTENT_LEVEL) this.town = this.createTownWorld();
     this.generateGrid();
     this.findExitPath();
+    this.applyWeathering();
+  }
+
+  /** Solid-cell map read by the weathered surfaces' corner shading. */
+  private solidGrid: SolidCellGrid | null = null;
+
+  /**
+   * Maze levels: world-space stains, damp and contact shading on the shared
+   * wall/floor/ceiling materials (SurfaceShading.ts). Needs the finished
+   * grid, so it runs after generation; the materials compile on first draw.
+   */
+  private applyWeathering() {
+    const look = WEATHERING[this.level];
+    if (!look) return;
+    if (!this.solidGrid) {
+      this.solidGrid = new SolidCellGrid((gx, gz) => this.grid[gx][gz] === CellType.SOLID, this.gridSize, this.cellSize, 3.0);
+      this.sharedTextures.push(this.solidGrid.texture);
+    }
+    // The low preset (no surface relief either) gets the cheaper shader variant.
+    const lite = !this.quality.surfaceRelief;
+    const surfaces: [THREE.Material, "wall" | "floor" | "ceiling"][] = [
+      [this.wallMaterial, "wall"],
+      [this.carpetMaterial, "floor"],
+      [this.redCarpetMaterial, "floor"],
+      [this.ceilingMaterial, "ceiling"],
+    ];
+    for (const [material, kind] of surfaces) {
+      if (material instanceof THREE.MeshStandardMaterial) applySurfaceWeathering(material, { kind, ...look[kind] }, this.solidGrid, lite);
+    }
+  }
+
+  /** Re-reads `quality` after the engine switched presets (shader variants, detail distance). */
+  public refreshQuality() {
+    this.applyWeathering();
+    this.lastCulledX = -9999; // re-evaluate detail visibility on the next culling pass
   }
 
   /**
@@ -774,12 +906,6 @@ export class ProceduralMap {
 
   /** The text on the exit desk's paper (also shown when the player reads it), or null on levels without one. */
   public exitPaperNote(): { title: string; lines: string[] } | null {
-    if (this.level === 1) {
-      return {
-        title: t("paper.l1.title"),
-        lines: [0, 1, 2, 3].map((n) => t(`paper.l1.${n}`)),
-      };
-    }
     if (this.level === 0) {
       const wall = this.noclipKind === "wall";
       return {
@@ -865,6 +991,7 @@ export class ProceduralMap {
       }
     }
     const paperTex = new THREE.CanvasTexture(canvas);
+    paperTex.colorSpace = THREE.SRGBColorSpace;
     const paperMat = new THREE.MeshBasicMaterial({ map: paperTex, side: THREE.DoubleSide });
     const paper = new THREE.Mesh(this.paperGeo, paperMat);
     paper.rotation.x = -Math.PI / 2;
@@ -941,180 +1068,35 @@ export class ProceduralMap {
     return new THREE.Points(geometry, material);
   }
 
-  private createWallTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Base yellowish color
-      ctx.fillStyle = "#cdc38d";
-      ctx.fillRect(0, 0, 256, 256);
-
-      // Subtle noise/dirt overlay for rotting damp walls
-      for (let i = 0; i < 5000; i++) {
-        const x = Math.random() * 256;
-        const y = Math.random() * 256;
-        const size = Math.random() * 1.5;
-        const opacity = Math.random() * 0.12;
-        ctx.fillStyle = `rgba(80, 70, 40, ${opacity})`;
-        ctx.fillRect(x, y, size, size);
-      }
-
-      // Vertical stripe/pattern lines (classic Backrooms wallpaper)
-      ctx.strokeStyle = "rgba(100, 90, 50, 0.22)";
-      ctx.lineWidth = 1.5;
-      for (let x = 8; x < 256; x += 16) {
-        // Draw elegant vertical wallpaper lines
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, 256);
-        ctx.stroke();
-
-        // Draw vertical dotted / dashes
-        ctx.beginPath();
-        ctx.strokeStyle = "rgba(80, 72, 36, 0.15)";
-        ctx.setLineDash([4, 12]);
-        ctx.moveTo(x - 4, 0);
-        ctx.lineTo(x - 4, 256);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.strokeStyle = "rgba(100, 90, 50, 0.22)";
-      }
-
-      // Horizontal subtle gradient damp stains (wallpaper moisture)
-      for (let j = 0; j < 3; j++) {
-        const stainY = Math.random() * 200;
-        const stainH = 30 + Math.random() * 40;
-        const grad = ctx.createLinearGradient(0, stainY, 0, stainY + stainH);
-        grad.addColorStop(0, "rgba(90, 75, 45, 0.16)");
-        grad.addColorStop(0.5, "rgba(90, 75, 45, 0.06)");
-        grad.addColorStop(1, "rgba(90, 75, 45, 0.0)");
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, stainY, 256, stainH);
-      }
+  /**
+   * Anisotropic filtering, and (quality permitting) a bump map read from the
+   * material's own colour texture: grout, carpet pile, concrete pits and
+   * stains then catch the flashlight and fixtures instead of looking printed
+   * on. Reusing the colour map costs no memory, only two extra texture taps.
+   */
+  private addSurfaceDetail(material: THREE.Material, bumpScale: number) {
+    if (!(material instanceof THREE.MeshStandardMaterial) || !material.map) return;
+    material.map.anisotropy = this.quality.anisotropy;
+    if (this.quality.surfaceRelief && !material.bumpMap) {
+      material.bumpMap = material.map;
+      material.bumpScale = bumpScale;
     }
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 3); // Repeats perfectly to cover cells which are 4m wide x 3m high
-    return texture;
   }
+
+  private createWallTexture(): THREE.Texture {
+    return Surfaces.createLevel0WallpaperTexture();
+  }
+
 
   private createConcreteWallTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 512;
-    canvas.height = 512;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return new THREE.Texture();
-
-    // Base concrete grey color (much lighter for superior illumination)
-    ctx.fillStyle = "#949494"; 
-    ctx.fillRect(0, 0, 512, 512);
-
-    // Render lots of randomized organic noise/spots for concrete grit and gravel
-    for (let i = 0; i < 4000; i++) {
-      const x = Math.random() * 512;
-      const y = Math.random() * 512;
-      const radius = 0.5 + Math.random() * 1.5;
-      const val = Math.random();
-      if (val < 0.4) {
-        ctx.fillStyle = "rgba(40, 40, 40, 0.15)"; // dark grit
-      } else if (val < 0.8) {
-        ctx.fillStyle = "rgba(220, 220, 220, 0.12)"; // light limestone grit
-      } else {
-        ctx.fillStyle = "rgba(120, 100, 80, 0.08)"; // rusty splash
-      }
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Wet seepage or water leaks staining down the concrete walls
-    for (let i = 0; i < 15; i++) {
-      const startX = Math.random() * 512;
-      const height = 150 + Math.random() * 300;
-      const width = 8 + Math.random() * 25;
-      
-      const grad = ctx.createLinearGradient(startX, 0, startX + width, 0);
-      grad.addColorStop(0, "rgba(45, 40, 35, 0.0)");
-      grad.addColorStop(0.3, "rgba(40, 37, 33, 0.25)"); // damp stain
-      grad.addColorStop(0.7, "rgba(40, 37, 33, 0.25)");
-      grad.addColorStop(1, "rgba(45, 40, 35, 0.0)");
-
-      ctx.fillStyle = grad;
-      ctx.fillRect(startX, 0, width, height);
-    }
-
-    // Concrete block pane seams/joints (horizontal joint running at middle, and 2 vertical panels joints)
-    ctx.strokeStyle = "rgba(30, 30, 30, 0.45)";
-    ctx.lineWidth = 4;
-    
-    // Horizontal seam (middle)
-    ctx.beginPath();
-    ctx.moveTo(0, 256);
-    ctx.lineTo(512, 256);
-    ctx.stroke();
-
-    // Vertical panel joints
-    ctx.beginPath();
-    ctx.moveTo(128, 0);
-    ctx.lineTo(128, 256);
-    ctx.moveTo(384, 0);
-    ctx.lineTo(384, 256);
-    ctx.moveTo(256, 256);
-    ctx.lineTo(256, 512);
-    ctx.stroke();
-
-    // Formwork tie-rod holes in the concrete (standard architectural concrete circles)
-    ctx.fillStyle = "rgba(35, 35, 35, 0.55)";
-    ctx.strokeStyle = "rgba(10, 10, 10, 0.35)";
-    ctx.lineWidth = 1.5;
-    
-    const holes = [
-      [64, 64], [192, 64], [320, 64], [448, 64],
-      [64, 192], [192, 192], [320, 192], [448, 192],
-      [64, 320], [192, 320], [320, 320], [448, 320],
-      [64, 448], [192, 448], [320, 448], [448, 448],
-    ];
-    holes.forEach(([hx, hy]) => {
-      ctx.beginPath();
-      ctx.arc(hx, hy, 4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    });
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 3); // repeat across 4m x 3m wall panel
-    return texture;
+    return Surfaces.createConcreteWallTexture();
   }
+
 
   private createBrickWallTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256; canvas.height = 128;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return new THREE.Texture();
-    ctx.fillStyle = "#633b32";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = "rgba(25, 12, 10, 0.75)";
-    ctx.lineWidth = 3;
-    for (let y = 0; y <= canvas.height; y += 16) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-      const offset = (y / 16) % 2 ? 18 : 0;
-      for (let x = offset; x <= canvas.width; x += 36) {
-        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + 16); ctx.stroke();
-      }
-    }
-    ctx.fillStyle = "rgba(185, 105, 72, 0.18)";
-    for (let i = 0; i < 600; i++) ctx.fillRect(Math.random() * 256, Math.random() * 128, 1 + Math.random() * 3, 1 + Math.random() * 2);
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping; texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(3, 2);
-    return texture;
+    return Surfaces.createBrickWallTexture();
   }
+
 
   private createConcreteFloorTexture(): THREE.Texture {
     const canvas = document.createElement("canvas");
@@ -1145,21 +1127,18 @@ export class ProceduralMap {
       ctx.fill();
     }
 
-    // Wet moisture stains and dark fluid puddle rings (oil spots!)
-    for (let i = 0; i < 8; i++) {
-      const rx = Math.random() * 512;
-      const ry = Math.random() * 512;
-      const rSize = 25 + Math.random() * 60;
-      ctx.fillStyle = "rgba(35, 30, 25, 0.22)"; // organic brown spill
-      ctx.beginPath();
-      ctx.arc(rx, ry, rSize, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Core of puddle (even darker oil spot)
-      ctx.fillStyle = "rgba(20, 20, 20, 0.25)";
-      ctx.beginPath();
-      ctx.arc(rx + Math.random() * 10 - 5, ry + Math.random() * 10 - 5, rSize * 0.5, 0, Math.PI * 2);
-      ctx.fill();
+    // A few soft oil drips. Kept faint and few: the big stains come from the
+    // world-space weathering (SurfaceShading.ts), which never repeats.
+    for (let i = 0; i < 4; i++) {
+      const rx = 40 + Math.random() * 432;
+      const ry = 40 + Math.random() * 432;
+      const rSize = 12 + Math.random() * 26;
+      const grad = ctx.createRadialGradient(rx, ry, 0, rx, ry, rSize);
+      grad.addColorStop(0, "rgba(22, 20, 18, 0.22)");
+      grad.addColorStop(0.6, "rgba(30, 27, 22, 0.12)");
+      grad.addColorStop(1, "rgba(35, 30, 25, 0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(rx - rSize, ry - rSize, rSize * 2, rSize * 2);
     }
 
     // Structural concrete floor cracks! Very industrial
@@ -1179,420 +1158,177 @@ export class ProceduralMap {
       ctx.stroke();
     }
 
+    Surfaces.weatherCanvas(ctx, { grain: 0.08, blotch: 0.12, seed: 1101 });
+
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4);
+    texture.repeat.set(2, 2); // 2 m per repeat
     return texture;
   }
 
   private createMetalCeilingTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return new THREE.Texture();
-
-    // Dark grey corrugated iron / steel ceiling base (lighter grey for brightness)
-    ctx.fillStyle = "#808588";
-    ctx.fillRect(0, 0, 256, 256);
-
-    // Draw horizontal slats / corrugated sheet iron pattern
-    for (let y = 0; y < 256; y += 16) {
-      // Draw shadow for 3D depth of slat
-      ctx.fillStyle = "rgba(10, 10, 10, 0.55)";
-      ctx.fillRect(0, y, 256, 4);
-
-      // Draw light highlight on the top ridge of slat
-      ctx.fillStyle = "rgba(230, 230, 230, 0.15)";
-      ctx.fillRect(0, y + 4, 256, 3);
-    }
-
-    // Add metallic texture speckles and rusting along the panel grooves
-    for (let i = 0; i < 800; i++) {
-      const x = Math.random() * 256;
-      const y = Math.random() * 256;
-      ctx.fillStyle = Math.random() > 0.6 ? "rgba(150, 95, 45, 0.12)" : "rgba(30, 30, 30, 0.15)";
-      ctx.fillRect(x, y, 1 + Math.random() * 2, 1 + Math.random() * 2);
-    }
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(8, 8); // nice corrugated frequency
-    return texture;
+    return Surfaces.createMetalCeilingTexture();
   }
+
 
   private createRedCarpetTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 128;
-    canvas.height = 128;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Base red carpet color (damp, dark, dirty blood-red/crimson)
-      ctx.fillStyle = "#591c1c";
-      ctx.fillRect(0, 0, 128, 128);
-
-      // Draw random noise to give it a fibrous/pile carpet texture
-      for (let i = 0; i < 8000; i++) {
-        const x = Math.random() * 128;
-        const y = Math.random() * 128;
-        const size = 1 + Math.random() * 0.8;
-        const tint = Math.random();
-        const color = tint > 0.5 ? "rgba(42, 6, 6, 0.4)" : "rgba(132, 45, 45, 0.22)";
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y, size, size);
-      }
-      
-      // Some slightly larger wet, dirty/stained moisture spots (blackish red)
-      for (let j = 0; j < 6; j++) {
-        const x = Math.random() * 128;
-        const y = Math.random() * 128;
-        const r = 6 + Math.random() * 14;
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
-        grad.addColorStop(0, "rgba(28, 2, 2, 0.52)");
-        grad.addColorStop(1, "rgba(28, 2, 2, 0)");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4); // Repeats over the 4m x 4m cell floor size
-    return texture;
+    return Surfaces.createRedCarpetTexture();
   }
+
 
   private createRustedMetalWallTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 512;
-    canvas.height = 512;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Base dark industrial copperish grey-brown
-      ctx.fillStyle = "#332218";
-      ctx.fillRect(0, 0, 512, 512);
-
-      // Add iron scratches and metal grit noise
-      for (let i = 0; i < 5000; i++) {
-        const x = Math.random() * 512;
-        const y = Math.random() * 512;
-        const radius = 0.5 + Math.random() * 1.5;
-        const tint = Math.random();
-        if (tint < 0.45) {
-          ctx.fillStyle = "rgba(10, 5, 2, 0.4)"; // dark carbon spots
-        } else if (tint < 0.85) {
-          ctx.fillStyle = "rgba(139, 69, 19, 0.25)"; // rusty orange spots
-        } else {
-          ctx.fillStyle = "rgba(180, 180, 180, 0.15)"; // steel silver metallic speckles
-        }
-        ctx.beginPath();
-        ctx.arc(x, y, radius, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Draw rusted steel sheet panels with vertical and horizontal seams
-      ctx.strokeStyle = "rgba(15, 8, 3, 0.8)";
-      ctx.lineWidth = 5;
-      
-      // We will make 4 main panel divisions (2x2 grid)
-      ctx.beginPath();
-      // Horizontal seam
-      ctx.moveTo(0, 256);
-      ctx.lineTo(512, 256);
-      // Vertical seam
-      ctx.moveTo(256, 0);
-      ctx.lineTo(256, 512);
-      ctx.stroke();
-
-      // Draw rivets/bolts at corners of each panel
-      ctx.fillStyle = "#5c3d2e";
-      ctx.strokeStyle = "#1a0f0a";
-      ctx.lineWidth = 1.5;
-      const rivets = [
-        [20, 20], [236, 20], [276, 20], [492, 20],
-        [20, 236], [236, 236], [276, 236], [492, 236],
-        [20, 276], [236, 276], [276, 276], [492, 276],
-        [20, 492], [236, 492], [276, 492], [492, 492]
-      ];
-      rivets.forEach(([rx, ry]) => {
-        ctx.beginPath();
-        ctx.arc(rx, ry, 6, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      });
-
-      // Running rust water leak streaks going down
-      for (let i = 0; i < 20; i++) {
-        const startX = Math.random() * 512;
-        const height = 180 + Math.random() * 320;
-        const width = 6 + Math.random() * 14;
-        
-        const grad = ctx.createLinearGradient(startX, 0, startX + width, 0);
-        grad.addColorStop(0, "rgba(139, 69, 19, 0.0)");
-        grad.addColorStop(0.5, "rgba(120, 40, 5, 0.5)"); // rich thick dripping rust
-        grad.addColorStop(1, "rgba(139, 69, 19, 0.0)");
-        
-        ctx.fillStyle = grad;
-        ctx.fillRect(startX, 0, width, height);
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 3);
-    return texture;
+    return Surfaces.createRustedMetalWallTexture();
   }
+
 
   private createRustedMetalFloorTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Base dark rusted iron floor plate
-      ctx.fillStyle = "#1e130c";
-      ctx.fillRect(0, 0, 256, 256);
-
-      // Industrial grating pattern (metal grid lines)
-      ctx.strokeStyle = "rgba(10, 5, 2, 0.85)";
-      ctx.lineWidth = 2;
-      for (let i = 0; i <= 256; i += 16) {
-        ctx.beginPath();
-        ctx.moveTo(i, 0);
-        ctx.lineTo(i, 256);
-        ctx.moveTo(0, i);
-        ctx.lineTo(256, i);
-        ctx.stroke();
-      }
-
-      // Add lots of rust particles and orange speckles
-      for (let i = 0; i < 3000; i++) {
-        const x = Math.random() * 256;
-        const y = Math.random() * 256;
-        const val = Math.random();
-        if (val < 0.6) {
-          ctx.fillStyle = "rgba(100, 30, 5, 0.35)"; // orange rust
-        } else {
-          ctx.fillStyle = "rgba(20, 15, 10, 0.4)"; // dark soot
-        }
-        ctx.fillRect(x, y, 1.5, 1.5);
-      }
-
-      // Massive dark spills/rust corrosion patches
-      for (let k = 0; k < 8; k++) {
-        const rx = Math.random() * 256;
-        const ry = Math.random() * 256;
-        const size = 15 + Math.random() * 35;
-        const grad = ctx.createRadialGradient(rx, ry, 0, rx, ry, size);
-        grad.addColorStop(0, "rgba(120, 45, 10, 0.6)");
-        grad.addColorStop(0.5, "rgba(70, 25, 5, 0.3)");
-        grad.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(rx, ry, size, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4);
-    return texture;
+    return Surfaces.createRustedMetalFloorTexture();
   }
+
 
   private createRustedMetalCeilingTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Base dark soot grey
-      ctx.fillStyle = "#261c16";
-      ctx.fillRect(0, 0, 256, 256);
-
-      // Corrugated metallic lines/shadows
-      ctx.fillStyle = "rgba(10, 5, 2, 0.75)";
-      for (let x = 0; x < 256; x += 32) {
-        ctx.fillRect(x, 0, 12, 256);
-      }
-
-      // Splashes of reddish orange corrosion and rust
-      for (let i = 0; i < 2000; i++) {
-        const x = Math.random() * 256;
-        const y = Math.random() * 256;
-        if (Math.random() < 0.7) {
-          ctx.fillStyle = "rgba(120, 50, 15, 0.32)";
-        } else {
-          ctx.fillStyle = "rgba(10, 10, 10, 0.5)";
-        }
-        ctx.fillRect(x, y, 2, 2);
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4);
-    return texture;
+    return Surfaces.createRustedMetalCeilingTexture();
   }
+
 
   /** Level G: tired pale grey-green office paint, scuffed at hip height. */
   private createOfficeWallTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.fillStyle = "#b9beb2";
-      ctx.fillRect(0, 0, 256, 256);
-      for (let i = 0; i < 5000; i++) {
-        ctx.fillStyle = Math.random() > 0.5 ? "rgba(90, 96, 88, 0.08)" : "rgba(230, 232, 222, 0.07)";
-        ctx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
-      }
-      // Chair-rail scuff band and a few grime streaks running down
-      ctx.fillStyle = "rgba(70, 72, 66, 0.18)";
-      ctx.fillRect(0, 150, 256, 10);
-      for (let s = 0; s < 5; s++) {
-        const x = Math.random() * 256;
-        const grad = ctx.createLinearGradient(0, 0, 0, 256);
-        grad.addColorStop(0, "rgba(60, 58, 45, 0.16)");
-        grad.addColorStop(1, "rgba(60, 58, 45, 0)");
-        ctx.fillStyle = grad;
-        ctx.fillRect(x, 0, 3 + Math.random() * 6, 120 + Math.random() * 120);
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    return texture;
+    return Surfaces.createOfficeWallTexture();
   }
+
 
   /** Level G: blue-grey commercial carpet tiles. */
   private createOfficeCarpetTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 128;
-    canvas.height = 128;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.fillStyle = "#4a5360";
-      ctx.fillRect(0, 0, 128, 128);
-      for (let i = 0; i < 6000; i++) {
-        ctx.fillStyle = Math.random() > 0.5 ? "rgba(30, 34, 42, 0.25)" : "rgba(120, 130, 145, 0.14)";
-        ctx.fillRect(Math.random() * 128, Math.random() * 128, 1.4, 1.4);
-      }
-      // Tile seams
-      ctx.strokeStyle = "rgba(20, 22, 28, 0.45)";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(0.5, 0.5, 127, 127);
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4);
-    return texture;
+    return Surfaces.createOfficeCarpetTexture();
   }
+
 
   private createCarpetTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 128;
-    canvas.height = 128;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Base carpet color (damp moldy yellow-brown pile)
-      ctx.fillStyle = "#82734a";
-      ctx.fillRect(0, 0, 128, 128);
-
-      // Draw random noise to give it a fibrous/pile carpet texture
-      for (let i = 0; i < 8000; i++) {
-        const x = Math.random() * 128;
-        const y = Math.random() * 128;
-        const size = 1 + Math.random() * 0.8;
-        const tint = Math.random();
-        const color = tint > 0.5 ? "rgba(65, 55, 30, 0.22)" : "rgba(150, 135, 95, 0.15)";
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y, size, size);
-      }
-      
-      // Some slightly larger wet, rotten moldy moisture spots
-      for (let j = 0; j < 6; j++) {
-        const x = Math.random() * 128;
-        const y = Math.random() * 128;
-        const r = 6 + Math.random() * 14;
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
-        grad.addColorStop(0, "rgba(55, 45, 25, 0.38)");
-        grad.addColorStop(1, "rgba(55, 45, 25, 0)");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4); // Repeats over the 4m x 4m cell floor size
-    return texture;
+    return Surfaces.createLevel0CarpetTexture();
   }
+
 
   private createCeilingTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 128;
-    canvas.height = 128;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      // Off-white acoustic tile ceiling base
-      ctx.fillStyle = "#cfcbb7";
-      ctx.fillRect(0, 0, 128, 128);
-
-      // Acoustic dots and texture holes
-      for (let i = 0; i < 400; i++) {
-        const x = Math.random() * 128;
-        const y = Math.random() * 128;
-        const size = 0.5 + Math.random() * 1.5;
-        ctx.fillStyle = "rgba(60, 58, 50, 0.32)";
-        ctx.fillRect(x, y, size, size);
-      }
-
-      // Tile borders/grid lines to shape 2x2 grid panels in a cell
-      ctx.strokeStyle = "rgba(80, 78, 70, 0.2)";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(0, 0, 128, 128);
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(4, 4); // Fits nicely in the 4m x 4m cell ceiling size
-    return texture;
+    return Surfaces.createLevel0CeilingTexture(this.cellSize);
   }
 
+
   private createCardboardTexture(): THREE.Texture {
+    const size = 256;
     const canvas = document.createElement("canvas");
-    canvas.width = 128;
-    canvas.height = 128;
+    canvas.width = canvas.height = size;
     const ctx = canvas.getContext("2d");
     if (ctx) {
       // Kraft paper cardboard brown base
       ctx.fillStyle = "#ae8d63";
-      ctx.fillRect(0, 0, 128, 128);
-      
-      // Draw darker fiber lines for packing box texture
-      ctx.fillStyle = "rgba(120, 95, 60, 0.25)";
-      for (let i = 0; i < 600; i++) {
-        const x = Math.random() * 128;
-        const y = Math.random() * 128;
-        const w = 1 + Math.random() * 20;
-        ctx.fillRect(x, y, w, 1);
+      ctx.fillRect(0, 0, size, size);
+
+      // Corrugation showing through the liner: faint vertical flutes
+      for (let x = 0; x < size; x += 6) {
+        ctx.fillStyle = "rgba(255, 235, 200, 0.06)";
+        ctx.fillRect(x, 0, 3, size);
+        ctx.fillStyle = "rgba(90, 66, 36, 0.06)";
+        ctx.fillRect(x + 3, 0, 2, size);
       }
 
-      // Draw cardboard borders
-      ctx.strokeStyle = "rgba(90, 70, 45, 0.4)";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(0, 0, 128, 128);
+      // Fibres in the paper
+      ctx.fillStyle = "rgba(120, 95, 60, 0.22)";
+      for (let i = 0; i < 900; i++) {
+        ctx.fillRect(Math.random() * size, Math.random() * size, 1 + Math.random() * 18, 1);
+      }
+
+      // Scuffs and a few damp blotches
+      for (let i = 0; i < 6; i++) {
+        const x = Math.random() * size, y = Math.random() * size, r = 8 + Math.random() * 26;
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
+        grad.addColorStop(0, "rgba(80, 58, 30, 0.22)");
+        grad.addColorStop(1, "rgba(80, 58, 30, 0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - r, y - r, r * 2, r * 2);
+      }
+
+      // A faded shipping stamp: "this side up" arrows and a code box
+      ctx.save();
+      ctx.globalAlpha = 0.38;
+      ctx.strokeStyle = "#3b2a1a";
+      ctx.fillStyle = "#3b2a1a";
+      ctx.lineWidth = 3;
+      for (const ax of [34, 50]) {
+        ctx.beginPath();
+        ctx.moveTo(ax, 62); ctx.lineTo(ax, 36);
+        ctx.moveTo(ax - 6, 44); ctx.lineTo(ax, 35); ctx.lineTo(ax + 6, 44);
+        ctx.stroke();
+      }
+      ctx.strokeRect(150, 176, 72, 30);
+      ctx.fillRect(158, 184, 56, 4);
+      ctx.fillRect(158, 194, 38, 4);
+      ctx.restore();
+
+      // Crushed, darkened edges all round (each face of the box is the whole canvas)
+      const edge = 18;
+      for (const [x0, y0, x1, y1, w, h] of [[0, 0, edge, 0, edge, size], [size, 0, size - edge, 0, edge, size], [0, 0, 0, edge, size, edge], [0, size, 0, size - edge, size, edge]] as const) {
+        const grad = ctx.createLinearGradient(x0, y0, x1, y1);
+        grad.addColorStop(0, "rgba(70, 50, 28, 0.5)");
+        grad.addColorStop(1, "rgba(70, 50, 28, 0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), w, h);
+      }
     }
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     return texture;
+  }
+
+  /** 128 x 64 diffuser face: base glow, two tube bands along its length, prism stipple, darker rim. */
+  private createDiffuserTexture(): THREE.Texture {
+    const w = 128, h = 64;
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#b8b6ac";
+      ctx.fillRect(0, 0, w, h);
+      for (const v of [0.32, 0.68]) {
+        const band = ctx.createLinearGradient(0, h * (v - 0.2), 0, h * (v + 0.2));
+        band.addColorStop(0, "rgba(255, 255, 250, 0)");
+        band.addColorStop(0.5, "rgba(255, 255, 250, 0.9)");
+        band.addColorStop(1, "rgba(255, 255, 250, 0)");
+        ctx.fillStyle = band;
+        ctx.fillRect(4, h * (v - 0.2), w - 8, h * 0.4);
+      }
+      // Prismatic lens: a fine grid of tiny cones.
+      ctx.fillStyle = "rgba(120, 118, 110, 0.18)";
+      for (let y = 1; y < h; y += 3) for (let x = (y % 2) + 1; x < w; x += 3) ctx.fillRect(x, y, 1, 1);
+      // Light falls off towards the frame; the tube ends are dimmer.
+      const edge = ctx.createLinearGradient(0, 0, w, 0);
+      edge.addColorStop(0, "rgba(70, 68, 60, 0.55)");
+      edge.addColorStop(0.08, "rgba(70, 68, 60, 0)");
+      edge.addColorStop(0.92, "rgba(70, 68, 60, 0)");
+      edge.addColorStop(1, "rgba(70, 68, 60, 0.55)");
+      ctx.fillStyle = edge;
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = "rgba(70, 68, 60, 0.5)";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(1.5, 1.5, w - 3, h - 3);
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    this.sharedTextures.push(texture);
+    return texture;
+  }
+
+  /**
+   * Untextured tube materials for the worlds that model their own lamps
+   * (Level FUN, Level 79): the troffer diffuser texture would smear across
+   * their tube geometry. Same colours the shared ones had before it.
+   */
+  private plainTubeMaterials(): { glassOn: THREE.MeshBasicMaterial; glassOff: THREE.MeshStandardMaterial } {
+    return {
+      glassOn: this.sharedMat("plain_tube_on", () => new THREE.MeshBasicMaterial({ color: 0xfffef0 })),
+      glassOff: this.sharedMat("plain_tube_off", () => new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.5 })),
+    };
   }
 
   private initMaterials() {
@@ -1617,34 +1353,27 @@ export class ProceduralMap {
 
     this.pillarGeo = new THREE.BoxGeometry(0.8, height, 0.8);
 
-    this.caseGeo = new THREE.BoxGeometry(1.2, 0.1, 0.4);
+    // Recessed troffer: a shallow housing set into the ceiling grid, and the
+    // prismatic diffuser under it (the part that lights up and flickers).
+    // Housing: a shallow back pan with a 5 cm rim, top at local y = 0 (the
+    // ceiling plane); the diffuser sits recessed inside the rim.
+    this.caseGeo = mergeParts([
+      [new THREE.BoxGeometry(1.24, 0.006, 0.64), new THREE.Matrix4().makeTranslation(0, -0.003, 0)],
+      [new THREE.BoxGeometry(1.24, 0.03, 0.05), new THREE.Matrix4().makeTranslation(0, -0.015, 0.295)],
+      [new THREE.BoxGeometry(1.24, 0.03, 0.05), new THREE.Matrix4().makeTranslation(0, -0.015, -0.295)],
+      [new THREE.BoxGeometry(0.05, 0.03, 0.54), new THREE.Matrix4().makeTranslation(0.595, -0.015, 0)],
+      [new THREE.BoxGeometry(0.05, 0.03, 0.54), new THREE.Matrix4().makeTranslation(-0.595, -0.015, 0)],
+    ]);
 
-    this.tubeGeo = new THREE.CylinderGeometry(0.04, 0.04, 1.0, 8);
-    this.tubeGeo.rotateZ(Math.PI / 2);
+    this.tubeGeo = new THREE.PlaneGeometry(1.12, 0.52);
+    this.tubeGeo.rotateX(Math.PI / 2);
 
     // Divider Geometries (office partition wall): thickness=0.08m, height=2.3m, depth=1.8m
     this.dividerGeo = new THREE.BoxGeometry(0.08, 2.3, 1.8);
     this.partitionBaseGeo = new THREE.BoxGeometry(0.1, 0.12, 1.8);
 
-    // Office Chairs geometries (low poly for extreme FPS)
-    this.chairSeatGeo = new THREE.BoxGeometry(0.55, 0.08, 0.55);
-    this.chairBackGeo = new THREE.BoxGeometry(0.5, 0.5, 0.08);
-    this.chairStemGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.45, 6);
-    this.chairLegGeo = new THREE.BoxGeometry(0.55, 0.03, 0.05);
-
-    // Cardboard boxes (brown shipment parcels)
-    this.boxGeo = new THREE.BoxGeometry(0.65, 0.65, 0.65);
-
     // Unit 1x1x1 box geometry used for scaling to prevent expensive dynamic BoxGeometry generation
     this.unitBoxGeo = new THREE.BoxGeometry(1, 1, 1);
-
-    // Pit Room geometries
-    this.pitGeoWall = new THREE.PlaneGeometry(1.0, 1.6);
-    this.pitGeoFloor = new THREE.PlaneGeometry(1.0, 1.0);
-
-    // Industrial Barrel geometries (low segment count for performance)
-    this.barrelCylinderGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.9, 10);
-    this.barrelRimGeo = new THREE.TorusGeometry(0.33, 0.02, 4, 10);
 
     // Boiler parts (very low polygon counts)
     this.boilerPipeVerticalGeo = new THREE.CylinderGeometry(0.065, 0.065, 0.6, 6);
@@ -1751,18 +1480,38 @@ export class ProceduralMap {
       metalness: this.level === 2 ? 0.4 : (this.level === 1 ? 0.8 : 0.0),
     });
 
+    // Surface relief + sharper grazing angles on the surfaces you always see.
+    // Level 0's wallpaper is a flat print: only a hint of relief.
+    this.addSurfaceDetail(this.wallMaterial, this.level === 0 ? 0.5 : 0.9);
+    this.addSurfaceDetail(this.carpetMaterial, 1.2);
+    this.addSurfaceDetail(this.redCarpetMaterial, 1.2);
+    this.addSurfaceDetail(this.ceilingMaterial, 0.8);
+    this.addSurfaceDetail(this.cardboardBoxMaterial, 0.6);
+
     // Fluorescent Tubes
-    this.fluorescentGlassOn = new THREE.MeshBasicMaterial({
-      color: 0xfffef0,
-    });
+    // Brighter than white: on the filmic levels the diffuser sits above the
+    // tone curve's shoulder and blooms. Elsewhere the VHS pass clips it to 1.
+    // The troffer's prismatic diffuser: the two tubes show through as soft
+    // bright bands. Kept just above white (not far above it) so the bands and
+    // the darker edges survive the tone curve instead of blooming into a blob.
+    const diffuser = this.createDiffuserTexture();
+    const glassOn = new THREE.MeshBasicMaterial({ color: 0xfffef0, map: diffuser });
+    glassOn.color.multiplyScalar(1.9);
+    this.fluorescentGlassOn = glassOn;
 
     this.fluorescentGlassOff = new THREE.MeshStandardMaterial({
-      color: 0x333333,
+      color: 0x5a5a56,
+      map: diffuser,
       roughness: 0.5,
     });
 
-    this.fluorescentCaseMaterial = new THREE.MeshPhongMaterial({
-      color: 0x222222,
+    // Painted sheet steel: off-white in the offices and Level 0's tile grid,
+    // dark and grimy in the industrial levels.
+    const industrial = this.level === 1 || this.level === 2 || this.level === 8;
+    this.fluorescentCaseMaterial = new THREE.MeshStandardMaterial({
+      color: industrial ? 0x2c2a26 : 0xd8d4c4,
+      roughness: industrial ? 0.7 : 0.55,
+      metalness: industrial ? 0.4 : 0.1,
     });
 
     // Puddle, leak, drop and ripple assets for damp areas (Backrooms Level 0 classic moisture)
@@ -1793,10 +1542,15 @@ export class ProceduralMap {
       polygonOffsetFactor: -1,
     });
 
-    this.leakStainMaterial = new THREE.MeshBasicMaterial({
-      color: 0x302613,      // very dark water damage
+    // Water damage soaked into the tile above each drip: lit like the ceiling
+    // (so it never glows in the dark) and fading out at a ragged edge.
+    this.leakStainMaterial = new THREE.MeshStandardMaterial({
+      color: 0x3a2c14,
+      roughness: 0.95,
       transparent: true,
-      opacity: 0.72,
+      opacity: 0.8,
+      depthWrite: false,
+      alphaMap: (this.puddleMaterial as THREE.MeshStandardMaterial).alphaMap,
     });
 
     this.dropMaterial = new THREE.MeshBasicMaterial({
@@ -1971,11 +1725,11 @@ export class ProceduralMap {
       // A cramped final service crawlspace leading to the barred exit.
       for (let x = 40; x <= 43; x++) this.level3LowCorridor.add(`${x},42`);
       for (let z = 42; z <= 44; z++) this.level3LowCorridor.add(`44,${z}`);
-      // A door out of the building, onto a sunny road (Level 94).
-      this.carveElectricalTownExit();
 
     } else if (this.level === 7) {
       this.carveLevel7();
+      // The drained Poolrooms' other way out: a door onto a sunny road (Level 94).
+      this.carvePoolTownExit();
     } else {
       // LEVEL 0: The Lobby (Classic Backrooms yellow partitions forming a modular wall-labyrinth)
       // Populate as walkable hallway/open area space by default
@@ -2257,15 +2011,6 @@ export class ProceduralMap {
     this.level4DoorX = this.exitGridX; this.level4DoorZ = this.exitGridZ;
     this.abandonedSecretX = 18; this.abandonedSecretZ = 35;
     corridor(18, 33, 18, 35);
-    // A second, unrelated secret: an office birthday party nobody mentions,
-    // tucked into the unused gap between the reception rooms — nowhere near
-    // level4DoorX/Z (the real exit) or abandonedSecretX/Z (the Level G door).
-    corridor(25, 7, 25, 9);
-    room(24, 10, 26, 12);
-    this.funCakeX = 25; this.funCakeZ = 11;
-    this.funPartyCells = [];
-    for (let z = 7; z <= 9; z++) this.funPartyCells.push({ gx: 25, gz: z });
-    for (let x = 24; x <= 26; x++) for (let z = 10; z <= 12; z++) this.funPartyCells.push({ gx: x, gz: z });
 
     this.level4DeskCells = [
       { gx: 18, gz: 18, rotation: 0 }, { gx: 22, gz: 18, rotation: 0 }, { gx: 26, gz: 18, rotation: 0 }, { gx: 30, gz: 18, rotation: 0 },
@@ -2413,29 +2158,32 @@ export class ProceduralMap {
   }
 
   /**
-   * The Electrical Room's way out to Level 94: a one-cell nook cut into the
-   * building's north wall from one of the top rooms, somewhere along it by
-   * seed, with an exit door standing open onto daylight at its end.
+   * The Poolrooms' way out to Level 94 — the alternative to the station door
+   * and Level 79: a dry one-cell nook cut into the north wall of the third
+   * hall, somewhere along it by seed, with an exit door standing open onto
+   * daylight at its end. Shut (a plain wall) until the halls are drained.
    */
-  private carveElectricalTownExit() {
+  private carvePoolTownExit() {
     const z = 1;
     const options: number[] = [];
-    for (let x = 5; x < this.gridSize - 3; x++) {
-      if (this.grid[x][z] !== CellType.SOLID || this.grid[x][z + 1] === CellType.SOLID) continue;
+    for (let x = 27; x <= this.gridSize - 4; x++) {
+      if (this.grid[x][z] !== CellType.SOLID || this.grid[x][z + 1] !== CellType.WATER_ROOM) continue;
       if (this.grid[x - 1][z + 1] === CellType.SOLID || this.grid[x + 1][z + 1] === CellType.SOLID) continue;
-      if (this.level3Switches.some(([sx, sz]) => Math.abs(sx - x) <= 1 && Math.abs(sz - (z + 1)) <= 1)) continue;
+      // Never on top of a valve or a clue mark someone needs to reach.
+      if (this.valvePositions.some(([vx, vz]) => Math.abs(vx - x) <= 1 && Math.abs(vz - (z + 1)) <= 1)) continue;
+      if (this.poolClueCells.has(`${x},${z + 1}`)) continue;
       options.push(x);
     }
     if (options.length === 0) return;
     const x = options[Math.floor(new SeededRandom(this.seed * 17 + 9494).next() * options.length)];
-    this.grid[x][z] = CellType.CORRIDOR;
+    this.grid[x][z] = CellType.ROOM_SMALL;
     this.townExitX = x;
     this.townExitZ = z;
   }
 
-  /** Whether a world position has reached the Electrical Room's exit door (the far end of its nook). */
+  /** Whether a world position has reached the Poolrooms' Level 94 door (the far end of its nook; only once drained). */
   public atTownExitDoor(x: number, z: number): boolean {
-    if (this.townExitX < 0) return false;
+    if (this.townExitX < 0 || !this.poolroomsSolved) return false;
     const cs = this.cellSize;
     return Math.floor(x / cs) === this.townExitX && Math.floor(z / cs) === this.townExitZ && z < this.townExitZ * cs + 1.7;
   }
@@ -2782,7 +2530,7 @@ export class ProceduralMap {
    * Level 0 progression gauntlet, carved into the enlarged east wing: a
    * perfect maze leading to a chamber with two open passages — no key, no
    * locked door, just the corridor and the choice. The correct passage
-   * reaches the exit; the wrong one opens into red rooms. Which is correct
+   * crosses a pit room to the exit; the wrong one opens into a red room. Which is correct
    * (and its painted colour) is seed-deterministic; every scrap-of-note
    * carries a clue naming it.
    */
@@ -2826,19 +2574,30 @@ export class ProceduralMap {
     this.correctDoorIsA = doorRng.next() < 0.5;
     this.correctDoorMarker = "mesa"; // notes point at the passage with the desk instead of a painted colour
 
-    // 6. A small room behind each passage. The correct one holds the exit; the
-    //    wrong one is a red room. (Passage cells were carved above.)
-    const carveRoom = (z0: number, z1: number, type: CellType) => {
-      for (let x = 59; x <= 61; x++) {
+    // 6. A small room behind each passage. The wrong one is a red room; the
+    //    correct one is a pit room the exit sits at the far end of, so the way
+    //    out always means crossing the pits. (Passage cells were carved above.)
+    const carveRoom = (z0: number, z1: number, type: CellType, x0 = 59) => {
+      for (let x = x0; x <= 61; x++) {
         for (let z = z0; z <= z1; z++) {
           if (x >= 0 && x < gs && z >= 0 && z < gs) this.grid[x][z] = type;
         }
       }
     };
+    // The exit room is two cells wide (x 60..61) behind a solid column at
+    // x = 59, which keeps the maze (whose cells run up to x = 58) from opening
+    // straight into it beside the exit. Crossing stays guaranteed: every cell
+    // with a shaft keeps a 0.55 m ledge, so between the two columns of shafts
+    // there is always a 1.1 m walkway from the passage to the exit, and the
+    // entry and exit cells themselves (next to corridor) keep their floor.
+    const carveExitRoom = (z0: number, z1: number) => {
+      carveRoom(z0, z1, CellType.SOLID);
+      carveRoom(z0, z1, CellType.PIT_ROOM, 60);
+    };
     const aIsExit = this.correctDoorIsA;
     // passage A room: z 22..26 (north).  passage B room: z 38..42 (south).
-    carveRoom(22, 26, aIsExit ? CellType.CORRIDOR : CellType.RED_ROOM);
-    carveRoom(38, 42, aIsExit ? CellType.RED_ROOM : CellType.CORRIDOR);
+    if (aIsExit) carveExitRoom(22, 26); else carveRoom(22, 26, CellType.RED_ROOM);
+    if (aIsExit) carveRoom(38, 42, CellType.RED_ROOM); else carveExitRoom(38, 42);
     // The exit is the far end of its room, up against solid rock, so a
     // noclip wall has something to pass through.
     this.exitGridX = 60;
@@ -2853,11 +2612,13 @@ export class ProceduralMap {
     this.noclipPatchX = (this.exitGridX + 0.5) * this.cellSize;
     this.noclipPatchZ = (this.exitGridZ + 0.5) * this.cellSize + (aIsExit ? 0.7 : -0.7);
 
-    // 7. A few more red-room clearings scattered through the maze.
+    // 7. A few pit-room clearings scattered through the maze. Always
+    //    crossable: shafts never touch (1.1 m walkways between them, ledges
+    //    along the walls), and a cell next to a corridor keeps its floor.
     for (const [rx, rz] of [[49, 13], [54, 47], [51, 27]] as [number, number][]) {
       for (let x = rx; x <= rx + 3; x++) {
         for (let z = rz; z <= rz + 3; z++) {
-          if (x > mazeX0 && x < mazeX1 && z > mazeZ0 && z < mazeZ1) this.grid[x][z] = CellType.RED_ROOM;
+          if (x > mazeX0 && x < mazeX1 && z > mazeZ0 && z < mazeZ1) this.grid[x][z] = CellType.PIT_ROOM;
         }
       }
     }
@@ -2887,9 +2648,8 @@ export class ProceduralMap {
       seed: this.seed,
       registerLight: (gx, gz, x, y, z, color, intensity, distance, decay) => this.registerLight(gx, gz, x, y, z, color, intensity, distance, decay),
       addObstacle: (gx, gz, x, z, radius) => { this.addObstacle(gx, gz, x, z, radius); },
-      pushFixture: (fixture) => { this.lightFixtures.push(fixture); },
-      glassOn: this.fluorescentGlassOn,
-      glassOff: this.fluorescentGlassOff,
+      pushFixture: (fixture) => { this.lightFixtures.push({ ...this.plainTubeMaterials(), ...fixture }); },
+      ...this.plainTubeMaterials(),
       glow: (color, size, opacity) => this.createItemGlow(color, size, opacity),
     });
   }
@@ -2922,9 +2682,8 @@ export class ProceduralMap {
       seed: this.seed,
       registerLight: (gx, gz, x, y, z, color, intensity, distance, decay) => this.registerLight(gx, gz, x, y, z, color, intensity, distance, decay),
       addObstacle: (gx, gz, x, z, radius) => { this.addObstacle(gx, gz, x, z, radius); },
-      pushFixture: (fixture) => { this.lightFixtures.push(fixture); },
-      glassOn: this.fluorescentGlassOn as THREE.MeshBasicMaterial,
-      glassOff: this.fluorescentGlassOff,
+      pushFixture: (fixture) => { this.lightFixtures.push({ ...this.plainTubeMaterials(), ...fixture }); },
+      ...this.plainTubeMaterials(),
     });
   }
 
@@ -2996,6 +2755,7 @@ export class ProceduralMap {
         ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i + 64, 64); ctx.stroke();
       }
       const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
       this.sharedTextures.push(tex);
       return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, metalness: 0.15 });
@@ -3093,6 +2853,183 @@ export class ProceduralMap {
    * SAÍDA sign over it, and through the doorway (painted, lit like daylight) a
    * road running off between green hills towards a little town.
    */
+  // ---------------------------------------------------------------------------
+  // Level exits. Built in the exit cell's own frame: its wall is to the north
+  // (local z = -cellSize/2) and the group is turned onto the real wall after.
+  // ---------------------------------------------------------------------------
+
+  /** Level 1 -> Pipe Dreams: the mouth of a huge rusted pipe, warm and dark inside. */
+  private buildPipeMouthExit(g: THREE.Group, hSize: number, height: number, light: ExitLight) {
+    const wallZ = -hSize / 2;
+    const rust = this.sharedMat("exit_pipe_rust", () => new THREE.MeshStandardMaterial({ color: 0x6e3f24, roughness: 0.7, metalness: 0.65, side: THREE.DoubleSide }));
+    const steel = this.sharedMat("exit_pipe_steel", () => new THREE.MeshStandardMaterial({ color: 0x4a4f52, roughness: 0.5, metalness: 0.8 }));
+    const dark = this.sharedMat("exit_pipe_dark", () => new THREE.MeshBasicMaterial({ color: 0x050302 }));
+    const R = 1.05, cy = 1.2, depth = 1.0;
+
+    // The main pipe: its mouth stands a metre out of the wall; the inside is black.
+    const tube = new THREE.Mesh(this.sharedGeo("exit_pipe_tube", () => new THREE.CylinderGeometry(R, R, depth, 28, 1, true)), rust);
+    tube.rotation.x = Math.PI / 2;
+    tube.position.set(0, cy, wallZ + depth / 2);
+    g.add(tube);
+    const back = new THREE.Mesh(this.sharedGeo("exit_pipe_back", () => new THREE.CircleGeometry(R, 28)), dark);
+    back.position.set(0, cy, wallZ + 0.02);
+    g.add(back);
+    const flange = new THREE.Mesh(this.sharedGeo("exit_pipe_flange", () => new THREE.TorusGeometry(R + 0.04, 0.09, 8, 32)), steel);
+    flange.position.set(0, cy, wallZ + depth);
+    g.add(flange);
+    const boltGeo = this.sharedGeo("exit_pipe_bolt", () => new THREE.CylinderGeometry(0.035, 0.035, 0.08, 6).rotateX(Math.PI / 2));
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      const bolt = new THREE.Mesh(boltGeo, steel);
+      bolt.position.set(Math.cos(a) * (R + 0.04), cy + Math.sin(a) * (R + 0.04), wallZ + depth + 0.09);
+      g.add(bolt);
+    }
+
+    // Smaller pipes running along the wall into it, and a valve wheel.
+    const run = new THREE.Mesh(this.sharedGeo("exit_pipe_run", () => new THREE.CylinderGeometry(0.12, 0.12, hSize - 0.1, 10).rotateZ(Math.PI / 2)), rust);
+    run.position.set(0, height - 0.35, wallZ + 0.2);
+    g.add(run);
+    const riser = new THREE.Mesh(this.sharedGeo("exit_pipe_riser", () => new THREE.CylinderGeometry(0.1, 0.1, height, 10)), steel);
+    riser.position.set(1.65, height / 2, wallZ + 0.18);
+    g.add(riser);
+    const wheel = new THREE.Mesh(this.sharedGeo("exit_pipe_wheel", () => new THREE.TorusGeometry(0.16, 0.025, 6, 16)),
+      this.sharedMat("exit_pipe_wheel", () => new THREE.MeshStandardMaterial({ color: 0x9a1f1a, roughness: 0.5, metalness: 0.5 })));
+    wheel.position.set(1.65, 1.3, wallZ + 0.36);
+    g.add(wheel);
+
+    // Heat from somewhere deep in the pipe (Pipe Dreams runs hot).
+    light(0, cy, wallZ + 0.6, 0xff7a3a, 1.4, 5);
+  }
+
+  /** Pipe Dreams -> the Electrical Room: a power plant's steel door, light buzzing through the gap. */
+  private buildPowerPlantExit(g: THREE.Group, hSize: number, height: number, light: ExitLight) {
+    const wallZ = -hSize / 2;
+    const frameMat = this.sharedMat("exit_plant_frame", () => new THREE.MeshStandardMaterial({ color: 0x3c4146, roughness: 0.45, metalness: 0.75 }));
+    const leafMat = this.sharedMat("exit_plant_leaf", () => new THREE.MeshStandardMaterial({ color: 0x6b737a, roughness: 0.5, metalness: 0.6 }));
+    const glow = this.sharedMat("exit_plant_glow", () => new THREE.MeshBasicMaterial({ color: 0xcfe6ff }));
+    const W = 1.9, H = 2.5;
+
+    // Cold light behind a double door left a hand's width apart.
+    const back = new THREE.Mesh(this.sharedGeo("exit_plant_back", () => new THREE.PlaneGeometry(W - 0.1, H - 0.05)), glow);
+    back.position.set(0, H / 2, wallZ + 0.03);
+    g.add(back);
+    const leafGeo = this.sharedGeo("exit_plant_leaf", () => new THREE.BoxGeometry(W / 2 - 0.06, H - 0.1, 0.07));
+    for (const side of [-1, 1]) {
+      const leaf = new THREE.Mesh(leafGeo, leafMat);
+      leaf.position.set(side * (W / 4 + 0.03), (H - 0.1) / 2, wallZ + 0.08);
+      g.add(leaf);
+      // A lightning-bolt plate on each leaf.
+      const bolt = new THREE.Mesh(this.sharedGeo("exit_plant_bolt", () => new THREE.PlaneGeometry(0.36, 0.36)), this.garageLabel("⚡", 0.36, 0.36, "#111111", "#f2c230"));
+      bolt.position.set(side * (W / 4 + 0.03), 1.55, wallZ + 0.12);
+      g.add(bolt);
+      const post = new THREE.Mesh(this.sharedGeo("exit_plant_post", () => new THREE.BoxGeometry(0.14, H + 0.14, 0.2)), frameMat);
+      post.position.set(side * (W / 2 + 0.07), (H + 0.14) / 2, wallZ + 0.1);
+      g.add(post);
+    }
+    const lintel = new THREE.Mesh(this.sharedGeo("exit_plant_lintel", () => new THREE.BoxGeometry(W + 0.28, 0.14, 0.2)), frameMat);
+    lintel.position.set(0, H + 0.07, wallZ + 0.1);
+    g.add(lintel);
+    const stripe = new THREE.Mesh(this.sharedGeo("exit_plant_stripe", () => new THREE.BoxGeometry(W - 0.1, 0.2, 0.02)), this.hazardTapeMaterial(W - 0.1, "x"));
+    stripe.position.set(0, 0.12, wallZ + 0.125);
+    g.add(stripe);
+    const sign = new THREE.Mesh(this.sharedGeo("exit_plant_sign", () => new THREE.PlaneGeometry(1.3, 0.34)), this.garageLabel(t("exit.sign.highVoltage"), 1.3, 0.34, "#111111", "#f2c230"));
+    sign.position.set(0, Math.min(height - 0.25, H + 0.38), wallZ + 0.03);
+    g.add(sign);
+
+    // A red warning lamp, and cable conduits climbing the wall into the ceiling.
+    const lamp = new THREE.Mesh(this.sharedGeo("exit_plant_lamp", () => new THREE.SphereGeometry(0.09, 12, 8)),
+      this.sharedMat("exit_plant_lamp", () => new THREE.MeshBasicMaterial({ color: 0xff3322 })));
+    lamp.position.set(W / 2 + 0.38, H + 0.05, wallZ + 0.12);
+    g.add(lamp);
+    const conduit = this.sharedGeo("exit_plant_conduit", () => new THREE.CylinderGeometry(0.035, 0.035, height, 6));
+    for (const x of [0.45, 0.6, 0.75]) {
+      const c = new THREE.Mesh(conduit, frameMat);
+      c.position.set(-W / 2 - x, height / 2, wallZ + 0.06);
+      g.add(c);
+    }
+    light(0, 1.2, wallZ + 0.6, 0xcfe6ff, 1.6, 6);
+    light(W / 2 + 0.38, H + 0.05, wallZ + 0.4, 0xff3322, 0.8, 3.5);
+  }
+
+  /** Lights Out -> Level Fun: a pastel party door with a painted smile, balloons, coloured light underneath. */
+  private buildPartyDoorExit(g: THREE.Group, hSize: number, light: ExitLight) {
+    const wallZ = -hSize / 2;
+    const W = 1.1, H = 2.2;
+    const frameMat = this.sharedMat("exit_party_frame", () => new THREE.MeshStandardMaterial({ color: 0xf2ece0, roughness: 0.7 }));
+    const leaf = new THREE.Mesh(this.sharedGeo("exit_party_leaf", () => new THREE.BoxGeometry(W, H - 0.04, 0.06)),
+      this.sharedMat("exit_party_leaf", () => new THREE.MeshStandardMaterial({ color: 0xe58fb5, roughness: 0.6 })));
+    leaf.position.set(0, (H - 0.04) / 2 + 0.04, wallZ + 0.05);
+    g.add(leaf);
+    const smile = new THREE.Mesh(this.sharedGeo("exit_party_smile", () => new THREE.PlaneGeometry(0.62, 0.62)), this.sharedMat("exit_party_smile", () => {
+      const c = document.createElement("canvas");
+      c.width = c.height = 128;
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = "#f6d24a"; ctx.beginPath(); ctx.arc(64, 64, 58, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#2a1a10";
+      ctx.beginPath(); ctx.ellipse(44, 50, 7, 12, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(84, 50, 7, 12, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = 8; ctx.strokeStyle = "#2a1a10"; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.arc(64, 66, 32, 0.2 * Math.PI, 0.8 * Math.PI); ctx.stroke();
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      this.sharedTextures.push(tex);
+      return new THREE.MeshStandardMaterial({ map: tex, transparent: true, roughness: 0.6 });
+    }));
+    smile.position.set(0, 1.45, wallZ + 0.085);
+    g.add(smile);
+    const knob = new THREE.Mesh(this.sharedGeo("exit_party_knob", () => new THREE.SphereGeometry(0.045, 10, 8)), this.officeMat("brass", 0xb08d3c, 0.3, 0.8));
+    knob.position.set(0.4, 1.0, wallZ + 0.11);
+    g.add(knob);
+    for (const side of [-1, 1]) {
+      const post = new THREE.Mesh(this.sharedGeo("exit_party_post", () => new THREE.BoxGeometry(0.1, H + 0.1, 0.12)), frameMat);
+      post.position.set(side * (W / 2 + 0.05), (H + 0.1) / 2, wallZ + 0.06);
+      g.add(post);
+    }
+    const lintel = new THREE.Mesh(this.sharedGeo("exit_party_lintel", () => new THREE.BoxGeometry(W + 0.2, 0.1, 0.12)), frameMat);
+    lintel.position.set(0, H + 0.05, wallZ + 0.06);
+    g.add(lintel);
+    // The party's light leaking out under the door.
+    const gap = new THREE.Mesh(this.sharedGeo("exit_party_gap", () => new THREE.BoxGeometry(W - 0.06, 0.035, 0.02)),
+      this.sharedMat("exit_party_gap", () => new THREE.MeshBasicMaterial({ color: 0xffd27a })));
+    gap.position.set(0, 0.018, wallZ + 0.09);
+    g.add(gap);
+
+    // Balloons tied beside the door, strings hanging.
+    const balloonGeo = this.sharedGeo("exit_party_balloon", () => new THREE.SphereGeometry(0.2, 14, 10));
+    const stringGeo = this.sharedGeo("exit_party_string", () => new THREE.CylinderGeometry(0.006, 0.006, 1.1, 4));
+    const stringMat = this.sharedMat("exit_party_string", () => new THREE.MeshBasicMaterial({ color: 0xdddddd }));
+    for (const [x, y, color] of [[-0.95, 2.05, 0xd8333a], [-1.22, 2.32, 0xf2c230], [0.95, 2.2, 0x3a6fd8]] as const) {
+      const balloon = new THREE.Mesh(balloonGeo, this.sharedMat(`exit_party_balloon_${color}`, () => new THREE.MeshStandardMaterial({ color, roughness: 0.35 })));
+      balloon.scale.set(1, 1.18, 1);
+      balloon.position.set(x, y, wallZ + 0.3);
+      g.add(balloon);
+      const str = new THREE.Mesh(stringGeo, stringMat);
+      str.position.set(x, y - 0.24 - 0.55, wallZ + 0.3);
+      g.add(str);
+    }
+    light(0, 0.3, wallZ + 0.5, 0xffa6d8, 1.3, 5);
+  }
+
+  /** The Electrical Room -> the Abandoned Office: the crawlspace ends in an open wooden doorway full of cold office light. */
+  private buildOfficeDoorwayExit(g: THREE.Group, hSize: number, light: ExitLight) {
+    const wallZ = -hSize / 2;
+    const W = 1.3, H = 2.3;
+    const frameMat = this.officeMat("level3_gate_frame", 0x3d3024, 0.75);
+    const glow = new THREE.Mesh(this.sharedGeo("exit_office_glow", () => new THREE.PlaneGeometry(W, H)),
+      this.sharedMat("exit_office_glow", () => new THREE.MeshBasicMaterial({ color: 0xe8f0ff })));
+    glow.position.set(0, H / 2, wallZ + 0.02);
+    g.add(glow);
+    for (const side of [-1, 1]) {
+      const post = new THREE.Mesh(this.officeBox(0.14, H + 0.12, 0.18), frameMat);
+      post.position.set(side * (W / 2 + 0.07), (H + 0.12) / 2, wallZ + 0.09);
+      g.add(post);
+    }
+    const lintel = new THREE.Mesh(this.officeBox(W + 0.28, 0.12, 0.18), frameMat);
+    lintel.position.set(0, H + 0.06, wallZ + 0.09);
+    g.add(lintel);
+    light(0, 1.5, wallZ + 0.7, 0xe8f0ff, 1.5, 6);
+  }
+
   private buildTownExitDoor(group: THREE.Group, gx: number, gz: number, posX: number) {
     const cs = this.cellSize;
     const wallZ = gz * cs;
@@ -3131,9 +3068,13 @@ export class ProceduralMap {
       return new THREE.MeshBasicMaterial({ map: tex });
     });
     const doorW = 1.5, doorH = 2.4;
+    // Shut (a closed steel door, no daylight) until the Poolrooms are drained.
+    const open = this.poolroomsSolved;
     const outside = new THREE.Mesh(this.sharedGeo("town_exit_view", () => new THREE.PlaneGeometry(doorW, doorH)), view);
     outside.position.set(posX, doorH / 2, wallZ + 0.07);
+    outside.visible = open;
     group.add(outside);
+    this.townDoorView = outside;
     // Steel frame around the doorway.
     const steel = this.sharedMat("town_exit_frame", () => new THREE.MeshStandardMaterial({ color: 0x4a5258, roughness: 0.45, metalness: 0.6 }));
     for (const sx of [-1, 1]) {
@@ -3148,7 +3089,8 @@ export class ProceduralMap {
     const leafMat = this.sharedMat("town_exit_leaf", () => new THREE.MeshStandardMaterial({ color: 0x5a6a5a, roughness: 0.5, metalness: 0.5 }));
     const hinge = new THREE.Group();
     hinge.position.set(posX - doorW / 2, 0, wallZ + 0.14);
-    hinge.rotation.y = -1.75;
+    hinge.rotation.y = open ? -1.75 : 0;
+    this.townDoorHinge = hinge;
     const leaf = new THREE.Mesh(this.sharedGeo("town_exit_leaf", () => new THREE.BoxGeometry(doorW - 0.05, doorH - 0.03, 0.06)), leafMat);
     leaf.position.set((doorW - 0.05) / 2, (doorH - 0.03) / 2, 0);
     hinge.add(leaf);
@@ -3158,7 +3100,7 @@ export class ProceduralMap {
     group.add(hinge);
     this.addObstacle(gx, gz, posX - doorW / 2 + 0.2, wallZ + 0.9, 0.22);
     // Daylight spilling in through the doorway.
-    this.registerLight(gx, gz, posX, 2.2, wallZ + 1.0, 0xfff1d0, 2.4, 10, 1.0);
+    if (open) this.registerLight(gx, gz, posX, 2.2, wallZ + 1.0, 0xfff1d0, 2.4, 10, 1.0);
     const sign = new THREE.Mesh(this.sharedGeo("town_exit_sign", () => new THREE.PlaneGeometry(1.2, 0.36)),
       this.garageLabel(t("town.sign.exitDoor"), 1.2, 0.36, "#ffffff", "#1f7a3a"));
     sign.position.set(posX, doorH + 0.42, wallZ + 0.08);
@@ -3618,25 +3560,7 @@ export class ProceduralMap {
           }
         }
 
-        // Custom collision for the Pit Room openings
-        if (this.grid[gx][gz] === CellType.PIT_ROOM) {
-          const posX = gx * this.cellSize + this.cellSize / 2;
-          const posZ = gz * this.cellSize + this.cellSize / 2;
-          const pitOffsets = [-1.0, 1.0];
-          for (const ox of pitOffsets) {
-            for (const oz of pitOffsets) {
-              const pCenterX = posX + ox;
-              const pCenterZ = posZ + oz;
-              const closestX = Math.max(pCenterX - 0.5, Math.min(x, pCenterX + 0.5));
-              const closestZ = Math.max(pCenterZ - 0.5, Math.min(z, pCenterZ + 0.5));
-              const dx = x - closestX;
-              const dz = z - closestZ;
-              if (dx * dx + dz * dz < radius * radius) {
-                return true; // Collided with the deep pit edge, prevent floating on empty slots
-              }
-            }
-          }
-        }
+        // (Pit Room shafts don't block: walking into one is a fall — see GameEngine.)
 
         // Custom collision for the Arch Room partition wall (running horizontally on gz === 9)
         if (this.grid[gx][gz] === CellType.ARCH_ROOM && gz === 9) {
@@ -3990,7 +3914,7 @@ export class ProceduralMap {
         ctx.fillStyle = "rgba(42, 96, 96, 0.18)";
         for (let i = 0; i < 18; i++) ctx.fillRect((i * 73) % 256, (i * 131) % 256, 14, 3);
       }
-      const clueMark = new THREE.Mesh(new THREE.PlaneGeometry(1.25, 1.25), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, opacity: 0.68 }));
+      const clueMark = new THREE.Mesh(new THREE.PlaneGeometry(1.25, 1.25), new THREE.MeshBasicMaterial({ map: srgbTexture(canvas), transparent: true, opacity: 0.68 }));
       clueMark.rotation.x = -Math.PI / 2;
       clueMark.position.set(posX, POOL_FLOOR_Y + 0.012, posZ);
       group.add(clueMark);
@@ -4012,6 +3936,8 @@ export class ProceduralMap {
     if (this.poolroomsSolved) {
       this.toxicWaterCells.clear();
       if (this.poolExitDoor) this.poolExitDoor.visible = true;
+      if (this.townDoorView) this.townDoorView.visible = true;
+      if (this.townDoorHinge) this.townDoorHinge.rotation.y = -1.75;
     }
   }
 
@@ -4187,7 +4113,6 @@ export class ProceduralMap {
     }
     if (gx === this.level4DoorX && gz === this.level4DoorZ) return false;
     if (Math.abs(gx - this.abandonedSecretX) <= 1 && Math.abs(gz - this.abandonedSecretZ) <= 1) return false;
-    if (this.funPartyCells.some((c) => Math.abs(c.gx - gx) <= 1 && Math.abs(c.gz - gz) <= 1)) return false;
     if (this.level4DeskCells.some((d) => Math.abs(d.gx - gx) <= 1 && Math.abs(d.gz - gz) <= 1)) return false;
     if (this.level4Employees.some((e) => Math.abs(e.gx - gx) <= 1 && Math.abs(e.gz - gz) <= 1)) return false;
     return !((gx === 5 && gz === 5) || (gx === 18 && gz === 5) || (gx === 31 && gz === 5));
@@ -4295,7 +4220,6 @@ export class ProceduralMap {
     // Level 4 (Abandoned Office).
     if (gx === this.level4DoorX && gz === this.level4DoorZ) return;
     if (gx === this.abandonedSecretX && gz === this.abandonedSecretZ) return;
-    if (this.funPartyCells.some((c) => c.gx === gx && c.gz === gz)) return;
     if (this.level4DeskCells.some((d) => d.gx === gx && d.gz === gz)) return;
     if (this.level4Employees.some((e) => Math.abs(e.gx - gx) <= 1 && Math.abs(e.gz - gz) <= 1)) return;
     if ((gx === 5 && gz === 5) || (gx === 18 && gz === 5) || (gx === 31 && gz === 5)) return; // meeting tables
@@ -4349,77 +4273,55 @@ export class ProceduralMap {
       ? [[0, 1, 0], [0, -1, Math.PI], [1, 0, Math.PI / 2], [-1, 0, -Math.PI / 2]].find(([dx, dz]) => this.grid[gx + dx]?.[gz + dz] === CellType.SOLID)
       : undefined;
 
-    // 1. CARPET (Floor pane) - Use shared floorGeo, or custom pit layouts
-    if (cellType === CellType.PIT_ROOM) {
-      // Create a grid of carpet tiles avoiding the four square pits (exactly zero overlap to prevent Z-fighting)
-      const segments = [
-        // Vertical sectors (left, center partition, right)
-        { w: 0.5, h: 0.02, d: 4.0, x: -1.75, z: 0 },
-        { w: 1.0, h: 0.02, d: 4.0, x: 0.0, z: 0 },
-        { w: 0.5, h: 0.02, d: 4.0, x: 1.75, z: 0 },
-        // Horizontal bridging sectors linking the verticals
-        { w: 1.0, h: 0.02, d: 0.5, x: -1.0, z: -1.75 },
-        { w: 1.0, h: 0.02, d: 0.5, x: 1.0, z: -1.75 },
-        { w: 1.0, h: 0.02, d: 1.0, x: -1.0, z: 0.0 },
-        { w: 1.0, h: 0.02, d: 1.0, x: 1.0, z: 0.0 },
-        { w: 1.0, h: 0.02, d: 0.5, x: -1.0, z: 1.75 },
-        { w: 1.0, h: 0.02, d: 0.5, x: 1.0, z: 1.75 }
+    // 1. CARPET (Floor pane) - Use shared floorGeo, or a pit room's ledge around its shaft
+    if (this.isPitHole(gx, gz)) {
+      // The carpet survives only as a narrow ledge around one big square shaft.
+      const H = PIT_HOLE_HALF;
+      const rim = hSize / 2 - H;
+      const ledges = [
+        { w: hSize, d: rim, x: 0, z: -(H + rim / 2) },
+        { w: hSize, d: rim, x: 0, z: H + rim / 2 },
+        { w: rim, d: 2 * H, x: -(H + rim / 2), z: 0 },
+        { w: rim, d: 2 * H, x: H + rim / 2, z: 0 },
       ];
-
-      segments.forEach((seg) => {
-        const segMesh = new THREE.Mesh(this.unitBoxGeo, this.carpetMaterial);
-        segMesh.scale.set(seg.w, seg.h, seg.d);
-        segMesh.position.set(posX + seg.x, -0.01 + seg.h / 2, posZ + seg.z);
-        segMesh.receiveShadow = true;
-        group.add(segMesh);
-      });
-
-      // Construct 4 dark recessed pit drops
-      const pitOffsets = [-1.0, 1.0];
-      const pitMat = this.sharedMat("pit", () => new THREE.MeshStandardMaterial({
-        color: 0x110f0a,
-        roughness: 0.9,
-        side: THREE.DoubleSide
-      }));
-
-      for (const ox of pitOffsets) {
-        for (const oz of pitOffsets) {
-          const pitGroup = new THREE.Group();
-          pitGroup.position.set(posX + ox, 0, posZ + oz);
-
-          // Pit Floor - flat at depth -1.6
-          const pFloor = new THREE.Mesh(this.pitGeoFloor, pitMat);
-          pFloor.position.set(0, -1.6, 0);
-          pFloor.rotation.x = -Math.PI / 2;
-          pFloor.receiveShadow = true;
-          pitGroup.add(pFloor);
-
-          // North Wall (Z = -0.5)
-          const pNorth = new THREE.Mesh(this.pitGeoWall, pitMat);
-          pNorth.position.set(0, -0.8, -0.5);
-          pitGroup.add(pNorth);
-
-          // South Wall (Z = 0.5)
-          const pSouth = new THREE.Mesh(this.pitGeoWall, pitMat);
-          pSouth.position.set(0, -0.8, 0.5);
-          pSouth.rotation.y = Math.PI;
-          pitGroup.add(pSouth);
-
-          // West Wall (X = -0.5)
-          const pWest = new THREE.Mesh(this.pitGeoWall, pitMat);
-          pWest.position.set(-0.5, -0.8, 0);
-          pWest.rotation.y = Math.PI / 2;
-          pitGroup.add(pWest);
-
-          // East Wall (X = 0.5)
-          const pEast = new THREE.Mesh(this.pitGeoWall, pitMat);
-          pEast.position.set(0.5, -0.8, 0);
-          pEast.rotation.y = -Math.PI / 2;
-          pitGroup.add(pEast);
-
-          group.add(pitGroup);
-        }
+      for (const l of ledges) {
+        const ledge = new THREE.Mesh(this.unitBoxGeo, this.carpetMaterial);
+        ledge.scale.set(l.w, 0.02, l.d);
+        ledge.position.set(posX + l.x, 0, posZ + l.z);
+        ledge.receiveShadow = true;
+        group.add(ledge);
       }
+
+      // The shaft: torn carpet and plaster at the lip, black within a few metres.
+      const shaftMat = this.sharedMat("pit_shaft", () => {
+        const c = document.createElement("canvas");
+        c.width = 8; c.height = 256;
+        const g = c.getContext("2d")!;
+        const grad = g.createLinearGradient(0, 0, 0, 256);
+        grad.addColorStop(0, "#5a4c2c");
+        grad.addColorStop(0.012, "#3a3120");
+        grad.addColorStop(0.08, "#14110a");
+        grad.addColorStop(0.2, "#000000");
+        g.fillStyle = grad;
+        g.fillRect(0, 0, 8, 256);
+        const tex = new THREE.CanvasTexture(c);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        this.sharedTextures.push(tex);
+        return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95 });
+      });
+      const wallGeo = this.sharedGeo("pit_shaft_wall", () => new THREE.PlaneGeometry(2 * H, PIT_DEPTH));
+      for (const [dx, dz, ry] of [[0, -1, 0], [0, 1, Math.PI], [-1, 0, Math.PI / 2], [1, 0, -Math.PI / 2]] as const) {
+        const wall = new THREE.Mesh(wallGeo, shaftMat);
+        wall.position.set(posX + dx * H, -PIT_DEPTH / 2 + 0.01, posZ + dz * H);
+        wall.rotation.y = ry;
+        group.add(wall);
+      }
+      const bottom = new THREE.Mesh(
+        this.sharedGeo("pit_shaft_bottom", () => new THREE.PlaneGeometry(2 * H, 2 * H).rotateX(-Math.PI / 2)),
+        this.sharedMat("pit_bottom", () => new THREE.MeshBasicMaterial({ color: 0x000000 })),
+      );
+      bottom.position.set(posX, -PIT_DEPTH, posZ);
+      group.add(bottom);
     } else {
       const isRamp = this.level === 1 && this.rampCells.has(`${gx},${gz}`);
       const isToxicWater = cellType === CellType.WATER_ROOM && this.toxicWaterCells.has(`${gx},${gz}`);
@@ -4479,7 +4381,9 @@ export class ProceduralMap {
       if (switchIndex >= 0) {
         const plateMat = this.sharedMat("level3_switch_plate", () => new THREE.MeshStandardMaterial({ color: 0x252525, metalness: 0.8, roughness: 0.35 }));
         const isOn = this.level3SwitchesOn.has(switchIndex);
-        const lightMat = this.sharedMat(`level3_switch_light_${switchIndex}`, () => new THREE.MeshStandardMaterial({ color: isOn ? 0x39ff88 : 0xff3b18, emissive: isOn ? 0x16a34a : 0xff2200, emissiveIntensity: 3.5 }));
+        // Indicator lens: bright, but kept under the tone curve's shoulder so it
+        // stays a saturated red/green instead of blowing out to orange-white.
+        const lightMat = this.sharedMat(`level3_switch_light_${switchIndex}`, () => new THREE.MeshStandardMaterial({ color: isOn ? 0x39ff88 : 0xff3b18, emissive: isOn ? 0x16a34a : 0xff2200, emissiveIntensity: LEVEL3_LENS_GLOW, roughness: 0.3 }));
         const terminalGroup = new THREE.Group();
         const wallSide = [[0, -1], [0, 1], [-1, 0], [1, 0]].find(([dx, dz]) => this.grid[gx + dx]?.[gz + dz] === CellType.SOLID);
         const [wallDx, wallDz] = wallSide ?? [0, -1];
@@ -4489,18 +4393,28 @@ export class ProceduralMap {
         const terminal = new THREE.Mesh(this.sharedGeo("level3_switch_terminal", () => new THREE.BoxGeometry(0.72, 1.15, 0.46)), plateMat);
         terminal.position.set(0, 0.58, 0);
         terminalGroup.add(terminal);
-        const lamp = new THREE.Mesh(this.sharedGeo("level3_switch_lamp", () => new THREE.BoxGeometry(0.36, 0.18, 0.05)), lightMat);
+        // Local -z faces the room. A dark bezel holds the lens, flush on the front.
+        const bezel = new THREE.Mesh(this.sharedGeo("level3_switch_bezel", () => new THREE.BoxGeometry(0.44, 0.24, 0.03)), this.plasticMaterial);
+        bezel.position.set(0, 0.98, -0.24);
+        terminalGroup.add(bezel);
+        const lamp = new THREE.Mesh(this.sharedGeo("level3_switch_lens", () => new THREE.BoxGeometry(0.36, 0.16, 0.02)), lightMat);
         lamp.name = `level3_switch_lamp_${switchIndex}`;
-        lamp.position.set(0, 1.05, -0.24);
+        lamp.position.set(0, 0.98, -0.256);
         terminalGroup.add(lamp);
-        const handle = new THREE.Mesh(this.sharedGeo("level3_switch_handle", () => new THREE.BoxGeometry(0.08, 0.28, 0.1)), this.metalMaterial);
-        handle.position.set(0.72, 0.72, -0.27);
-        handle.rotation.x = -0.35;
+        // The lever, on its mount at the front of the panel.
+        const mount = new THREE.Mesh(this.sharedGeo("level3_switch_mount", () => new THREE.BoxGeometry(0.14, 0.2, 0.04)), this.plasticMaterial);
+        mount.position.set(0.2, 0.6, -0.25);
+        terminalGroup.add(mount);
+        const handle = new THREE.Mesh(this.sharedGeo("level3_switch_handle", () => new THREE.BoxGeometry(0.05, 0.26, 0.05).translate(0, 0.13, 0)), this.metalMaterial);
+        handle.position.set(0.2, 0.6, -0.28);
+        handle.rotation.x = -0.45;
         terminalGroup.add(handle);
         group.add(terminalGroup);
-        const lightX = posX + wallDx * (hSize / 2 - 0.45);
-        const lightZ = posZ + wallDz * (hSize / 2 - 0.45);
-        this.registerLight(gx, gz, lightX, 1.1, lightZ, 0xff3b18, 4.5, 7.0, 1.0);
+        // The panel's glow, half a metre out into the room (not inside the
+        // terminal, where it only blew out the brick around it).
+        const lightX = posX + wallDx * (hSize / 2 - 1.05);
+        const lightZ = posZ + wallDz * (hSize / 2 - 1.05);
+        this.level3SwitchLights[switchIndex] = this.registerLight(gx, gz, lightX, 1.2, lightZ, isOn ? 0x39ff88 : 0xff3b18, 2.0, 5.5, 1.0);
       }
       if (gx === this.level3GateX && gz === this.level3GateZ && !this.level3GateOpen) {
         // A plain wooden door out of place in the brick service halls, sealing
@@ -4569,7 +4483,7 @@ export class ProceduralMap {
         const symbolCanvas = document.createElement("canvas"); symbolCanvas.width = symbolCanvas.height = 128;
         const symbolCtx = symbolCanvas.getContext("2d");
         if (symbolCtx) { symbolCtx.fillStyle = "#d8f2f2"; symbolCtx.fillRect(0, 0, 128, 128); symbolCtx.fillStyle = "#0d6073"; symbolCtx.font = "bold 84px sans-serif"; symbolCtx.textAlign = "center"; symbolCtx.fillText(this.poolValveSymbols[valveIndex % this.poolValvesPerRoom], 64, 92); }
-        const symbol = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.3), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(symbolCanvas) }));
+        const symbol = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.3), new THREE.MeshBasicMaterial({ map: srgbTexture(symbolCanvas) }));
         symbol.position.set(0, 1.62, wz + 0.08); valve.add(symbol);
         if (this.poolTurned.has(valveIndex)) {
           wheelMat.color.setHex(0x54f4d0); wheelMat.emissive.setHex(0x167c6e);
@@ -4603,6 +4517,7 @@ export class ProceduralMap {
           for (let x = 8; x < 128; x += 19) ctx.fillRect(x, 0, 1, 128);
         }
         const map = new THREE.CanvasTexture(canvas);
+        map.colorSpace = THREE.SRGBColorSpace;
         this.sharedTextures.push(map);
         return new THREE.MeshStandardMaterial({ map, roughness: 0.45, metalness: 0.7 });
       });
@@ -4638,6 +4553,7 @@ export class ProceduralMap {
         const ctx = canvas.getContext("2d");
         if (ctx) { ctx.fillStyle = "#0b1a10"; ctx.fillRect(0, 0, 128, 128); ctx.fillStyle = "#4dff8a"; ctx.font = "bold 96px monospace"; ctx.textAlign = "center"; ctx.fillText("G", 64, 100); }
         const map = new THREE.CanvasTexture(canvas);
+        map.colorSpace = THREE.SRGBColorSpace;
         this.sharedTextures.push(map);
         return new THREE.MeshBasicMaterial({ map });
       });
@@ -4741,7 +4657,7 @@ export class ProceduralMap {
           ctx.fillStyle = "#241a16"; ctx.font = "bold 25px monospace"; ctx.fillText("AVISO MEG", 28, 48);
           ctx.font = "18px monospace"; ctx.fillText("Encontre os 5 paineis", 28, 94); ctx.fillText("de luz para abrir a", 28, 124); ctx.fillText("porta de barras.", 28, 154);
         }
-        const note = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 0.72), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), side: THREE.DoubleSide }));
+        const note = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 0.72), new THREE.MeshBasicMaterial({ map: srgbTexture(canvas), side: THREE.DoubleSide }));
         note.position.set(posX, 1.35, posZ - hSize / 2 + 0.03); group.add(note);
       }
     }
@@ -5196,12 +5112,11 @@ export class ProceduralMap {
     if (this.level === 0 && gx === this.officeDoorX && gz === this.officeDoorZ) {
       this.buildOfficeDoor(group, posX, posZ, height);
     }
-    if (this.level === 9 && this.funPartyCells.some((c) => c.gx === gx && c.gz === gz)) {
-      this.buildFunPartyCell(group, gx, gz, posX, posZ);
-    }
 
-    // 5. THE GLITCHING NOCLIP WALL EXIT ("flipar na parede / noclip")
-    if (gx === this.exitGridX && gz === this.exitGridZ && this.level !== 4 && this.level !== 9) {
+    // 5. THE EXIT. Each one belongs to its level and hints at the next one;
+    // only Level 0 keeps the taped no-physics patch and the desk with its paper.
+    // (Level G, the Abandoned Office and the Poolrooms build their own doors.)
+    if (gx === this.exitGridX && gz === this.exitGridZ && this.level !== 4 && this.level !== 9 && this.level !== 7) {
       const exitGroup = new THREE.Group();
 
       // Find all adjacent solid neighbors
@@ -5212,115 +5127,36 @@ export class ProceduralMap {
       if (gx === this.gridSize - 1 || this.grid[gx + 1][gz] === CellType.SOLID) adjacentSolids.push('E');
 
       const wallPrng = new SeededRandom(this.seed + gx * 37 + gz * 73);
+      // A dead end (Lights Out's maze, the Electrical Room's crawlspace): the door
+      // faces whoever walks up to it, on the wall across from the way in.
+      const ways = (['N', 'S', 'W', 'E'] as const).filter((d) => !adjacentSolids.includes(d));
+      const across = { N: 'S', S: 'N', W: 'E', E: 'W' } as const;
+      const deadEnd = (this.level === 3 || this.level === 8) && ways.length === 1 ? across[ways[0]] : null;
       // On Level 1, the exit is at the end of the straight corridor running west-to-east. So force chosenDir to 'E'!
-      const chosenDir = this.level === 2 ? 'N' : (this.level === 1 ? 'E' : this.level === 0 ? this.noclipDir : (adjacentSolids.length > 0
+      const chosenDir = this.level === 2 ? 'N' : (this.level === 1 ? 'E' : this.level === 0 ? this.noclipDir : deadEnd ?? (adjacentSolids.length > 0
         ? adjacentSolids[wallPrng.nextInt(0, adjacentSolids.length - 1)]
         : 'S'));
       // Group yaw for that direction (N default, S half-turn, W/E quarter-turns)
       const chosenRot = chosenDir === 'S' ? Math.PI : chosenDir === 'W' ? Math.PI / 2 : chosenDir === 'E' ? -Math.PI / 2 : 0;
+      /** A pooled light at a point of the exit's own frame (its wall to the north), in world space. */
+      const exitLight = (lx: number, y: number, lz: number, color: number, intensity: number, distance: number) => {
+        this.registerLight(
+          gx, gz,
+          posX + lx * Math.cos(chosenRot) + lz * Math.sin(chosenRot),
+          fY + y,
+          posZ - lx * Math.sin(chosenRot) + lz * Math.cos(chosenRot),
+          color, intensity, distance, 1.2
+        );
+      };
 
-      let glitchWall: THREE.Mesh | null = null;
-
-      if (this.level === 2) {
-        // LEVEL 2: CYAN ESCAPE PORTAL LEADING TO VICTORY!
-        const pipeMat = new THREE.MeshStandardMaterial({
-          color: 0x4fa6e8, // Futuristic cyan metal
-          roughness: 0.2,
-          metalness: 0.95
-        });
-
-        // Glowing cyan dimensional portal plate (replaces glitch wall)
-        const portalGeo = new THREE.PlaneGeometry(hSize - 0.8, height - 0.5);
-        const portalMat = new THREE.MeshBasicMaterial({
-          color: 0x00f0ff, // Glowing pure cyan
-          side: THREE.DoubleSide
-        });
-        glitchWall = new THREE.Mesh(portalGeo, portalMat);
-        glitchWall.position.set(0, height / 2, -hSize / 2 + 0.08);
-        exitGroup.add(glitchWall);
-
-        // Circular Steam pipes frame around the portal plate
-        const framePipeGeo = new THREE.CylinderGeometry(0.06, 0.06, hSize - 0.6, 8);
-        const pipe1 = new THREE.Mesh(framePipeGeo, pipeMat);
-        pipe1.rotation.z = Math.PI / 2;
-        pipe1.position.set(0, height - 0.25, -hSize / 2 + 0.15);
-        exitGroup.add(pipe1);
-
-        const pipe2 = new THREE.Mesh(framePipeGeo, pipeMat);
-        pipe2.rotation.z = Math.PI / 2;
-        pipe2.position.set(0, 0.25, -hSize / 2 + 0.15);
-        exitGroup.add(pipe2);
-
-        // Vertical frame pillars on sides
-        const vertPipeGeo = new THREE.CylinderGeometry(0.08, 0.08, height - 0.4, 8);
-        const pipe3 = new THREE.Mesh(vertPipeGeo, pipeMat);
-        pipe3.position.set(-(hSize / 2 - 0.35), height / 2, -hSize / 2 + 0.15);
-        exitGroup.add(pipe3);
-
-        const pipe4 = new THREE.Mesh(vertPipeGeo, pipeMat);
-        pipe4.position.set(hSize / 2 - 0.35, height / 2, -hSize / 2 + 0.15);
-        exitGroup.add(pipe4);
-
-        // Cyan light shining through the portal
-        const portalLight = new THREE.PointLight(0x00f0ff, 8.0, 10, 0.5);
-        portalLight.position.set(0, height / 2, -hSize / 2 + 0.5);
-        exitGroup.add(portalLight);
-      } else if (this.level === 1) {
-        // LEVEL 1: RUSTY MAINTENANCE STEAM GATE PORTAL LEADING TO LEVEL 2 "PIPE DREAMS"
-        const gateMat = new THREE.MeshStandardMaterial({
-          color: 0x8a4b2a, // Deep rusty brown/orange
-          roughness: 0.9,
-          metalness: 0.15
-        });
-        const pipeMat = new THREE.MeshStandardMaterial({
-          color: 0xb55a30,
-          roughness: 0.25,
-          metalness: 0.95
-        });
-
-        // Glowing orange/red dimensional portal plate (replaces glitch wall)
-        const portalGeo = new THREE.PlaneGeometry(hSize - 0.8, height - 0.5);
-        const portalMat = new THREE.MeshBasicMaterial({
-          color: 0xff3300, // Boiling glowing hot orange/red
-          side: THREE.DoubleSide
-        });
-        glitchWall = new THREE.Mesh(portalGeo, portalMat);
-        glitchWall.position.set(0, height / 2, -hSize / 2 + 0.08);
-        exitGroup.add(glitchWall);
-
-        // Circular Steam pipes frame around the portal plate
-        const framePipeGeo = new THREE.CylinderGeometry(0.06, 0.06, hSize - 0.6, 8);
-        const pipe1 = new THREE.Mesh(framePipeGeo, pipeMat);
-        pipe1.rotation.z = Math.PI / 2;
-        pipe1.position.set(0, height - 0.25, -hSize / 2 + 0.15);
-        exitGroup.add(pipe1);
-
-        const pipe2 = new THREE.Mesh(framePipeGeo, pipeMat);
-        pipe2.rotation.z = Math.PI / 2;
-        pipe2.position.set(0, 0.25, -hSize / 2 + 0.15);
-        exitGroup.add(pipe2);
-
-        // Vertical frame pillars on sides
-        const vertPipeGeo = new THREE.CylinderGeometry(0.08, 0.08, height - 0.4, 8);
-        const pipe3 = new THREE.Mesh(vertPipeGeo, pipeMat);
-        pipe3.position.set(-(hSize / 2 - 0.35), height / 2, -hSize / 2 + 0.15);
-        exitGroup.add(pipe3);
-
-        const pipe4 = new THREE.Mesh(vertPipeGeo, pipeMat);
-        pipe4.position.set(hSize / 2 - 0.35, height / 2, -hSize / 2 + 0.15);
-        exitGroup.add(pipe4);
-
-        // Hot portal light shining through the portal
-        const portalLight = new THREE.PointLight(0xff3c00, 8.0, 10, 0.5);
-        portalLight.position.set(0, height / 2, -hSize / 2 + 0.5);
-        exitGroup.add(portalLight);
-
-        // Custom desk with instructions paper about Level 2
-        const deskWithPaper = this.createDeskWithPaperMesh();
-        deskWithPaper.position.set(0, 0, -hSize / 2 + 1.2);
-        exitGroup.add(deskWithPaper);
-        this.exitDeskX = posX + (-hSize / 2 + 1.2) * Math.sin(chosenRot);
-        this.exitDeskZ = posZ + (-hSize / 2 + 1.2) * Math.cos(chosenRot);
+      if (this.level === 1) {
+        this.buildPipeMouthExit(exitGroup, hSize, height, exitLight);
+      } else if (this.level === 2) {
+        this.buildPowerPlantExit(exitGroup, hSize, height, exitLight);
+      } else if (this.level === 3) {
+        this.buildPartyDoorExit(exitGroup, hSize, exitLight);
+      } else if (this.level === 8) {
+        this.buildOfficeDoorwayExit(exitGroup, hSize, exitLight);
       } else {
         // LEVEL 0: a stretch of wall or floor with no physics, ringed with
         // yellow-and-black hazard tape, next to a desk whose paper says which.
@@ -5378,35 +5214,13 @@ export class ProceduralMap {
 
       // Set position of the parent group
       exitGroup.position.set(posX, 0, posZ);
-
-      // Apply rotation on the entire exitGroup based on chosenDir
-      if (chosenDir === 'S') {
-        exitGroup.rotation.y = Math.PI;
-      } else if (chosenDir === 'W') {
-        exitGroup.rotation.y = Math.PI / 2;
-      } else if (chosenDir === 'E') {
-        exitGroup.rotation.y = -Math.PI / 2;
-      } else {
-        exitGroup.rotation.y = 0; // North Wall is default
-      }
-
+      exitGroup.rotation.y = chosenRot;
       group.add(exitGroup);
-
-      // Add to animating meshes so it glitches out beautifully
-      if (glitchWall) {
-        this.animatingMeshes.push({
-          mesh: glitchWall,
-          type: "glitch",
-          initialY: height / 2,
-          phase: 0,
-          gridX: gx,
-          gridZ: gz,
-        });
-      }
     }
 
     // 5b. LEVEL FURNITURE — Level 3's machinery, Level 4's office leftovers, the Poolrooms' fittings.
     this.placeLevelDecor(group, gx, gz, posX, posZ, cellType, height);
+    this.placeBuildingFittings(group, gx, gz, posX, posZ, height);
 
     // 6. FLUORESCENT LIGHT LUMINAIRE FIXTURE (Deterministic placement)
     // Place a fluorescent lightbox on the ceiling. (45% probability on corridor cells or room centers)
@@ -5425,17 +5239,17 @@ export class ProceduralMap {
     if (shouldSpawnLight && !(gx === this.exitGridX && gz === this.exitGridZ)) {
       const fixtureGroup = new THREE.Group();
 
-      // Black metal industrial bracket
+      // Troffer housing, flush with the ceiling.
       // Poolrooms: huge ceiling panels hung just under the fog bank, so they read from far away.
       const isPool = this.level === 7;
       const lampDrop = isPool ? 1.2 : 0;
       const lampScale = isPool ? 5 : 1;
       const caseMesh = new THREE.Mesh(this.caseGeo, this.fluorescentCaseMaterial);
-      caseMesh.position.set(0, height - 0.05 - lampDrop, 0);
+      caseMesh.position.set(0, height - lampDrop, 0);
       caseMesh.scale.setScalar(lampScale);
       fixtureGroup.add(caseMesh);
 
-      // Glowing tube glass tube cylinder
+      // The diffuser, just under the housing
       const lightRng = new SeededRandom(this.seed + gx * 41 + gz * 61);
       const burntRoll = lightRng.next();
       const isBurntOut = (this.level === 1 && burntRoll < 0.38) // 38% burnt out rate in warehouse Level 1!
@@ -5443,12 +5257,16 @@ export class ProceduralMap {
 
       const glassMaterial = isBurntOut ? this.fluorescentGlassOff : this.fluorescentGlassOn;
       const tubeMesh = new THREE.Mesh(this.tubeGeo, glassMaterial);
-      tubeMesh.position.set(0, height - 0.08 - lampDrop - (isPool ? 0.2 : 0), 0);
+      tubeMesh.position.set(0, height - 0.022 * lampScale - lampDrop, 0);
       tubeMesh.scale.setScalar(lampScale);
       fixtureGroup.add(tubeMesh);
 
-      // Point Light with soft, yellow-greenish tint for Level 0, or clean industrial white-grey for Level 1
-      let lightColor = (this.level === 4 || this.level === 9) ? 0xe8f0ff : this.level === 7 ? 0xc9faff : (this.level === 1 ? 0xe6e6e6 : 0xfefdb5);
+      // Tube colour per level: warm-white fluorescent in Level 0's halls (the
+      // yellow is the wallpaper's, not the light's), sodium amber among Pipe
+      // Dreams' rust, warm in the electrical station, cool in the offices,
+      // clean industrial white-grey for Level 1.
+      let lightColor = (this.level === 4 || this.level === 9) ? 0xe8f0ff : this.level === 7 ? 0xc9faff : this.level === 1 ? 0xe6e6e6
+        : this.level === 2 ? 0xffcf96 : this.level === 8 ? 0xffe2b8 : 0xfff0c0;
       let lightIntensity = isBurntOut ? 0.0 : (this.level === 2 ? 2.15 : this.level === 4 ? 1.0 : this.level === 9 ? 1.65 : this.level === 7 ? 1.8 : this.level === 1 ? 1.05 : 1.4); // bright office/pool lighting
 
       // Gild Sector gets gorgeous colorful lighting!
@@ -5460,9 +5278,22 @@ export class ProceduralMap {
         lightIntensity = isBurntOut ? 0.45 : 1.7; // Brighter and always slightly glowing
       }
 
+      // No two tubes the same age: a little dimmer or brighter, drifting green
+      // as they wear or warm as they were replaced. Own stream, so the burn-out
+      // and colour rolls above stay where they always were.
+      if (!isGild && !isPool && !isBurntOut) {
+        const ageRng = new SeededRandom(this.seed + gx * 131 + gz * 197 + 17);
+        lightIntensity *= 0.86 + ageRng.next() * 0.2;
+        const drift = ageRng.next();
+        const tint = new THREE.Color(lightColor).lerp(new THREE.Color(drift < 0.5 ? 0xe4ffd4 : 0xffd8a8), Math.abs(drift - 0.5) * 0.4);
+        lightColor = tint.getHex();
+      }
+
       // The lamp is only *declared* here; the LightPool decides which lamps get
       // a real GPU light, keeping the visible light count small and constant.
-      const light = this.registerLight(gx, gz, posX, fY + height - 0.15 - lampDrop, posZ, lightColor, lightIntensity, isPool ? 30 : 7.5, 1.0);
+      // Hung 30 cm under the diffuser so it also washes the ceiling tiles
+      // around the fixture instead of leaving them dark.
+      const light = this.registerLight(gx, gz, posX, fY + height - (isPool ? 0.15 : 0.3) - lampDrop, posZ, lightColor, lightIntensity, isPool ? 30 : 7.5, 1.0);
 
       // Local floating dust cloud directly under the fluorescent light fixture
       const dustCloud = this.quality.fixtureDustParticles > 0 ? this.createLocalDustCloud() : undefined;
@@ -5856,7 +5687,7 @@ export class ProceduralMap {
     }
 
     // 8. DAMP LEVEL 0 CARPET MOISTURE & CEILING LEAKS (Ripples, puddles, and dripping drops)
-    if (this.level !== 7 && this.wetSpills.has(`${gx},${gz}`)) {
+    if (this.level !== 7 && this.wetSpills.has(`${gx},${gz}`) && !this.isPitHole(gx, gz)) {
       const isExitPathCell = this.exitPathSet.has(`${gx},${gz}`);
 
       // Floor damp puddle
@@ -5961,8 +5792,14 @@ export class ProceduralMap {
       const itemTypeRoll = itemRng.next();
       // Keep it within the cell boundaries (so + hSize/2 is center, range is -hSize/2 + 0.5 to hSize/2 - 0.5)
       const maxOffset = hSize / 2 - 0.6;
-      const ix = posX + itemRng.nextRange(-maxOffset, maxOffset);
-      const iz = posZ + itemRng.nextRange(-maxOffset, maxOffset);
+      let ix = posX + itemRng.nextRange(-maxOffset, maxOffset);
+      let iz = posZ + itemRng.nextRange(-maxOffset, maxOffset);
+      // A pit room's shaft: put it on the ledge instead of hovering over the drop.
+      if (this.isPitHole(gx, gz)) {
+        const ledge = (PIT_HOLE_HALF + hSize / 2) / 2;
+        if (Math.abs(ix - posX) > Math.abs(iz - posZ)) ix = posX + Math.sign(ix - posX || 1) * ledge;
+        else iz = posZ + Math.sign(iz - posZ || 1) * ledge;
+      }
       // Floating slightly off the floor — or bobbing on the surface in a flooded pool cell.
       const iy = this.grid[gx][gz] === CellType.WATER_ROOM ? WATER_SURFACE_Y + 0.12 : 0.45;
 
@@ -6029,8 +5866,7 @@ export class ProceduralMap {
     // under an employee, or at the exit.
     if (this.level === 9 && !(gx === this.exitGridX && gz === this.exitGridZ) && !(gx < 5 && gz < 5)) {
       const isWorkstation = this.level4DeskCells.some((desk) => desk.gx === gx && desk.gz === gz)
-        || this.level4Employees.some((employee) => employee.gx === gx && employee.gz === gz)
-        || this.funPartyCells.some((c) => c.gx === gx && c.gz === gz);
+        || this.level4Employees.some((employee) => employee.gx === gx && employee.gz === gz);
       const waterRng = new SeededRandom(this.seed + gx * 149 + gz * 211);
       if (!isWorkstation && waterRng.next() < LEVEL4_WATER_CHANCE) {
         const maxOffset = hSize / 2 - 0.65;
@@ -6209,6 +6045,30 @@ export class ProceduralMap {
     return folder;
   }
 
+  /**
+   * Level 0's halls (and Lights Out, the same halls unpowered) and the
+   * Abandoned Office: outlets, grilles, detectors (LevelDecor). A separate
+   * per-cell stream, so the props and lamps drawn from the cell's other
+   * streams land exactly where they always did.
+   */
+  private placeBuildingFittings(group: THREE.Group, gx: number, gz: number, posX: number, posZ: number, height: number) {
+    if (this.level !== 0 && this.level !== 3 && this.level !== 9) return;
+    if (this.isKeepClearCell(gx, gz) || this.isPitHole(gx, gz)) return;
+    const rng = new SeededRandom(this.seed + gx * 5297 + gz * 7307 + 911);
+    const fittings = Decor.ceilingAndWallFittings(this.levelDecorKit(), rng, {
+      half: this.cellSize / 2,
+      height,
+      walls: this.wallSidesOf(gx, gz),
+      outlets: this.level !== 9,
+    });
+    if (!fittings) return;
+    fittings.position.set(posX, 0, posZ);
+    group.add(fittings);
+    // Small enough to vanish into the fog long before the cell does: the
+    // culling pass hides them beyond detailDistance.
+    group.userData.details = fittings;
+  }
+
   /** Solid neighbours of a cell, as outward unit steps. */
   private wallSidesOf(gx: number, gz: number): [number, number][] {
     const sides: [number, number][] = [];
@@ -6225,62 +6085,6 @@ export class ProceduralMap {
     group.add(obj);
   }
 
-  /**
-   * The hidden office birthday party (see funCakeX/Z, funPartyCells): a
-   * corridor of stray balloons leading to a small room built entirely from
-   * Level FUN's own set-dressing — banner, balloon clusters, two coworkers
-   * who never left, and the cake itself at funCakeX/funCakeZ. Eating it
-   * (GameEngine.tryEatFunCake) is what actually starts the transition; this
-   * method only builds what the player sees.
-   */
-  private buildFunPartyCell(group: THREE.Group, gx: number, gz: number, posX: number, posZ: number) {
-    this.decorKit ??= {
-      geo: (key, build) => this.sharedGeo(key, build),
-      mat: (key, build) => this.sharedMat(key, build),
-      wallTile: this.wallMaterial,
-      track: (texture) => { this.sharedTextures.push(texture); },
-    };
-    const kit = this.decorKit;
-    const rng = new SeededRandom(this.seed + gx * 971 + gz * 613 + 0xca4e);
-
-    if (gx === this.funCakeX && gz === this.funCakeZ) {
-      const table = Fun.funPartyTable(kit, "pink", { length: 1.3, depth: 0.8, places: 1, stage: 0 });
-      table.object.position.set(posX, 0, posZ);
-      group.add(table.object);
-      const cake = Fun.funCake(kit, { candles: 6, lit: true });
-      cake.object.position.set(posX, 0.737, posZ);
-      cake.object.name = "fun_secret_cake";
-      group.add(cake.object);
-      this.addObstacle(gx, gz, posX, posZ, 0.55);
-      const banner = Fun.funBirthdayBanner(kit, 2.6);
-      banner.object.position.set(posX, 2.85, posZ);
-      group.add(banner.object);
-      for (const [dx, dz] of [[-1.1, -1.1], [1.1, -1.1], [-1.1, 1.1], [1.1, 1.1]] as const) {
-        const cluster = Fun.funBalloonCluster(kit, rng, 4);
-        cluster.object.position.set(posX + dx, 0, posZ + dz);
-        group.add(cluster.object);
-      }
-      // Two coworkers who never stopped celebrating.
-      for (const [dx, dz, yaw] of [[-1.3, 0.2, 0.8], [1.3, -0.3, -1.0]] as const) {
-        const guest = Fun.funPartygoer(kit, { pose: "stand", scale: 0.92 });
-        guest.object.position.set(posX + dx, 0, posZ + dz);
-        guest.object.rotation.y = yaw;
-        group.add(guest.object);
-      }
-    } else {
-      // The approach: a stray balloon or streamer, so the party is felt before it's seen.
-      if (rng.next() < 0.6) {
-        const cluster = Fun.funBalloonCluster(kit, rng, 2 + rng.nextInt(0, 3));
-        cluster.object.position.set(posX + rng.nextRange(-0.6, 0.6), 0, posZ + rng.nextRange(-0.6, 0.6));
-        group.add(cluster.object);
-      }
-      if (rng.next() < 0.4) {
-        const streamer = Fun.funStreamer(kit, rng.next() < 0.5 ? "red" : "yellow", 1.0);
-        streamer.object.position.set(posX, 2.9, posZ);
-        group.add(streamer.object);
-      }
-    }
-  }
 
   /**
    * Everything Level G puts in a cell beyond floor/walls/ceiling: door frames
@@ -6334,6 +6138,7 @@ export class ProceduralMap {
         ctx.fillText(t("sign.emergencyExit"), 128, 40);
       }
       const signTex = new THREE.CanvasTexture(canvas);
+      signTex.colorSpace = THREE.SRGBColorSpace;
       this.sharedTextures.push(signTex);
       const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.3), new THREE.MeshBasicMaterial({ map: signTex }));
       sign.position.set(0, 2.45, edgeZ - 0.07);
@@ -6548,38 +6353,40 @@ export class ProceduralMap {
   private createChairMesh(rng: SeededRandom, isTipped: boolean, isFloating: boolean): THREE.Group {
     const chair = new THREE.Group();
 
-    // Four-star rolling legs base (low poly)
-    const leg1 = new THREE.Mesh(this.chairLegGeo, this.plasticMaterial);
-    leg1.position.set(0, 0.015, 0);
-    chair.add(leg1);
+    // Three merged parts, one per material: a five-star base on casters with
+    // armrests and the back spine, the gas-lift column, and the cushions.
+    const frame = new THREE.Mesh(this.sharedGeo("chair_frame", () => {
+      const parts: [THREE.BufferGeometry, THREE.Matrix4][] = [];
+      const m = (x: number, y: number, z: number, ry = 0, rz = 0) =>
+        new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, ry, rz)), new THREE.Vector3(1, 1, 1));
+      parts.push([new THREE.CylinderGeometry(0.055, 0.065, 0.06, 10), m(0, 0.1, 0)]);
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        const [cx, cz] = [Math.cos(a), Math.sin(a)];
+        // Leg: sloping down from the hub to the caster.
+        parts.push([new THREE.BoxGeometry(0.29, 0.035, 0.045), m(cx * 0.16, 0.075, cz * 0.16, -a, -0.12)]);
+        parts.push([new THREE.CylinderGeometry(0.026, 0.026, 0.035, 8).rotateX(Math.PI / 2), m(cx * 0.3, 0.026, cz * 0.3, -a + Math.PI / 2)]);
+      }
+      parts.push([new THREE.BoxGeometry(0.3, 0.03, 0.3), m(0, 0.41, 0)]); // seat plate
+      parts.push([new THREE.BoxGeometry(0.06, 0.38, 0.03), m(0, 0.6, -0.27)]); // back spine
+      for (const side of [-1, 1]) {
+        parts.push([new THREE.BoxGeometry(0.035, 0.2, 0.04), m(side * 0.27, 0.56, -0.02)]);
+        parts.push([new THREE.BoxGeometry(0.06, 0.03, 0.26), m(side * 0.27, 0.675, 0.0)]);
+      }
+      return mergeParts(parts);
+    }), this.plasticMaterial);
+    chair.add(frame);
 
-    const leg2 = new THREE.Mesh(this.chairLegGeo, this.plasticMaterial);
-    leg2.rotateY(Math.PI / 2);
-    leg2.position.set(0, 0.015, 0);
-    chair.add(leg2);
-
-    // Hydraulic stem cylinder
-    const stem = new THREE.Mesh(this.chairStemGeo, this.metalMaterial);
-    stem.position.set(0, 0.23, 0);
+    const stem = new THREE.Mesh(this.sharedGeo("chair_stem", () => new THREE.CylinderGeometry(0.024, 0.03, 0.3, 8).translate(0, 0.27, 0)), this.metalMaterial);
     chair.add(stem);
 
-    // Padding seat cushion
-    const seat = new THREE.Mesh(this.chairSeatGeo, this.fabricMaterial);
-    seat.position.set(0, 0.46, 0);
-    seat.castShadow = true;
-    chair.add(seat);
-
-    // Seat back support bar (metal support)
-    const backBar = new THREE.Mesh(this.unitBoxGeo, this.metalMaterial);
-    backBar.scale.set(0.1, 0.45, 0.06);
-    backBar.position.set(0, 0.72, -0.22);
-    chair.add(backBar);
-
-    // Backrest pad
-    const backrest = new THREE.Mesh(this.chairBackGeo, this.fabricMaterial);
-    backrest.position.set(0, 0.95, -0.25);
-    backrest.castShadow = true;
-    chair.add(backrest);
+    const cushions = new THREE.Mesh(this.sharedGeo("chair_cushions", () => mergeParts([
+      [new RoundedBoxGeometry(0.5, 0.08, 0.48, 2, 0.03), new THREE.Matrix4().makeTranslation(0, 0.465, 0.01)],
+      [new RoundedBoxGeometry(0.46, 0.52, 0.07, 2, 0.03), new THREE.Matrix4().compose(
+        new THREE.Vector3(0, 0.88, -0.27), new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.1, 0, 0)), new THREE.Vector3(1, 1, 1))],
+    ])), this.fabricMaterial);
+    cushions.castShadow = true;
+    chair.add(cushions);
 
     // If it's tipped over, we rotate the whole chair group onto its side (e.g. 80-90 degrees pitch/roll)
     if (isTipped) {
@@ -6648,31 +6455,20 @@ export class ProceduralMap {
   private createCardboardBoxMesh(rng: SeededRandom): THREE.Group {
     const boxGroup = new THREE.Group();
 
-    // Core box
-    const mainBox = new THREE.Mesh(this.boxGeo, this.cardboardBoxMaterial);
+    // Core box, its edges slightly rounded and crushed
+    const mainBox = new THREE.Mesh(this.sharedGeo("cardboard_box", () => new RoundedBoxGeometry(0.65, 0.65, 0.65, 1, 0.015)), this.cardboardBoxMaterial);
     mainBox.position.set(0, 0.325, 0);
     mainBox.castShadow = true;
     mainBox.receiveShadow = true;
     boxGroup.add(mainBox);
 
-    // Packing tape stripe running across top and sides using unitBoxGeo scaled
-    const tapeTop = new THREE.Mesh(this.unitBoxGeo, this.tapeMaterial);
-    tapeTop.scale.set(0.08, 0.012, 0.66);
-    tapeTop.position.set(0, 0.655, 0);
-    boxGroup.add(tapeTop);
-
-    // Front/Back tape sides
-    // Front tape side
-    const tapeFront = new THREE.Mesh(this.unitBoxGeo, this.tapeMaterial);
-    tapeFront.scale.set(0.08, 0.4, 0.012);
-    tapeFront.position.set(0, 0.45, 0.33);
-    boxGroup.add(tapeFront);
-
-    // Back tape side
-    const tapeBack = new THREE.Mesh(this.unitBoxGeo, this.tapeMaterial);
-    tapeBack.scale.set(0.08, 0.4, 0.012);
-    tapeBack.position.set(0, 0.45, -0.33);
-    boxGroup.add(tapeBack);
+    // Packing tape over the top seam and down the front and back, as one mesh
+    const tape = new THREE.Mesh(this.sharedGeo("cardboard_tape", () => mergeParts([
+      [new THREE.BoxGeometry(0.08, 0.004, 0.652), new THREE.Matrix4().makeTranslation(0, 0.652, 0)],
+      [new THREE.BoxGeometry(0.08, 0.2, 0.004), new THREE.Matrix4().makeTranslation(0, 0.55, 0.326)],
+      [new THREE.BoxGeometry(0.08, 0.2, 0.004), new THREE.Matrix4().makeTranslation(0, 0.55, -0.326)],
+    ])), this.tapeMaterial);
+    boxGroup.add(tape);
 
     return boxGroup;
   }
@@ -6691,28 +6487,23 @@ export class ProceduralMap {
       metalness: 0.88
     }));
 
-    // Main barrel cylinder using shared geometry
-    const body = new THREE.Mesh(this.barrelCylinderGeo, drumMaterial);
-    body.position.set(0, 0.45, 0);
+    // Body, rolling hoops, chimes at both ends and the two bung caps, as one mesh
+    const body = new THREE.Mesh(this.sharedGeo("drum_body", () => {
+      const ring = (y: number, r: number, tube: number): [THREE.BufferGeometry, THREE.Matrix4] =>
+        [new THREE.TorusGeometry(r, tube, 4, 16).rotateX(Math.PI / 2), new THREE.Matrix4().makeTranslation(0, y, 0)];
+      return mergeParts([
+        [new THREE.CylinderGeometry(0.32, 0.32, 0.88, 16), new THREE.Matrix4().makeTranslation(0, 0.45, 0)],
+        ring(0.3, 0.327, 0.016),
+        ring(0.6, 0.327, 0.016),
+        ring(0.012, 0.318, 0.014),
+        ring(0.888, 0.318, 0.014),
+        [new THREE.CylinderGeometry(0.035, 0.035, 0.02, 8), new THREE.Matrix4().makeTranslation(0.19, 0.898, 0.05)],
+        [new THREE.CylinderGeometry(0.022, 0.022, 0.02, 8), new THREE.Matrix4().makeTranslation(-0.2, 0.898, -0.04)],
+      ]);
+    }), drumMaterial);
     body.castShadow = true;
     body.receiveShadow = true;
     drum.add(body);
-
-    // Dynamic metallic structural reinforcement rings (ribs of the oil drum) using shared geometry
-    const rim1 = new THREE.Mesh(this.barrelRimGeo, drumMaterial);
-    rim1.position.set(0, 0.18, 0);
-    rim1.rotation.x = Math.PI / 2;
-    drum.add(rim1);
-
-    const rim2 = new THREE.Mesh(this.barrelRimGeo, drumMaterial);
-    rim2.position.set(0, 0.45, 0);
-    rim2.rotation.x = Math.PI / 2;
-    drum.add(rim2);
-
-    const rim3 = new THREE.Mesh(this.barrelRimGeo, drumMaterial);
-    rim3.position.set(0, 0.72, 0);
-    rim3.rotation.x = Math.PI / 2;
-    drum.add(rim3);
 
     return drum;
   }
@@ -6736,43 +6527,30 @@ export class ProceduralMap {
       metalness: 0.75
     }));
 
-    // Main rigid metal core box using scaled unitBoxGeo
-    const core = new THREE.Mesh(this.unitBoxGeo, panelMaterial);
-    core.scale.set(0.78, 0.78, 0.78);
-    core.position.set(0, 0.39, 0);
+    // Inset steel panels
+    const core = new THREE.Mesh(this.sharedGeo("crate_core", () => new THREE.BoxGeometry(0.76, 0.76, 0.76).translate(0, 0.39, 0)), panelMaterial);
     core.castShadow = true;
     core.receiveShadow = true;
     crate.add(core);
 
-    // Frame struts (horizontal and vertical borders creating paneling look)
-    // Corner struts using scaled unitBoxGeo
-    const positions = [
-      [-0.39, 0.39, -0.39],
-      [0.39, 0.39, -0.39],
-      [-0.39, 0.39, 0.39],
-      [0.39, 0.39, 0.39],
-    ];
-    positions.forEach(([cx, cy, cz]) => {
-      const strut = new THREE.Mesh(this.unitBoxGeo, crateMaterial);
-      strut.scale.set(0.1, 0.8, 0.1);
-      strut.position.set(cx, cy, cz);
-      crate.add(strut);
-    });
-
-    // Cross braces on the crate faces representing industrial reinforced framing
-    // Front cross
-    const frontCross = new THREE.Mesh(this.unitBoxGeo, crateMaterial);
-    frontCross.scale.set(0.04, 1.05, 0.04);
-    frontCross.rotation.z = Math.PI / 4;
-    frontCross.position.set(0, 0.39, 0.395);
-    crate.add(frontCross);
-
-    // Back cross
-    const backCross = new THREE.Mesh(this.unitBoxGeo, crateMaterial);
-    backCross.scale.set(0.04, 1.05, 0.04);
-    backCross.rotation.z = -Math.PI / 4;
-    backCross.position.set(0, 0.39, -0.395);
-    crate.add(backCross);
+    // The whole angle-iron frame (corner posts, top and bottom rails, the
+    // diagonal braces on two faces) as one mesh
+    const frame = new THREE.Mesh(this.sharedGeo("crate_frame", () => {
+      const parts: [THREE.BufferGeometry, THREE.Matrix4][] = [];
+      const at = (x: number, y: number, z: number, rz = 0) =>
+        new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, rz)), new THREE.Vector3(1, 1, 1));
+      for (const [cx, cz] of [[-0.37, -0.37], [0.37, -0.37], [-0.37, 0.37], [0.37, 0.37]]) {
+        parts.push([new THREE.BoxGeometry(0.07, 0.8, 0.07), at(cx, 0.4, cz)]);
+      }
+      for (const y of [0.035, 0.765]) {
+        for (const z of [-0.37, 0.37]) parts.push([new THREE.BoxGeometry(0.8, 0.06, 0.06), at(0, y, z)]);
+        for (const x of [-0.37, 0.37]) parts.push([new THREE.BoxGeometry(0.06, 0.06, 0.8), at(x, y, 0)]);
+      }
+      parts.push([new THREE.BoxGeometry(0.035, 1.0, 0.035), at(0, 0.4, 0.385, Math.PI / 4)]);
+      parts.push([new THREE.BoxGeometry(0.035, 1.0, 0.035), at(0, 0.4, -0.385, -Math.PI / 4)]);
+      return mergeParts(parts);
+    }), crateMaterial);
+    crate.add(frame);
 
     return crate;
   }
@@ -7125,7 +6903,7 @@ export class ProceduralMap {
         // Lamps the event left dark come back on (only flickering ones restore themselves).
         for (const f of this.lightFixtures) {
           f.light.intensity = f.intensity;
-          f.mesh.material = this.fluorescentGlassOn;
+          f.mesh.material = f.glassOn ?? this.fluorescentGlassOn;
         }
         this.eventCooldown = 30.0 + Math.random() * 25.0; // Cooldown for 30-55 seconds
       }
@@ -7163,12 +6941,12 @@ export class ProceduralMap {
       // The garage's blackouts are floor 3's alone.
       if (this.globalEventState === "blackout" && this.inGarageBlackoutZone(fixture.light.x)) {
         fixture.light.intensity = 0.0;
-        fixture.mesh.material = this.fluorescentGlassOff;
+        fixture.mesh.material = fixture.glassOff ?? this.fluorescentGlassOff;
       } else if (this.globalEventState === "flicker_storm") {
         const flashOn = Math.random() > 0.45;
         // Subtly dim the bulbs rather than dropping them to absolute blackout to reduce strobe strain
         fixture.light.intensity = flashOn ? fixture.intensity : fixture.intensity * 0.35;
-        fixture.mesh.material = flashOn ? this.fluorescentGlassOn : this.fluorescentGlassOff;
+        fixture.mesh.material = flashOn ? fixture.glassOn ?? this.fluorescentGlassOn : fixture.glassOff ?? this.fluorescentGlassOff;
       } else {
         // Normal mode: Standard individual quiet organic flickers
         if (fixture.flickerTimer > 0) {
@@ -7177,12 +6955,12 @@ export class ProceduralMap {
           // Rapid oscillating glow with comfortable visual range
           const flash = Math.random() > 0.4;
           fixture.light.intensity = flash ? fixture.intensity : fixture.intensity * 0.45;
-          fixture.mesh.material = flash ? this.fluorescentGlassOn : this.fluorescentGlassOff;
+          fixture.mesh.material = flash ? fixture.glassOn ?? this.fluorescentGlassOn : fixture.glassOff ?? this.fluorescentGlassOff;
 
           // Reset once timer completes
           if (fixture.flickerTimer <= 0) {
             fixture.light.intensity = fixture.intensity;
-            fixture.mesh.material = this.fluorescentGlassOn;
+            fixture.mesh.material = fixture.glassOn ?? this.fluorescentGlassOn;
           }
         } else {
           // Very rare natural spark flicker probability (0.0125% per frame);
@@ -7346,6 +7124,7 @@ export class ProceduralMap {
 
     const hSize = this.cellSize;
     const maxVisibleDistanceSq = this.maxVisibleDistance * this.maxVisibleDistance;
+    const detailDistanceSq = (this.maxVisibleDistance * 0.6) ** 2;
 
     const pGx = Math.floor(playerX / hSize);
     const pGz = Math.floor(playerZ / hSize);
@@ -7389,6 +7168,8 @@ export class ProceduralMap {
           if (!cellGroup.visible) {
             cellGroup.visible = true;
           }
+          const details: THREE.Object3D | undefined = cellGroup.userData.details;
+          if (details) details.visible = distSq <= detailDistanceSq;
 
           if (!cellGroup.userData.aabb) {
             const fY = this.floorHeight[gx]?.[gz] ?? 0;
@@ -7664,16 +7445,7 @@ export class ProceduralMap {
     // Dispose prop geometries
     if (this.dividerGeo) this.dividerGeo.dispose();
     if (this.partitionBaseGeo) this.partitionBaseGeo.dispose();
-    if (this.chairSeatGeo) this.chairSeatGeo.dispose();
-    if (this.chairBackGeo) this.chairBackGeo.dispose();
-    if (this.chairStemGeo) this.chairStemGeo.dispose();
-    if (this.chairLegGeo) this.chairLegGeo.dispose();
-    if (this.boxGeo) this.boxGeo.dispose();
     if (this.unitBoxGeo) this.unitBoxGeo.dispose();
-    if (this.pitGeoWall) this.pitGeoWall.dispose();
-    if (this.pitGeoFloor) this.pitGeoFloor.dispose();
-    if (this.barrelCylinderGeo) this.barrelCylinderGeo.dispose();
-    if (this.barrelRimGeo) this.barrelRimGeo.dispose();
     if (this.boilerPipeVerticalGeo) this.boilerPipeVerticalGeo.dispose();
     if (this.boilerPipeElbowGeo) this.boilerPipeElbowGeo.dispose();
     if (this.boilerDialPlateGeo) this.boilerDialPlateGeo.dispose();

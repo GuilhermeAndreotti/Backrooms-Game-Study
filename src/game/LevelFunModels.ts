@@ -27,6 +27,7 @@
  */
 
 import * as THREE from "three";
+import { weatherCanvas } from "./surfaceTextures";
 import type { DecorKit, DecorPiece, Rng } from "./LevelDecor";
 import { t } from "../i18n";
 
@@ -106,6 +107,8 @@ function canvasTexture(kit: DecorKit, w: number, h: number, draw: (ctx: CanvasRe
   canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext("2d");
   if (ctx) draw(ctx);
+  // Tiled surfaces (wallpaper, carpet, floors) get the shared wear; drawings and signs stay clean.
+  if (ctx && repeat) weatherCanvas(ctx, { grain: 0.05, blotch: 0.08, seed: w * 7 + h });
   const map = new THREE.CanvasTexture(canvas);
   map.colorSpace = THREE.SRGBColorSpace;
   if (repeat) { map.wrapS = map.wrapT = THREE.RepeatWrapping; map.anisotropy = 4; }

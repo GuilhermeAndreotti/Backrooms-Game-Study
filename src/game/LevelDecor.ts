@@ -120,8 +120,8 @@ function transformer(kit: DecorKit, rng: Rng, wz: number): DecorPiece {
   }
   const on = rng.next() < 0.7;
   const led = std(kit, on ? "l3_led_on" : "l3_led_off", on
-    ? { color: 0x39ff88, emissive: 0x16c060, emissiveIntensity: 2.5 }
-    : { color: 0xff3b18, emissive: 0xff2200, emissiveIntensity: 2.5 });
+    ? { color: 0x39ff88, emissive: 0x16c060, emissiveIntensity: 1.6 }
+    : { color: 0xff3b18, emissive: 0xff2200, emissiveIntensity: 1.6 });
   g.add(box(kit, 0.08, 0.08, 0.03, led, 0.45, 1.35, wz + d + 0.01));
   // Heavy cables rising from the top into the ceiling.
   const cable = std(kit, "l3_cable", { color: 0x121212, roughness: 0.9 });
@@ -650,4 +650,91 @@ function mulberry(seed: number): () => number {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Building services: the small things every real office ceiling and wall has
+// ---------------------------------------------------------------------------
+
+export interface FittingsOptions {
+  /** Cell half-size (the walls stand at +-half). */
+  half: number;
+  /** Ceiling height. */
+  height: number;
+  /** Outward steps (dx, dz) to the solid neighbours that have a wall. */
+  walls: [number, number][];
+  /** Wall outlets (Level 0's halls; not the office, whose walls may be windows). */
+  outlets: boolean;
+}
+
+/**
+ * Wall outlets, return-air grilles, smoke detectors and the odd missing
+ * ceiling tile, in the cell's local frame (centre at the origin, floor y = 0).
+ * Purely visual: no collision, and each kind is one shared geometry and
+ * material. Ceiling pieces snap to the drop-ceiling grid (three tiles per
+ * 2 m, see createLevel0CeilingTexture) and keep clear of the light fixture.
+ */
+export function ceilingAndWallFittings(kit: DecorKit, rng: Rng, opts: FittingsOptions): THREE.Object3D | null {
+  const g = new THREE.Group();
+  const { half, height } = opts;
+  // Two tiles per texture repeat, a whole number of repeats per cell.
+  const tiles = 2 * Math.max(1, Math.round((2 * half) / 1.2));
+  const tile = (2 * half) / tiles;
+  // Tile centres away from the middle two rows/columns, where the fixture hangs.
+  const perSide = Math.max(1, tiles / 2 - 1);
+  const edgeTile = () => {
+    const k = Math.floor(rng.next() * perSide);
+    const i = rng.next() < 0.5 ? k : tiles - 1 - k;
+    return -half + tile * (i + 0.5);
+  };
+
+  if (rng.next() < 0.22) {
+    const grille = canvasMat(kit, "return_grille", 64, 64, (ctx) => {
+      ctx.fillStyle = "#d9d5c6"; ctx.fillRect(0, 0, 64, 64);
+      ctx.fillStyle = "#3a3830"; ctx.fillRect(5, 5, 54, 54);
+      ctx.fillStyle = "#cfcabb";
+      for (let y = 8; y < 57; y += 5) ctx.fillRect(7, y, 50, 2);
+      ctx.fillStyle = "rgba(60, 50, 30, 0.35)"; ctx.fillRect(5, 5, 54, 3); // dust along the top slat
+    });
+    const vent = new THREE.Mesh(kit.geo("fitting_grille", () => new THREE.PlaneGeometry(tile * 0.92, tile * 0.92).rotateX(Math.PI / 2)), grille);
+    vent.position.set(edgeTile(), height - 0.004, edgeTile());
+    g.add(vent);
+  } else if (rng.next() < 0.05) {
+    // A tile pushed up or fallen out: black void above the grid.
+    const hole = new THREE.Mesh(
+      kit.geo("fitting_missing_tile", () => new THREE.PlaneGeometry(tile * 0.94, tile * 0.94).rotateX(Math.PI / 2)),
+      kit.mat("fitting_void", () => new THREE.MeshBasicMaterial({ color: 0x060504 })),
+    );
+    hole.position.set(edgeTile(), height - 0.003, edgeTile());
+    g.add(hole);
+  }
+
+  if (rng.next() < 0.12) {
+    const detector = new THREE.Mesh(
+      kit.geo("fitting_detector", () => new THREE.CylinderGeometry(0.055, 0.065, 0.035, 12).translate(0, -0.0175, 0)),
+      std(kit, "detector", { color: 0xe4e0d4, roughness: 0.5 }),
+    );
+    detector.position.set(edgeTile(), height, edgeTile());
+    g.add(detector);
+  }
+
+  if (opts.outlets) {
+    const plate = canvasMat(kit, "wall_outlet", 32, 48, (ctx) => {
+      ctx.fillStyle = "#e6e0cc"; ctx.fillRect(0, 0, 32, 48);
+      ctx.strokeStyle = "rgba(90, 80, 60, 0.6)"; ctx.lineWidth = 2; ctx.strokeRect(1, 1, 30, 46);
+      ctx.fillStyle = "#2a2620";
+      for (const y of [12, 30]) { ctx.fillRect(10, y, 3, 7); ctx.fillRect(19, y, 3, 7); ctx.fillRect(14.5, y + 9, 3, 2); }
+    });
+    for (const [dx, dz] of opts.walls) {
+      if (rng.next() > 0.2) continue;
+      const along = rng.nextRange(-half + 0.5, half - 0.5);
+      const outlet = new THREE.Mesh(kit.geo("fitting_outlet", () => new THREE.BoxGeometry(0.075, 0.12, 0.008)), plate);
+      // On the wall at (dx, dz), 30 cm up, facing into the cell.
+      outlet.position.set(dx !== 0 ? dx * (half - 0.004) : along, 0.3, dz !== 0 ? dz * (half - 0.004) : along);
+      outlet.rotation.y = Math.atan2(-dx, -dz);
+      g.add(outlet);
+    }
+  }
+
+  return g.children.length > 0 ? g : null;
 }

@@ -16,6 +16,7 @@
  */
 
 import * as THREE from "three";
+import { weatherCanvas } from "./surfaceTextures";
 import { Reflector } from "three/examples/jsm/objects/Reflector.js";
 import { EMPTY_CHESS, fromFen, type ChessNetState, type PieceType } from "../shared/chess";
 import { t } from "../i18n";
@@ -148,7 +149,10 @@ export class Lobby {
   private canvasTexture(w: number, h: number, draw: (g: CanvasRenderingContext2D) => void, repeat?: [number, number]): THREE.CanvasTexture {
     const c = document.createElement("canvas");
     c.width = w; c.height = h;
-    draw(c.getContext("2d")!);
+    const g = c.getContext("2d")!;
+    draw(g);
+    // Tiled ground and walls get a light version of the shared wear.
+    if (repeat) weatherCanvas(g, { grain: 0.04, blotch: 0.07, seed: w * 3 + h });
     const tex = this.track(new THREE.CanvasTexture(c));
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = 4;

@@ -25,17 +25,19 @@
  */
 
 import * as THREE from "three";
+import { weatherCanvas } from "../surfaceTextures";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { DecorKit } from "../LevelDecor";
 import type { DynamicLightSource } from "../LightPool";
 import { t } from "../../i18n";
 import {
-  CASTLE_FLOOR, CASTLE_FOOTPRINT, CLOCK_FACE_Y, CLOCK_HATCH, CLOCK_PARTS, ClockPart, KING_THRONE, MODEL_PIECES, MODEL_PIECE_DATA, MODEL_SCALE, MODEL_TABLE,
+  CASTLE_FLOOR, CASTLE_FOOTPRINT, CIRCUS_BALL_START, CIRCUS_CURTAIN, CIRCUS_RING, CLOCK_FACE_Y, CLOCK_HATCH, CLOCK_PARTS, ClockPart, KING_THRONE, MODEL_PIECES, MODEL_PIECE_DATA, MODEL_SCALE, MODEL_TABLE,
   PART_SPOTS, PUZZLE_GATE, STAY_HOUSE, TOWER_FLOOR, TOWER_PLAZA, TOWN_AREA, TOWN_BARRICADE, TOWN_CELL, TOWN_EDGE_Z, TOWN_EXIT, TOWN_GRID, TOWN_LOTS,
   TOWN_ROADS, TOWN_ROAD_HALF, TOWN_SPAWN, TOWN_TOWER, TownLot, TownSide, VALLEY_PATH, cellCenter, lotFloor, modelPoint, partSpot, partSpotWorld,
   townCellAt, townGroundHeight, townRng, townRoadDistance,
 } from "./townLayout";
 import { drawTownPlan, drawTownView } from "./townPlan";
+import { CIRCUS_BALL_RADIUS } from "./townBall";
 
 const CELL = TOWN_CELL;
 const Z_AXIS = new THREE.Vector3(0, 0, 1);
@@ -58,7 +60,7 @@ export interface TownBuildEnv {
   addObstacle(gx: number, gz: number, x: number, z: number, radius: number): { radius: number };
 }
 
-export type TownGate = "barricade" | "puzzle" | "exit";
+export type TownGate = "barricade" | "puzzle" | "exit" | "circus";
 
 interface Lamp { head: THREE.Mesh; light: DynamicLightSource; level: number }
 interface HouseLights { mat: THREE.MeshStandardMaterial; light: DynamicLightSource | null }
@@ -135,11 +137,15 @@ export class TownWorld {
   private readonly textures = new Map<string, THREE.CanvasTexture>();
 
   // Gates
-  private readonly gateOpen: Record<TownGate, boolean> = { barricade: false, puzzle: false, exit: false };
+  private readonly gateOpen: Record<TownGate, boolean> = { barricade: false, puzzle: false, exit: false, circus: false };
   private barricade!: THREE.Group;
   private portcullis!: THREE.Group;
   private exitLeaves: THREE.Object3D[] = [];
-  private gateAnim: Record<TownGate, number> = { barricade: 0, puzzle: 0, exit: 0 };
+  private gateAnim: Record<TownGate, number> = { barricade: 0, puzzle: 0, exit: 0, circus: 0 };
+  /** The circus curtain's two halves, over the doorway into the Animation Room. */
+  private readonly curtains: THREE.Object3D[] = [];
+  /** The circus ball (moved by the director's TownBall). */
+  circusBall!: THREE.Object3D;
 
   // Lights
   readonly lamps: Lamp[] = [];
@@ -192,6 +198,7 @@ export class TownWorld {
     const hills = new THREE.Group();
     this.buildTerrain(hills);
     this.buildValley(hills);
+    this.buildCircusStart(hills);
     this.flush(hills, "hills");
 
     // The whole castle stands on top of its hill.
@@ -200,11 +207,14 @@ export class TownWorld {
     this.buildCastleShell(castle);
     this.buildCastleRooms(castle);
     this.buildEntrance(castle);
+    this.buildCircusRing(castle);
     this.buildAnimationRoom(castle);
     this.buildThroneRoom(castle);
     this.flush(castle, "castle");
 
     this.buildGates();
+    this.buildCircusCurtain();
+    this.buildCircusBall();
     this.buildParts();
   }
 
@@ -222,6 +232,7 @@ export class TownWorld {
     if (gx === TOWN_BARRICADE.gx && gz === TOWN_BARRICADE.gz) return !this.gateOpen.barricade;
     if (gx === PUZZLE_GATE.gx && gz === PUZZLE_GATE.gz) return !this.gateOpen.puzzle;
     if (gx === TOWN_EXIT.gx && gz === TOWN_EXIT.gz) return !this.gateOpen.exit;
+    if (gx === CIRCUS_CURTAIN.gx && gz === CIRCUS_CURTAIN.gz) return !this.gateOpen.circus;
     return false;
   }
 
@@ -312,7 +323,7 @@ export class TownWorld {
   update(delta: number) {
     this.clock += delta;
     // Gates ease towards their state.
-    for (const gate of ["barricade", "puzzle", "exit"] as TownGate[]) {
+    for (const gate of ["barricade", "puzzle", "exit", "circus"] as TownGate[]) {
       const target = this.gateOpen[gate] ? 1 : 0;
       const cur = this.gateAnim[gate];
       if (Math.abs(cur - target) < 0.001) continue;
@@ -322,6 +333,13 @@ export class TownWorld {
     this.barricade.visible = b < 0.99;
     this.barricade.position.y = (this.barricade.userData.baseY as number) - b * 2.5;
     this.portcullis.position.y = CASTLE_FLOOR + this.gateAnim.puzzle * 3.7;
+    // The curtain draws apart, bunching up at the sides.
+    const cu = this.gateAnim.circus;
+    this.curtains.forEach((c, i) => {
+      // Its outer edge stays on the door jamb while the cloth bunches towards it.
+      c.scale.x = 1 - 0.78 * cu;
+      c.position.x = cellCenter(CIRCUS_CURTAIN.gx) + (i === 0 ? -1 : 1) * (2.04 - 1.02 * c.scale.x);
+    });
     const e = this.gateAnim.exit;
     this.exitLeaves.forEach((leaf, i) => { leaf.rotation.y = (i === 0 ? 1 : -1) * e * 1.75; });
     this.exitLight.intensity = this.exitLight.baseIntensity * (0.15 + 0.85 * e);
@@ -387,7 +405,10 @@ export class TownWorld {
     if (cached) return cached;
     const c = document.createElement("canvas");
     c.width = w; c.height = h;
-    draw(c.getContext("2d")!, w, h);
+    const g = c.getContext("2d")!;
+    draw(g, w, h);
+    // Tiled surfaces get a light version of the shared wear (it is a cartoon town).
+    if (tile) weatherCanvas(g, { grain: 0.04, blotch: 0.07, seed: key.length * 53 + key.charCodeAt(0) });
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = 4;
@@ -2146,6 +2167,88 @@ export class TownWorld {
   // -------------------------------------------------------------------------
   // Gates
   // -------------------------------------------------------------------------
+
+  /** The circus ball: segments of red, yellow, blue and white, a star on each pole. */
+  private buildCircusBall() {
+    const tex = this.tex("circus_ball", 256, 128, null, (c, w, h) => {
+      const colors = ["#d02a2a", "#f2d24b", "#2a5ad0", "#f4efe2"];
+      for (let i = 0; i < 8; i++) { c.fillStyle = colors[i % 4]; c.fillRect((i * w) / 8, 0, w / 8 + 1, h); }
+      c.fillStyle = "#f4efe2";
+      c.fillRect(0, 0, w, h * 0.1);
+      c.fillRect(0, h * 0.9, w, h * 0.1);
+      c.fillStyle = "#d02a2a";
+      c.fillRect(0, h * 0.1, w, 3);
+      c.fillRect(0, h * 0.9 - 3, w, 3);
+    });
+    const mat = this.mat("circus_ball", { map: tex, roughness: 0.35, metalness: 0.05 });
+    const ball = new THREE.Mesh(this.kit.geo("town_circus_ball", () => new THREE.SphereGeometry(CIRCUS_BALL_RADIUS, 24, 16)), mat);
+    ball.castShadow = true;
+    ball.position.set(CIRCUS_BALL_START.x, townGroundHeight(CIRCUS_BALL_START.x, CIRCUS_BALL_START.z) + CIRCUS_BALL_RADIUS, CIRCUS_BALL_START.z);
+    ball.userData.dynamic = true;
+    this.root.add(ball);
+    this.circusBall = ball;
+  }
+
+  /** Where the ball waits: a toppled circus stool beside the road, the ball's empty perch. */
+  private buildCircusStart(g: THREE.Group) {
+    const x = CIRCUS_BALL_START.x + 1.8, z = CIRCUS_BALL_START.z - 0.6;
+    const stool = new THREE.Group();
+    stool.position.set(x, townGroundHeight(x, z) + 0.45, z);
+    stool.rotation.set(Math.PI / 2, 0.5, 0);
+    const red = this.mat("circus_red", { color: 0xd02a2a, roughness: 0.5 });
+    const gold = this.mat("brass", { color: 0xd9a830, roughness: 0.3, metalness: 0.8 });
+    this.cyl(stool, 0.45, 0.55, 0.8, red, 0, 0, 0, 16);
+    this.cyl(stool, 0.5, 0.5, 0.06, gold, 0, 0.42, 0, 16);
+    this.cyl(stool, 0.58, 0.58, 0.06, gold, 0, -0.42, 0, 16);
+    g.add(stool);
+    this.solid(x, z, 0.6);
+  }
+
+  /** The ring in the entrance hall: a low drum with a star on top, and a sign over it. */
+  private buildCircusRing(g: THREE.Group) {
+    const R = CIRCUS_RING.radius, H = CIRCUS_RING.height;
+    const top = this.mat("circus_ring_top", {
+      map: this.tex("circus_ring_top", 256, 256, null, (c, w, h) => {
+        const cx = w / 2, cy = h / 2;
+        for (let i = 0; i < 16; i++) {
+          c.fillStyle = i % 2 ? "#f2d24b" : "#d02a2a";
+          c.beginPath(); c.moveTo(cx, cy);
+          c.arc(cx, cy, w / 2, (i / 16) * Math.PI * 2, ((i + 1) / 16) * Math.PI * 2);
+          c.fill();
+        }
+        c.fillStyle = "#f4efe2";
+        c.beginPath();
+        for (let i = 0; i < 10; i++) {
+          const r = i % 2 ? w * 0.09 : w * 0.22, a = (i / 10) * Math.PI * 2 - Math.PI / 2;
+          c.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+        }
+        c.fill();
+      }), roughness: 0.55,
+    });
+    const disc = new THREE.Mesh(this.kit.geo("town_circus_ring_top", () => new THREE.CircleGeometry(R, 32).rotateX(-Math.PI / 2)), top);
+    disc.position.set(CIRCUS_RING.x, H + 0.005, CIRCUS_RING.z);
+    g.add(disc);
+    this.cyl(g, R, R + 0.04, H, this.mat("brass", { color: 0xd9a830, roughness: 0.3, metalness: 0.8 }), CIRCUS_RING.x, H / 2, CIRCUS_RING.z, 32);
+    this.plane(g, 3.4, 0.5, this.label(t("town.sign.ring"), 3.4, 0.5, "#f6e2a0", "#5a0f1c"), CIRCUS_RING.x, 6.2, 88.12);
+  }
+
+  /** Red and white striped stage curtain across the doorway into the Animation Room. */
+  private buildCircusCurtain() {
+    const cloth = this.mat("circus_curtain", {
+      map: this.tex("circus_curtain", 64, 16, [0.5, 0.5], (c, w, h) => {
+        c.fillStyle = "#b0182a"; c.fillRect(0, 0, w, h);
+        c.fillStyle = "#f4efe2"; c.fillRect(w / 2, 0, w / 2, h);
+      }), roughness: 0.9, side: THREE.DoubleSide,
+    });
+    const z = (CIRCUS_CURTAIN.gz + 1) * CELL - 0.18;
+    for (const side of [-1, 1]) {
+      const half = new THREE.Mesh(this.boxGeo(2.04, 4.5, 0.08), cloth);
+      half.position.set(cellCenter(CIRCUS_CURTAIN.gx) + side * 1.02, CASTLE_FLOOR + 2.25, z);
+      half.userData.dynamic = true;
+      this.root.add(half);
+      this.curtains.push(half);
+    }
+  }
 
   private buildGates() {
     // The barricade on the road out: two sawhorses, striped planks, a sign.

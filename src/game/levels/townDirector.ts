@@ -40,19 +40,21 @@ import { KING_LOOK } from "../mobs/townKing";
 import { NO_SCRIPTED_POSE } from "../mobs/types";
 import { animateToon, buildStandaloneToon, poseSeated, Townsfolk } from "./townFigures";
 import {
-  CASTLE_FLOOR, CLOCK_HATCH, CLOCK_PARTS, ClockPart, KING_CHECKPOINT, KING_THRONE, MODEL_PIECES, MODEL_SCALE, MODEL_TABLE, ModelPieceId, NOISY_HOUSES,
+  CASTLE_FLOOR, CIRCUS_BALL_START, CLOCK_HATCH, CLOCK_PARTS, ClockPart, KING_CHECKPOINT, KING_THRONE, MODEL_PIECES, MODEL_SCALE, MODEL_TABLE, ModelPieceId, NOISY_HOUSES,
   THRONE_DOOR_X, THRONE_DOOR_Z, TOWNSFOLK, TOWN_AREA, TOWN_CELL, TOWN_EDGE_Z, TOWN_EXIT, TOWN_SPAWN, TOWN_TOWER, TownZone, cellCenter,
-  stayChair, townCellAt, townIsIndoors, townRng,
+  stayChair, townCellAt, townGroundHeight, townIsIndoors, townRng,
 } from "./townLayout";
 import { SKY_DAY, SKY_HILLS, SKY_NIGHT, SKY_SUNSET, SkyLook, TownSky, cloneSky, mixSky } from "./townSky";
 import type { TownWorld } from "./townWorld";
+import { TownBall } from "./townBall";
+import type { BallNetState } from "../Lobby";
 import { EntityType } from "../../shared/entityTypes";
 
 export type TownAudio = Pick<AudioManager,
   "startFunMusic" | "stopFunMusic" | "funMusicPlaying" | "playFunSound" | "playKingBreath" | "playKingWhisper" | "playKingStinger" |
   "playKingThud" | "playTerminalBeep" | "startTownAmbience" | "setTownAmbience" | "stopTownAmbience" | "playTownSound">;
 
-export type TownEventKind = "part" | "clock" | "model" | "solved" | "kingWake";
+export type TownEventKind = "part" | "clock" | "model" | "solved" | "kingWake" | "ball";
 
 export interface TownHost {
   audio: TownAudio;
@@ -83,7 +85,19 @@ export interface TownHost {
   escape(): void;
   /** Opens (a view) or closes (null) the King's dialogue panel. */
   dialogue(view: TownDialogueView | null): void;
+  /** The circus ball: this client simulates it (the level's world authority). */
+  ballAuthority(): boolean;
+  /** Authority: stream the ball to teammates on the level. Others: forward a kick to the authority. */
+  sendBall(state: BallNetState): void;
+  kickBall(vx: number, vz: number): void;
+  /** The local explorer's horizontal velocity (m/s), for kicking. */
+  playerVelocity(): { vx: number; vz: number };
+  /** The map's collision test (walls, furniture, gates, too-steep ground). */
+  collide(x: number, z: number, radius: number): boolean;
 }
+
+/** Circus ball frames per second, from the authority. */
+const BALL_SEND_HZ = 12;
 
 type Phase = "day" | "dusk" | "night";
 type Vision = "none" | "dialogue" | "confront" | "shrinking" | "open" | "white" | "stay" | "chair" | "crown" | "throne" | "done";
@@ -221,6 +235,10 @@ export class TownDirector {
   /** Which of the model's missing buildings are back on their plots. */
   private readonly placed: boolean[] = MODEL_PIECES.map(() => false);
   private solved = false;
+  /** The circus ball, and whether it's on the entrance hall's ring (the curtain is open). */
+  private readonly ball: TownBall;
+  private ballDelivered = false;
+  private ballSendTimer = 0;
 
   // The shared timeline
   private phase: Phase = "day";
@@ -291,6 +309,7 @@ export class TownDirector {
       world.root.add(f.group);
     });
 
+    this.ball = new TownBall(world.circusBall, townGroundHeight);
     world.setGateBulbs(0);
     const rng = townRng((world.seed ^ 0x11947) >>> 0);
     this.lightsOut = [...world.houses.keys()];
@@ -355,12 +374,16 @@ export class TownDirector {
         const k = this.host.king();
         return t(k?.awake ? "town.obj.run" : "town.obj.throne");
       }
+      if (region === "entrance" && !this.ballDelivered) return t("town.obj.ring");
       if (region === "animRoom" || (region === "entrance" && !this.solved)) {
         return this.solved ? t("town.obj.gateOpen") : t("town.obj.model", { n: this.placedCount(), total: MODEL_PIECES.length });
       }
       return t("town.obj.castle");
     }
-    if (this.zone === "hills" || this.zone === "road") return this.phase === "night" ? t("town.obj.hills") : t("town.obj.findParts", { n: this.found.size });
+    if (this.zone === "hills" || this.zone === "road") {
+      if (this.phase !== "night") return t("town.obj.findParts", { n: this.found.size });
+      return this.ballDelivered ? t("town.obj.hills") : t("town.obj.ball");
+    }
     switch (this.phase) {
       case "day":
         return this.found.size < 3 ? t("town.obj.findParts", { n: this.found.size }) : t("town.obj.tower");
@@ -534,6 +557,62 @@ export class TownDirector {
       this.solve(quiet);
     } else if (kind === "kingWake") {
       this.kingWoken = true;
+    } else if (kind === "ball") {
+      this.deliverBall(quiet);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // The circus ball
+  // -------------------------------------------------------------------------
+
+  /** Authority's ball frame (non-authority clients follow it). */
+  applyBallState(msg: BallNetState) {
+    if (this.host.ballAuthority()) return;
+    this.ball.applyState(msg);
+    if (msg.g > 0) this.deliverBall(false);
+  }
+
+  /** A teammate kicked the ball (forwarded to the authority, which owns the simulation). */
+  applyBallKick(vx: number, vz: number) {
+    if (this.host.ballAuthority()) this.ball.applyKick(vx, vz);
+  }
+
+  private deliverBall(quiet: boolean) {
+    if (this.ballDelivered) return;
+    this.ballDelivered = true;
+    this.ball.deliver();
+    this.world.setGate("circus", true);
+    if (quiet) return;
+    this.host.audio.playTownSound("place");
+    this.host.audio.playTownSound("gate");
+    this.host.notify(t("town.ntf.ring"));
+  }
+
+  private updateBall(delta: number, p: { x: number; z: number; alive: boolean }) {
+    const authority = this.host.ballAuthority();
+    const v = this.host.playerVelocity();
+    this.ball.update(delta, {
+      authority,
+      canKick: p.alive && this.vision === "none" && this.caughtFade <= 0,
+      px: p.x, pz: p.z, pvx: v.vx, pvz: v.vz,
+      collide: (x, z, r) => this.host.collide(x, z, r),
+      onKick: (vx, vz) => {
+        if (!authority) this.host.kickBall(vx, vz);
+        this.host.audio.playTownSound("knock", 0, 0.35);
+      },
+      onDelivered: () => {
+        this.deliverBall(false);
+        this.host.send("ball", 0);
+      },
+      onLost: () => this.host.notify(t("town.ntf.ballLost")),
+    });
+    if (authority && !this.ballDelivered) {
+      this.ballSendTimer += delta;
+      if (this.ballSendTimer >= 1 / BALL_SEND_HZ) {
+        this.ballSendTimer = 0;
+        this.host.sendBall(this.ball.getState());
+      }
     }
   }
 
@@ -661,6 +740,7 @@ export class TownDirector {
     }
     if (this.phase === "night" && !this.eternalDay) this.flickerNightLamps();
     this.updateVision(delta, p);
+    this.updateBall(delta, p);
     this.world.update(delta);
 
     if (this.wrongFlash > 0) {
@@ -681,6 +761,11 @@ export class TownDirector {
       this.host.notify(t(msg));
     };
     if (this.zone === "hills") once("hills", "town.ntf.hills");
+    if (this.zone === "hills" && !this.ballDelivered) {
+      const p = this.host.player();
+      if (Math.hypot(p.x - CIRCUS_BALL_START.x, p.z - CIRCUS_BALL_START.z) < 10) once("ball", "town.ntf.ball");
+    }
+    if (region === "entrance" && !this.ballDelivered) once("ring", "town.ntf.ringHint");
     if (region === "entrance") once("castle", "town.ntf.castle");
     if (region === "animRoom") once("animRoom", "town.ntf.animRoom");
     if (region === "throne") {

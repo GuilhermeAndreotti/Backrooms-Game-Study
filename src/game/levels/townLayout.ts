@@ -209,6 +209,17 @@ export const THRONE_DOOR_X = cellCenter(TOWN_EXIT.gx);
 export const THRONE_DOOR_Z = (TOWN_EXIT.gz + 1) * TOWN_CELL;
 
 // ---------------------------------------------------------------------------
+// The circus ball (the hills -> the castle's entrance hall)
+// ---------------------------------------------------------------------------
+
+/** Where the circus ball waits, out in the valley (world metres). */
+export const CIRCUS_BALL_START = { x: cellCenter(29), z: cellCenter(36) };
+/** The ring in the entrance hall: the ball resting on it opens the way to the model. */
+export const CIRCUS_RING = { x: cellCenter(35), z: 95, radius: 1.2, height: 0.12 };
+/** The doorway from the entrance hall into the Animation Room, curtained until then. */
+export const CIRCUS_CURTAIN = { gx: 35, gz: 21 };
+
+// ---------------------------------------------------------------------------
 // The clock
 // ---------------------------------------------------------------------------
 

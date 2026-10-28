@@ -48,13 +48,12 @@ Cerca de 30% das falas, o funcionário "sai do personagem" e revela que **ningu�
 
 ## Segredos
 
-Dois caminhos opcionais saem deste nível (ambos individuais, se **Rotas secretas** estiver ativado):
+Um caminho opcional sai deste nível (individual, se **Rotas secretas** estiver ativado). (A festinha escondida com o bolo, que levava ao Level FUN, foi removida: o [Level Fun](level-fun.md) agora vem na rota principal, depois do Lights Out.)
 
 - **Level G** — uma passagem escondida, convergindo no marcador da "porta de escritório que não deveria existir". Chegar à célula dela leva o jogador ao [Level G](level-g.md), e a saída de lá devolve a este nível.
-- **Level FUN** — um **bolo escondido** num ponto do mapa. Aperte `E` perto dele quando **ninguém estiver olhando** para comê-lo e você é levado ao [Level FUN](level-fun.md). O radar mostra um marcador do bolo enquanto ele não foi comido.
 
 ## Referências no código
 
-- `ProceduralMap`: `level4Employees`, `drawLevel4Programmers`, `abandonedSecretX/Z`, `funCakeX/Z`.
+- `ProceduralMap`: `level4Employees`, `drawLevel4Programmers`, `abandonedSecretX/Z`.
 - `GameEngine`: `level4DoorOpen`, `setupOfficeWorkers`, `learnMegId`/`onMegProgress` (senha no HUD), `updateOfficeStorm` (raios), diálogo M.E.G., `MegDoorModal`.
 - Textos: `meg.*`, `dialog.*`, `act.megDoor`, `eng.megDoor*`, `eng.megHint`, `eng.megId*`, `hud.meg*`.

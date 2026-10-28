@@ -30,7 +30,7 @@ import { EMPTY_CHESS, type ChessNetState } from "./shared/chess";
 import type { TownDialogueView } from "./game/levels/townDirector";
 import type { SpaceTerminalId, WireColor } from "./game/levels/spaceLayout";
 import { AdSlot } from "./components/AdSlot";
-import { LOBBY_LEVEL, FUN_LEVEL, SPACE_LEVEL, HOTEL_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, OLD_TOWN_LEVEL, nextMainLevel } from "./game/levels/constants";
+import { LOBBY_LEVEL, FUN_LEVEL, SPACE_LEVEL, HOTEL_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, POOLROOMS_LEVEL, OLD_TOWN_LEVEL, ENDING_LEVELS, nextMainLevel } from "./game/levels/constants";
 import { HotelPanelModal } from "./components/HotelPanelModal";
 import type { HotelPanel } from "./game/levels/hotelDirector";
 import { addAchievementListener, removeAchievementListener, unlockAchievement } from "./utils/achievements";
@@ -38,6 +38,9 @@ import { isTypingInField, lockGameInput } from "./utils/input";
 import { EMPTY_FACE } from "./utils/face";
 import { BackroomsLore, generateProceduralLore } from "./utils/lore";
 import { t, useLanguage, localeTag } from "./i18n";
+import { LeaderboardModal } from "./components/LeaderboardModal";
+import { RunTimer } from "./components/RunTimer";
+import { formatRunTime } from "./utils/runTime";
 import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, FileText, Compass, Skull } from "lucide-react";
 
 /**
@@ -108,9 +111,24 @@ function inviteLink(code: string): string {
 const CHAT_HISTORY_LIMIT = 100;
 
 /** The terminal code that unlocks each room cheat, for the chat announcement. */
-const CHEAT_CODES: Record<RoomCheat | typeof SUDO_CHEAT, string> = { speed: "MVJM", stamina: "UHUM", clip: "CLIP", life: "LIFE", arrow: "SETA", sudo: "SUDO" };
+const CHEAT_CODES: Record<RoomCheat | typeof SUDO_CHEAT, string> = { speed: "MVJM", stamina: "UHUM", clip: "CLIP", life: "LIFE", arrow: "SETA", radar: "SUDO", sudo: "SUDO" };
 
 /** Keeps only known cheat ids from a server message. */
+/** The server's run info (elapsed ms, not a timestamp: clocks differ) as a local clock start. */
+function runClockFrom(run: unknown): { startedAt: number; cheats: boolean } | null {
+  if (!run || typeof run !== "object") return null;
+  const r = run as { elapsed?: unknown; cheats?: unknown };
+  return typeof r.elapsed === "number" ? { startedAt: performance.now() - r.elapsed, cheats: r.cheats === true } : null;
+}
+
+/** "(#3 ANY% · #1 NO CHEATS)", or that it didn't place. */
+function runRankText(r: { rankAny: number | null; rankClean: number | null }): string {
+  const parts: string[] = [];
+  if (r.rankAny) parts.push(`#${r.rankAny} ${t("board.any")}`);
+  if (r.rankClean) parts.push(`#${r.rankClean} ${t("board.clean")}`);
+  return parts.length ? `(${parts.join(" · ")})` : t("run.noRank");
+}
+
 function sanitizeRoomCheats(value: unknown): RoomCheat[] {
   return Array.isArray(value) ? value.filter((c): c is RoomCheat => (ROOM_CHEATS as readonly unknown[]).includes(c)) : [];
 }
@@ -119,6 +137,9 @@ export default function App() {
   useLanguage(); // re-render everything when the language changes
   const [settings, setSettings] = useState<GameSettings>(defaultSettings);
   const [phase, setPhase] = useState<ConnectionPhase>(ConnectionPhase.MENU);
+  // Socket handlers are created once per connection; they read the live phase here.
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
   const [errorMessage, setErrorMessage] = useState("");
   const [currentSeed, setCurrentSeed] = useState<number>(0);
   
@@ -205,6 +226,11 @@ export default function App() {
   const [chessOpen, setChessOpen] = useState(false);
   /** Level the explorer last escaped from, so the report can tell FUN's ending apart. */
   const [escapedFrom, setEscapedFrom] = useState<number | null>(null);
+  /** The timed expedition (lobby -> Level 79's ending), as a local performance.now() start. */
+  const [runClock, setRunClock] = useState<{ startedAt: number; cheats: boolean } | null>(null);
+  /** The finished run's time and its places on the boards. */
+  const [runResult, setRunResult] = useState<{ ms: number; cheats: boolean; rankAny: number | null; rankClean: number | null } | null>(null);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [megDialogue, setMegDialogue] = useState<{ name: string; grade: string; dialogue: string } | null>(null);
   // Lobby cheat terminal: MVJM/UHUM/CLIP/SKIN. cheatSkin only mirrors the
   // engine's own state for the picker's checkmark — GameEngine.cheatSkin
@@ -462,9 +488,6 @@ export default function App() {
       case "fun":
         // Something on Level FUN was picked up, placed or opened.
         return true;
-      case "fun_cake":
-        // The transition itself already fired via onSecretLevelFound.
-        return true;
       case "town":
         // A clock part or the tower's hatch (Level 94).
         return true;
@@ -663,8 +686,8 @@ export default function App() {
         socketRef.current?.send(JSON.stringify({ type: "start_game", level: 0 }));
         return;
       }
-      // Spectating: arrows flip between the teammates still alive.
-      if (engineRef.current?.isDead && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      // Spectating (dead, or through the exit): arrows flip between the teammates still playing.
+      if (engineRef.current?.isSpectating && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         e.preventDefault();
         engineRef.current.cycleSpectate(e.key === "ArrowRight" ? 1 : -1);
         return;
@@ -796,6 +819,8 @@ export default function App() {
     setIsNoclipActive(false);
     setVoipEnabled(false);
     setVoipSpeaking(false);
+    setRunClock(null);
+    setRunResult(null);
     playersRef.current = [];
 
     try {
@@ -844,12 +869,14 @@ export default function App() {
           else if (type === "room_not_found") {
             setErrorMessage(t("err.notFound"));
             setPhase(ConnectionPhase.ERROR);
+            socketRef.current = null; // closed on purpose: onclose has nothing to add
             socket.close();
           }
 
           else if (type === "room_full") {
-            setErrorMessage(data.reason === "server" ? t("err.serverFull") : t("err.roomCap", { n: data.capacity ?? 4 }));
+            setErrorMessage(data.reason === "server" ? t("err.serverFull") : data.reason === "busy" ? t("err.serverBusy") : t("err.roomCap", { n: data.capacity ?? 4 }));
             setPhase(ConnectionPhase.ERROR);
+            socketRef.current = null; // closed on purpose: onclose has nothing to add
             socket.close();
           }
 
@@ -860,10 +887,12 @@ export default function App() {
             if (!joinedCode) {
               setErrorMessage(t("err.oldServer"));
               setPhase(ConnectionPhase.ERROR);
+              socketRef.current = null;
               socket.close();
               return;
             }
             worldAuthorityRef.current = authority;
+            setRunClock(runClockFrom(data.run));
             console.log(`Infiltration confirmed! Seed acquired: ${seed}. Connecting visuals...`);
             setClientId(myId);
             clientIdRef.current = myId;
@@ -924,6 +953,7 @@ export default function App() {
 
                       const nextLevel = nextMainLevel(engine.level);
                       if (nextLevel !== null) {
+                        if (engine.level === FUN_LEVEL) unlockAchievement("level_fun_escaped");
                         // Ask the server to advance the whole room together instead
                         // of transitioning just this client: previously each player
                         // who found the exit noclipped into their own next level,
@@ -941,16 +971,11 @@ export default function App() {
                         socketRef.current.send(JSON.stringify({ type: "level_transition_request", level: ELECTRICAL_ROOM_LEVEL, secret: true }));
                       } else if (engine.level === LEVEL_G && socketRef.current?.readyState === WebSocket.OPEN) {
                         socketRef.current.send(JSON.stringify({ type: "level_transition_request", level: ABANDONED_OFFICE_LEVEL, secret: true }));
-                      } else if (engine.level === FUN_LEVEL && socketRef.current?.readyState === WebSocket.OPEN) {
-                        // Level FUN isn't an ending: its way out leads to Level 79's station.
-                        unlockAchievement("level_fun_escaped");
-                        socketRef.current.send(JSON.stringify({ type: "level_transition_request", level: SPACE_LEVEL, secret: true }));
                       } else {
                         console.log("Explorer successfully escaped the Backrooms!");
                         // Only the main route's end (Level 79) is the way out of the Backrooms; the
                         // secret levels have their own endings below.
                         if (engine.level === SPACE_LEVEL) unlockAchievement("absolute_survivor");
-                        if (engine.level === FUN_LEVEL) unlockAchievement("level_fun_escaped");
                         // Level G's emergency door is its own, secret ending
                            if (engine.level === LEVEL_G) {
                           unlockAchievement("level_g_escaped");
@@ -963,7 +988,8 @@ export default function App() {
                           // go back to the room's lobby underneath it.
                           setEscapedFrom(engine.level);
                           setEscapeReport(engine.level === 1 ? "l2" : "done");
-                          socketRef.current.send(JSON.stringify({ type: "return_to_lobby_request" }));
+                          // Level 79's ending (or Level 94's, its alternative) is the end of the timed route.
+                          socketRef.current.send(JSON.stringify({ type: "return_to_lobby_request", completed: ENDING_LEVELS.includes(engine.level) }));
                         } else {
                           setPhase(ConnectionPhase.ESCAPED);
                           if (engineRef.current) {
@@ -988,19 +1014,16 @@ export default function App() {
                        // is sent to the server so the convergence at Level 4
                        // remains synchronized.
                       const engine = engineRef.current;
-                        // Level 94 has two ways in: the Electrical Room's exit door and Level 79's UNKNOWN course.
-                        const from = targetLevel === LEVEL_G || targetLevel === FUN_LEVEL ? [ABANDONED_OFFICE_LEVEL]
-                          : targetLevel === OLD_TOWN_LEVEL ? [ELECTRICAL_ROOM_LEVEL, SPACE_LEVEL] : [1];
+                        // Level 94 has two ways in: the Poolrooms' other door and Level 79's UNKNOWN course.
+                        const from = targetLevel === LEVEL_G ? [ABANDONED_OFFICE_LEVEL]
+                          : targetLevel === OLD_TOWN_LEVEL ? [POOLROOMS_LEVEL, SPACE_LEVEL] : [1];
                       if (!engine || !from.includes(engine.level)) return;
 
                         if (targetLevel === LEVEL_G) {
                         console.log("Found the office door that shouldn't exist... entering LEVEL G.");
                         unlockAchievement("level_g_found");
-                      } else if (targetLevel === FUN_LEVEL) {
-                        console.log("Ate the cake nobody was watching... entering LEVEL FUN.");
-                        unlockAchievement("level_fun_found");
                       } else if (targetLevel === OLD_TOWN_LEVEL) {
-                        console.log("Left by the Electrical Room's exit door or the station's unknown course... entering Level 94: Motion.");
+                        console.log("Left by the Poolrooms' other door or the station's unknown course... entering Level 94: Motion.");
                         unlockAchievement("motion_found");
                       } else {
                          console.log("Found the dark corridor... entering Level 6: Lights Out.");
@@ -1159,14 +1182,18 @@ export default function App() {
                 data.solo ? t("sys.toLobbySelf")
                   : data.toLobby || data.completed ? t("sys.resetLobby")
                   : data.scratch ? t("sys.resetScratch")
-                  : t("sys.resetLevel", { n: nextLevel })
+                  : t("sys.resetLevel", { name: t(`radar.title.${nextLevel}`) })
               );
             } else {
               console.log(`Group noclipped into Level ${nextLevel}!`);
               if (nextLevel === 1) unlockAchievement("noclip_master");
+              if (nextLevel === FUN_LEVEL) unlockAchievement("level_fun_found");
             }
             // The expedition leaving the lobby for Level 0 is the player's first step in.
             if (nextLevel === 0) unlockAchievement("first_steps");
+            // Leaving the lobby starts (or doesn't) a timed run; the room back in its lobby ends it.
+            if (data.start) { setRunClock(runClockFrom(data.run)); setRunResult(null); }
+            if (forced && (data.toLobby || data.completed)) setRunClock(null);
 
             // Poolrooms completion is the main-route ending. The server resets
             // the room to its lobby, but this client should see the existing
@@ -1255,13 +1282,21 @@ export default function App() {
             engineRef.current?.applyBallKick(data);
           }
 
+          else if (type === "run_result") {
+            if (typeof data.ms !== "number") return;
+            const result = { ms: data.ms, cheats: data.cheats === true, rankAny: typeof data.rankAny === "number" ? data.rankAny : null, rankClean: typeof data.rankClean === "number" ? data.rankClean : null };
+            setRunClock(null);
+            setRunResult(result);
+            logSystemMessage(t("run.finished", { time: formatRunTime(result.ms), rank: runRankText(result) }));
+          }
+
           else if (type === "player_died") {
             const { id: deadId, cause } = data;
             const who = playersRef.current.find((p) => p.id === deadId);
             if (who) who.dead = true;
             engineRef.current?.setRemoteDead(deadId, true);
             if (deadId !== clientIdRef.current) {
-              logSystemMessage(t("sys.died", { name: (who?.name ?? t("sys.someone")).toUpperCase() }));
+              logSystemMessage(t(cause === "fall" ? "sys.fell" : "sys.died", { name: (who?.name ?? t("sys.someone")).toUpperCase() }));
               if (cause === "caught") engineRef.current?.triggerRemoteJumpscare(deadId);
             }
             touchRoster();
@@ -1485,9 +1520,15 @@ export default function App() {
           pingIntervalRef.current = null;
         }
         setLatency(undefined);
-        // If we were active in game, transition back gracefully reporting connection issues
-        if (phase === ConnectionPhase.PLAYING) {
+        // If we were active in game, transition back gracefully reporting connection issues.
+        // (Not for a socket we closed or replaced ourselves: disconnect() clears socketRef first.)
+        if (socketRef.current === socket && phaseRef.current === ConnectionPhase.PLAYING) {
           disconnect(true, t("err.linkLost"));
+        } else if (socketRef.current === socket && phaseRef.current === ConnectionPhase.CONNECTING) {
+          // Closed before "joined" with no explanation: don't hang on the connecting screen.
+          socketRef.current = null;
+          setErrorMessage(t("err.noContact"));
+          setPhase(ConnectionPhase.ERROR);
         }
       };
 
@@ -1978,12 +2019,19 @@ export default function App() {
             </div>
           )}
 
-          {/* Death: spectating a living teammate */}
-          {waitingForExit && exitProgress && (
+          {/* Through the exit: watching whoever hasn't made it yet */}
+          {waitingForExit && exitProgress && !isDead && (
             <div className="absolute top-20 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 font-mono select-none pointer-events-none">
               <div className="bg-black/75 border border-cyan-800 rounded px-5 py-3 text-center text-cyan-300 uppercase tracking-widest text-[10px]">
                 {t("exit.waiting")}<br />
                 <span className="text-stone-300">{exitProgress.ready}/{exitProgress.required}</span>
+              </div>
+              <div className="flex items-center gap-3 bg-black/70 border border-cyan-950 rounded px-4 py-2 pointer-events-auto">
+                <button onClick={() => engineRef.current?.cycleSpectate(-1)} className="text-cyan-300 hover:text-white px-2 cursor-pointer" aria-label={t("dead.prev")}>◀</button>
+                <span className="text-[11px] text-stone-300 uppercase tracking-widest min-w-[10rem] text-center">
+                  {spectateName ? <>{t("dead.spectating")} <b className="text-cyan-300">{spectateName}</b></> : t("dead.nobody")}
+                </span>
+                <button onClick={() => engineRef.current?.cycleSpectate(1)} className="text-cyan-300 hover:text-white px-2 cursor-pointer" aria-label={t("dead.next")}>▶</button>
               </div>
             </div>
           )}
@@ -2048,6 +2096,13 @@ export default function App() {
                   {linkCopied ? t("lobby.copied") : t("lobby.copyLink")}
                 </button>
                 <div className="text-[10px] text-stone-400">{t("lobby.invite")}</div>
+                <button
+                  id="btn-lobby-leaderboard"
+                  onClick={() => { document.exitPointerLock?.(); setShowLeaderboard(true); }}
+                  className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider border border-[#deb81d]/40 text-[#deb81d] hover:bg-[#deb81d]/10 px-3 py-1.5 rounded cursor-pointer transition-all"
+                >
+                  <Trophy className="w-3.5 h-3.5" />{t("board.title")}
+                </button>
                 <div className="text-[10px] text-stone-300 uppercase tracking-wider">
                   {t("lobby.players", { n: connectedPlayers.length + 1 })}
                 </div>
@@ -2539,7 +2594,15 @@ export default function App() {
                   <div>• {t("esc.sector")} <span className="text-white">{levelGEnding === "done" ? t("esc.sectorG") : "COUT-SPACE L0-45"}</span></div>
                   <div>• {t("esc.contactSignal")} <span className="text-[#deb81d]">{settings.name}</span></div>
                   <div>• {t("esc.seed")} <span className="text-gray-400">{currentSeed}</span></div>
+                  {escapedFrom !== null && ENDING_LEVELS.includes(escapedFrom) && runResult && (
+                    <div>• {t("run.time")} <span className="text-white font-bold">{formatRunTime(runResult.ms)}</span> <span className="text-green-400">{runRankText(runResult)}</span></div>
+                  )}
                 </div>
+                {escapedFrom !== null && ENDING_LEVELS.includes(escapedFrom) && (
+                  <button type="button" onClick={() => setShowLeaderboard(true)} className="w-full flex items-center justify-center gap-2 border border-green-700/50 text-green-300 hover:bg-green-900/20 py-2 rounded text-xs uppercase tracking-widest cursor-pointer">
+                    <Trophy className="w-4 h-4" />{t("board.title")}
+                  </button>
+                )}
               </div>
 
               <div className="pt-2">
@@ -2565,6 +2628,13 @@ export default function App() {
         </div>
       )}
 
+
+      {/* Speedrun clock while the expedition is timed */}
+      {phase === ConnectionPhase.PLAYING && runClock && currentLevel !== LOBBY_LEVEL && escapeReport === null && (
+        <RunTimer startedAt={runClock.startedAt} cheats={runClock.cheats} />
+      )}
+
+      {showLeaderboard && <LeaderboardModal onClose={() => setShowLeaderboard(false)} />}
     </div>
   );
 }

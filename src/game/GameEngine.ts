@@ -48,6 +48,7 @@ import { ANIMATION_CELLS, KING_THRONE, townRelocationCells } from "./levels/town
 import { MOB_DEFS } from "./mobs/registry";
 import type { SpaceConsoleId, SpaceTarget, SpaceTerminalId } from "./levels/spaceLayout";
 import type { FunStage } from "./LevelFunModels";
+import { RoomEnvironment } from "./Environment";
 import {
   AdaptiveResolution,
   QualityLevel,
@@ -90,7 +91,7 @@ export interface GameEngineCallbacks {
   onInventoryChange?: (items: string[]) => void;
   onSanityChange?: (val: number) => void;
   /** This explorer died (sanity at zero, ...); the app tells the room and shows the spectator UI. */
-  onPlayerDeath?: (cause: "sanity" | "caught") => void;
+  onPlayerDeath?: (cause: DeathCause) => void;
   /** Back from the dead (level change / room reset): the app clears its spectator UI. */
   onPlayerRevive?: () => void;
   onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
@@ -108,6 +109,13 @@ export interface GameEngineCallbacks {
 
 /** Multiplier on every sanity drain source: sanity falls slower than the raw tuning. */
 const SANITY_DRAIN_SCALE = 0.6;
+/**
+ * Red Room sanity drain, before SANITY_DRAIN_SCALE: about 70 s from full to
+ * nothing standing in one (less with a monster near, more with the crystal).
+ */
+const RED_ROOM_DRAIN = 0.024;
+/** Seconds of Red Room exposure at which the HUD's red vignette is fully closed. */
+const RED_ROOM_EXPOSURE_MAX = 60;
 /**
  * The Abandoned Office is stocked with almond water (see LEVEL4_WATER_CHANCE in
  * ProceduralMap), so a bottle drunk there restores only this share of its usual
@@ -165,6 +173,39 @@ const INVENTORY_PICKUPS: Partial<Record<string, { notification: MessageKey; achi
   liquid_pain: { notification: "eng.pain" },
 };
 
+/** Radial beam profile projected by the flashlight (SpotLight.map). */
+function createFlashlightCookie(): THREE.Texture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    const c = size / 2;
+    const g = ctx.createRadialGradient(c, c, 0, c, c, c);
+    g.addColorStop(0.0, "#ffffff");
+    g.addColorStop(0.16, "#f4f4f4");
+    g.addColorStop(0.24, "#d0d0d0");
+    g.addColorStop(0.3, "#e6e6e6"); // reflector ring
+    g.addColorStop(0.38, "#9a9a9a");
+    g.addColorStop(0.7, "#6a6a6a");
+    g.addColorStop(1.0, "#000000");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
+/** Why the local explorer died (sent to the room, which tells the others). */
+export type DeathCause = "sanity" | "caught" | "fall";
+
+/** Seconds from stepping off a pit room's ledge to hitting the bottom. */
+const PIT_FALL_SECONDS = 1.5;
+
+/** Fraction of the ambient light the interior levels get from the baked room environment instead. */
+const AMBIENT_ENV_SHARE = 0.5;
+
 /** Ambient light and fog per level, shared by level setup and the per-frame event code. */
 function levelAtmosphere(level: number, funStage: FunStage = 0) {
   switch (level) {
@@ -196,7 +237,30 @@ function levelAtmosphere(level: number, funStage: FunStage = 0) {
     case POOLROOMS_LEVEL: // Classic Poolrooms: bright cyan tiles and clear water
       return { ambientColor: 0xfff8e6, ambientIntensity: 3.2, fogColor: 0xd9e8d2, dimmedFogColor: 0x5e7f78 };
     default: // Level 0: classic yellow
-      return { ambientColor: 0xeae2c2, ambientIntensity: 1.05, fogColor: 0xede4c0, dimmedFogColor: 0x5c5740 };
+      return { ambientColor: 0xeae2c2, ambientIntensity: 1.05, fogColor: 0xd2bf80, dimmedFogColor: 0x5c5740 };
+  }
+}
+
+/**
+ * How the VHS pass turns the scene's linear light into screen colour.
+ *
+ * `filmic` levels get exposure, an ACES curve and a proper sRGB encode: light
+ * falls off smoothly, lamps roll off instead of clipping, and the dark end
+ * keeps its gradients. The open-air and cartoon levels were art-directed
+ * against the raw linear output (their skies and toon shaders write display
+ * colours directly) and keep it.
+ */
+function levelGrade(level: number): { filmic: boolean; exposure: number } {
+  switch (level) {
+    case 0: return { filmic: true, exposure: 0.85 };
+    case 1: return { filmic: true, exposure: 0.9 };
+    case 2: return { filmic: true, exposure: 0.85 };
+    case ELECTRICAL_ROOM_LEVEL: return { filmic: true, exposure: 0.75 };
+    case ABANDONED_OFFICE_LEVEL: return { filmic: true, exposure: 0.85 };
+    // Its darkness used to come from the raw linear output; keep it that dark.
+    case LIGHTS_OUT_LEVEL: return { filmic: true, exposure: 0.3 };
+    case LEVEL_G: return { filmic: true, exposure: 0.85 };
+    default: return { filmic: false, exposure: 1 };
   }
 }
 
@@ -335,6 +399,9 @@ export class GameEngine {
 
   /** Fixed-size pool that backs every lamp, so the visible light count is constant. */
   private lightPool!: LightPool;
+  /** Baked image-based ambient for the interior levels (see Environment.ts). */
+  private roomEnv: RoomEnvironment | null = null;
+  private flashlightCookie: THREE.Texture | null = null;
 
   // Scratch objects reused every frame instead of being reallocated.
   private scratchCamDir = new THREE.Vector3();
@@ -349,6 +416,8 @@ export class GameEngine {
   
   // Exposure timer in the mysterious Level 0 Red Rooms (60 seconds to collapse)
   public redRoomExposure = 0;
+  /** Whether the local explorer stood in a Red Room this frame (drains sanity). */
+  private inRedRoom = false;
   /** Level 7: cumulative seconds standing in a toxic ("Hydrolitis Plague") water cell. Same shape as redRoomExposure, own field since the two are never simultaneous but use different thresholds/recovery. */
   public toxicWaterExposure = 0;
 
@@ -428,6 +497,8 @@ export class GameEngine {
   private kingPhantom: { entity: WanderingEntity; t: number; awayX: number; awayZ: number; whispered: boolean } | null = null;
   /** The catch: a ~1.3 s locked-camera lunge before the kill (see updateKingGrab). */
   private kingGrab: { entity: WanderingEntity; t: number; screamed: boolean; baseFov: number } | null = null;
+  /** Falling down a Level 0 pit room's shaft (controls gone; ends in death). */
+  private pitFall: { t: number; vy: number } | null = null;
   private kingFaceScratch = new THREE.Vector3();
   /** Post-process: red glitch during the grab, then a cut to black after it. */
   private kingFlash = 0;
@@ -436,7 +507,6 @@ export class GameEngine {
   private nearTerminal = false;
   private level4DoorOpen = false;
   /** Guards the hidden office cake against firing its transition more than once. */
-  private funCakeEaten = false;
   private scratchRight = new THREE.Vector3();
 
   // UI callbacks
@@ -495,7 +565,7 @@ export class GameEngine {
   public onSectorChange?: (sector: string) => void;
   public onInventoryChange?: (items: string[]) => void;
   private onSanityChange?: (val: number) => void;
-  private onPlayerDeath?: (cause: "sanity" | "caught") => void;
+  private onPlayerDeath?: (cause: DeathCause) => void;
   private onPlayerRevive?: () => void;
   public onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   private onPerformanceSample?: (fps: number, renderScale: number) => void;
@@ -525,6 +595,8 @@ export class GameEngine {
   private cheatLife = false;
   /** SETA: the radar points toward this level's secret entrance. */
   public cheatArrow = false;
+  /** SUDO: the radar always reaches as far as a playing cassette tape. */
+  public cheatRadar = false;
   /** The room's "secret routes" option (App keeps it current); Level 79's UNKNOWN course needs it. */
   public secretRoutesEnabled: () => boolean = () => true;
   /** SKIN cheat: the monster/NPC body worn instead of the hazmat suit, replicated to teammates; "" for none. */
@@ -632,6 +704,8 @@ export class GameEngine {
       this.renderer.shadowMap.type = THREE.PCFShadowMap;
     }
 
+    this.roomEnv = new RoomEnvironment(this.renderer);
+
     // Empty previous renderer if any
     this.container.innerHTML = "";
     this.container.appendChild(this.renderer.domElement);
@@ -667,11 +741,17 @@ export class GameEngine {
   private initVHSPostProcessing() {
     const { width: targetW, height: targetH } = this.getSceneBufferSize();
 
-    // 1. Create WebGLRenderTarget for capturing the main 3D scene output
+    // 1. Create WebGLRenderTarget for capturing the main 3D scene output.
+    // Half-float where the GPU can render to it (almost all WebGL2 devices):
+    // the scene is linear light, and 8 bits per channel bands badly in the
+    // dark gradients and clips every lamp at 1.0 before the tone curve.
+    const ext = this.renderer.extensions;
+    const hdr = ext.has("EXT_color_buffer_float") || ext.has("EXT_color_buffer_half_float");
     this.vhsRenderTarget = new THREE.WebGLRenderTarget(targetW, targetH, {
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat
+      format: THREE.RGBAFormat,
+      type: hdr ? THREE.HalfFloatType : THREE.UnsignedByteType,
     });
 
     // 2. Setup the post-processing orthographic scene and camera for full screen quad rendering
@@ -696,7 +776,37 @@ export class GameEngine {
       uniform float uDread;
       uniform float uFlash;
       uniform float uBlack;
+      uniform float uExposure;
       varying vec2 vUv;
+
+      // The scene as the rest of the pass expects it: exposed linear light on
+      // filmic levels, and the old clipped 0..1 values everywhere else.
+      vec3 sceneAt(vec2 p) {
+        vec3 c = texture2D(tDiffuse, p).rgb;
+        #ifdef FILMIC
+        return c * uExposure;
+        #else
+        return min(c, vec3(1.0));
+        #endif
+      }
+
+      // Light above the halation threshold at p. Capped, so an HDR lamp
+      // blooms about as far as a clipped one did instead of swallowing its
+      // own shape.
+      vec3 glowTap(vec2 p) {
+        return clamp(sceneAt(p) - 0.68, 0.0, 0.9);
+      }
+
+      #ifdef FILMIC
+      // ACES filmic fit (Narkowicz): a soft toe that keeps the blacks deep and
+      // a shoulder that rolls lamps off instead of clipping them.
+      vec3 acesFilm(vec3 x) {
+        return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+      }
+      vec3 linearToSRGB(vec3 c) {
+        return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+      }
+      #endif
 
       float random(vec2 p) {
         return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
@@ -733,10 +843,31 @@ export class GameEngine {
         float shiftAmt = 0.0012 + distFromCenter * 0.0018 + (0.016 * insanity) + 0.009 * uDread + 0.035 * uFlash;
         vec2 rgbShift = vec2(shiftAmt, 0.0);
         
-        float r = texture2D(tDiffuse, uv - rgbShift).r;
-        float g = texture2D(tDiffuse, uv).g;
-        float b = texture2D(tDiffuse, uv + rgbShift).b;
+        float r = sceneAt(uv - rgbShift).r;
+        float g = sceneAt(uv).g;
+        float b = sceneAt(uv + rgbShift).b;
         vec3 color = vec3(r, g, b);
+
+        #ifdef CAMERA_FX
+        // Halation: tubes, lamps and lit exit signs bleed into the dark around
+        // them, the way they do on a real (cheap) camera. 8 taps on the
+        // low-res scene buffer, only above a soft threshold.
+        vec2 px = 1.0 / uResolution;
+        vec3 glow = vec3(0.0);
+        glow += glowTap(uv + vec2( 2.5,  0.0) * px);
+        glow += glowTap(uv + vec2(-2.5,  0.0) * px);
+        glow += glowTap(uv + vec2( 0.0,  2.5) * px);
+        glow += glowTap(uv + vec2( 0.0, -2.5) * px);
+        glow += glowTap(uv + vec2( 4.5,  4.5) * px);
+        glow += glowTap(uv + vec2(-4.5,  4.5) * px);
+        glow += glowTap(uv + vec2( 4.5, -4.5) * px);
+        glow += glowTap(uv + vec2(-4.5, -4.5) * px);
+        color += glow * vec3(0.2, 0.19, 0.16);
+        #endif
+
+        #ifdef FILMIC
+        color = linearToSRGB(acesFilm(color));
+        #endif
 
         // C. OVERLAID CRT SCANLINES (Drastically softened and static to ensure excellent display readability)
         float scanlineValue = sin(uv.y * 380.0) * (0.02 + 0.04 * insanity);
@@ -769,6 +900,11 @@ export class GameEngine {
           color = mix(color, pulseRed, 0.32 * insanity);
         }
 
+        #ifdef CAMERA_FX
+        // Fine, constant sensor grain: breaks up banding in the dark gradients.
+        color += (random(floor(gl_FragCoord.xy) * 0.0137 + fract(uTime * 7.31)) - 0.5) * 0.028;
+        #endif
+
         color *= 1.0 - uBlack;
         gl_FragColor = vec4(color, 1.0);
       }
@@ -783,10 +919,12 @@ export class GameEngine {
         uSanity: { value: 1.0 },
         uDread: { value: 0 },
         uFlash: { value: 0 },
-        uBlack: { value: 0 }
+        uBlack: { value: 0 },
+        uExposure: { value: 1 },
       },
       vertexShader: vertexShader,
       fragmentShader: fragmentShader,
+      defines: this.vhsDefines(),
       depthWrite: false,
       depthTest: false
     });
@@ -795,6 +933,26 @@ export class GameEngine {
     const quadGeo = new THREE.PlaneGeometry(2, 2);
     const quadMesh = new THREE.Mesh(quadGeo, this.vhsMaterial);
     this.vhsScene.add(quadMesh);
+  }
+
+  private vhsDefines(): Record<string, string> {
+    const defines: Record<string, string> = {};
+    if (this.quality.bloom) defines.CAMERA_FX = "";
+    if (levelGrade(this.level).filmic) defines.FILMIC = "";
+    return defines;
+  }
+
+  /** Points the VHS pass at the current level's grade and quality preset (recompiles only on a change). */
+  private applyLevelGrade() {
+    if (!this.vhsMaterial) return;
+    this.vhsMaterial.uniforms.uExposure.value = levelGrade(this.level).exposure;
+    const next = this.vhsDefines();
+    const current = this.vhsMaterial.defines ?? {};
+    const same = Object.keys(next).length === Object.keys(current).length && Object.keys(next).every((k) => k in current);
+    if (!same) {
+      this.vhsMaterial.defines = next;
+      this.vhsMaterial.needsUpdate = true;
+    }
   }
 
   /**
@@ -812,6 +970,7 @@ export class GameEngine {
     const atmosphere = levelAtmosphere(this.level, this.funDirector?.stage ?? 0);
     this.scene.background = new THREE.Color(atmosphere.fogColor);
     this.scene.fog = new THREE.FogExp2(atmosphere.fogColor, this.fogDensityFor(this.level));
+    this.applyLevelGrade();
 
     this.ambientLight = new THREE.AmbientLight(atmosphere.ambientColor, atmosphere.ambientIntensity);
     this.scene.add(this.ambientLight);
@@ -859,6 +1018,10 @@ export class GameEngine {
     this.flashlight.shadow.camera.near = 0.1;
     this.flashlight.shadow.camera.far = 18;
     this.flashlight.shadow.bias = -0.0015;
+    // A real torch's beam: hot centre, a faint reflector ring, dim spill.
+    // (Projected through the shadow map, so only where shadows are on.)
+    this.flashlightCookie = createFlashlightCookie();
+    this.flashlight.map = this.flashlightCookie;
     
     this.flashlightTarget = new THREE.Object3D();
     this.flashlightTarget.position.set(0, 0, -5);
@@ -941,12 +1104,14 @@ export class GameEngine {
       this.flashlight.castShadow = this.quality.shadows;
     }
     this.applySceneBufferSize();
+    this.applyLevelGrade();
 
     // Streaming radius and fog follow the preset; force a re-cull so the change
     // takes effect without waiting for the player to walk another 2.5m.
     if (this.map && this.player) {
       this.map.quality = this.quality;
       this.map.maxVisibleDistance = this.quality.viewDistance * (this.level === 1 ? 1.15 : 1.0);
+      this.map.refreshQuality();
       this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z, true);
     }
     if (this.scene.fog instanceof THREE.FogExp2) {
@@ -1009,12 +1174,18 @@ export class GameEngine {
       // Tick player controllers
       if (this.isDead || this.isWaitingForTransition) this.updateSpectator(delta);
       else if (this.kingGrab) this.updateKingGrab(delta);
+      else if (this.pitFall) this.updatePitFall(delta);
       else if (this.townDirector?.cinematic && this.camera.parent) {
         // Level 94's secret ending: the director has the camera.
         this.player.isFlashlightOn = false;
         this.townDirector.driveCamera(this.camera.parent, this.camera);
       } else {
         this.player.update(delta);
+        // Level 0's pit rooms: step (not jump) past a ledge and you're gone. LIFE walks on air.
+        if (this.map && !this.cheatLife && this.player.mapFullyLoaded && this.player.jumpOffset <= 0.01
+          && this.map.isOverPit(this.player.position.x, this.player.position.z, 0.15)) {
+          this.startPitFall();
+        }
         if (this.level === ELECTRICAL_ROOM_LEVEL && this.map) {
           const gx = Math.floor(this.player.position.x / this.map.cellSize);
           const gz = Math.floor(this.player.position.z / this.map.cellSize);
@@ -1038,10 +1209,14 @@ export class GameEngine {
       this.updateReadingRange();
       if (this.radarBoostTimer > 0) this.radarBoostTimer = Math.max(0, this.radarBoostTimer - delta);
 
+      // Dead or waiting at the exit, player.position is the spectated teammate's
+      // (updateSpectator): nothing position-triggered below may fire for us —
+      // hazards, pickups, secret entrances, exits.
+      const embodied = !this.isDead && !this.isWaitingForTransition;
 
       // Detect if explorer has entered creeping crimson Red Rooms
       let inRedRoom = false;
-      if (this.level === 0 && this.map && this.player) {
+      if (embodied && this.level === 0 && this.map && this.player) {
         const px = this.player.position.x;
         const pz = this.player.position.z;
         const gx = Math.floor(px / this.map.cellSize);
@@ -1051,8 +1226,11 @@ export class GameEngine {
         }
       }
 
+      // Red Rooms drain sanity (see the sanity pass below); the exposure meter
+      // only drives the HUD's closing red vignette, capped where it maxes out.
+      this.inRedRoom = inRedRoom;
       if (inRedRoom) {
-        this.redRoomExposure += delta;
+        this.redRoomExposure = Math.min(RED_ROOM_EXPOSURE_MAX, this.redRoomExposure + delta);
         if (this.onRedRoomExposureChange) {
           this.onRedRoomExposureChange(this.redRoomExposure);
         }
@@ -1060,29 +1238,6 @@ export class GameEngine {
         // Subtly rattle/flicker the ambient hum audio slightly to signal atmospheric instability
         if (Math.random() < delta * 0.12) {
           this.audio.triggerHumFlicker(50);
-        }
-
-        // If continuous/cumulative exposure reaches exactly 60 seconds (1 minute), the player succumbs
-        if (this.redRoomExposure >= 60.0) {
-          console.warn("[GameEngine] Succumbed to Red Room silent dimension collapse. Relocating safely...");
-          this.redRoomExposure = 0;
-          if (this.onRedRoomExposureChange) {
-            this.onRedRoomExposureChange(0);
-          }
-
-          // Trigger collapse sound effect
-          this.audio.playEntityCatchSound();
-
-          // Reset parameters and teleport key coordinates safely to spawn
-          this.player.spawnSafely();
-
-          // Relocate hostile entities far away
-          const playerGX = Math.floor(this.player.position.x / this.map.cellSize);
-          const playerGZ = Math.floor(this.player.position.z / this.map.cellSize);
-          this.relocateEntitiesAwayFrom(playerGX, playerGZ);
-
-          // Core culling update
-          this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z, true);
         }
       } else if (this.redRoomExposure > 0) {
         // Recover slowly when leaving the Red Room (at 0.5x rate)
@@ -1097,7 +1252,7 @@ export class GameEngine {
       // "in seconds" if you linger), with a proportionally faster recovery
       // once you're clear of it.
       let inToxicWater = false;
-      if (this.level === POOLROOMS_LEVEL && this.map && this.player) {
+      if (embodied && this.level === POOLROOMS_LEVEL && this.map && this.player) {
         const gx = Math.floor(this.player.position.x / this.map.cellSize);
         const gz = Math.floor(this.player.position.z / this.map.cellSize);
         if (this.map.toxicWaterCells.has(`${gx},${gz}`)) inToxicWater = true;
@@ -1122,7 +1277,7 @@ export class GameEngine {
       }
 
       // Track Level Sector transitions and collectible pickups
-      if (this.map && this.player) {
+      if (embodied && this.map && this.player) {
         const px = this.player.position.x;
         const pz = this.player.position.z;
         const gx = Math.floor(px / this.map.cellSize);
@@ -1388,14 +1543,17 @@ export class GameEngine {
           }
         }
 
+        // 4. Red Room: the silence itself wears the mind down, lit or not.
+        const ambientDepletion = darknessDepletion + (this.inRedRoom ? RED_ROOM_DRAIN : 0);
+
         // Apply depletion or recovery. LIFE keeps sanity full and prevents every
         // sanity-based death while the cheat is active.
         if (this.cheatLife) {
           this.sanity = 1.0;
         } else if (nearMonster) {
-          this.sanity = Math.max(0.0, this.sanity - (monsterDepletionSum + darknessDepletion) * SANITY_DRAIN_SCALE * this.sanityDrainFactor() * delta);
-        } else if (darknessDepletion > 0) {
-          this.sanity = Math.max(0.0, this.sanity - darknessDepletion * SANITY_DRAIN_SCALE * this.sanityDrainFactor() * delta);
+          this.sanity = Math.max(0.0, this.sanity - (monsterDepletionSum + ambientDepletion) * SANITY_DRAIN_SCALE * this.sanityDrainFactor() * delta);
+        } else if (ambientDepletion > 0) {
+          this.sanity = Math.max(0.0, this.sanity - ambientDepletion * SANITY_DRAIN_SCALE * this.sanityDrainFactor() * delta);
         } else {
           // Recover sanity in normal illuminated space (trimmed only slightly, so a
           // careful player still recovers at close to the old pace)
@@ -1415,7 +1573,7 @@ export class GameEngine {
       // Level 1's secret entrance: walk to the dead end of the unlit side
       // corridor and the "Lights Out" transition fires — purely local (not a
       // room-wide level_transition_request), since it's an optional solo detour.
-      if (this.level === 1 && this.map && this.map.secretGridX >= 0 && this.onSecretLevelFound) {
+      if (embodied && this.level === 1 && this.map && this.map.secretGridX >= 0 && this.onSecretLevelFound) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
         if (pgX === this.map.secretGridX && pgZ === this.map.secretGridZ) {
@@ -1423,16 +1581,15 @@ export class GameEngine {
         }
       }
 
-      // The Electrical Room's door out of the building, onto the road to Level 94's town.
-      if (this.level === ELECTRICAL_ROOM_LEVEL && this.map && this.onSecretLevelFound && this.map.atTownExitDoor(this.player.position.x, this.player.position.z)) {
+      // The Poolrooms' other door (once drained): out onto the road to Level 94's town,
+      // the alternative to the station door and Level 79.
+      if (embodied && this.level === POOLROOMS_LEVEL && this.map && this.onSecretLevelFound && this.map.atTownExitDoor(this.player.position.x, this.player.position.z)) {
         this.onSecretLevelFound(OLD_TOWN_LEVEL);
       }
 
       // The abandoned office contains a hidden route into Level G. The old
       // office-door marker is reused as a deterministic convergence point.
-      // (Level FUN's own entrance is the hidden cake — see nearFunCake/tryInteract,
-      // an E-press rather than a walk-in trigger.)
-      if (this.level === ABANDONED_OFFICE_LEVEL && this.map && this.map.abandonedSecretX >= 0 && this.onSecretLevelFound) {
+      if (embodied && this.level === ABANDONED_OFFICE_LEVEL && this.map && this.map.abandonedSecretX >= 0 && this.onSecretLevelFound) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
         if (pgX === this.map.abandonedSecretX && pgZ === this.map.abandonedSecretZ) {
@@ -1441,7 +1598,7 @@ export class GameEngine {
       }
 
       // Level 0: the exit is a taped wall/floor with no physics — pass through it.
-      if (this.level === 0 && this.map && this.map.noclipCellX >= 0) {
+      if (embodied && this.level === 0 && this.map && this.map.noclipCellX >= 0) {
         if (this.map.isInNoclipExit(this.player.position.x, this.player.position.z)) {
           this.noclipDwell += delta;
           if (Math.random() < delta * 6) this.audio.triggerHumFlicker(60);
@@ -1458,7 +1615,7 @@ export class GameEngine {
 
       // Other levels: stepping into the exit cell is enough (Level G's can't be
       // entered until the emergency door opens).
-      if (this.level !== 0 && this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
+      if (embodied && this.level !== 0 && this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
         if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== ELECTRICAL_ROOM_LEVEL || this.map.level3GateOpen) && (this.level !== ABANDONED_OFFICE_LEVEL || this.level4DoorOpen) && (this.level !== POOLROOMS_LEVEL || this.map.poolroomsSolved) && (this.level !== FUN_LEVEL || this.funDirector?.exitOpen)) {
@@ -1577,6 +1734,8 @@ export class GameEngine {
           if (fog) fog.color.lerp(this.officeFlashColor, this.officeFlash * 0.35);
           background.lerp(this.officeFlashColor, this.officeFlash * 0.35);
         }
+
+        this.applyRoomEnvironment();
       }
 
       // Local spotlight updating with probability-based flickering when sanity is below 40%
@@ -1714,6 +1873,29 @@ export class GameEngine {
     };
 
     animate();
+  }
+
+  /**
+   * Hands part of this frame's ambient light to the baked room environment
+   * (Environment.ts): same overall brightness, but lit from above, with
+   * glossy surfaces reflecting the tubes. Runs after every level/director has
+   * set the ambient light, which is re-assigned each frame (never compounded).
+   */
+  private applyRoomEnvironment() {
+    // Open-air / sky-lit levels light themselves (sun, hemisphere, day cycle).
+    const outdoors = this.level === LOBBY_LEVEL || this.level === SPACE_LEVEL || this.level === OLD_TOWN_LEVEL;
+    if (outdoors || !this.roomEnv) {
+      this.scene.environment = null;
+      return;
+    }
+    // Level G's alarm pulses the ambient red: keep it all on the coloured light.
+    const share = this.level === LEVEL_G && this.levelGAlarm ? 0 : AMBIENT_ENV_SHARE;
+    // Kept assigned even at zero share, so toggling never recompiles shaders.
+    if (share > 0 || !this.scene.environment) this.scene.environment = this.roomEnv.textureFor(this.ambientLight.color.getHex());
+    const total = this.ambientLight.intensity;
+    this.ambientLight.intensity = total * (1 - share);
+    // An AmbientLight's diffuse is albedo * I / PI; image light's is albedo * radiance * intensity.
+    this.scene.environmentIntensity = total * share / Math.PI;
   }
 
   /** A teammate's (or the mirror's) explorer avatar — see buildExplorerAvatar. */
@@ -2115,7 +2297,10 @@ export class GameEngine {
 
   /** Ball frame from the lobby's authority. */
   public applyBallState(msg: BallNetState & { level: number }) {
-    if (!this.lobby || msg.level !== this.level || this.isWorldAuthority) return;
+    if (msg.level !== this.level || this.isWorldAuthority) return;
+    // Level 94's circus ball rides the same messages.
+    if (this.townDirector) { this.townDirector.applyBallState(msg); return; }
+    if (!this.lobby) return;
     if (this.lobby.applyState(msg) > 0) {
       this.onHUDNotification?.(t("lobby.goal"));
       this.audio.playGlitchNoclipSound();
@@ -2124,7 +2309,9 @@ export class GameEngine {
 
   /** A teammate kicked the ball (forwarded to the authority, which owns the simulation). */
   public applyBallKick(msg: { level: number; vx: number; vz: number }) {
-    if (!this.lobby || msg.level !== this.level || !this.isWorldAuthority) return;
+    if (msg.level !== this.level || !this.isWorldAuthority) return;
+    if (this.townDirector) { this.townDirector.applyBallKick(msg.vx, msg.vz); return; }
+    if (!this.lobby) return;
     this.lobby.applyKick(msg.vx, msg.vz);
   }
 
@@ -2170,7 +2357,7 @@ export class GameEngine {
   private spectateId: string | null = null;
   private remoteDead = new Set<string>();
 
-  private die(cause: "sanity" | "caught", silent = false) {
+  private die(cause: DeathCause, silent = false) {
     if (this.isDead || this.cheatLife) return;
     if (this.kingGrab) this.endKingGrab(false);
     this.isDead = true;
@@ -2190,7 +2377,7 @@ export class GameEngine {
   private revive() {
     // Teammates revive with us: forget stale "dead" flags until snapshots refresh them.
     this.remoteDead.clear();
-    this.remoteStates.forEach((st) => { st.dead = false; });
+    this.remoteStates.forEach((st) => { st.dead = false; st.exitReady = false; });
     const wasDead = this.isDead;
     this.isDead = false;
     this.isWaitingForTransition = false;
@@ -2227,11 +2414,12 @@ export class GameEngine {
     this.refreshRemoteVisibility();
   }
 
-  /** Living teammates on our level, in a stable order. */
+  /** Teammates on our level still playing it — alive and not through the exit yet — in a stable order. */
   private spectatable(): string[] {
     const ids: string[] = [];
     this.remotePlayerGroups.forEach((_g, id) => {
-      if (!this.remoteDead.has(id) && !this.remoteStates.get(id)?.dead) ids.push(id);
+      const st = this.remoteStates.get(id);
+      if (!this.remoteDead.has(id) && !st?.dead && !st?.exitReady) ids.push(id);
     });
     return ids.sort();
   }
@@ -2259,16 +2447,29 @@ export class GameEngine {
   public setWaitingForTransition(waiting: boolean) {
     this.isWaitingForTransition = waiting;
     this.player.setSpectating(waiting);
-    if (waiting && !this.spectateId) this.cycleSpectate(1);
+    if (waiting) {
+      this.camera.position.set(0, 0, 0);
+      this.camera.rotation.set(0, 0, 0);
+      this.player.isFlashlightOn = false;
+      if (!this.spectateId || !this.spectatable().includes(this.spectateId)) this.cycleSpectate(1);
+    }
     this.refreshRemoteVisibility();
+  }
+
+  /** Watching a teammate: dead, or through the exit waiting for the rest. */
+  public get isSpectating(): boolean {
+    return this.isDead || this.isWaitingForTransition;
   }
 
   /** Hides dead teammates entirely, and the spectated one's body (we're inside its head; its flashlight stays). */
   private refreshRemoteVisibility() {
+    const spectating = this.isDead || this.isWaitingForTransition;
     this.remotePlayerGroups.forEach((group, id) => {
-      const dead = this.remoteDead.has(id) || !!this.remoteStates.get(id)?.dead;
-      group.visible = !dead;
-      const bodyVisible = !(this.isDead && id === this.spectateId);
+      const st = this.remoteStates.get(id);
+      // Dead, or already through the exit (waiting for the rest): gone from the level.
+      const gone = this.remoteDead.has(id) || !!st?.dead || !!st?.exitReady;
+      group.visible = !gone;
+      const bodyVisible = !(spectating && id === this.spectateId);
       group.children.forEach((c) => {
         if (c instanceof THREE.Light || c.type === "Object3D") return;
         c.visible = bodyVisible;
@@ -2417,7 +2618,15 @@ export class GameEngine {
       return;
     }
 
+    const before = this.remoteStates.get(id);
     this.remoteStates.set(id, update);
+    // Someone went through the exit (or came back from it): show/hide them, and
+    // whoever was watching them moves on to the next explorer still playing.
+    if (before && (!!before.exitReady !== !!update.exitReady || !!before.dead !== !!update.dead)) {
+      if ((update.exitReady || update.dead) && this.spectateId === id) this.cycleSpectate(1);
+      else if ((this.isDead || this.isWaitingForTransition) && !this.spectateId) this.cycleSpectate(1);
+      this.refreshRemoteVisibility();
+    }
 
     const group = this.remotePlayerGroups.get(id);
     if (!group) {
@@ -2801,12 +3010,18 @@ export class GameEngine {
     this.teardownHotel();
     this.teardownLevelG();
     this.level = level;
+    this.applyLevelGrade();
     this.level4DoorOpen = false;
     this.megKnown = [false, false, false];
     this.officeThunderIn = 6 + Math.random() * 8;
     this.officeFlashT = -1;
     this.officeThunderAt = -1;
-    this.funCakeEaten = false;
+    // Hazard meters belong to the level they were filled on.
+    this.noclipDwell = 0;
+    this.pitFall = null;
+    this.inRedRoom = false;
+    if (this.redRoomExposure > 0) { this.redRoomExposure = 0; this.onRedRoomExposureChange?.(0); }
+    if (this.toxicWaterExposure > 0) { this.toxicWaterExposure = 0; this.onToxicWaterExposureChange?.(0); }
 
     // 1. Terminate current map mesh references
     if (this.map) {
@@ -3351,6 +3566,43 @@ export class GameEngine {
     this.player.isFlashlightOn = true; // you see its face
   }
 
+  private startPitFall() {
+    this.pitFall = { t: 0, vy: 0 };
+    this.player.state = "idle";
+    this.player.isFlashlightOn = false;
+    this.audio.playEntityCatchSound(0.45);
+    this.audio.triggerHumFlicker(400);
+  }
+
+  /** The drop: gravity, the shaft's walls rushing past, the opening shrinking overhead, then black. */
+  private updatePitFall(delta: number) {
+    const f = this.pitFall;
+    if (!f) return;
+    f.t += delta;
+    f.vy -= 15 * delta; // the jumps' gravity
+    const pos = this.player.position;
+    pos.y += f.vy * delta;
+    // Slide in off the lip, towards the middle of the shaft (never through its walls).
+    const [cx, cz] = this.map.pitCenterAt(pos.x, pos.z);
+    const k = Math.min(1, 2.5 * delta);
+    pos.x += (cx - pos.x) * k;
+    pos.z += (cz - pos.z) * k;
+    // The head tips back to the light you fell from.
+    this.player.rotation.x += (1.15 - this.player.rotation.x) * Math.min(1, 2 * delta);
+    const shake = 0.015 + 0.03 * Math.min(1, f.t);
+    this.camera.position.set((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, 0);
+    this.camera.rotation.set(0, 0, (Math.random() - 0.5) * shake);
+    this.camera.parent?.position.copy(pos);
+    this.camera.parent?.rotation.copy(this.player.rotation);
+    this.deathBlack = Math.max(this.deathBlack, Math.min(1, f.t / PIT_FALL_SECONDS) * 0.75);
+    if (f.t >= PIT_FALL_SECONDS) {
+      this.pitFall = null;
+      this.deathBlack = 1;
+      this.audio.playKingThud(1, 0);
+      this.die("fall", true);
+    }
+  }
+
   private updateKingGrab(delta: number) {
     const g = this.kingGrab;
     if (!g) return;
@@ -3640,8 +3892,6 @@ export class GameEngine {
         text = t("act.megEmployee");
       } else if (this.nearMegDoor()) {
         text = t("act.megDoor");
-      } else if (this.nearFunCake()) {
-        text = t("fun.act.eatCake");
       }
     }
     if (text !== this.lastInteractPrompt) {
@@ -3706,15 +3956,6 @@ export class GameEngine {
     // The locked door's cell has collision, so allow interaction from the
     // neighbouring corridor cell (one 4m grid cell away).
     return dx * dx + dz * dz < 5.2 * 5.2;
-  }
-
-  /** The hidden office party's cake: eating it is Level FUN's secret entrance. */
-  private nearFunCake(): boolean {
-    if (this.level !== ABANDONED_OFFICE_LEVEL || !this.map || !this.player || this.map.funCakeX < 0 || this.funCakeEaten) return false;
-    const cs = this.map.cellSize;
-    const dx = this.player.position.x - (this.map.funCakeX * cs + cs / 2);
-    const dz = this.player.position.z - (this.map.funCakeZ * cs + cs / 2);
-    return dx * dx + dz * dz < 2.0 * 2.0;
   }
 
   // ---------------------------------------------------------------------
@@ -3938,6 +4179,13 @@ export class GameEngine {
       achievement: (id) => unlockAchievement(id),
       escape: () => this.onEscapeTrigger?.(),
       dialogue: (view) => this.onTownDialogue?.(view),
+      ballAuthority: () => this.isWorldAuthority,
+      sendBall: (state) => {
+        if (this.remoteStates.size > 0) this.sendToServer({ type: "ball", level: OLD_TOWN_LEVEL, ...state });
+      },
+      kickBall: (vx, vz) => this.sendToServer({ type: "ball_kick", level: OLD_TOWN_LEVEL, vx, vz }),
+      playerVelocity: () => ({ vx: this.player.velX, vz: this.player.velZ }),
+      collide: (x, z, r) => !!this.map && this.map.checkCollision(x, z, r),
     });
   }
 
@@ -4149,8 +4397,9 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "fun_cake" | "space_terminal" | "town" | "town_model" | "chess" | "wardrobe" | "hotel" | "hotel_panel" | null {
-    if (this.isDead) return null;
+  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "space_terminal" | "town" | "town_model" | "chess" | "wardrobe" | "hotel" | "hotel_panel" | null {
+    // Waiting at the exit we spectate a teammate, so "where we are" is where they are.
+    if (this.isDead || this.isWaitingForTransition) return null;
     if (this.hotelDirector) {
       const used = this.hotelDirector.interact();
       return used === "panel" ? "hotel_panel" : used ? "hotel" : null;
@@ -4189,15 +4438,6 @@ export class GameEngine {
     if (this.nearMegDoor()) {
       this.onMegDoorRequest?.();
       return "meg_door";
-    }
-    if (this.nearFunCake()) {
-      // A completely unrelated secret from Level G's: eating the cake at
-      // the hidden office party leaves for Level FUN, nowhere near the real
-      // exit door (level4DoorX/Z) or the Level G door (abandonedSecretX/Z).
-      this.funCakeEaten = true;
-      this.audio.playFunSound("giggle", 0, 0.5);
-      this.onSecretLevelFound?.(FUN_LEVEL);
-      return "fun_cake";
     }
     if (this.nearExitDesk()) {
       this.readingAnchor = { x: this.map.exitDeskX, z: this.map.exitDeskZ };
@@ -4400,14 +4640,14 @@ export class GameEngine {
     this.cheatClip = has("clip");
     this.cheatLife = has("life");
     this.cheatArrow = has("arrow");
+    this.cheatRadar = has("radar");
     if (this.player) this.applyCheatsToPlayer();
   }
 
   /**
    * World position of every secret entrance on this level (Level 1 → Lights
-   * Out, Abandoned Office → Level G, Abandoned Office → the hidden cake ->
-   * Level FUN). Abandoned Office has two at once, so this returns a list
-   * rather than a single target.
+   * Out, Abandoned Office → Level G, the Poolrooms → Level 94). A list, so a
+   * level could hold more than one.
    */
   public secretEntranceTargets(): { x: number; z: number; label: string }[] {
     const map = this.map;
@@ -4415,9 +4655,8 @@ export class GameEngine {
     const cs = map.cellSize;
     const targets: { x: number; z: number; label: string }[] = [];
     if (this.level === 1 && map.secretGridX >= 0) targets.push({ x: (map.secretGridX + 0.5) * cs, z: (map.secretGridZ + 0.5) * cs, label: "6" });
-    if (this.level === ELECTRICAL_ROOM_LEVEL && map.townExitX >= 0) targets.push({ x: (map.townExitX + 0.5) * cs, z: (map.townExitZ + 0.5) * cs, label: "94" });
+    if (this.level === POOLROOMS_LEVEL && map.townExitX >= 0) targets.push({ x: (map.townExitX + 0.5) * cs, z: (map.townExitZ + 0.5) * cs, label: "94" });
     if (this.level === ABANDONED_OFFICE_LEVEL && map.abandonedSecretX >= 0) targets.push({ x: (map.abandonedSecretX + 0.5) * cs, z: (map.abandonedSecretZ + 0.5) * cs, label: "G" });
-    if (this.level === ABANDONED_OFFICE_LEVEL && map.funCakeX >= 0 && !this.funCakeEaten) targets.push({ x: (map.funCakeX + 0.5) * cs, z: (map.funCakeZ + 0.5) * cs, label: "FUN" });
     return targets;
   }
 
@@ -5114,7 +5353,7 @@ export class GameEngine {
         break;
       case "cassette_tape":
         // The recording's static sweeps the halls: the radar reaches much farther for a while.
-        if (this.radarBoostTimer > 0) return refuse("eng.itemBlocked.active");
+        if (this.radarBoostTimer > 0 || this.cheatRadar) return refuse("eng.itemBlocked.active");
         this.radarBoostTimer = RADAR_BOOST_SECONDS;
         this.audio.triggerHumFlicker(400);
         this.onHUDNotification?.(t("eng.tapeUsed"));
@@ -5192,7 +5431,7 @@ export class GameEngine {
 
   /** Radar display range in meters — extended while a cassette tape plays. */
   public get radarRange(): number {
-    return this.radarBoostTimer > 0 ? RADAR_BOOST_RANGE : RADAR_BASE_RANGE;
+    return this.radarBoostTimer > 0 || this.cheatRadar ? RADAR_BOOST_RANGE : RADAR_BASE_RANGE;
   }
 
   /**
@@ -5206,6 +5445,11 @@ export class GameEngine {
     }
 
     this.voip.dispose();
+    this.scene.environment = null;
+    this.roomEnv?.dispose();
+    this.roomEnv = null;
+    this.flashlightCookie?.dispose();
+    this.flashlightCookie = null;
     this.teardownHotel();
     this.officeCity?.target.dispose();
     this.officeCity = null;

@@ -55,6 +55,12 @@ COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/package.json ./package.json
 
+# The speedrun leaderboard lives here; mount a volume on it to keep the times
+# across container re-creations (e.g. `-v backrooms-data:/app/data`).
+ENV LEADERBOARD_FILE=/app/data/leaderboard.json
+RUN mkdir -p /app/data && chown node:node /app/data
+VOLUME ["/app/data"]
+
 USER node
 
 EXPOSE 3000

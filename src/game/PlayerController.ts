@@ -17,15 +17,18 @@ import { GAME_KEYS, isTypingInField, lockGameInput } from "../utils/input";
 export const PLAYER_STANDING_HEIGHT = 1.33;
 export const PLAYER_CROUCH_HEIGHT = 1.13;
 
+/** Everyone's pace on foot, cheats aside (the speed cheat multiplies on top of it). */
+const BASE_SPEED_SCALE = 1.2;
+
 export class PlayerController {
   private camera: THREE.Camera;
   private domElement: HTMLElement;
   private map: ProceduralMap;
 
-  // Movement speed configuration (meters per second)
-  private walkSpeed = 2.4;
-  private runSpeed = 4.8;
-  private crouchSpeed = 1.3;
+  // Movement speed configuration (meters per second), all scaled by BASE_SPEED_SCALE.
+  private walkSpeed = 2.4 * BASE_SPEED_SCALE;
+  private runSpeed = 4.8 * BASE_SPEED_SCALE;
+  private crouchSpeed = 1.3 * BASE_SPEED_SCALE;
 
   // Stamina parameters
   public maxStamina = 1.0; // 0.0 to 1.0 representation
@@ -124,6 +127,7 @@ export class PlayerController {
     window.addEventListener("mouseup", this.onMouseUp);
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
+    window.addEventListener("blur", this.releaseKeys);
   }
 
   public removeEvents() {
@@ -134,7 +138,17 @@ export class PlayerController {
     window.removeEventListener("mouseup", this.onMouseUp);
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("blur", this.releaseKeys);
   }
+
+  /**
+   * Alt-tabbing (or any focus loss) while holding a key swallows its keyup,
+   * which left the explorer walking/sprinting on their own once back.
+   */
+  private releaseKeys = () => {
+    this.keys = {};
+    this.isDragging = false;
+  };
 
   private requestLock = () => {
     if (!this.isSpectating && !this.isLocked && !this.isOverrideActive) {
@@ -340,6 +354,15 @@ export class PlayerController {
 
     this.velX = (this.position.x - originalX) / dt;
     this.velZ = (this.position.z - originalZ) / dt;
+    // Pushing into a wall: no steps, no bob, no sprint drain.
+    const moving = wantsMove && this.velX * this.velX + this.velZ * this.velZ > 0.04;
+    // (Crouching stays crouching: teammates read it to lower the model.)
+    if (!moving && (this.state === "walking" || this.state === "running")) {
+      if (this.state === "running" && !this.infiniteStaminaCheat && this.adrenalineTimer <= 0) {
+        this.stamina = Math.min(this.maxStamina, this.stamina + this.staminaDrainRate * dt); // undo this frame's drain
+      }
+      this.state = "idle";
+    }
 
     // 5. JUMPING SIMULATION ("pulando sem parar")
     const spacePressed = this.keys[" "];
@@ -375,7 +398,7 @@ export class PlayerController {
     let bobX = 0;
     let bobY = 0;
 
-    if (wantsMove) {
+    if (moving) {
       const paceMultiplier = this.state === "running" ? 1.6 : (this.state === "crouching" ? 0.75 : 1.0);
       this.bobTime += dt * this.bobFrequency * paceMultiplier;
 
@@ -410,8 +433,8 @@ export class PlayerController {
     const breatheY = Math.sin(this.breathingTime) * breatheAmpY;
 
     // Combine physical movement bobbing with local breathing displacement
-    const targetCamX = (wantsMove ? bobX : this.camera.position.x * 0.9) + breatheX;
-    const targetCamY = (wantsMove ? bobY : this.camera.position.y * 0.9) + breatheY;
+    const targetCamX = (moving ? bobX : this.camera.position.x * 0.9) + breatheX;
+    const targetCamY = (moving ? bobY : this.camera.position.y * 0.9) + breatheY;
 
     this.camera.position.set(targetCamX, targetCamY, 0);
 

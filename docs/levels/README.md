@@ -5,8 +5,13 @@ Guia de cada nível do jogo. Os ids e a rota principal vêm de [src/game/levels/
 ## Rota principal
 
 ```
-Lobby ─▶ Level 0 ─▶ Level 1 ─▶ Level 2 ─▶ Electrical Room ─▶ Abandoned Office ─▶ Terror Hotel ─▶ Lights Out ─▶ Poolrooms ─▶ Level 79 ─▶ fim
+Lobby ─▶ Level 0 ─▶ Level 1 ─▶ Level 2 ─▶ Level 3 ─▶ Level 4 ─▶ Level 5 ─▶ Level 6 ─▶ Level Fun ─▶ Level 37 ─┬▶ Level 79 ─▶ fim
+                                                                                                             └▶ Level 94 ─▶ fim (alternativo)
 ```
+
+Nomes exibidos no jogo: sempre **"Level {n} - {Nome}"**, com o número da wiki das Backrooms (`hud.loc.*`/`radar.title.*` em `src/i18n`): Level 0 - O Saguão, 1 - Zona Habitável, 2 - Pipe Dreams, 3 - Electrical Room, 4 - Abandoned Office, 5 - Terror Hotel, 6 - Lights Out, Fun - A Festa, 37 - Poolrooms, 79 - Estação Espacial; secretos: G - O Pequeno Escritório, 94 - Motion.
+
+Tanto o fim do Level 79 quanto o do Level 94 encerram a expedição (e param o cronômetro do ranking).
 
 A sala avança **junta**: o jogador que chega à saída envia `level_transition_request`; o servidor só muda de nível quando todos os jogadores vivos naquele nível estão prontos e o destino é o próximo de `MAIN_LEVELS`. Ao avançar, todos os mortos são revividos.
 
@@ -19,12 +24,12 @@ A sala avança **junta**: o jogador que chega à saída envia `level_transition_
 | Level 2 — Pipe Dreams | `2` | Rota principal / lobby | [level-2.md](level-2.md) |
 | Level 3 — Electrical Room | `3` | Rota principal / lobby / saída do Lights Out | [level-3-electrical-room.md](level-3-electrical-room.md) |
 | Level 4 — Abandoned Office | `4` | Rota principal / lobby / saída do Level G | [level-4-abandoned-office.md](level-4-abandoned-office.md) |
-| Poolrooms | `5` | Rota principal / lobby | [poolrooms.md](poolrooms.md) |
+| Level 37 — Poolrooms | `5` | Saída do Level Fun / lobby | [poolrooms.md](poolrooms.md) |
 | Level 5 — Terror Hotel | `13` | Saída do Abandoned Office / lobby | [level-5-terror-hotel.md](level-5-terror-hotel.md) |
 | Level 6 — Lights Out | `6` | Saída do Terror Hotel / corredor secreto no Level 1 / lobby | [level-6-lights-out.md](level-6-lights-out.md) |
 | Level G — The Small Office *(secreto)* | `7` | Passagem escondida no Level 4 / lobby | [level-g.md](level-g.md) |
-| Level 94 — Motion *(secreto)* | `8` | Porta de saída na Electrical Room / rumo DESCONHECIDO no Level 79 / lobby | [level-94-motion.md](level-94-motion.md) |
-| Level FUN *(secreto)* | `9` | Bolo escondido no Level 4 / lobby | [level-fun.md](level-fun.md) |
+| Level 94 — Motion *(final alternativo)* | `8` | Porta escondida nas Poolrooms drenadas / rumo DESCONHECIDO no Level 79 / lobby | [level-94-motion.md](level-94-motion.md) |
+| Level Fun | `9` | Saída do Lights Out / lobby | [level-fun.md](level-fun.md) |
 | Lobby | `10` | Início de toda sala | [lobby.md](lobby.md) |
 | Level 79 — Space Station | `12` | Saída das Poolrooms / lobby | [level-79-space-station.md](level-79-space-station.md) |
 
@@ -58,12 +63,11 @@ Controlados pela opção de sala **Rotas secretas** (anfitrião, no lobby).
 
 | Detour | Entrada | Saída |
 |---|---|---|
-| Lights Out | Beco sem saída de um corredor sem luz no Level 1 | Leva o grupo à Electrical Room; na rota principal, após o Hotel, segue às Poolrooms |
+| Lights Out | Beco sem saída de um corredor sem luz no Level 1 | Leva o grupo à Electrical Room; na rota principal, após o Hotel, segue ao Level Fun |
 | Level G | Passagem escondida no Abandoned Office | Volta ao Abandoned Office |
-| Level 94 — Motion | Porta "SAÍDA" num nicho da parede norte da Electrical Room (individual), ou os três consoles do Level 79 em DESCONHECIDO (todos a bordo) | Final da própria fase (volta ao lobby) |
-| Level FUN | Comer o bolo que ninguém está vigiando (Abandoned Office), ou escolher no lobby | **Segue para o Level 79** (pula as Poolrooms) — não encerra a expedição |
+| Level 94 — Motion | Porta "SAÍDA" num nicho da parede norte do terceiro salão das Poolrooms, que só abre com as Poolrooms drenadas (individual), ou os três consoles do Level 79 em DESCONHECIDO (todos a bordo) | Final alternativo da rota (volta ao lobby; conta no ranking) |
 
-Detours são **individuais**: quem entra deixa a sala principal por um tempo; o servidor reúne os jogadores quando a sala chega ao ponto de convergência (nível 4 em diante). O **Level FUN** é um atalho para frente: quem sai dele chega à estação do Level 79 **antes** do grupo e permanece lá quando a sala avança (as transições da rota principal não o puxam de volta); a estação não guarda estado compartilhado para quem chega depois (energia, consoles).
+Detours são **individuais**: quem entra deixa a sala principal por um tempo; o servidor reúne os jogadores quando a sala chega ao ponto de convergência (nível 4 em diante). Quem toma a porta do Level 94 nas Poolrooms fica lá quando a sala avança para o Level 79 (as transições da rota principal não o puxam de volta).
 
 ## Anatomia de um nível
 

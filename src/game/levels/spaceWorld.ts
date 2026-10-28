@@ -18,6 +18,7 @@
  */
 
 import * as THREE from "three";
+import { weatherCanvas } from "../surfaceTextures";
 import type { DecorKit } from "../LevelDecor";
 import type { DynamicLightSource } from "../LightPool";
 import type { LightFixture } from "../ProceduralMap";
@@ -498,6 +499,7 @@ export class SpaceWorld {
       ctx.fillStyle = "rgba(40,90,120,0.55)";
       ctx.fillRect(0, 150, 256, 6);
     }
+    weatherCanvas(ctx, { grain: 0.05, blotch: 0.08, seed: key.length * 977 + 29 });
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;

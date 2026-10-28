@@ -2,7 +2,8 @@
 
 - **Id de rede:** `5` (conteúdo `7`) — **Grid:** 40×40
 - **Entidades:** `CLUMP` e `O VIGIA`
-- **Próximo nível:** [Level 79 — Space Station](level-79-space-station.md) (a saída é uma porta de estação)
+- **Exibido como:** Level 37 - Poolrooms · **Vem de:** [Level Fun](level-fun.md)
+- **Próximo nível:** [Level 79 — Space Station](level-79-space-station.md) (a saída é uma porta de estação) — **ou**, pela porta escondida, [Level 94 — Motion](level-94-motion.md)
 
 ## Ambientação
 
@@ -15,6 +16,8 @@ Drenar a contaminação girando **12 válvulas** — **3 válvulas em cada uma d
 > *"AS VÁLVULAS DRENARAM A CONTAMINAÇÃO. A água está segura agora."*
 
 A saída, embutida na divisória da piscina mais funda (célula `28,21`), só funciona depois disso.
+
+**A outra porta (Level 94):** num nicho seco da parede norte do terceiro salão (posição sorteada pela seed) há uma porta de metal com a placa **"SAÍDA"**, fechada. Quando as Poolrooms drenam, ela se abre para a luz do dia e uma estrada até uma cidadezinha: entrar leva **só você** ao [Level 94 — Motion](level-94-motion.md), o final alternativo ao Level 79 (desligado se a sala desativar "Rotas secretas"). O cheat SETA aponta para ela com o rótulo "94".
 
 ## Como descobrir a ordem
 

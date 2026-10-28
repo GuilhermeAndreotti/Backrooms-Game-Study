@@ -2,7 +2,8 @@
 
 - **Id de rede:** `9` (conteúdo `11`) — **Grid:** 48×48 — **Layout:** [levels/funLayout.ts](../../src/game/levels/funLayout.ts)
 - **Entidades:** nenhuma de perseguição (`bespoke`). Os "convidados" são **aparições roteirizadas e cenas**, nunca caçadores
-- **Entrada:** bolo escondido no [Abandoned Office](level-4-abandoned-office.md), ou seletor do lobby — **Saída:** uma porta de serviço que leva à [Level 79 — Space Station](level-79-space-station.md), pulando as Poolrooms (rota alternativa; **não** encerra a expedição). Quem veio do Abandoned Office vai **sozinho** e chega à estação à frente do grupo; se a sala começou no FUN pelo lobby, **a sala inteira** segue junto.
+- **Exibido como:** Level Fun - A Festa — **rota principal**, depois do [Lights Out](level-6-lights-out.md)
+- **Entrada:** saída do Lights Out, ou seletor do lobby — **Saída:** uma porta de serviço que leva às [Poolrooms](poolrooms.md) (a sala avança junta, como em qualquer nível da rota).
 
 ## Ambientação
 
