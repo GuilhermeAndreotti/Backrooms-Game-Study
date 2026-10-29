@@ -45,6 +45,14 @@ Elencos de [levels/registry.ts](../src/game/levels/registry.ts). "Estático" = p
 | `DEATHMOTH` | [deathmoth.ts](../src/game/mobs/deathmoth.ts) | "Minha lanterna está atraindo algo?" | Mariposa de voo baixo; reage à luz até 6 m e à proximidade até 2 m, com linha de visão | Apague a lanterna e mantenha distância |
 | `FINGER_KING` | [fingerKing.ts](../src/game/mobs/fingerKing.ts) | — | Exclusivo do Level G. Anuncia-se por **dedos arranhando paredes**; fica mais forte ao longo do nível, mas nunca passa de um corredor em disparada (a corrida final é vencível). Se você o encara de perto, ele **encara de volta** e então ataca | Esconda-se em armários, agachado |
 
+## Super-Guard (global)
+
+Exceção ao elenco por nível: o **Super-Guard** pode aparecer em qualquer nível, inclusive no lobby e nas rotas secretas, quando um jogador vivo passa **mais de 8 minutos sem atividade de teclado, mouse ou toque**. Mensagens automáticas de movimento e ping não contam como atividade. Cada jogador AFK recebe seu próprio perseguidor; os companheiros no mesmo nível podem vê-lo.
+
+É invencível, atravessa obstáculos e ignora esconderijos. Voltar a jogar ou trocar de nível depois da aparição não cancela a caçada: ele acelera até interceptar o alvo em no máximo 5 segundos, causando morte ao alcançá-lo. **Com LIFE ou SUDO ativo, o jogador não morre: o Super-Guard apenas continua perseguindo**, inclusive após alcançá-lo. A morte encerra essa caçada e o jogador revivido recebe um novo período de inatividade.
+
+O servidor controla o relógio, a perseguição e a morte, mesmo com a aba em segundo plano. A lógica está em [src/shared/superGuard.ts](../src/shared/superGuard.ts); [src/game/SuperGuard.ts](../src/game/SuperGuard.ts) apenas desenha os snapshots `super_guards`. A mensagem `activity` não aceita timestamps do cliente. O Super-Guard não integra o elenco `MobDefinition` nem depende do cliente-autoridade.
+
 ## Notas técnicas
 
 - **Assets visuais**: os mobs têm GLBs articulados com três LODs, gerados offline a partir dos builders. Materiais PBR, laboratório visual, regeneração e limites da produção artística estão em [mob-assets.md](mob-assets.md).

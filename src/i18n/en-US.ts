@@ -339,6 +339,7 @@ export const enUS: Record<MessageKey, string> = {
   "sys.fell": "[EXPEDITION SIGNAL LOST]: {name} FELL INTO THE PIT.",
   "sys.cheat": "[TERMINAL]: {name} ENABLED {code} FOR THE WHOLE ROOM.",
   "sys.someone": "AN EXPLORER",
+  "sys.super_guard": "{name} was AFK for over 8 minutes. The Super-Guard has arrived. There is no escape.",
   "sys.joined": "[EXPEDITION SIGNAL DETECTED]: {name} HAS JOINED THE GROUP.",
   "sys.left": "[EXPEDITION SIGNAL LOST]: {name} DISCONNECTED FROM THIS SECTOR.",
   "sys.resetScratch": "[GROUP RESET]: EVERYONE RETURNS TO LEVEL 0.",

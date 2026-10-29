@@ -9,6 +9,7 @@
  */
 
 import "dotenv/config";
+import { tickSuperGuard, type SuperGuardState, type SuperGuardFrame } from "./src/shared/superGuard";
 import express from "express";
 import compression from "compression";
 import path from "path";
@@ -149,6 +150,7 @@ function sanitizeMonsterSkin(value: unknown): string {
 }
 
 interface Connection {
+  superGuard?: SuperGuardState;
   ws: WebSocket;
   player: PlayerState;
   isAlive: boolean;
@@ -158,6 +160,7 @@ interface Connection {
 }
 
 interface Room {
+  hadSuperGuards?: boolean;
   hotel: HotelState;
   hotelWorld: HotelWorldState;
   hotelEntities: ReturnType<typeof sanitizeEntities>;
@@ -680,6 +683,9 @@ function resetSharedLevelState(room: Room) {
 }
 
 function reviveAll(room: Room) {
+  room.connections.forEach((c) => {
+    if (c.player.dead) c.superGuard = { lastActivity: Date.now(), lastTick: Date.now() };
+  });
   // Marked dirty so the next snapshot tells every client they're alive again.
   room.players.forEach((p) => { p.dead = false; p.exitReady = false; room.dirty.add(p.id); });
 }
@@ -950,6 +956,14 @@ async function startServer() {
 
         // Queued instead of relayed immediately: see the room tick below.
         room.dirty.add(p.id);
+        return;
+      }
+
+      if (type === "activity") {
+        // No client timestamp or position is trusted. Activity never cancels a hunt.
+        if (!conn.player.dead && conn.superGuard && !conn.superGuard.frame) {
+          conn.superGuard.lastActivity = Date.now();
+        }
         return;
       }
 
@@ -1568,6 +1582,26 @@ async function startServer() {
    */
   const tick = setInterval(() => {
     rooms.forEach((room) => {
+      const now = Date.now();
+      const guards: SuperGuardFrame[] = [];
+      room.connections.forEach((c) => {
+        const state = c.superGuard ??= { lastActivity: now, lastTick: now };
+        const spawned = !!state.frame;
+        if (tickSuperGuard(state, c.player, now, room.cheats.has("life"))) {
+          c.player.dead = true;
+          room.dirty.add(c.player.id);
+          broadcastToRoom(room, { type: "player_died", id: c.player.id, cause: "caught", superGuard: true });
+          tickSuperGuard(state, c.player, now);
+          checkAllDead(room);
+          tryAdvanceRoom(room);
+        }
+        if (state.frame) {
+          guards.push(state.frame);
+          if (!spawned) broadcastToRoom(room, { type: "super_guard_spawn", id: c.player.id, name: c.player.name });
+        }
+      });
+      if (guards.length || room.hadSuperGuards) broadcastToRoom(room, { type: "super_guards", guards });
+      room.hadSuperGuards = guards.length > 0;
       // Players change level via their movement updates (e.g. the solo
       // secret-level detour), so authority is re-checked every tick.
       refreshAuthority(room);

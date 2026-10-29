@@ -337,6 +337,7 @@ export const ptBR = {
   "sys.fell": "[SINAL DE EXPEDIÇÃO PERDIDO]: {name} CAIU NO POÇO.",
   "sys.cheat": "[TERMINAL]: {name} ATIVOU {code} PARA TODA A SALA.",
   "sys.someone": "UM EXPLORADOR",
+  "sys.super_guard": "{name} ficou mais de 8 minutos AFK. O Super-Guard chegou. Não há escapatória.",
   "sys.joined": "[SINAL DE EXPEDIÇÃO DETECTADO]: {name} REUNIU-SE AO GRUPO.",
   "sys.left": "[SINAL DE EXPEDIÇÃO PERDIDO]: {name} DESCONECTOU-SE DESTE SETOR.",
   "sys.resetScratch": "[GRUPO REINICIADO]: TODOS VOLTAM AO LEVEL 0.",

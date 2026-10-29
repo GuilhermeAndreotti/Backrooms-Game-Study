@@ -339,6 +339,7 @@ export const es: Record<MessageKey, string> = {
   "sys.fell": "[SEÑAL DE EXPEDICIÓN PERDIDA]: {name} CAYÓ AL POZO.",
   "sys.cheat": "[TERMINAL]: {name} ACTIVÓ {code} PARA TODA LA SALA.",
   "sys.someone": "UN EXPLORADOR",
+  "sys.super_guard": "{name} estuvo AFK más de 8 minutos. El Super-Guard ha llegado. No hay escapatoria.",
   "sys.joined": "[SEÑAL DE EXPEDICIÓN DETECTADA]: {name} SE HA UNIDO AL GRUPO.",
   "sys.left": "[SEÑAL DE EXPEDICIÓN PERDIDA]: {name} SE DESCONECTÓ DE ESTE SECTOR.",
   "sys.resetScratch": "[GRUPO REINICIADO]: TODOS VUELVEN AL LEVEL 0.",

@@ -14,6 +14,8 @@ import * as THREE from "three";
 import { ProceduralMap, LEVEL_G_DOOR_OPEN_ANGLE, CellType } from "./ProceduralMap";
 import { PlayerController, PLAYER_STANDING_HEIGHT, PLAYER_CROUCH_HEIGHT } from "./PlayerController";
 import { animateAccessories, buildExplorerAvatar, monsterSkinType, MONSTER_SKIN_TYPES } from "./ExplorerAvatar";
+import { SuperGuardRenderer } from "./SuperGuard";
+import type { SuperGuardFrame } from "../shared/superGuard";
 import { outfitKey, sanitizeOutfit, type Outfit } from "../shared/outfit";
 import { AudioManager } from "./AudioManager";
 import { WanderingEntity, EntityType, EntityNetState, type SkinBodyChoice } from "./WanderingEntity";
@@ -99,7 +101,7 @@ export interface GameEngineCallbacks {
   onInventoryChange?: (items: string[]) => void;
   onSanityChange?: (val: number) => void;
   /** This explorer died (sanity at zero, ...); the app tells the room and shows the spectator UI. */
-  onPlayerDeath?: (cause: DeathCause) => void;
+  onPlayerDeath?: (cause: DeathCause, serverConfirmed?: boolean) => void;
   /** Back from the dead (level change / room reset): the app clears its spectator UI. */
   onPlayerRevive?: () => void;
   onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
@@ -592,7 +594,7 @@ export class GameEngine {
   public onSectorChange?: (sector: string) => void;
   public onInventoryChange?: (items: string[]) => void;
   private onSanityChange?: (val: number) => void;
-  private onPlayerDeath?: (cause: DeathCause) => void;
+  private onPlayerDeath?: (cause: DeathCause, serverConfirmed?: boolean) => void;
   private onPlayerRevive?: () => void;
   public onScrapOfNoteCollected?: (seed: number, doorMarker: string) => void;
   private onPerformanceSample?: (fps: number, renderScale: number) => void;
@@ -1197,6 +1199,7 @@ export class GameEngine {
 
       const delta = this.timer.update().getDelta();
       this.totalPlayTime += delta;
+      this.superGuards.update(this.scene, this.level, delta);
       this.noiseBus.prune(this.totalPlayTime);
       this.frameCounter++;
 
@@ -2433,7 +2436,17 @@ export class GameEngine {
   private spectateId: string | null = null;
   private remoteDead = new Set<string>();
 
-  private die(cause: DeathCause, silent = false) {
+  private superGuards = new SuperGuardRenderer();
+
+  public applySuperGuards(frames: SuperGuardFrame[]) {
+    this.superGuards.apply(frames);
+  }
+
+  public caughtBySuperGuard() {
+    this.die("caught", false, true);
+  }
+
+  private die(cause: DeathCause, silent = false, serverConfirmed = false) {
     if (this.isDead || this.cheatLife) return;
     if (this.kingGrab) this.endKingGrab(false);
     this.isDead = true;
@@ -2446,7 +2459,7 @@ export class GameEngine {
     this.spectateId = null;
     this.cycleSpectate(1);
     this.refreshRemoteVisibility();
-    this.onPlayerDeath?.(cause);
+    this.onPlayerDeath?.(cause, serverConfirmed);
   }
 
   /** Brings this explorer back (level change or room reset): fresh mind, fresh legs. */
@@ -5547,6 +5560,7 @@ export class GameEngine {
    * Halts loop, untethers document/canvas events, and purges WebGL memory stacks.
    */
   public destroy() {
+    this.superGuards.dispose();
     this.isRunning = false;
     this.timer.dispose();
     if (this.animationFrameId) {

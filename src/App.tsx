@@ -314,6 +314,21 @@ export default function App() {
   const socketRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const engineRef = useRef<GameEngine | null>(null);
+  useEffect(() => {
+    let lastSent = -Infinity;
+    const activity = (event: Event) => {
+      if (!event.isTrusted) return;
+      const ws = socketRef.current;
+      if (!engineRef.current || engineRef.current.isDead || ws?.readyState !== WebSocket.OPEN) return;
+      const now = performance.now();
+      if (now - lastSent < 1000) return;
+      lastSent = now;
+      ws.send(JSON.stringify({ type: "activity" }));
+    };
+    const events = ["keydown", "pointerdown", "pointermove", "wheel", "touchstart", "touchmove"];
+    events.forEach((name) => window.addEventListener(name, activity, { passive: true }));
+    return () => events.forEach((name) => window.removeEventListener(name, activity));
+  }, []);
   const spaceTerminalView = useCallback(
     () => (spaceTerminal ? engineRef.current?.spaceTerminalView(spaceTerminal) ?? null : null),
     [spaceTerminal],
@@ -1088,10 +1103,10 @@ export default function App() {
                       setSpectateName(null);
                       playersRef.current.forEach((p) => { p.dead = false; });
                     },
-                    onPlayerDeath: (cause) => {
+                    onPlayerDeath: (cause, serverConfirmed) => {
                       setIsDead(true);
                       setSpectateName(engineRef.current?.spectateName() ?? null);
-                      socketRef.current?.send(JSON.stringify({ type: "died", cause }));
+                      if (!serverConfirmed) socketRef.current?.send(JSON.stringify({ type: "died", cause }));
                     },
                     onDiaryPageCollected: () => {
                       const page: BackroomsLore = {
@@ -1307,8 +1322,18 @@ export default function App() {
             logSystemMessage(t("run.finished", { time: formatRunTime(result.ms), rank: runRankText(result) }));
           }
 
+          else if (type === "super_guards") {
+            engineRef.current?.applySuperGuards(data.guards);
+          }
+
+          else if (type === "super_guard_spawn") {
+            const who = playersRef.current.find((p) => p.id === data.id);
+            logSystemMessage(t("sys.super_guard", { name: data.name ?? who?.name ?? t("sys.someone") }));
+          }
+
           else if (type === "player_died") {
             const { id: deadId, cause } = data;
+            if (deadId === clientIdRef.current && data.superGuard === true) engineRef.current?.caughtBySuperGuard();
             const who = playersRef.current.find((p) => p.id === deadId);
             if (who) who.dead = true;
             engineRef.current?.setRemoteDead(deadId, true);
