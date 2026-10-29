@@ -28,7 +28,7 @@ A sala avança **junta**: o jogador que chega à saída envia `level_transition_
 | Level 5 — Terror Hotel | `13` | Saída do Abandoned Office / lobby | [level-5-terror-hotel.md](level-5-terror-hotel.md) |
 | Level 6 — Lights Out | `6` | Saída do Terror Hotel / corredor secreto no Level 1 / lobby | [level-6-lights-out.md](level-6-lights-out.md) |
 | Level G — The Small Office *(secreto)* | `7` | Passagem escondida no Level 4 / lobby | [level-g.md](level-g.md) |
-| Level 94 — Motion *(final alternativo)* | `8` | Porta escondida nas Poolrooms drenadas / rumo DESCONHECIDO no Level 79 / lobby | [level-94-motion.md](level-94-motion.md) |
+| Level 94 — Motion *(final alternativo)* | `8` | Porta no patamar final das Poolrooms / rumo DESCONHECIDO no Level 79 / lobby | [level-94-motion.md](level-94-motion.md) |
 | Level Fun | `9` | Saída do Lights Out / lobby | [level-fun.md](level-fun.md) |
 | Lobby | `10` | Início de toda sala | [lobby.md](lobby.md) |
 | Level 79 — Space Station | `12` | Saída das Poolrooms / lobby | [level-79-space-station.md](level-79-space-station.md) |
@@ -65,7 +65,7 @@ Controlados pela opção de sala **Rotas secretas** (anfitrião, no lobby).
 |---|---|---|
 | Lights Out | Beco sem saída de um corredor sem luz no Level 1 | Leva o grupo à Electrical Room; na rota principal, após o Hotel, segue ao Level Fun |
 | Level G | Passagem escondida no Abandoned Office | Volta ao Abandoned Office |
-| Level 94 — Motion | Porta "SAÍDA" num nicho da parede norte do terceiro salão das Poolrooms, que só abre com as Poolrooms drenadas (individual), ou os três consoles do Level 79 em DESCONHECIDO (todos a bordo) | Final alternativo da rota (volta ao lobby; conta no ranking) |
+| Level 94 — Motion | Porta "SAÍDA" ao lado da porta da estação, no patamar do fim da parte 3 das Poolrooms (depois de abrir a comporta; individual), ou os três consoles do Level 79 em DESCONHECIDO (todos a bordo) | Final alternativo da rota (volta ao lobby; conta no ranking) |
 
 Detours são **individuais**: quem entra deixa a sala principal por um tempo; o servidor reúne os jogadores quando a sala chega ao ponto de convergência (nível 4 em diante). Quem toma a porta do Level 94 nas Poolrooms fica lá quando a sala avança para o Level 79 (as transições da rota principal não o puxam de volta).
 

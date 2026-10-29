@@ -17,6 +17,12 @@ export class AudioManager {
   private humGain: GainNode | null = null;
   private masterGain: GainNode | null = null;
   private sceneGate: GainNode | null = null;
+  /** Everything heard through water: the master bus' low-pass, opened wide out of it (see setUnderwater). */
+  private underFilter: BiquadFilterNode | null = null;
+  private underBed: GainNode | null = null;
+  private underAmount = 0;
+  /** Holding your breath under water: the stamina panting stays silent. */
+  private breathHeld = false;
   private hotelMuted = false;
   private hotelBeat = -1;
   private hotelNodes = new Set<AudioScheduledSourceNode>();
@@ -60,7 +66,12 @@ export class AudioManager {
       this.masterGain.gain.setValueAtTime(this.settings.volumeMaster, this.ctx.currentTime);
       this.sceneGate = this.ctx.createGain();
       this.sceneGate.gain.value = this.hotelMuted ? 0 : 1;
-      this.masterGain.connect(this.sceneGate);
+      this.underFilter = this.ctx.createBiquadFilter();
+      this.underFilter.type = "lowpass";
+      this.underFilter.frequency.value = 20000;
+      this.underFilter.Q.value = 0.7;
+      this.masterGain.connect(this.underFilter);
+      this.underFilter.connect(this.sceneGate);
       this.sceneGate.connect(this.ctx.destination);
       this.buildReverb();
 
@@ -127,67 +138,77 @@ export class AudioManager {
   }
 
   /**
-   * Wading: a low slosh of displaced water, a few bubbles, and (running) a
-   * bright splash on top. Played into `dest` so callers pan/echo it.
+   * Wading: the soft give of the water around a foot, a little slap as it
+   * comes down, and — only when running — a short spray on top. `depth` is
+   * how deep the water is (m): ankle-deep water pats, knee-deep water
+   * sloshes slower and lower. Every step varies a little, so a long walk
+   * through the pools doesn't turn into a loop. Played into `dest`.
    */
-  private waterSlosh(t: number, speed: 'walk' | 'run' | 'crouch', vol: number, dest: AudioNode) {
+  private waterSlosh(t: number, speed: 'walk' | 'run' | 'crouch', vol: number, dest: AudioNode, depth = 0.45) {
     const ctx = this.ctx!;
-    const dur = speed === 'run' ? 0.5 : speed === 'crouch' ? 0.34 : 0.42;
+    const deep = Math.max(0, Math.min(1, (depth - 0.2) / 0.8));
+    const vary = 0.85 + Math.random() * 0.3;
+    const dur = (speed === 'run' ? 0.36 : speed === 'crouch' ? 0.42 : 0.38) * (0.85 + deep * 0.5);
     const src = ctx.createBufferSource();
     src.buffer = this.noise();
-    const bp = ctx.createBiquadFilter();
-    bp.type = "bandpass";
-    bp.Q.value = 1.4;
-    bp.frequency.setValueAtTime(320, t);
-    bp.frequency.exponentialRampToValueAtTime(speed === 'run' ? 1300 : 850, t + dur * 0.35);
-    bp.frequency.exponentialRampToValueAtTime(260, t + dur);
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.Q.value = 0.9;
+    const peak = (speed === 'run' ? 1500 : 900) * (1.15 - deep * 0.45) * vary;
+    lp.frequency.setValueAtTime(380, t);
+    lp.frequency.exponentialRampToValueAtTime(peak, t + dur * 0.25);
+    lp.frequency.exponentialRampToValueAtTime(220, t + dur);
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(vol, t + 0.05);
-    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    src.connect(bp); bp.connect(g); g.connect(dest);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.035 + deep * 0.04);
+    g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+    src.connect(lp); lp.connect(g); g.connect(dest);
     src.start(t, Math.random() * 1.5, dur + 0.05);
 
-    if (speed === 'run') {
+    if (speed === 'run' && Math.random() < 0.8) {
       const sp = ctx.createBufferSource();
       sp.buffer = this.noise();
       const hp = ctx.createBiquadFilter();
-      hp.type = "highpass";
-      hp.frequency.value = 2600;
+      hp.type = "bandpass";
+      hp.frequency.value = 2400 + Math.random() * 900;
+      hp.Q.value = 0.8;
       const sg = ctx.createGain();
-      sg.gain.setValueAtTime(vol * 0.55, t);
-      sg.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      sg.gain.setValueAtTime(vol * 0.28, t + 0.02);
+      sg.gain.exponentialRampToValueAtTime(0.0008, t + 0.13);
       sp.connect(hp); hp.connect(sg); sg.connect(dest);
-      sp.start(t, Math.random() * 1.5, 0.2);
+      sp.start(t + 0.02, Math.random() * 1.5, 0.14);
     }
 
-    // Bubbles: short rising blips as the water closes behind the foot.
-    const bubbles = speed === 'crouch' ? 1 : 2 + Math.floor(Math.random() * 2);
-    for (let i = 0; i < bubbles; i++) {
-      const at = t + 0.06 + Math.random() * dur * 0.6;
+    // Now and then a bubble or two as the water closes behind a deeper step.
+    if (deep > 0.25 && Math.random() < 0.45) {
+      const at = t + 0.08 + Math.random() * dur * 0.5;
       const o = ctx.createOscillator();
       o.type = "sine";
-      const f = 280 + Math.random() * 420;
+      const f = 260 + Math.random() * 300;
       o.frequency.setValueAtTime(f, at);
-      o.frequency.exponentialRampToValueAtTime(f * 2.4, at + 0.05);
+      o.frequency.exponentialRampToValueAtTime(f * 2.1, at + 0.05);
       const bg = ctx.createGain();
-      bg.gain.setValueAtTime(vol * 0.18, at);
-      bg.gain.exponentialRampToValueAtTime(0.001, at + 0.06);
+      bg.gain.setValueAtTime(vol * 0.07, at);
+      bg.gain.exponentialRampToValueAtTime(0.0008, at + 0.06);
       o.connect(bg); bg.connect(dest);
       o.start(at); o.stop(at + 0.07);
     }
   }
 
-  /** A footstep in the pool's water (local or a teammate's, via pan/volume). */
-  public playWaterStep(speed: 'walk' | 'run' | 'crouch', pan = 0, volume = 1) {
+  /**
+   * A footstep in the pool's water (local or a teammate's, via pan/volume).
+   * Kept well under the dry footsteps: in the Poolrooms you walk through
+   * water for minutes on end, and the silence around it matters more.
+   */
+  public playWaterStep(speed: 'walk' | 'run' | 'crouch', pan = 0, volume = 1, depth = 0.45) {
     if (!this.ctx || !this.masterGain || volume < 0.02) return;
     const t = this.ctx.currentTime;
     const panner = this.ctx.createStereoPanner();
     panner.pan.value = Math.max(-1, Math.min(1, pan));
     panner.connect(this.masterGain);
-    this.toReverb(panner);
-    const base = speed === 'run' ? 0.85 : speed === 'crouch' ? 0.3 : 0.6;
-    this.waterSlosh(t, speed, base * volume * this.settings.volumeSfx, panner);
+    this.toReverb(panner, 0.6);
+    const base = speed === 'run' ? 0.3 : speed === 'crouch' ? 0.045 : 0.12;
+    this.waterSlosh(t, speed, base * volume * this.settings.volumeSfx, panner, depth);
   }
 
   /**
@@ -229,7 +250,7 @@ export class AudioManager {
     scrape.connect(bp); bp.connect(sg); sg.connect(panner);
     scrape.start(t, Math.random() * 1.5, 0.1);
 
-    if (inWater) this.waterSlosh(t, weight > 0.6 ? 'run' : 'walk', vol * 0.8, panner);
+    if (inWater) this.waterSlosh(t, weight > 0.6 ? 'run' : 'walk', vol * 0.55, panner, 0.6);
   }
 
   public setSettings(settings: GameSettings) {
@@ -947,6 +968,7 @@ export class AudioManager {
     this.currentSanity = sanity;
     if (!this.initialized || !this.ctx || !this.masterGain) return;
 
+    if (this.breathHeld) return;
     // Calm breathing is extremely quiet/silent; exhaustion or panic (low sanity) triggers loud, fast, and desperate breathing.
     const tension = Math.max(1.0 - stamina, 1.0 - sanity); // 0.0 to 1.0 (empty stamina or low sanity means high tension)
     if (tension < 0.05) {
@@ -2461,12 +2483,348 @@ export class AudioManager {
     setTimeout(() => { try { out.disconnect(); panner.disconnect(); } catch { /* gone */ } }, life * 1000 + 500);
   }
 
+
+  // ---------------------------------------------------------------------
+  // The Poolrooms: the body in the water, the water around you, and the
+  // building breathing at the edge of hearing. Everything here stays quiet;
+  // what scares is the silence between the sounds.
+  // ---------------------------------------------------------------------
+
+  /** A short shaped noise burst into `dest`. */
+  private poolBurst(dest: AudioNode, t: number, dur: number, type: BiquadFilterType, f0: number, f1: number, q: number, vol: number, attack = 0.02) {
+    const ctx = this.ctx!;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise();
+    const f = ctx.createBiquadFilter();
+    f.type = type;
+    f.Q.value = q;
+    f.frequency.setValueAtTime(f0, t);
+    f.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(g); g.connect(dest);
+    src.start(t, Math.random() * 1.5, dur + 0.05);
+  }
+
+  private poolTone(dest: AudioNode, t: number, dur: number, type: OscillatorType, f0: number, f1: number, vol: number, attack = 0.01) {
+    const ctx = this.ctx!;
+    const o = ctx.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(f0, t);
+    o.frequency.exponentialRampToValueAtTime(Math.max(10, f1), t + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(dest);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  private poolBubbles(dest: AudioNode, t: number, count: number, vol: number, spread = 0.4) {
+    for (let i = 0; i < count; i++) {
+      const at = t + Math.random() * spread;
+      const f = 300 + Math.random() * 500;
+      this.poolTone(dest, at, 0.05 + Math.random() * 0.04, "sine", f, f * (1.8 + Math.random()), vol * (0.5 + Math.random() * 0.5), 0.004);
+    }
+  }
+
+  /** A panned output that cleans itself up; `echo` is its send into the reverb. */
+  private poolOut(pan: number, echo: number, life: number): StereoPannerNode {
+    const panner = this.ctx!.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, pan));
+    panner.connect(this.masterGain!);
+    if (echo > 0) this.toReverb(panner, echo);
+    setTimeout(() => { try { panner.disconnect(); } catch { /* gone */ } }, life * 1000);
+    return panner;
+  }
+
+  /** One swimming stroke: at the surface a soft pull-and-wash, under it a muffled push and a few bubbles. */
+  public playSwimStroke(underwater: boolean, strength: number) {
+    if (!this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    const v = this.settings.volumeSfx * (0.5 + strength * 0.5);
+    const out = this.poolOut(0, underwater ? 0.2 : 0.7, 2);
+    if (underwater) {
+      this.poolBurst(out, t, 0.5, "lowpass", 320, 140, 0.8, 0.09 * v, 0.12);
+      this.poolBubbles(out, t + 0.1, 2 + Math.floor(Math.random() * 2), 0.03 * v);
+    } else {
+      this.poolBurst(out, t, 0.32, "bandpass", 700, 1600, 0.7, 0.06 * v, 0.05);
+      this.poolBurst(out, t + 0.18, 0.45, "lowpass", 900, 260, 0.6, 0.05 * v, 0.08);
+    }
+  }
+
+  /** Going under: the rush of water closing over your head. */
+  public playDive(strength: number) {
+    if (!this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    const v = this.settings.volumeSfx * (0.6 + strength * 0.4);
+    const out = this.poolOut(0, 0.3, 2.5);
+    this.poolBurst(out, t, 0.6, "lowpass", 1800, 160, 0.7, 0.16 * v, 0.02);
+    this.poolBubbles(out, t + 0.05, 7, 0.05 * v, 0.6);
+  }
+
+  /** Breaking the surface: water streaming off you, and a breath — a gasp if you stayed down too long. */
+  public playSurface(gasp: number) {
+    if (!this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    const v = this.settings.volumeSfx;
+    const out = this.poolOut(0, 0.6, 2.5);
+    this.poolBurst(out, t, 0.5, "bandpass", 2200, 800, 0.6, 0.07 * v, 0.03);
+    if (gasp > 0.05) {
+      // A ragged inhale through the mouth, louder the closer you came to drowning.
+      this.poolBurst(out, t + 0.12, 0.45 + gasp * 0.25, "bandpass", 700, 1500, 2.2, (0.06 + gasp * 0.16) * v, 0.06);
+      if (gasp > 0.5) this.poolBurst(out, t + 0.75, 0.4, "bandpass", 600, 1200, 2, gasp * 0.08 * v, 0.05);
+    } else {
+      this.poolBurst(out, t + 0.1, 0.5, "bandpass", 500, 900, 1.8, 0.025 * v, 0.1);
+    }
+  }
+
+  /** A body hitting the water from a height. */
+  public playSplash(strength: number, pan = 0, volume = 1) {
+    if (!this.ctx || !this.masterGain || volume < 0.02) return;
+    const t = this.ctx.currentTime;
+    const v = this.settings.volumeSfx * volume * Math.min(1.2, 0.4 + strength * 0.5);
+    const out = this.poolOut(pan, 1.2, 4);
+    this.poolTone(out, t, 0.25, "sine", 120, 45, 0.18 * v);
+    this.poolBurst(out, t, 0.9, "bandpass", 1600, 500, 0.6, 0.22 * v, 0.01);
+    this.poolBurst(out, t + 0.05, 0.4, "highpass", 3000, 2000, 0.5, 0.08 * v, 0.01);
+    this.poolBubbles(out, t + 0.15, 6, 0.04 * v, 0.7);
+  }
+
+  /** Landing on hard tile after a drop — the higher, the harder (and the further it carries). */
+  public playLand(height: number, wet: boolean) {
+    if (!this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    const v = this.settings.volumeSfx * Math.min(1, 0.35 + height * 0.2);
+    const out = this.poolOut(0, 1.3, 3);
+    this.poolTone(out, t, 0.22, "triangle", 90, 30, 0.3 * v);
+    this.poolBurst(out, t, 0.18, "lowpass", 900, 200, 0.7, 0.18 * v, 0.005);
+    if (wet) this.waterSlosh(t, 'run', 0.2 * v, out, 0.3);
+  }
+
+  /** A hand and a boot on a steel rung. */
+  public playLadderRung() {
+    if (!this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    const v = this.settings.volumeSfx;
+    const out = this.poolOut(0, 0.8, 1.5);
+    const f = 900 + Math.random() * 200;
+    this.poolTone(out, t, 0.12, "triangle", f, f * 0.96, 0.035 * v, 0.002);
+    this.poolBurst(out, t, 0.06, "bandpass", 2500, 1800, 3, 0.02 * v, 0.002);
+  }
+
+  /** Hauling yourself out of the water onto a ledge. */
+  public playHoist() {
+    if (!this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    const v = this.settings.volumeSfx;
+    const out = this.poolOut(0, 0.6, 2.5);
+    this.poolBurst(out, t, 0.7, "bandpass", 1200, 500, 0.7, 0.08 * v, 0.06);
+    this.poolBurst(out, t + 0.35, 0.8, "highpass", 2600, 1800, 0.5, 0.025 * v, 0.2); // water running off
+    this.poolBurst(out, t + 0.1, 0.3, "bandpass", 450, 300, 1.5, 0.04 * v, 0.03); // the effort
+  }
+
+  /** A heavy grate or shutter grinding along its rails. */
+  public playGrind(kind: "bars" | "shutter", pan = 0, volume = 1) {
+    if (!this.ctx || !this.masterGain || volume < 0.02) return;
+    const t = this.ctx.currentTime;
+    const v = this.settings.volumeSfx * volume;
+    const dur = kind === "shutter" ? 2.6 : 1.4;
+    const out = this.poolOut(pan, 1.4, dur + 3);
+    this.poolBurst(out, t, dur, "bandpass", 420, 300, 4, 0.12 * v, 0.2);
+    for (let i = 0; i < (kind === "shutter" ? 14 : 6); i++) {
+      const at = t + (i / (kind === "shutter" ? 14 : 6)) * dur;
+      this.poolBurst(out, at, 0.05, "bandpass", 1800 + Math.random() * 600, 1400, 4, 0.05 * v, 0.003);
+    }
+    this.poolTone(out, t + dur, 0.5, "sine", 70, 40, 0.25 * v);
+  }
+
+  /** The drowning pulse: blood in the ears, while the air runs out. */
+  public playDrownPulse(intensity: number) {
+    if (!this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    const out = this.poolOut(0, 0, 1.5);
+    const v = this.settings.volumeSfx * (0.25 + intensity * 0.5);
+    this.poolTone(out, t, 0.16, "sine", 58, 40, 0.5 * v, 0.01);
+    this.poolTone(out, t + 0.22, 0.2, "sine", 52, 36, 0.38 * v, 0.01);
+  }
+
+  /** Through the water: the world muffled and the low roar of being under it. 0 (dry) .. 1. */
+  public setUnderwater(amount: number) {
+    if (!this.ctx || !this.underFilter || !this.masterGain) return;
+    const a = Math.max(0, Math.min(1, amount));
+    if (Math.abs(a - this.underAmount) < 0.01) return;
+    this.underAmount = a;
+    const t = this.ctx.currentTime;
+    this.underFilter.frequency.setTargetAtTime(a > 0.01 ? 20000 * Math.pow(420 / 20000, a) : 20000, t, 0.08);
+    if (!this.underBed && a > 0) {
+      const ctx = this.ctx;
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise();
+      src.loop = true;
+      const lp = ctx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.value = 160;
+      this.underBed = ctx.createGain();
+      this.underBed.gain.value = 0;
+      src.connect(lp); lp.connect(this.underBed); this.underBed.connect(this.masterGain);
+      src.start(t);
+    }
+    this.underBed?.gain.setTargetAtTime(a * 0.09 * this.settings.volumeHum, t, 0.15);
+  }
+
+  /** Holding your breath: the stamina panting goes quiet until you come up. */
+  public holdBreath(held: boolean) {
+    this.breathHeld = held;
+    if (held) this.breathingCycleTimer = 0.4;
+  }
+
+  private poolAmbience: { nodes: AudioScheduledSourceNode[]; out: GainNode; room: BiquadFilterNode; dread: GainNode } | null = null;
+
+  /**
+   * The Poolrooms' bed: a room tone you notice only when it changes, a hum
+   * from the filtration somewhere, and a sub-bass dread the director raises
+   * near the end. Returns false until audio is ready.
+   */
+  public startPoolAmbience(): boolean {
+    if (!this.ctx || !this.masterGain) return false;
+    if (this.poolAmbience) return true;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.0001, t);
+    out.gain.linearRampToValueAtTime(this.settings.volumeHum * 0.45, t + 4);
+    out.connect(this.masterGain);
+
+    const air = ctx.createBufferSource();
+    air.buffer = this.noise();
+    air.loop = true;
+    const room = ctx.createBiquadFilter();
+    room.type = "lowpass";
+    room.frequency.value = 520;
+    const airGain = ctx.createGain();
+    airGain.gain.value = 0.028;
+    air.connect(room); room.connect(airGain); airGain.connect(out);
+
+    // The filtration plant: a 50 Hz motor and its harmonic, slowly beating.
+    const motor = ctx.createOscillator();
+    motor.type = "sine";
+    motor.frequency.value = 50;
+    const motor2 = ctx.createOscillator();
+    motor2.type = "sine";
+    motor2.frequency.value = 100.4;
+    const motorGain = ctx.createGain();
+    motorGain.gain.value = 0.01;
+    motor.connect(motorGain); motor2.connect(motorGain); motorGain.connect(out);
+
+    const sub = ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.value = 31;
+    const dread = ctx.createGain();
+    dread.gain.value = 0;
+    sub.connect(dread); dread.connect(out);
+
+    for (const n of [air, motor, motor2, sub]) n.start(t);
+    this.poolAmbience = { nodes: [air, motor, motor2, sub], out, room, dread };
+    return true;
+  }
+
+  /** `part` 1..3 darkens the room tone; `dread` 0..1 brings up the sub. */
+  public setPoolAmbience(part: number, dread: number) {
+    const a = this.poolAmbience;
+    if (!this.ctx || !a) return;
+    const t = this.ctx.currentTime;
+    a.room.frequency.setTargetAtTime(part >= 3 ? 260 : part === 2 ? 380 : 520, t, 1.5);
+    a.dread.gain.setTargetAtTime(Math.max(0, Math.min(1, dread)) * 0.35, t, 0.8);
+  }
+
+  public stopPoolAmbience() {
+    const a = this.poolAmbience;
+    this.poolAmbience = null;
+    if (a && this.ctx) {
+      const t = this.ctx.currentTime;
+      a.out.gain.cancelScheduledValues(t);
+      a.out.gain.setValueAtTime(a.out.gain.value, t);
+      a.out.gain.linearRampToValueAtTime(0.0001, t + 0.4);
+      setTimeout(() => a.nodes.forEach((n) => { try { n.stop(); n.disconnect(); } catch { /* already stopped */ } }), 500);
+    }
+    this.setUnderwater(0);
+    this.breathHeld = false;
+  }
+
+  /**
+   * Something far off in the building: a drip into still water, a pipe
+   * knocking, the structure settling, something heavy slipping into a pool
+   * out of sight, a drain swallowing. Always distant, mostly reverb.
+   */
+  public playPoolEvent(kind: "drip" | "knock" | "creak" | "splash" | "gurgle" | "boom", pan = 0, volume = 1) {
+    if (!this.ctx || !this.masterGain || volume < 0.02) return;
+    const t = this.ctx.currentTime;
+    const v = this.settings.volumeSfx * volume;
+    const out = this.poolOut(pan, 2.2, 6);
+    // Distance: everything comes through a dark filter.
+    const far = this.ctx.createBiquadFilter();
+    far.type = "lowpass";
+    far.frequency.value = kind === "drip" ? 4000 : 1400;
+    far.connect(out);
+    setTimeout(() => { try { far.disconnect(); } catch { /* gone */ } }, 6000);
+    switch (kind) {
+      case "drip": {
+        const f = 900 + Math.random() * 900;
+        this.poolTone(far, t, 0.08, "sine", f, f * 2.4, 0.05 * v, 0.002);
+        if (Math.random() < 0.5) this.poolTone(far, t + 0.4 + Math.random() * 0.6, 0.07, "sine", f * 1.1, f * 2.2, 0.03 * v, 0.002);
+        break;
+      }
+      case "knock":
+        for (let i = 0; i < 2 + Math.floor(Math.random() * 3); i++) {
+          this.poolTone(far, t + i * (0.18 + Math.random() * 0.1), 0.2, "triangle", 180, 120, 0.12 * v, 0.003);
+          this.poolBurst(far, t + i * 0.2, 0.05, "bandpass", 1200, 800, 3, 0.04 * v, 0.002);
+        }
+        break;
+      case "creak":
+        this.poolBurst(far, t, 1.6, "bandpass", 300, 520, 9, 0.12 * v, 0.4);
+        this.poolTone(far, t, 1.6, "sawtooth", 62, 58, 0.025 * v, 0.5);
+        break;
+      case "splash":
+        this.poolBurst(far, t, 1.0, "bandpass", 1300, 450, 0.7, 0.1 * v, 0.02);
+        this.poolTone(far, t, 0.3, "sine", 100, 40, 0.08 * v);
+        break;
+      case "gurgle":
+        for (let i = 0; i < 9; i++) {
+          const at = t + i * (0.07 + Math.random() * 0.08);
+          this.poolTone(far, at, 0.09, "sine", 120 + Math.random() * 160, 260 + Math.random() * 200, 0.06 * v, 0.01);
+        }
+        break;
+      case "boom":
+        this.poolTone(far, t, 2.4, "sine", 48, 26, 0.35 * v, 0.05);
+        this.poolBurst(far, t, 2.2, "lowpass", 200, 60, 0.7, 0.2 * v, 0.05);
+        break;
+    }
+  }
+
+  /**
+   * Surfacing face to face with it: not a jolt, a swell — the sub rises and
+   * a held, detuned chord blooms out of the room tone.
+   */
+  public playPoolStinger() {
+    if (!this.ctx || !this.masterGain) return;
+    const t = this.ctx.currentTime;
+    const v = this.settings.volumeSfx;
+    const out = this.poolOut(0, 1.6, 7);
+    this.poolTone(out, t, 4.5, "sine", 36, 30, 0.45 * v, 1.2);
+    for (const f of [146.8, 155.6, 220.9]) this.poolTone(out, t + 0.2, 4.2, "sawtooth", f, f * 0.985, 0.018 * v, 1.6);
+    this.poolBurst(out, t, 4, "bandpass", 900, 600, 6, 0.04 * v, 2);
+  }
+
   /**
    * Destroys the audio engine.
    */
   public destroy() {
     try {
       this.stopSpaceAmbience();
+      this.stopPoolAmbience();
       this.stopTownAmbience();
       this.stopFunMusic(true);
       this.stopAlarm();

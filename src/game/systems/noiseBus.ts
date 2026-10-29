@@ -14,7 +14,8 @@
  * onWaterDrip callback and updateLights' flicker-buzz gating).
  */
 
-export type NoiseSource = "footstep" | "prop";
+/** "water": something moving through the Poolrooms' water (strokes, splashes, wading, bubbles); "fall": a body landing from a height. */
+export type NoiseSource = "footstep" | "prop" | "water" | "fall";
 
 export interface NoiseEvent {
   x: number;
@@ -28,6 +29,8 @@ export interface NoiseEvent {
 
 export class NoiseBus {
   private events: NoiseEvent[] = [];
+  /** The engine clock as of the last prune(): "now", for listeners comparing ages. */
+  now = 0;
   /** Events older than this are forgotten — roughly how long a sound "lingers" perceptually. */
   private static readonly MAX_AGE_S = 4.0;
 
@@ -37,6 +40,7 @@ export class NoiseBus {
 
   /** Drops events older than MAX_AGE_S. Call once per frame (authority only) before querying. */
   prune(nowS: number) {
+    this.now = nowS;
     if (this.events.length === 0) return;
     const cutoff = nowS - NoiseBus.MAX_AGE_S;
     this.events = this.events.filter((e) => e.atS >= cutoff);

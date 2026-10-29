@@ -24,7 +24,7 @@ const INITIAL_FEN = toFen(initialPosition());
 import { LOBBY_LEVEL, LEVEL_1, MAIN_LEVELS, FUN_LEVEL, SPACE_LEVEL, HOTEL_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, OLD_TOWN_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, ENDING_LEVELS, nextMainLevel } from "./src/game/levels/constants";
 import { applyHotelAction, createHotelState, createHotelWorldState, parseHotelAction, type HotelState, type HotelWorldState } from "./src/shared/hotel";
 import { HOTEL_EXIT, hotelCenter } from "./src/game/levels/hotelLayout";
-import { POOL_ROOM_COUNT, POOL_VALVE_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./src/game/poolroomsPuzzle";
+import { POOL_LEVER_COUNT, POOL_ROOM_COUNT, POOL_VALVE_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./src/game/poolroomsPuzzle";
 import { Leaderboard } from "./src/server/leaderboard";
 
 // ---------------------------------------------------------------------------
@@ -187,6 +187,8 @@ interface Room {
   poolValvesTurned: Set<number>;
   poolValveRevision: number;
   poolVigiaIntellect: number;
+  /** Part 2's levers pulled so far (idempotent; all of them open the way to Part 3). */
+  poolLevers: Set<number>;
   /** Level FUN puzzle facts announced so far ("kind:index"), replayed to explorers who arrive later. */
   funFacts: Set<string>;
   /**
@@ -365,6 +367,7 @@ function poolroomsSnapshot(room: Room) {
     stage,
     solved: stage === POOL_ROOM_COUNT,
     vigiaIntellect: room.poolVigiaIntellect,
+    levers: [...room.poolLevers].sort((a, b) => a - b),
   };
 }
 
@@ -372,6 +375,7 @@ function resetPoolroomsState(room: Room) {
   room.poolValvesTurned.clear();
   room.poolValveRevision++;
   room.poolVigiaIntellect = 0;
+  room.poolLevers.clear();
 }
 
 /** Applies one serialized valve attempt and returns the resulting full state. */
@@ -789,6 +793,7 @@ async function startServer() {
             megIds: new Set(),
             chess: { seats: { w: "", b: "" }, game: null, rev: 0 },
             poolVigiaIntellect: 0,
+            poolLevers: new Set(),
             run: null,
           };
           rooms.set(roomKey, room);
@@ -1007,6 +1012,19 @@ async function startServer() {
         if (level !== POOLROOMS_LEVEL || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= POOL_VALVE_COUNT) return;
         const state = applyPoolValveTurn(room, index);
         broadcastToLevel(room, level, { type: "poolrooms_state", level, ...state });
+        return;
+      }
+
+      // Poolrooms Part 2: three idempotent levers; the full state goes back out like a valve turn.
+      if (type === "pool_lever") {
+        const level = conn.player.level;
+        const index = data.index;
+        if (level !== POOLROOMS_LEVEL || data.level !== level || typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= POOL_LEVER_COUNT) return;
+        if (!room.poolLevers.has(index)) {
+          room.poolLevers.add(index);
+          room.poolValveRevision++;
+        }
+        broadcastToLevel(room, level, { type: "poolrooms_state", level, ...poolroomsSnapshot(room) });
         return;
       }
 
