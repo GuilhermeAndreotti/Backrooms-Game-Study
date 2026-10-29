@@ -2,21 +2,19 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * O VIGIA: an enormous creature with extremely long limbs that locks onto the
- * explorers from the beginning of Poolrooms. It sees across the flooded halls,
- * follows at walking pace and becomes more dangerous as the valve puzzle feeds
- * it information.
+ * O VIGIA: an enormous creature with extremely long limbs, the Poolrooms'
+ * keeper. One lives in each of the level's three parts. Its behaviour there —
+ * patrolling, listening, chasing, losing you and searching, stalking the foot
+ * of whatever you climbed, shadowing a diver along the edge — is its own
+ * state machine, mobs/vigiaBrain.ts, which WanderingEntity runs instead of
+ * sense() below. This file is its body: build, animation and the poses the
+ * brain streams to every client (MobSenseResult.pose):
  *
- * Scope note: the design doc's real attack — closing/blocking corridors,
- * pulling the player off their route — needs the existing MovableProp/
- * obstacle-registration system plus a new server-validated message (the
- * same shape as the box_push relay), which is GameEngine/server
- * orchestration work, not something a MobDefinition's sense() can express
- * on its own (sense() only returns movement/state, no side-effect
- * messages). Deliberately left for the level that actually gives it a
- * corridor worth blocking. For now, proximity behaves like every other
- * mob (the engine's catch check is a flat per-frame distance test with no
- * per-type override yet), while its wide sight range supplies the pressure.
+ *   0 calm · 1 listening (head cocked) · 2 hunting (the grab cycle) ·
+ *   3 reaching up at someone out of its reach; +4 once Part 1's valve puzzle
+ *   has "transformed" it (the second pair of arms unfolds).
+ *
+ * sense() remains only as a fallback for a Vigia outside the Poolrooms.
  */
 
 import * as THREE from "three";
@@ -26,9 +24,8 @@ import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
 import { animateBiped, rot } from "./anim";
 
-/** The initial sight range covers the spawn-to-Vigia route across Poolrooms. */
-const INITIAL_VISION_RANGE = 180;
-/** Each disturbed valve expands the range, up to the full level width. */
+/** Fallback sense() (outside the Poolrooms): how far it notices someone. */
+const INITIAL_VISION_RANGE = 24;
 const INTELLECT_VISION_GAIN = 14;
 /** Fast enough to follow a walking explorer, but sprinting can still create space. */
 const INITIAL_CHASE_SPEED = 2.25;
@@ -42,7 +39,10 @@ export const vigia: MobDefinition = {
   baseHeight: 1.65,
   strideLength: 0.9,
   stepWeight: 1,
-  facesViewer: true,
+  // On its rounds it looks where it walks; once it's onto someone it turns to them.
+  calmIgnoresViewer: true,
+  // Long arms: it grabs from a little further than most (its height reach is VIGIA_REACH_UP).
+  catchRadius: 1.7,
   bobFreq: 0.6, bobAmp: 0.03, // almost imperceptible — reads as "immobile"
   speechBubbleLocalY: 1.1,
   forcedChaseSpeed: 2.2, // even under forced-chase rules, stays slower than the rest of the roster
@@ -160,11 +160,16 @@ export const vigia: MobDefinition = {
     animateBiped(ctx, { stride: 0.2, armSwing: 0, knee: 0.4, elbow: 0, lean: 0.05, bounce: 0.02, breathe: 0.015, headReach: 1.3 });
     const j = ctx.joints;
     const { time, move, observe, pose, chasing } = ctx;
-    const transformed = pose === 3;
-    const intelligenceReach = transformed ? 1.3 : pose === 2 ? 1 : pose === 1 ? 0.55 : 0;
+    const transformed = pose >= 4;
+    const mood = pose & 3;
+    // Listening: the head cocks to one side and holds there.
+    if (mood === 1 && j.head) j.head.rotation.z += 0.28 + Math.sin(time * 0.6) * 0.05;
+    const intelligenceReach = (mood === 3 ? 1.2 : mood === 2 ? 1 : mood === 1 ? 0.3 : 0) + (transformed ? 0.3 : 0);
+    // Reaching up the side of a block at someone it can't get to: both arms raised, fingers working.
+    const lift = mood === 3 ? 0.75 + Math.sin(time * 1.4) * 0.12 : 0;
     // A slow, asymmetric grab cycle. It only fully extends after the Vigia
     // has learned enough from the valves, making the escalation readable.
-    const grabCycle = chasing ? Math.max(0, Math.sin(time * (1.7 + intelligenceReach * 0.8))) : 0;
+    const grabCycle = chasing || mood === 3 ? Math.max(0, Math.sin(time * (1.7 + intelligenceReach * 0.8))) : 0;
     const reach = intelligenceReach * (0.45 + grabCycle * 0.55);
     for (const [n, s] of [["L", 1], ["R", -1]] as const) {
       const creep = Math.sin(time * 0.9 + (s > 0 ? 0 : 2.4));
@@ -173,7 +178,7 @@ export const vigia: MobDefinition = {
       // +Z, directly in front of the torso. The forearms then fold together
       // like a closing trap instead of remaining spread across the corridor.
       const forwardFold = 0.58 + armReach * 0.38;
-      rot(j[`arm${n}`], creep * 0.06 - armReach * 0.28, s * (forwardFold + creep * 0.06), -s * (0.12 + observe * 0.1 + armReach * 0.28));
+      rot(j[`arm${n}`], creep * 0.06 - armReach * 0.28 - lift * 0.4, s * (forwardFold + creep * 0.06), -s * (0.12 + observe * 0.1 + armReach * 0.28 + lift));
       rot(j[`fore${n}`], -0.18 - armReach * 0.58, s * (0.28 + Math.sin(time * 1.3 + s) * 0.07), -s * (0.16 + armReach * 0.52));
       rot(j[`hand${n}`], 0.16 + armReach * 0.42, 0, -s * (0.28 + armReach * 0.4));
       for (let finger = 0; finger < 4; finger++) {
@@ -195,23 +200,19 @@ export const vigia: MobDefinition = {
   },
 
   sense(ctx) {
-    // Every wheel teaches it a little; a botched sequence exposes the whole
-    // route. It starts with enough vision to acquire the explorer immediately,
-    // then becomes harder to shake as the puzzle progresses.
+    // Fallback only (see the file comment): a plain sight-range watcher.
     const intellect = ctx.map.poolVigiaIntellect;
-    // Mistakes can awaken it early; draining the final sector guarantees the
-    // transformation even for a flawless team.
     const transformed = intellect >= 0.64 || ctx.map.poolroomsSolved;
-    const awareness = INITIAL_VISION_RANGE + intellect * INTELLECT_VISION_GAIN + (transformed ? 6 : 0);
+    const awareness = INITIAL_VISION_RANGE + intellect * INTELLECT_VISION_GAIN;
     if (ctx.distanceMeters < awareness) {
       return {
         chasing: true,
-        speed: transformed ? 3.35 : INITIAL_CHASE_SPEED + intellect * INTELLECT_SPEED_GAIN,
-        agitated: intellect > 0.28,
-        pose: transformed ? 3 : intellect > 0.72 ? 2 : intellect > 0.35 ? 1 : 0,
+        speed: transformed ? 3.0 : INITIAL_CHASE_SPEED + intellect * INTELLECT_SPEED_GAIN,
+        agitated: true,
+        pose: 2 + (transformed ? 4 : 0),
       };
     }
-    return { chasing: false, speed: STILL_SPEED + intellect * 0.25, agitated: transformed, pose: transformed ? 3 : 0 };
+    return { chasing: false, speed: STILL_SPEED + intellect * 0.25, agitated: false, pose: transformed ? 4 : 0 };
   },
 
   speech(ctx) {

@@ -29,6 +29,11 @@ import * as Surfaces from "./surfaceTextures";
 import type { OfficeSkyline } from "./officeWindow";
 import { POOL_FLOOR_Y, WATER_SURFACE_Y, createPoolTileMaterial, createWallTileMaterial, createWaterMaterial } from "./Water";
 import { POOL_ROOM_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./poolroomsPuzzle";
+import {
+  POOL_DEEP_DOOR, POOL_GATE, POOL_GRID, POOL_LEVER_SLOTS, POOL_PART1, POOL_STATION_EXIT, POOL_TOWN_EXIT, PoolPart, SWIM_DEPTH, VIGIA_MAX_FLOOR, VIGIA_MAX_WADE,
+  forEachPoolCell, poolCellAt, poolPartAt, poolStairHeight,
+} from "./levels/poolLayout";
+import { PoolWorld } from "./levels/poolWorld";
 
 // Deterministic Mulbery32 Random Number Generator
 export class SeededRandom {
@@ -121,7 +126,7 @@ export function gridSizeForLevel(level: number): number {
   if (level === SPACE_LEVEL) return SPACE_GRID; // Level 79: a hand-laid station
   if (level === OLD_TOWN_CONTENT_LEVEL) return TOWN_GRID; // Level 94: a town, its hills and a castle
   if (level === LOBBY_LEVEL) return 16; // the room lobby: small, open-air
-  if (level === 7) return 40; // the Poolrooms — a simpler layout than 1/2, a smaller grid to match
+  if (level === 7) return POOL_GRID; // the Poolrooms: Part 1's halls, then Parts 2 and 3 (levels/poolLayout.ts)
   if (level === 3 || level === 8 || level === 9) return 48;
   return level === 0 ? 64 : 48;
 }
@@ -382,6 +387,7 @@ export class ProceduralMap {
   /** The Level 94 door's daylight view and swinging leaf (opened when the Poolrooms drain). */
   private townDoorView: THREE.Object3D | null = null;
   private townDoorHinge: THREE.Object3D | null = null;
+  private townDoorLight: DynamicLightSource | null = null;
   public townExitZ = -1;
 
   // --- Level 0: secret office door leading to Level G ---------------------
@@ -439,7 +445,14 @@ export class ProceduralMap {
   private readonly poolStairSteps = 6;
   /** Cells LevelDecor already dressed, so wall dividers don't pile onto the same spot. */
   private decoredCells = new Set<string>();
-  private poolExitDoor: THREE.Group | null = null;
+  /** Parts 2 and 3 of the Poolrooms (see levels/poolWorld.ts). */
+  public pool: PoolWorld | null = null;
+  /** The Poolrooms have real heights to climb, fall from and swim in (see PlayerController.updatePoolBody). */
+  public readonly verticalTerrain: boolean;
+  /** Water deeper than this is swum, not waded. */
+  public readonly swimDepth = SWIM_DEPTH;
+  /** The shutter on the Poolrooms' exit landing has been rolled up (local: whoever reached it). */
+  public poolExitOpen = false;
   private poolValveMeshes = new Map<number, THREE.Group>();
   /** Set by GameEngine right after construction — O Eco (sound-reactive) queries this. Not owned/populated here. */
   public noiseBus: NoiseBus | null = null;
@@ -666,10 +679,12 @@ export class ProceduralMap {
     this.floorHeight = Array.from({ length: gs }, () => new Array(gs).fill(0));
 
     this.prng = new SeededRandom(seed);
+    this.verticalTerrain = this.level === 7;
     this.initMaterials();
     if (this.level === HOTEL_LEVEL) this.hotel = this.createHotelWorld();
     if (this.level === FUN_CONTENT_LEVEL) this.fun = this.createFunWorld();
     if (this.level === SPACE_LEVEL) this.space = this.createSpaceWorld();
+    if (this.level === 7) this.pool = this.createPoolWorld();
     if (this.level === OLD_TOWN_CONTENT_LEVEL) this.town = this.createTownWorld();
     this.generateGrid();
     this.findExitPath();
@@ -1728,8 +1743,7 @@ export class ProceduralMap {
 
     } else if (this.level === 7) {
       this.carveLevel7();
-      // The drained Poolrooms' other way out: a door onto a sunny road (Level 94).
-      this.carvePoolTownExit();
+      this.carvePoolDepths();
     } else {
       // LEVEL 0: The Lobby (Classic Backrooms yellow partitions forming a modular wall-labyrinth)
       // Populate as walkable hallway/open area space by default
@@ -2157,33 +2171,9 @@ export class ProceduralMap {
     this.secretGridZ = pick.z + pick.dz * len;
   }
 
-  /**
-   * The Poolrooms' way out to Level 94 — the alternative to the station door
-   * and Level 79: a dry one-cell nook cut into the north wall of the third
-   * hall, somewhere along it by seed, with an exit door standing open onto
-   * daylight at its end. Shut (a plain wall) until the halls are drained.
-   */
-  private carvePoolTownExit() {
-    const z = 1;
-    const options: number[] = [];
-    for (let x = 27; x <= this.gridSize - 4; x++) {
-      if (this.grid[x][z] !== CellType.SOLID || this.grid[x][z + 1] !== CellType.WATER_ROOM) continue;
-      if (this.grid[x - 1][z + 1] === CellType.SOLID || this.grid[x + 1][z + 1] === CellType.SOLID) continue;
-      // Never on top of a valve or a clue mark someone needs to reach.
-      if (this.valvePositions.some(([vx, vz]) => Math.abs(vx - x) <= 1 && Math.abs(vz - (z + 1)) <= 1)) continue;
-      if (this.poolClueCells.has(`${x},${z + 1}`)) continue;
-      options.push(x);
-    }
-    if (options.length === 0) return;
-    const x = options[Math.floor(new SeededRandom(this.seed * 17 + 9494).next() * options.length)];
-    this.grid[x][z] = CellType.ROOM_SMALL;
-    this.townExitX = x;
-    this.townExitZ = z;
-  }
-
-  /** Whether a world position has reached the Poolrooms' Level 94 door (the far end of its nook; only once drained). */
+  /** Whether a world position has reached the Poolrooms' Level 94 door (the far end of its nook; once the landing's shutter is up). */
   public atTownExitDoor(x: number, z: number): boolean {
-    if (this.townExitX < 0 || !this.poolroomsSolved) return false;
+    if (this.townExitX < 0 || !this.poolExitOpen) return false;
     const cs = this.cellSize;
     return Math.floor(x / cs) === this.townExitX && Math.floor(z / cs) === this.townExitZ && z < this.townExitZ * cs + 1.7;
   }
@@ -2331,7 +2321,8 @@ export class ProceduralMap {
    * its level-7-only "loses you if you're submerged in WATER_ROOM" weakness.
    */
   private carveLevel7() {
-    const lo = 2, hi = this.gridSize - 3;
+    // Part 1 only: Parts 2 and 3 lie east and south of it (carvePoolDepths).
+    const lo = POOL_PART1.x1, hi = POOL_PART1.x2;
 
     // Four flooded halls chained by wide doorways, each with its own water level.
     for (let x = lo; x <= hi; x++) {
@@ -2440,10 +2431,64 @@ export class ProceduralMap {
     }
     this.poolZoneSurface = this.poolZoneBaseDepth.map((_, zone) => this.poolZoneTargetSurface(zone, 0));
 
-    // The exit is set into the partition wall of the deepest hall.
-    this.exitGridX = 28;
-    this.exitGridZ = 21;
-    this.grid[this.exitGridX][this.exitGridZ] = CellType.WATER_ROOM;
+  }
+
+  /**
+   * Parts 2 and 3 (levels/poolLayout.ts): every authored cell becomes a
+   * walkable grid cell — water or dry — and the two ways out, Level 79's
+   * station door and Level 94's road, wait side by side past the last
+   * crossing.
+   */
+  private carvePoolDepths() {
+    forEachPoolCell((gx, gz, cell) => {
+      this.grid[gx][gz] = cell.water !== null ? CellType.WATER_ROOM : CellType.ROOM_SMALL;
+      this.floorHeight[gx][gz] = cell.floor;
+    });
+    this.exitGridX = POOL_STATION_EXIT.x;
+    this.exitGridZ = POOL_STATION_EXIT.z;
+    this.townExitX = POOL_TOWN_EXIT.x;
+    this.townExitZ = POOL_TOWN_EXIT.z;
+  }
+
+  /** Which of the Poolrooms' three parts a world position is in (0 elsewhere / other levels). */
+  public poolPartAt(worldX: number, worldZ: number): PoolPart | 0 {
+    if (this.level !== 7) return 0;
+    return poolPartAt(Math.floor(worldX / this.cellSize), Math.floor(worldZ / this.cellSize));
+  }
+
+  /**
+   * Whether the Vigia of `part` can stand on (gx, gz): its own part, the
+   * floor (never a block, stair or ladder), and water no deeper than it wades.
+   */
+  public vigiaMayStand(gx: number, gz: number, part: PoolPart): boolean {
+    if (poolPartAt(gx, gz) !== part) return false;
+    const cell = poolCellAt(gx, gz);
+    if (!cell) return part === 1 && this.grid[gx]?.[gz] !== undefined && this.grid[gx][gz] !== CellType.SOLID;
+    // Part 3: the hall over the drowned labyrinth (never down in it).
+    if (cell.part === 3) return cell.kind === "hall" || cell.deck !== undefined;
+    if (cell.stair || cell.floor > VIGIA_MAX_FLOOR) return false;
+    return cell.water === null || cell.water - cell.floor <= VIGIA_MAX_WADE;
+  }
+
+  /**
+   * Where a monster standing at (x, z) has its feet: the floor, except over
+   * Part 3's drowned corridors, where it walks the hall on their roof.
+   */
+  public standHeightAt(worldX: number, worldZ: number): number {
+    if (this.level === 7) {
+      const deck = poolCellAt(Math.floor(worldX / this.cellSize), Math.floor(worldZ / this.cellSize))?.deck;
+      if (deck !== undefined) return deck;
+    }
+    return this.getFloorHeightAt(worldX, worldZ);
+  }
+
+  /** Part 2's levers pulled so far (room state, from the server's snapshot). */
+  public poolLevers: ReadonlySet<number> = new Set();
+  public get poolLeversOpen(): boolean { return this.poolLevers.size >= POOL_LEVER_SLOTS; }
+
+  public setPoolLevers(pulled: ReadonlySet<number>) {
+    this.poolLevers = new Set(pulled);
+    this.pool?.setLevers(this.poolLevers);
   }
 
   /** Which of the Poolrooms' four halls (0 = start hall … 3 = exit hall) a cell belongs to. */
@@ -2461,7 +2506,7 @@ export class ProceduralMap {
 
   /** A flooded hall too deep to wade is closed to anyone not already standing in it. */
   private isPoolCellBlocked(gx: number, gz: number): boolean {
-    if (this.level !== 7 || this.grid[gx]?.[gz] !== CellType.WATER_ROOM) return false;
+    if (this.level !== 7 || this.grid[gx]?.[gz] !== CellType.WATER_ROOM || poolPartAt(gx, gz) !== 1) return false;
     const zone = this.poolZoneOf(gx, gz);
     if (zone === this.poolPlayerZone) return false;
     return this.poolZoneSurface[zone] - POOL_FLOOR_Y > this.poolWadeMaxDepth;
@@ -2684,6 +2729,22 @@ export class ProceduralMap {
       addObstacle: (gx, gz, x, z, radius) => { this.addObstacle(gx, gz, x, z, radius); },
       pushFixture: (fixture) => { this.lightFixtures.push({ ...this.plainTubeMaterials(), ...fixture }); },
       ...this.plainTubeMaterials(),
+    });
+  }
+
+  private createPoolWorld(): PoolWorld {
+    this.decorKit ??= { geo: (key, build) => this.sharedGeo(key, build), mat: (key, build) => this.sharedMat(key, build), wallTile: this.wallMaterial, track: (texture) => { this.sharedTextures.push(texture); } };
+    return new PoolWorld({
+      kit: this.decorKit,
+      seed: this.seed,
+      registerLight: (...args) => this.registerLight(...args),
+      part1Floor: (gx, gz) => {
+        const cell = this.grid[gx]?.[gz];
+        if (cell === undefined || cell === CellType.SOLID) return null;
+        return cell === CellType.WATER_ROOM ? POOL_FLOOR_Y : 0;
+      },
+      stationDoor: () => this.buildStationDoor(),
+      townDoor: (group, gx, gz, posX, floorY) => this.buildTownExitDoor(group, gx, gz, posX, floorY),
     });
   }
 
@@ -3030,9 +3091,13 @@ export class ProceduralMap {
     light(0, 1.5, wallZ + 0.7, 0xe8f0ff, 1.5, 6);
   }
 
-  private buildTownExitDoor(group: THREE.Group, gx: number, gz: number, posX: number) {
+  private buildTownExitDoor(parent: THREE.Group, gx: number, gz: number, posX: number, floorY = 0) {
     const cs = this.cellSize;
     const wallZ = gz * cs;
+    // Built as if its floor were at 0, then carried up onto the floor it stands on.
+    const group = new THREE.Group();
+    group.position.y = floorY;
+    parent.add(group);
     const view = this.sharedMat("town_exit_view", () => {
       const c = document.createElement("canvas");
       c.width = 512; c.height = 384;
@@ -3069,7 +3134,7 @@ export class ProceduralMap {
     });
     const doorW = 1.5, doorH = 2.4;
     // Shut (a closed steel door, no daylight) until the Poolrooms are drained.
-    const open = this.poolroomsSolved;
+    const open = this.poolExitOpen;
     const outside = new THREE.Mesh(this.sharedGeo("town_exit_view", () => new THREE.PlaneGeometry(doorW, doorH)), view);
     outside.position.set(posX, doorH / 2, wallZ + 0.07);
     outside.visible = open;
@@ -3100,7 +3165,7 @@ export class ProceduralMap {
     group.add(hinge);
     this.addObstacle(gx, gz, posX - doorW / 2 + 0.2, wallZ + 0.9, 0.22);
     // Daylight spilling in through the doorway.
-    if (open) this.registerLight(gx, gz, posX, 2.2, wallZ + 1.0, 0xfff1d0, 2.4, 10, 1.0);
+    this.townDoorLight = this.registerLight(gx, gz, posX, floorY + 2.2, wallZ + 1.0, 0xfff1d0, open ? 2.4 : 0, 10, 1.0);
     const sign = new THREE.Mesh(this.sharedGeo("town_exit_sign", () => new THREE.PlaneGeometry(1.2, 0.36)),
       this.garageLabel(t("town.sign.exitDoor"), 1.2, 0.36, "#ffffff", "#1f7a3a"));
     sign.position.set(posX, doorH + 0.42, wallZ + 0.08);
@@ -3290,6 +3355,10 @@ export class ProceduralMap {
     if (gx < 0 || gz < 0 || gx >= this.gridSize || gz >= this.gridSize) return 0;
     // Level 94's valley rolls between the hills (flat in town and in the castle).
     if (this.town) return townGroundHeight(worldX, worldZ);
+    if (this.level === 7) {
+      const cell = poolCellAt(gx, gz);
+      if (cell) return cell.stair ? poolStairHeight(cell, gx, gz, worldX, worldZ) : cell.floor;
+    }
     // Flooded pool cells are sunken: wading in is a step down, leaving is a step up.
     let pool = this.grid[gx][gz] === CellType.WATER_ROOM ? POOL_FLOOR_Y : 0;
     const stair = this.level === 7 ? this.poolStairCells.get(`${gx},${gz}`) : undefined;
@@ -3308,9 +3377,55 @@ export class ProceduralMap {
 
   /** Whether a world position is standing in a flooded pool cell. */
   public isWaterAt(worldX: number, worldZ: number): boolean {
+    if (this.level === 7) return this.waterSurfaceAt(worldX, worldZ) !== null;
     const gx = Math.floor(worldX / this.cellSize);
     const gz = Math.floor(worldZ / this.cellSize);
-    return this.grid[gx]?.[gz] === CellType.WATER_ROOM && !(this.level === 7 && this.poolroomsSolved);
+    return this.grid[gx]?.[gz] === CellType.WATER_ROOM;
+  }
+
+  /** The water surface (world Y) over a position, or null where it's dry (Part 1 once drained). */
+  public waterSurfaceAt(worldX: number, worldZ: number): number | null {
+    const gx = Math.floor(worldX / this.cellSize);
+    const gz = Math.floor(worldZ / this.cellSize);
+    if (this.grid[gx]?.[gz] !== CellType.WATER_ROOM) return null;
+    if (this.level !== 7) return WATER_SURFACE_Y;
+    const cell = poolCellAt(gx, gz);
+    if (cell) return cell.water;
+    if (this.poolroomsSolved) return null;
+    return this.poolZoneSurface[this.poolZoneOf(gx, gz)] ?? WATER_SURFACE_Y;
+  }
+
+  /** Underside of a roof dipping into the water over a position (Infinity: open above). */
+  public ceilingAt(worldX: number, worldZ: number): number {
+    if (this.level !== 7) return Infinity;
+    return poolCellAt(Math.floor(worldX / this.cellSize), Math.floor(worldZ / this.cellSize))?.ceil ?? Infinity;
+  }
+
+  /**
+   * The Poolrooms' height-aware body collision, on top of checkCollision: a
+   * cell whose floor is above `maxFootY` is a ledge you can't get onto from
+   * here, one whose roof is below `headY` a ceiling you'd hit, and bars stop
+   * explorers (the Vigia's corridors). Parts 2/3 only; false elsewhere.
+   */
+  public blocksBody(x: number, z: number, radius: number, maxFootY: number, headY: number): boolean {
+    if (!this.verticalTerrain) return false;
+    const cs = this.cellSize;
+    for (let gx = Math.floor((x - radius) / cs); gx <= Math.floor((x + radius) / cs); gx++) {
+      for (let gz = Math.floor((z - radius) / cs); gz <= Math.floor((z + radius) / cs); gz++) {
+        const cell = poolCellAt(gx, gz);
+        if (!cell) continue;
+        let top = cell.floor;
+        if (cell.stair) {
+          // A stair's height where you'd meet it: your position clamped into its cell.
+          const cx = Math.max(gx * cs + 0.01, Math.min((gx + 1) * cs - 0.01, x));
+          const cz = Math.max(gz * cs + 0.01, Math.min((gz + 1) * cs - 0.01, z));
+          top = poolStairHeight(cell, gx, gz, cx, cz);
+        }
+        if (top > maxFootY) return true;
+        if (cell.ceil < headY) return true;
+      }
+    }
+    return false;
   }
 
   private echoCache = new Map<string, number>();
@@ -3532,9 +3647,10 @@ export class ProceduralMap {
         if (this.level === 9 && !this.level4DoorOpen && gx === this.level4DoorX && gz === this.level4DoorZ) {
           return true;
         }
-        if (this.level === 7 && !this.poolroomsSolved && gx === this.exitGridX && gz === this.exitGridZ) {
-          return true;
-        }
+        // The Poolrooms: Part 1's grate stays down until the halls drain; the exit nooks stay shuttered until opened.
+        if (this.level === 7 && !this.poolroomsSolved && gx === POOL_GATE.x && gz === POOL_GATE.z) return true;
+        if (this.level === 7 && !this.poolLeversOpen && gx === POOL_DEEP_DOOR.x && gz === POOL_DEEP_DOOR.z) return true;
+        if (this.level === 7 && !this.poolExitOpen && ((gx === POOL_STATION_EXIT.x && gz === POOL_STATION_EXIT.z) || (gx === POOL_TOWN_EXIT.x && gz === POOL_TOWN_EXIT.z))) return true;
         // Level FUN's doors: a shut one fills its whole cell.
         if (this.fun && this.fun.isGateClosed(gx, gz)) return true;
         if (this.hotel?.blocksMovement(gx, gz)) return true;
@@ -3844,58 +3960,6 @@ export class ProceduralMap {
     group.add(water);
     this.poolWaterMeshes.push(water);
 
-    if (gx === this.exitGridX && gz === this.exitGridZ) {
-      // The way on to Level 79: a white metal station door, with a window full of space.
-      const door = new THREE.Group();
-      const edgeZ = -this.cellSize / 2;
-      const frameMat = this.sharedMat("pool_exit_frame_white", () => new THREE.MeshStandardMaterial({ color: 0xc9d0d6, metalness: 0.6, roughness: 0.35 }));
-      const leafMat = this.sharedMat("pool_exit_leaf_white", () => new THREE.MeshStandardMaterial({ color: 0xeef2f5, metalness: 0.45, roughness: 0.3 }));
-      const trimMat = this.sharedMat("pool_exit_trim", () => new THREE.MeshStandardMaterial({ color: 0x8a939b, metalness: 0.7, roughness: 0.3 }));
-      const frame = new THREE.Mesh(this.sharedGeo("pool_exit_frame_w", () => new THREE.BoxGeometry(1.9, 2.4, 0.18)), frameMat);
-      frame.position.set(0, POOL_FLOOR_Y + 1.2, edgeZ + 0.09); door.add(frame);
-      const leaf = new THREE.Mesh(this.sharedGeo("pool_exit_leaf_w", () => new THREE.BoxGeometry(1.5, 2.1, 0.08)), leafMat);
-      leaf.position.set(0, POOL_FLOOR_Y + 1.08, edgeZ + 0.2); door.add(leaf);
-      // Pressed panel lines and a handle, so it reads as a hatch rather than a slab.
-      for (const y of [0.45, 1.2]) {
-        const seam = new THREE.Mesh(this.sharedGeo("pool_exit_seam", () => new THREE.BoxGeometry(1.3, 0.025, 0.02)), trimMat);
-        seam.position.set(0, POOL_FLOOR_Y + y, edgeZ + 0.25); door.add(seam);
-      }
-      const handle = new THREE.Mesh(this.sharedGeo("pool_exit_handle", () => new THREE.BoxGeometry(0.06, 0.34, 0.06)), trimMat);
-      handle.position.set(0.55, POOL_FLOOR_Y + 1.0, edgeZ + 0.27); door.add(handle);
-      // The window: a thick ring of frame around a pane of stars and a far-off, orange-rimmed dark.
-      const windowFrame = new THREE.Mesh(this.sharedGeo("pool_exit_window_frame", () => new THREE.TorusGeometry(0.3, 0.05, 10, 28)), trimMat);
-      windowFrame.position.set(0, POOL_FLOOR_Y + 1.62, edgeZ + 0.25); door.add(windowFrame);
-      const spaceMat = this.sharedMat("pool_exit_space", () => {
-        const c = document.createElement("canvas");
-        c.width = c.height = 256;
-        const ctx = c.getContext("2d")!;
-        ctx.fillStyle = "#020309"; ctx.fillRect(0, 0, 256, 256);
-        const rng = new SeededRandom(7979);
-        for (let i = 0; i < 140; i++) {
-          const b = 120 + Math.floor(rng.next() * 135);
-          ctx.fillStyle = `rgb(${b},${b},${Math.min(255, b + 20)})`;
-          ctx.fillRect(rng.next() * 256, rng.next() * 256, rng.next() < 0.1 ? 2 : 1, 1);
-        }
-        const glow = ctx.createRadialGradient(170, 150, 14, 170, 150, 70);
-        glow.addColorStop(0, "rgba(255,190,110,0.95)");
-        glow.addColorStop(0.3, "rgba(255,120,40,0.45)");
-        glow.addColorStop(1, "rgba(255,90,20,0)");
-        ctx.fillStyle = glow; ctx.fillRect(0, 0, 256, 256);
-        ctx.fillStyle = "#000"; ctx.beginPath(); ctx.arc(170, 150, 16, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = "rgba(90,160,255,0.9)"; ctx.beginPath(); ctx.arc(205, 118, 6, 0, Math.PI * 2); ctx.fill();
-        const tex = new THREE.CanvasTexture(c);
-        tex.colorSpace = THREE.SRGBColorSpace;
-        this.sharedTextures.push(tex);
-        return new THREE.MeshBasicMaterial({ map: tex, fog: false });
-      });
-      const pane = new THREE.Mesh(this.sharedGeo("pool_exit_pane", () => new THREE.CircleGeometry(0.3, 28)), spaceMat);
-      pane.position.set(0, POOL_FLOOR_Y + 1.62, edgeZ + 0.245); door.add(pane);
-      door.position.set(posX, 0, posZ);
-      door.visible = this.poolroomsSolved;
-      group.add(door);
-      this.poolExitDoor = door;
-    }
-
     // The answer is split across three faded tile marks in the sector, so players
     // must find the matching symbol and its sequence number before turning valves.
     const clue = this.poolClueCells.get(`${gx},${gz}`);
@@ -3921,6 +3985,58 @@ export class ProceduralMap {
     }
   }
 
+  /**
+   * The way on to Level 79: a white metal station door with a window full of
+   * space, local to a cell centre — the door on its north edge, floor at y = 0.
+   */
+  private buildStationDoor(): THREE.Group {
+    const door = new THREE.Group();
+    const edgeZ = -this.cellSize / 2;
+    const frameMat = this.sharedMat("pool_exit_frame_white", () => new THREE.MeshStandardMaterial({ color: 0xc9d0d6, metalness: 0.6, roughness: 0.35 }));
+    const leafMat = this.sharedMat("pool_exit_leaf_white", () => new THREE.MeshStandardMaterial({ color: 0xeef2f5, metalness: 0.45, roughness: 0.3 }));
+    const trimMat = this.sharedMat("pool_exit_trim", () => new THREE.MeshStandardMaterial({ color: 0x8a939b, metalness: 0.7, roughness: 0.3 }));
+    const frame = new THREE.Mesh(this.sharedGeo("pool_exit_frame_w", () => new THREE.BoxGeometry(1.9, 2.4, 0.18)), frameMat);
+    frame.position.set(0, 1.2, edgeZ + 0.09); door.add(frame);
+    const leaf = new THREE.Mesh(this.sharedGeo("pool_exit_leaf_w", () => new THREE.BoxGeometry(1.5, 2.1, 0.08)), leafMat);
+    leaf.position.set(0, 1.08, edgeZ + 0.2); door.add(leaf);
+    // Pressed panel lines and a handle, so it reads as a hatch rather than a slab.
+    for (const y of [0.45, 1.2]) {
+      const seam = new THREE.Mesh(this.sharedGeo("pool_exit_seam", () => new THREE.BoxGeometry(1.3, 0.025, 0.02)), trimMat);
+      seam.position.set(0, y, edgeZ + 0.25); door.add(seam);
+    }
+    const handle = new THREE.Mesh(this.sharedGeo("pool_exit_handle", () => new THREE.BoxGeometry(0.06, 0.34, 0.06)), trimMat);
+    handle.position.set(0.55, 1.0, edgeZ + 0.27); door.add(handle);
+    // The window: a thick ring of frame around a pane of stars and a far-off, orange-rimmed dark.
+    const windowFrame = new THREE.Mesh(this.sharedGeo("pool_exit_window_frame", () => new THREE.TorusGeometry(0.3, 0.05, 10, 28)), trimMat);
+    windowFrame.position.set(0, 1.62, edgeZ + 0.25); door.add(windowFrame);
+    const spaceMat = this.sharedMat("pool_exit_space", () => {
+      const c = document.createElement("canvas");
+      c.width = c.height = 256;
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = "#020309"; ctx.fillRect(0, 0, 256, 256);
+      const rng = new SeededRandom(7979);
+      for (let i = 0; i < 140; i++) {
+        const b = 120 + Math.floor(rng.next() * 135);
+        ctx.fillStyle = `rgb(${b},${b},${Math.min(255, b + 20)})`;
+        ctx.fillRect(rng.next() * 256, rng.next() * 256, rng.next() < 0.1 ? 2 : 1, 1);
+      }
+      const glow = ctx.createRadialGradient(170, 150, 14, 170, 150, 70);
+      glow.addColorStop(0, "rgba(255,190,110,0.95)");
+      glow.addColorStop(0.3, "rgba(255,120,40,0.45)");
+      glow.addColorStop(1, "rgba(255,90,20,0)");
+      ctx.fillStyle = glow; ctx.fillRect(0, 0, 256, 256);
+      ctx.fillStyle = "#000"; ctx.beginPath(); ctx.arc(170, 150, 16, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "rgba(90,160,255,0.9)"; ctx.beginPath(); ctx.arc(205, 118, 6, 0, Math.PI * 2); ctx.fill();
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      this.sharedTextures.push(tex);
+      return new THREE.MeshBasicMaterial({ map: tex, fog: false });
+    });
+    const pane = new THREE.Mesh(this.sharedGeo("pool_exit_pane", () => new THREE.CircleGeometry(0.3, 28)), spaceMat);
+    pane.position.set(0, 1.62, edgeZ + 0.245); door.add(pane);
+    return door;
+  }
+
   /** Applies a synchronized valve state and starts the corresponding drain stage. */
   public setPoolroomsValveState(turned: ReadonlySet<number>, stage: number) {
     this.poolTurned = new Set(turned);
@@ -3933,12 +4049,23 @@ export class ProceduralMap {
         if (mat) { mat.color.setHex(turned.has(index) ? 0x54f4d0 : 0xffb04a); mat.emissive.setHex(turned.has(index) ? 0x167c6e : 0x7a3105); }
       });
     });
-    if (this.poolroomsSolved) {
-      this.toxicWaterCells.clear();
-      if (this.poolExitDoor) this.poolExitDoor.visible = true;
-      if (this.townDoorView) this.townDoorView.visible = true;
-      if (this.townDoorHinge) this.townDoorHinge.rotation.y = -1.75;
-    }
+    if (this.poolroomsSolved) this.toxicWaterCells.clear();
+    this.pool?.setGateOpen(this.poolroomsSolved);
+  }
+
+  /** The exit landing's shutter rolls up: both doors (Level 79 and Level 94) can be taken. */
+  public setPoolExitOpen(open: boolean) {
+    this.poolExitOpen = open;
+    this.pool?.setExitOpen(open);
+    if (this.townDoorView) this.townDoorView.visible = open;
+    if (this.townDoorHinge) this.townDoorHinge.rotation.y = open ? -1.75 : 0;
+    if (this.townDoorLight) this.townDoorLight.intensity = this.townDoorLight.baseIntensity = open ? 2.4 : 0;
+  }
+
+  /** Recolours the Poolrooms' haze bank (the director darkens it in the deeper parts). */
+  public setPoolHaze(color: number) {
+    if (!this.poolCeilingFog) return;
+    for (const layer of this.poolCeilingFog.children) ((layer as THREE.Mesh).material as THREE.MeshBasicMaterial).color.setHex(color);
   }
 
   /**
@@ -4249,6 +4376,8 @@ export class ProceduralMap {
     // Level 79 likewise (see levels/spaceWorld.ts).
     if (this.space && cellType !== CellType.SOLID) return this.space.createCell(gx, gz);
     if (this.hotel && cellType !== CellType.SOLID) return this.hotel.createCell(gx, gz);
+    // The Poolrooms' Parts 2 and 3 likewise (see levels/poolWorld.ts).
+    if (this.pool && cellType !== CellType.SOLID && poolCellAt(gx, gz)) return this.pool.createCell(gx, gz);
     // Level 94 is built whole, not per cell (see levels/townWorld.ts): its cells stay empty.
     if (this.town) return group;
 

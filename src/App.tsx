@@ -169,6 +169,8 @@ export default function App() {
   const [pointerLockedOverride, setPointerLockedOverride] = useState(false);
   const [redRoomExposure, setRedRoomExposure] = useState(0);
   const [toxicWaterExposure, setToxicWaterExposure] = useState(0);
+  /** The Poolrooms: breath left under water (0..1), null while the meter is hidden. */
+  const [breath, setBreath] = useState<number | null>(null);
   const [currentSector, setCurrentSector] = useState("");
   const [inventory, setInventory] = useState<string[]>([]);
   const [activeLoreNote, setActiveLoreNote] = useState<BackroomsLore | null>(null);
@@ -948,6 +950,7 @@ export default function App() {
                     onEscapeTrigger: () => {
                       setRedRoomExposure(0);
                       setToxicWaterExposure(0);
+                      setBreath(null);
                       const engine = engineRef.current;
                       if (!engine) return;
 
@@ -1061,6 +1064,7 @@ export default function App() {
                     onMegProgress: (progress) => setMegProgress(progress),
                     onRedRoomExposureChange: (exp) => setRedRoomExposure(exp),
                     onToxicWaterExposureChange: (exp) => setToxicWaterExposure(exp),
+                    onBreathChange: (value) => setBreath(value),
                     onHUDNotification: (msg) => triggerNotification(msg),
                     onSectorChange: (sec) => setCurrentSector(sec),
                     onInventoryChange: (items) => setInventory(items),
@@ -1683,14 +1687,39 @@ export default function App() {
             />
           )}
 
-          {/* Hydrolitis Plague toxic water vignette (Level 7) */}
-          {currentLevel === 7 && toxicWaterExposure > 0 && (
+          {/* Hydrolitis Plague toxic water vignette (the Poolrooms) */}
+          {currentLevel === POOLROOMS_LEVEL && toxicWaterExposure > 0 && (
             <div
               className="absolute inset-0 pointer-events-none z-30 transition-all duration-300 ease-out"
               style={{
                 background: `radial-gradient(circle, rgba(0,0,0,0) 30%, rgba(74,140,26,${Math.min(0.9, 0.2 + (toxicWaterExposure / 8) * 0.7)}) 100%)`
               }}
             />
+          )}
+
+          {/* The Poolrooms: breath under water — a row of bubbles that burst as the air runs out */}
+          {currentLevel === POOLROOMS_LEVEL && breath !== null && (
+            <div className="absolute bottom-24 left-1/2 z-30 -translate-x-1/2 pointer-events-none select-none font-mono text-center transition-opacity duration-500" style={{ opacity: breath > 0.97 ? 0.35 : 0.9 }}>
+              <div className="flex items-center justify-center gap-1.5">
+                {Array.from({ length: 10 }, (_, i) => {
+                  const fill = Math.max(0, Math.min(1, breath * 10 - i));
+                  const low = breath < 0.3;
+                  return (
+                    <span
+                      key={i}
+                      className="inline-block rounded-full border transition-all duration-200"
+                      style={{
+                        width: 11, height: 11,
+                        borderColor: low ? "rgba(255,120,110,0.75)" : "rgba(190,240,245,0.7)",
+                        background: `rgba(${low ? "255,150,140" : "200,245,250"},${0.15 + fill * 0.6})`,
+                        transform: `scale(${0.55 + fill * 0.45})`,
+                      }}
+                    />
+                  );
+                })}
+              </div>
+              <div className="mt-1 text-[10px] uppercase tracking-[0.3em]" style={{ color: breath < 0.3 ? "#ff9a8e" : "#bfeef3" }}>{t("hud.breath")}</div>
+            </div>
           )}
 
           {/* A panel closed with Esc: the browser won't hand the mouse back without a click */}

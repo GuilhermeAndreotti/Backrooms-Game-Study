@@ -16,6 +16,8 @@ import { resetRig } from "./mobs/anim";
 import { ELECTRICAL_ROOM_LEVEL, LEVEL_2, LIGHTS_OUT_LEVEL, POOLROOMS_LEVEL } from "./levels/constants";
 import { SPACE_DOOR_RANGE, SPACE_PATROL_POINTS, SPACE_RECTS, SpaceRect, spaceCabinAt, spaceDoorAt, spaceSightClear } from "./levels/spaceLayout";
 import { townEntityMayEnter } from "./levels/townLayout";
+import { VigiaBrain, VigiaSelf, VigiaTarget } from "./mobs/vigiaBrain";
+import { POOL_PATROL } from "./levels/poolLayout";
 import {
   ALIEN_CABIN_BAN_SECONDS, ALIEN_CHASE_SPEED, ALIEN_FEEL_RANGE, ALIEN_HEAR_RANGE, ALIEN_LOSE_SECONDS, ALIEN_PATROL_SPEED,
   ALIEN_SEARCH_SECONDS, ALIEN_SEARCH_SPEED, ALIEN_SIGHT_HALF_ANGLE, ALIEN_SIGHT_RANGE,
@@ -95,6 +97,10 @@ export class WanderingEntity {
   public hunting = false;
   /** The explorer it's after is crouched in a closet it hasn't seen through yet. */
   public targetHidden = false;
+  /** The Poolrooms: what the Vigia knows of the explorer it's attending to (GameEngine fills it in before update()). */
+  public vigiaTarget: VigiaTarget | null = null;
+  /** The Poolrooms' Vigia's mind (see mobs/vigiaBrain.ts); null for every other mob and level. */
+  private vigia: VigiaBrain | null = null;
   
   // Grid/logic position
   public gridX: number;
@@ -184,6 +190,7 @@ export class WanderingEntity {
     // Create custom aesthetic mesh
     this.mesh = this.createVisualMesh();
     this.syncWorldPosition();
+    this.setupVigiaBrain();
   }
 
   /**
@@ -359,7 +366,7 @@ export class WanderingEntity {
     let ey = MOB_DEFS[this.type].baseHeight;
 
     // Level 1's sectors are real stacked storeys — stand on this cell's floor.
-    ey += this.map.getFloorHeightAt(wx, wz);
+    ey += this.map.standHeightAt(wx, wz);
 
     this.mesh.position.set(wx, ey, wz);
     this.updateWallClipLook();
@@ -507,7 +514,7 @@ export class WanderingEntity {
 
     // --- Height: floor + hover bob (gait bounce takes over while walking)
     const bobOffset = Math.sin(this.bobTime * def.bobFreq) * def.bobAmp * (1 - this.moveWeight * 0.7);
-    const floorY = this.map.getFloorHeightAt(pos.x, pos.z);
+    const floorY = this.map.standHeightAt(pos.x, pos.z);
     pos.y = floorY + def.baseHeight + bobOffset;
 
     // --- Rig (skipped far away: nobody can read a limb at 40 m)
@@ -696,7 +703,9 @@ export class WanderingEntity {
     // Level 3 ("Lights Out") stalkers are summoned specifically to hunt the
     // player, so they share Level 2's always-chasing behavior.
     const senseDef = MOB_DEFS[this.type];
-    if (this.type === EntityType.ALIEN) {
+    if (this.vigia) {
+      this.senseVigia(delta, playerX, playerZ, playerState, isFlashlightOn);
+    } else if (this.type === EntityType.ALIEN) {
       this.senseAlien(delta, playerX, playerZ, playerState, pxGrid, pzGrid);
     } else if (this.map.networkLevel === LEVEL_2 || this.map.networkLevel === LIGHTS_OUT_LEVEL) {
       this.isChasing = true;
@@ -708,7 +717,7 @@ export class WanderingEntity {
       this.isChasing = false;
     }
 
-    if (this.type !== EntityType.ALIEN && this.map.networkLevel !== LEVEL_2 && this.map.networkLevel !== LIGHTS_OUT_LEVEL) {
+    if (!this.vigia && this.type !== EntityType.ALIEN && this.map.networkLevel !== LEVEL_2 && this.map.networkLevel !== LIGHTS_OUT_LEVEL) {
       const ctx = this.senseCtx(delta, distanceMeters, playerX, playerZ, playerState, cameraDir, isFlashlightOn);
       const result = senseDef.sense(ctx);
       this.isChasing = result.chasing;
@@ -753,6 +762,8 @@ export class WanderingEntity {
           ? (this.isChasing ? 0.03 : 0.3 + this.decisionRandom() * 0.9)
           // O Alien walks its routes in one smooth stride; it stops where it decides to (chooseAlienStep).
           : this.type === EntityType.ALIEN ? 0
+          // O Vigia decides its own stops (see VigiaBrain.hold).
+          : this.vigia ? (this.isChasing ? 0.02 : 0.06)
           // Level 94: the King never stops once he's up; the Animations stop and start like puppets.
           : this.type === EntityType.TOWN_KING ? 0.02
           : this.type === EntityType.ANIMATION ? (this.isChasing ? 0.05 : 0.3 + this.decisionRandom() * 0.8)
@@ -799,6 +810,10 @@ export class WanderingEntity {
     }
     if (this.type === EntityType.ALIEN) {
       this.chooseAlienStep();
+      return;
+    }
+    if (this.vigia) {
+      this.chooseVigiaStep();
       return;
     }
     // The King doesn't wander the hall: he sits until something wakes him.
@@ -908,6 +923,9 @@ export class WanderingEntity {
     if (this.map.checkCollision((cx + ox) / 2, (cz + oz) / 2, 0.35, crossesPoolGate)) return false;
     if (!this.hunting && this.targetHidden && this.map.hideCells.has(`${x},${z}`)) return false;
     if (this.type === EntityType.ALIEN && !this.alienMayStep(fx, fz, x, z)) return false;
+    // O Vigia keeps to the floor of its own part of the Poolrooms; anything else stays in Part 1.
+    if (this.vigia && !this.map.vigiaMayStand(x, z, this.vigia.part)) return false;
+    if (!this.vigia && this.map.networkLevel === POOLROOMS_LEVEL && this.map.poolPartAt(cx, cz) !== 1) return false;
     // Level 94: the Animations keep to the town's streets, the King to his hall.
     if (this.map.town && !townEntityMayEnter(this.type, x, z)) return false;
     return true;
@@ -1181,6 +1199,65 @@ export class WanderingEntity {
     this.alienRoute.push({ x, z, dwell: 0.5 + rand() * 2 });
   }
 
+  // ---------------------------------------------------------------------
+  // O Vigia (the Poolrooms). Its mind lives in mobs/vigiaBrain.ts; this is
+  // the glue: what it knows of itself, and walking where the mind decides.
+  // ---------------------------------------------------------------------
+
+  private setupVigiaBrain() {
+    this.vigia = null;
+    if (this.type !== EntityType.VIGIA || this.map.networkLevel !== POOLROOMS_LEVEL) return;
+    const cs = this.map.cellSize;
+    const part = this.map.poolPartAt((this.gridX + 0.5) * cs, (this.gridZ + 0.5) * cs) || 1;
+    this.vigia = new VigiaBrain(part, this.map, () => this.decisionRandom());
+  }
+
+  /** The part of the Poolrooms this Vigia lives in (0 for any other mob). */
+  public get vigiaPart(): number { return this.vigia?.part ?? 0; }
+
+  private vigiaSelf(): VigiaSelf {
+    const pos = this.mesh.position;
+    return { gx: this.gridX, gz: this.gridZ, x: pos.x, z: pos.z, floorY: this.map.standHeightAt(pos.x, pos.z), moving: this.isMoving };
+  }
+
+  /** Whether this Vigia can see `t` right now (GameEngine picks its quarry with it). */
+  public vigiaSees(t: VigiaTarget): boolean {
+    return !!this.vigia && this.vigia.sees(this.vigiaSelf(), t);
+  }
+
+  private senseVigia(delta: number, px: number, pz: number, state: "idle" | "walking" | "running" | "crouching", flashlight?: boolean) {
+    const brain = this.vigia!;
+    brain.intellect = this.map.poolVigiaIntellect;
+    const target = this.vigiaTarget ?? {
+      x: px, z: pz, eyeY: this.map.getFloorHeightAt(px, pz) + 1.33, state, crouched: state === "crouching", submerged: false, flashlight: !!flashlight,
+    };
+    brain.think(delta, this.vigiaSelf(), target, this.map.noiseBus, this.map.noiseBus?.now ?? 0);
+    this.isChasing = brain.chasing;
+    this.isAgitated = brain.agitated;
+    this.pose = brain.pose;
+    this.moveSpeed = brain.speed;
+    // Once it has you it doesn't finish a pause first.
+    if (brain.chasing) this.pauseTimer = Math.min(this.pauseTimer, 0.05);
+  }
+
+  private chooseVigiaStep() {
+    const brain = this.vigia!;
+    const goal = brain.nextGoal(this.vigiaSelf());
+    if (!goal) {
+      // Standing (listening, looking round, rising to the chase): re-decide soon.
+      this.pauseTimer = Math.max(0.1, Math.min(brain.hold, 0.4));
+      return;
+    }
+    const step = this.bfsFirstStep(goal[0], goal[1]);
+    if (step) {
+      this.startStep(step);
+    } else {
+      // Somewhere it can't get to from here: forget it and decide again.
+      brain.goalX = brain.goalZ = -1;
+      this.pauseTimer = 0.4;
+    }
+  }
+
   /** Puts the entity on a specific cell instantly (Level G ambushes). */
   public teleportTo(gx: number, gz: number) {
     this.gridX = gx;
@@ -1200,6 +1277,20 @@ export class WanderingEntity {
     const size = this.map.gridSize;
     let candidates: [number, number][] = [];
 
+    // O Vigia only ever goes back to the far end of its own rounds.
+    const brain = this.vigia;
+    if (brain) {
+      const spots = POOL_PATROL[brain.part].filter(([x, z]) => this.map.vigiaMayStand(x, z, brain.part));
+      spots.sort((a, b) => Math.hypot(b[0] - playerGridX, b[1] - playerGridZ) - Math.hypot(a[0] - playerGridX, a[1] - playerGridZ));
+      const [x, z] = spots[0] ?? [this.gridX, this.gridZ];
+      this.teleportTo(x, z);
+      this.isAgitated = false;
+      this.isChasing = false;
+      brain.reset();
+      this.updateVisualState();
+      return;
+    }
+
     // Search cells in quadrants opposite/far from player
     for (let x = 3; x < size - 3; x++) {
       for (let z = 3; z < size - 3; z++) {
@@ -1209,7 +1300,8 @@ export class WanderingEntity {
           const dz = z - playerGridZ;
           const dist = Math.sqrt(dx * dx + dz * dz);
           // Half the map on small levels (Level G is only 18 cells across).
-          if (dist > Math.min(18, size * 0.5) && this.map.isWalkableForEntities(x, z)) {
+          const keepsToPart1 = this.map.networkLevel !== POOLROOMS_LEVEL || this.map.poolPartAt((x + 0.5) * this.map.cellSize, (z + 0.5) * this.map.cellSize) === 1;
+          if (dist > Math.min(18, size * 0.5) && keepsToPart1 && this.map.isWalkableForEntities(x, z)) {
             candidates.push([x, z]);
           }
         }
@@ -1422,6 +1514,7 @@ export class WanderingEntity {
     this.prevGridX = -1;
     this.prevGridZ = -1;
     this.resetAlienBrain();
+    this.setupVigiaBrain();
 
     this.resetBaseSpeed();
     this.syncWorldPosition();

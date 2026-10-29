@@ -1,44 +1,47 @@
 # Poolrooms (Dark Poolrooms, tema Level 37.2)
 
-- **Id de rede:** `5` (conteúdo `7`) — **Grid:** 40×40
-- **Entidades:** `CLUMP` e `O VIGIA`
+- **Id de rede:** `5` (conteúdo `7`) — **Grid:** 96×96 (três partes)
+- **Entidades:** `CLUMP` (parte 1); `O VIGIA` só da grade em diante — um na parte 2, um na parte 3
 - **Exibido como:** Level 37 - Poolrooms · **Vem de:** [Level Fun](level-fun.md)
-- **Próximo nível:** [Level 79 — Space Station](level-79-space-station.md) (a saída é uma porta de estação) — **ou**, pela porta escondida, [Level 94 — Motion](level-94-motion.md)
+- **Saídas (lado a lado, no fim da parte 3):** [Level 79 — Space Station](level-79-space-station.md) (porta de estação, leva a sala) **ou** [Level 94 — Motion](level-94-motion.md) (porta para a estrada, individual; desligada se a sala desativar "Rotas secretas")
 
-## Ambientação
+O plano das partes 2 e 3 está em [poolLayout.ts](../../src/game/levels/poolLayout.ts) (dados puros, sem seed — inclusive o labirinto, gerado com uma semente fixa); a geometria em [poolWorld.ts](../../src/game/levels/poolWorld.ts); fôlego, ambientação, luz, alavancas e a comporta final em [poolDirector.ts](../../src/game/levels/poolDirector.ts). As três partes são iluminadas como as Poolrooms clássicas.
 
-Salas de azulejo inundadas, escuras e úmidas, com piscinas de profundidades diferentes. A água está **contaminada** ("Hydrolitis Plague") e o ambiente tem azulejo por todo lado.
+## Parte 1 — As válvulas (exploração)
 
-## Objetivo
+Os salões alagados de sempre, **sem o Vigia**. Drene a contaminação girando **6 válvulas** — **3 em cada uma das 2 primeiras áreas** — **na ordem correta** de cada área (`poolValveOrderForSeed`, em [poolroomsPuzzle.ts](../../src/game/poolroomsPuzzle.ts)). Cada área tem **três pistas** no piso (símbolo + posição na sequência). Os dois salões mais fundos só ficam rasos quando tudo drena. O progresso é compartilhado pela sala (`poolroomsState` no servidor).
 
-Drenar a contaminação girando **12 válvulas** — **3 válvulas em cada uma das 4 áreas** — **na ordem correta** de cada área. Quando todas estão giradas:
+Quando tudo drena, **a grade no fundo do terceiro salão (célula `38,10`) sobe** e abre o caminho para a parte 2.
 
-> *"AS VÁLVULAS DRENARAM A CONTAMINAÇÃO. A água está segura agora."*
+## Parte 2 — A Caçada (verticalidade)
 
-A saída, embutida na divisória da piscina mais funda (célula `28,21`), só funciona depois disso.
+Um natatório enorme com água pelo tornozelo, em três salões (**arquibancadas**, **piscina de competição**, **escorregadores**) e uma **ala de máquinas** a leste (caixas d'água, passarelas, uma ponte de tubos sem um vão, pilhas de blocos).
 
-**A outra porta (Level 94):** num nicho seco da parede norte do terceiro salão (posição sorteada pela seed) há uma porta de metal com a placa **"SAÍDA"**, fechada. Quando as Poolrooms drenam, ela se abre para a luz do dia e uma estrada até uma cidadezinha: entrar leva **só você** ao [Level 94 — Motion](level-94-motion.md), o final alternativo ao Level 79 (desligado se a sala desativar "Rotas secretas"). O cheat SETA aponta para ela com o rótulo "94".
+- **Subir:** blocos sobem de ~0,9 m em ~0,9 m (pule), escadas de marinheiro (encoste olhando e segure `W`), escadas.
+- **A regra:** o Vigia **nunca sai do chão** e não alcança quem está com os pés **≥ 2 m acima dele**. Blocos baixos não salvam.
+- Ele espreita a base da estrutura por um tempo, depois se afasta — mas fica por perto.
+- **Som:** correr na água chama atenção; andar quase não; agachado, quase nada. Cair de uma passarela é ouvido do outro lado do salão.
+- **Objetivo: as 3 alavancas** da ala de máquinas — duas no chão, expostas, uma no alto de uma caixa d'água (`POOL_LEVERS`). Puxar uma (`E`) faz barulho. Estado compartilhado pela sala (mensagem `pool_lever`, validada pelo servidor). Com as três, **abre a porta** no alto da passagem sul (`60,38`), à qual se chega pelas passarelas (rota oeste com a passarela desabada, ou leste pelas escadas do escorregador).
 
-## Como descobrir a ordem
+## Parte 3 — As Profundezas (labirinto submerso)
 
-A ordem de cada área é sorteada da seed (`poolValveOrderForSeed`, em [poolroomsPuzzle.ts](../../src/game/poolroomsPuzzle.ts)), igual para todos. Em cada área há **três pistas** (pontos de leitura espalhados, longe uns dos outros), cada uma indicando uma válvula e sua posição na sequência. Encontre as três pistas, monte a ordem e gire as válvulas (`E`) nela.
+Um **labirinto alagado** de corredores largos (duas células, 8 m) sob um teto logo abaixo da linha d'água, com **poços de ar** espalhados — nenhum trecho sem ar passa de dois cômodos. Sobre o teto do labirinto fica um **salão escuro de azulejo** onde os poços se abrem como bocas de poço: é por ali que o Vigia anda.
 
-O progresso (`VÁLVULA GIRADA: n/total`) é compartilhado pela sala; o servidor guarda o estado (`poolroomsState`) e o envia por snapshot a quem entra depois.
+- **Nadar:** `Espaço` sobe, `C`/`Ctrl` mergulha, `W` segue o olhar debaixo d'água, `Shift` nada mais rápido (gasta fôlego e estamina).
+- **Fôlego:** ~32 s de ar, que só gasta com a cabeça submersa e enche em ~2,4 s num poço. O medidor aparece quando importa; som e imagem se fecham quando falta. Ficar sem ar não mata: você apaga e acorda no último chão seco, com perda de sanidade. **Os poços de ar são iluminados.**
+- **O Vigia:** anda no salão por cima e para na borda dos poços. Dali **puxa quem emerge perto da borda**, mas não alcança quem mergulhou. Ele vê pelo poço quem está na superfície, ouve braçadas e o arquejo de quem sobe sem fôlego, e **segue as bolhas** de poço em poço.
+- **O fim:** quem chega aos últimos cômodos o encontra **esperando na borda do último poço**. Do poço sai um canal a leste; a escada leva ao patamar (alto demais para ele). Gire a **roda da comporta** (`E`, barulhenta) e escolha a porta.
 
 ## Perigos
 
-- **Água tóxica**: ficar em células contaminadas acumula exposição; ao chegar a **8 s** o jogador é arrancado dali e reaparece em um ponto seguro (as entidades são afastadas dele). Fora da água a exposição se recupera rápido. O HUD mostra a exposição. A água fica segura depois de drenar.
-- **`CLUMP`**: o perigo nativo do nível. **Perde você se estiver submerso** — mergulhar é uma fuga.
-- **`O VIGIA`**: criatura enorme de membros longuíssimos que **marca os exploradores desde o início**, enxerga longe pelas salas alagadas e avança em passo de caminhada. Ela é mais perigosa conforme o puzzle avança.
-
-## Dicas
-
-- Dividam as quatro áreas entre os jogadores; cada área é independente.
-- Anote a ordem de cada área à medida que acha as pistas.
-- Mantenha-se fora da água tóxica enquanto procura.
+- **Água tóxica** (parte 1): exposição de 8 s te arranca dali para um ponto seguro.
+- **`CLUMP`** (parte 1): perde você se estiver submerso.
+- **`O VIGIA`** (partes 2 e 3): ver [entities.md](../entities.md).
 
 ## Referências no código
 
-- `ProceduralMap`: `valvePositions`, `poolValveOrder`, `poolClueCells`, `toxicWaterCells`, `poolroomsSolved`, `updatePoolroomsWater`.
-- `GameEngine`: `tryTurnValve`, `valvesTurned`, `toxicWaterExposure`; servidor: `resetPoolroomsState`, `poolroomsSnapshot`.
-- [Water.ts](../../src/game/Water.ts): superfície da água.
+- `ProceduralMap`: `carveLevel7` (parte 1), `carvePoolDepths`, `waterSurfaceAt`, `ceilingAt`, `blocksBody`, `vigiaMayStand`, `standHeightAt`, `setPoolLevers`, `setPoolExitOpen`.
+- `PlayerController.updatePoolBody`: degraus, quedas, escadas, natação.
+- `WanderingEntity` + [vigiaBrain.ts](../../src/game/mobs/vigiaBrain.ts): estados do Vigia; `GameEngine.pickVigiaTarget` e a regra de altura no `catch`.
+- Servidor: `poolroomsSnapshot` (válvulas + `levers`), mensagens `valve_turn` e `pool_lever`.
+- [Water.ts](../../src/game/Water.ts): superfície com ondulações reais, Fresnel, janela de Snell vista de baixo.

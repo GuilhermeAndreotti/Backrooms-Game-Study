@@ -43,7 +43,7 @@ A player reaching an exit sends `level_transition_request`; the room only actual
 Levels are plain numbers threaded through client and server (`GameEngine.level`, `PlayerState.level`, `RemotePlayer.level`). The source of truth is `src/game/levels/constants.ts`; per-level guides live in `docs/levels/`.
 
 - Main route (`MAIN_LEVELS`): `0` → `1` (garage) → `2` (Pipe Dreams) → `3` Electrical Room → `4` Abandoned Office → `13` Terror Hotel → `6` Lights Out → `9` Level Fun → `5` Poolrooms → `12` Level 79 Space Station.
-- Alternative ending: `8` Level 94 "Motion" (a door in the drained Poolrooms, individual; or Level 79's UNKNOWN course). Both `12` and `8` are `ENDING_LEVELS`: finishing either ends the expedition and stops the leaderboard clock.
+- Alternative ending: `8` Level 94 "Motion" (a door beside the station door at the end of the Poolrooms' Part 3, individual; or Level 79's UNKNOWN course). Both `12` and `8` are `ENDING_LEVELS`: finishing either ends the expedition and stops the leaderboard clock.
 - Secret detours: `6` Lights Out (also from a dark corridor in Level 1), `7` Level G (from Level 4).
 - Display names are "Level {n} - {Name}" with the Backrooms wiki number (Hotel shows as Level 5, Poolrooms as 37, FUN as "Level Fun") — from `hud.loc.*`/`radar.title.*` in `src/i18n`, never derived from the network id.
 - `10` (`LOBBY_LEVEL`) — the room lobby every game starts in; the host triggers `start_game` (optionally picking a level).

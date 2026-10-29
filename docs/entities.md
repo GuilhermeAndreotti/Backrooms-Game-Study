@@ -16,7 +16,7 @@ Elencos de [levels/registry.ts](../src/game/levels/registry.ts). "Estático" = p
 | Electrical Room | estático | `HOUND` ×8 |
 | Abandoned Office | bespoke | nenhuma hostil (NPCs M.E.G.) |
 | Terror Hotel | estático, dirigido por eventos | `BELLMAN`, `DEATHMOTH` ×3 |
-| Poolrooms | estático | `CLUMP`, `VIGIA` |
+| Poolrooms | estático | `CLUMP` (parte 1), `VIGIA` ×2 (partes 2 e 3) |
 | Level 79 | estático | `ALIEN` |
 | Lights Out | sob demanda | pool `DULLER`, `SKIN_STEALER`, `WRETCH`, `HOUND` |
 | Level G | bespoke | `FINGER_KING` |
@@ -36,7 +36,7 @@ Elencos de [levels/registry.ts](../src/game/levels/registry.ts). "Estático" = p
 | `OBSERVADOR` | [observador.ts](../src/game/mobs/observador.ts) | "Ele está me vendo?" | Alto, coberto de olhos. **Contato visual sustentado o faz atacar** (e não volta atrás) — o inverso do Hound | Desvie o olhar |
 | `IMITADOR` | [imitador.ts](../src/game/mobs/imitador.ts) | "Isso é o que parece?" | Humanoide genérico **imóvel**; revela-se (olhos abrem, escurece, corre) ao chegar perto | Dê a volta |
 | `SOMBRA` | [sombra.ts](../src/game/mobs/sombra.ts) | "Tenho luz suficiente?" | Massa negra quase invisível no escuro. **Fraca e fugitiva sob luz**; só perigosa para quem está no escuro | Fique em áreas iluminadas |
-| `VIGIA` | [vigia.ts](../src/game/mobs/vigia.ts) | — | Enorme, membros longuíssimos; **marca os jogadores desde o início das Poolrooms**, enxerga longe, anda em passo lento | Planeje a rota; não fique exposto |
+| `VIGIA` | [vigia.ts](../src/game/mobs/vigia.ts), [vigiaBrain.ts](../src/game/mobs/vigiaBrain.ts) | "Ele me viu ou só me ouviu?" | Enorme, membros longuíssimos. Patrulha, investiga ruídos, persegue quem vê (cone de visão, paredes/blocos bloqueiam), perde e procura. **Nunca sai do chão** (blocos, escadas, escadas de marinheiro, água funda) e não alcança pés a ≥2 m acima dele nem mergulhadores; espreita a base da estrutura e depois se afasta. Na parte 3 anda no salão sobre o labirinto alagado e espera nas bordas dos poços de ar | Suba alto, ande devagar na água, mergulhe — e não suba ofegante perto dele |
 | `CEIFADOR` | [ceifador.ts](../src/game/mobs/ceifador.ts) | "Ele aprendeu meu padrão?" | Alto, encapuzado, **o mais rápido**; aparece perto das células mais visitadas pelo grupo (`VisitTracker`) | Varie rotas (hoje nenhum nível o invoca; segue disponível no cheat SKIN) |
 | `ANIMATION` | [animation.ts](../src/game/mobs/animation.ts) | "Eles me viram?" | Personagens de desenho antigo, em stop-motion. Veem quem está à frente com linha livre (mais longe se você corre ou usa a lanterna, bem menos agachado); desistem após ~3,5 s sem te ver; **nunca entram em casas** | Entre numa casa, use carros e becos, apague a lanterna |
 | `TOWN_KING` | [townKing.ts](../src/game/mobs/townKing.ts) | "Como passo por ele?" | Sentado no trono até alguém chegar perto ou passar por ele; então persegue sem parar, mais devagar que uma corrida, com alcance longo (2,4 m). Preso ao salão | Use colunas e mesas: ele contorna, você se espreme ao lado |

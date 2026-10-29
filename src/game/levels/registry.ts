@@ -115,10 +115,11 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     spawn: { kind: "bespoke" },
   },
 
-  // Level 7 ("LEVEL 5" display, theme: Level 37.2 "Dark Poolrooms"): CLUMP
-  // is the level's native hazard (see LevelDefinition consumers for its
-  // "loses you if you're submerged" override), O Vigia guards the route
-  // past the valve puzzle.
+  // The Poolrooms (theme: Level 37.2 "Dark Poolrooms"): CLUMP is Part 1's
+  // native hazard (it loses you if you're submerged). The Vigia only waits
+  // past Part 1's drained grate: one keeps Part 2 and one Part 3
+  // (levels/poolLayout.ts). It never leaves its own part, so each must stand
+  // where that part's floor is (see mobs/vigiaBrain.ts).
   [POOLROOMS_LEVEL]: {
     id: POOLROOMS_LEVEL,
     displayLabel: "POOLROOMS",
@@ -126,7 +127,8 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
       kind: "static",
       roster: [
         { type: EntityType.CLUMP, targetCell: [24, 14] },
-        { type: EntityType.VIGIA, targetCell: [30, 24] },
+        { type: EntityType.VIGIA, targetCell: [56, 30] },
+        { type: EntityType.VIGIA, targetCell: [55, 63] },
       ],
     },
   },

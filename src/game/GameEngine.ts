@@ -37,9 +37,11 @@ import {
   POOLROOMS_LEVEL,
   SPACE_LEVEL,
 } from "./levels/constants";
-import { POOL_VALVE_COUNT } from "./poolroomsPuzzle";
+import { POOL_LEVER_COUNT, POOL_VALVE_COUNT } from "./poolroomsPuzzle";
 import { FunDirector } from "./levels/funDirector";
 import { SpaceDirector, type SpaceTerminalView } from "./levels/spaceDirector";
+import { PoolDirector } from "./levels/poolDirector";
+import { vigiaReachesHeight } from "./mobs/vigiaBrain";
 import { TownDirector, type TownDialogueChoice, type TownDialogueView } from "./levels/townDirector";
 import { HotelDirector, type HotelObserver, type HotelPanel } from "./levels/hotelDirector";
 import { HOTEL_LEVEL } from "./levels/constants";
@@ -89,6 +91,8 @@ export interface GameEngineCallbacks {
   onRedRoomExposureChange?: (val: number) => void;
   /** Level 7's toxic water exposure (see toxicWaterExposure) — same shape as onRedRoomExposureChange, kept separate rather than shared since the two hazards use different thresholds and are never active at the same time. */
   onToxicWaterExposureChange?: (val: number) => void;
+  /** The Poolrooms: breath left under water (0..1), or null when the meter should hide. */
+  onBreathChange?: (val: number | null) => void;
   onHUDNotification?: (msg: string) => void;
   onSectorChange?: (sector: string) => void;
   onInventoryChange?: (items: string[]) => void;
@@ -308,6 +312,10 @@ interface AiTarget {
   crouched: boolean;
   x: number;
   z: number;
+  /** Eye height (world Y): the Poolrooms' heights and depths matter to the Vigia. */
+  y: number;
+  /** Head under the water. */
+  submerged: boolean;
   state: "idle" | "walking" | "running" | "crouching";
   dir: THREE.Vector3;
   flashlight: boolean;
@@ -332,6 +340,20 @@ function nearestTarget(targets: AiTarget[], x: number, z: number): { target: AiT
 function nearestSeenByAlien(targets: AiTarget[], alien: WanderingEntity): { target: AiTarget; distSq: number } {
   const seen = targets.filter((t) => alien.alienCanSee(t.x, t.z, t.state));
   return nearestTarget(seen.length > 0 ? seen : targets, alien.mesh.position.x, alien.mesh.position.z);
+}
+
+/**
+ * O Vigia attends to whoever it can see; failing that, whoever is in its part
+ * of the Poolrooms (it hears them, it doesn't know where they are); failing
+ * that, the nearest. It is also told what it may know of them.
+ */
+function pickVigiaTarget(targets: AiTarget[], vigia: WanderingEntity, map: ProceduralMap): { target: AiTarget; distSq: number } {
+  const known = (t: AiTarget) => ({ x: t.x, z: t.z, eyeY: t.y, state: t.state, crouched: t.crouched, submerged: t.submerged, flashlight: t.flashlight });
+  const seen = targets.filter((t) => vigia.vigiaSees(known(t)));
+  const inPart = targets.filter((t) => map.poolPartAt(t.x, t.z) === vigia.vigiaPart);
+  const pick = nearestTarget(seen.length > 0 ? seen : inPart.length > 0 ? inPart : targets, vigia.mesh.position.x, vigia.mesh.position.z);
+  vigia.vigiaTarget = known(pick.target);
+  return pick;
 }
 
 /** Like nearestTarget, but anyone still visible beats anyone hidden. */
@@ -539,6 +561,7 @@ export class GameEngine {
   private onMegProgress?: (progress: MegProgress) => void;
   private onRedRoomExposureChange?: (val: number) => void;
   private onToxicWaterExposureChange?: (val: number) => void;
+  private onBreathChange?: (val: number | null) => void;
   public onHUDNotification?: (msg: string) => void;
   private onObjectiveChange?: (text: string | null) => void;
   /** How this explorer looks to others (name, suit, face) — for the lobby mirror's copy of them. */
@@ -639,6 +662,7 @@ export class GameEngine {
     this.onMegProgress = callbacks.onMegProgress;
     this.onRedRoomExposureChange = callbacks.onRedRoomExposureChange;
     this.onToxicWaterExposureChange = callbacks.onToxicWaterExposureChange;
+    this.onBreathChange = callbacks.onBreathChange;
     this.onHUDNotification = callbacks.onHUDNotification;
     this.onObjectiveChange = callbacks.onObjectiveChange;
     this.selfLook = { name: settings.name, suitColor: settings.suitColor, face: settings.face, outfit: sanitizeOutfit(settings.outfit) };
@@ -781,6 +805,8 @@ export class GameEngine {
       uniform float uDread;
       uniform float uFlash;
       uniform float uBlack;
+      uniform float uUnder;
+      uniform float uAir;
       uniform float uExposure;
       varying vec2 vUv;
 
@@ -843,6 +869,12 @@ export class GameEngine {
         
         uv.x += trackingBar + rollDistortion;
 
+        // Under water: the picture wavers like the surface above it.
+        if (uUnder > 0.01) {
+          uv.x += sin(uv.y * 21.0 + uTime * 1.6) * 0.0028 * uUnder;
+          uv.y += cos(uv.x * 17.0 + uTime * 1.2) * 0.0022 * uUnder;
+        }
+
         // B. CHROMATIC ABERRATION (Scales dynamically with insanity!)
         float distFromCenter = length(uv - 0.5);
         float shiftAmt = 0.0012 + distFromCenter * 0.0018 + (0.016 * insanity) + 0.009 * uDread + 0.035 * uFlash;
@@ -892,6 +924,13 @@ export class GameEngine {
         float vignette = 1.0 - (distFromCenter * distFromCenter * baseVignetteSize);
         color *= vignette;
 
+        // Under water: the reds die first, the light goes green-blue and soft.
+        color = mix(color, color * vec3(0.5, 0.92, 1.0) + vec3(0.0, 0.015, 0.02), 0.65 * uUnder);
+        // Out of air: the colour drains and the world shrinks to a tunnel, pulsing.
+        float airPulse = 0.85 + 0.15 * sin(uTime * (3.0 + uAir * 4.0));
+        color = mix(color, vec3(dot(color, vec3(0.3, 0.59, 0.11))), 0.55 * uAir);
+        color *= 1.0 - uAir * 0.8 * airPulse * smoothstep(0.12, 0.62, distFromCenter);
+
         // Dread: the edges close in and the grain thickens as it nears.
         color *= 1.0 - uDread * 0.55 * smoothstep(0.15, 0.75, distFromCenter);
         color += vec3(random(uv * 1.7 + uTime) - 0.5) * 0.14 * uDread;
@@ -926,6 +965,8 @@ export class GameEngine {
         uFlash: { value: 0 },
         uBlack: { value: 0 },
         uExposure: { value: 1 },
+        uUnder: { value: 0 },
+        uAir: { value: 0 },
       },
       vertexShader: vertexShader,
       fragmentShader: fragmentShader,
@@ -1010,6 +1051,7 @@ export class GameEngine {
     this.setupOfficeSkyline();
     this.setupFun();
     this.setupSpace();
+    this.setupPool();
     this.setupTown();
     this.setupHotel();
     this.requestLevelSync();
@@ -1206,6 +1248,7 @@ export class GameEngine {
       this.updateOfficeStorm(delta);
       this.updateFun(delta);
       this.updateSpace(delta);
+      this.updatePool(delta);
       this.updateTown(delta);
       this.hotelDirector?.update(delta);
       if (this.hotelDirector) {
@@ -1430,7 +1473,9 @@ export class GameEngine {
               ? nearestHuntable(aiTargets, entity.mesh.position.x, entity.mesh.position.z)
               : entity.type === EntityType.ALIEN
                 ? nearestSeenByAlien(aiTargets, entity)
-                : nearestTarget(aiTargets, entity.mesh.position.x, entity.mesh.position.z);
+                : entity.vigiaPart
+                  ? pickVigiaTarget(aiTargets, entity, this.map)
+                  : nearestTarget(aiTargets, entity.mesh.position.x, entity.mesh.position.z);
             entity.targetHidden = target.hidden;
 
             // Entities far from everyone are simulated at a reduced rate: their
@@ -1444,7 +1489,7 @@ export class GameEngine {
             // Billboard towards *our* camera, not the explorer it's hunting.
             // O Alien faces where it walks: its facing is its sight cone; a Deathmoth flies nose first. Level 94's
             // cartoons and their King turn like characters, not billboards.
-            if (entity.type !== EntityType.BELLMAN && entity.type !== EntityType.DEATHMOTH && entity.type !== EntityType.ALIEN && entity.type !== EntityType.ANIMATION && entity.type !== EntityType.TOWN_KING) {
+            if (entity.type !== EntityType.BELLMAN && entity.type !== EntityType.DEATHMOTH && entity.type !== EntityType.ALIEN && entity.type !== EntityType.ANIMATION && entity.type !== EntityType.TOWN_KING && !entity.vigiaPart) {
               entity.mesh.lookAt(px, entity.mesh.position.y, pz);
             }
           } else {
@@ -1460,7 +1505,10 @@ export class GameEngine {
           const dx = entity.mesh.position.x - px;
           const dz = entity.mesh.position.z - pz;
           const reach = MOB_DEFS[entity.type].catchRadius ?? 1.45;
-          if (canBeCaught && !caught && !this.cheatLife && (!this.hotelDirector || this.hotelDirector.canCatch(entity)) && dx * dx + dz * dz < reach * reach) {
+          // In the Poolrooms the Vigia's arms reach so far up and down, and no further.
+          const heightOk = entity.type !== EntityType.VIGIA || !this.map.verticalTerrain
+            || vigiaReachesHeight(this.map.standHeightAt(entity.mesh.position.x, entity.mesh.position.z), this.player.position.y);
+          if (canBeCaught && !caught && !this.cheatLife && heightOk && (!this.hotelDirector || this.hotelDirector.canCatch(entity)) && dx * dx + dz * dz < reach * reach) {
             caught = true;
             caughtBy = entity;
             console.warn(`[GameEngine] Explorer CAUGHT by ${entity.type}! Reseting state...`);
@@ -1625,7 +1673,7 @@ export class GameEngine {
       if (embodied && this.level !== 0 && this.map && (this.map.exitGridX !== 0 || this.map.exitGridZ !== 0)) {
         const pgX = Math.floor(this.player.position.x / this.map.cellSize);
         const pgZ = Math.floor(this.player.position.z / this.map.cellSize);
-        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== ELECTRICAL_ROOM_LEVEL || this.map.level3GateOpen) && (this.level !== ABANDONED_OFFICE_LEVEL || this.level4DoorOpen) && (this.level !== POOLROOMS_LEVEL || this.map.poolroomsSolved) && (this.level !== FUN_LEVEL || this.funDirector?.exitOpen)) {
+        if (pgX === this.map.exitGridX && pgZ === this.map.exitGridZ && (this.level !== ELECTRICAL_ROOM_LEVEL || this.map.level3GateOpen) && (this.level !== ABANDONED_OFFICE_LEVEL || this.level4DoorOpen) && (this.level !== POOLROOMS_LEVEL || this.map.poolExitOpen) && (this.level !== FUN_LEVEL || this.funDirector?.exitOpen)) {
           this.audio.playGlitchNoclipSound();
           this.onEscapeTrigger?.();
         }
@@ -1733,6 +1781,15 @@ export class GameEngine {
           this.ambientLight.color.setHex(a.color); this.ambientLight.intensity = a.intensity;
           if (fog) { fog.color.setHex(a.fog); fog.density = a.density; }
           background.setHex(a.fog);
+        }
+
+        // The Poolrooms: each part its own light and haze, and the murk under the water.
+        if (this.poolDirector) {
+          const a = this.poolDirector.atmosphere();
+          this.ambientLight.color.copy(a.ambient);
+          this.ambientLight.intensity = a.intensity;
+          if (fog) { fog.color.copy(a.fog); fog.density = this.fogDensityFor(this.level) * a.fogScale; }
+          background.copy(a.fog);
         }
 
         // Abandoned Office: lightning through the windows washes the floor in cold white.
@@ -1862,7 +1919,9 @@ export class GameEngine {
         this.vhsMaterial.uniforms.uTime.value = this.totalPlayTime;
         if (!this.kingGrab) this.kingFlash = Math.max(0, this.kingFlash - delta * 3);
         this.deathBlack = Math.max(0, this.deathBlack - delta * 0.7);
-        this.vhsMaterial.uniforms.uDread.value = this.level === LEVEL_G ? this.kingDread : this.level === OLD_TOWN_LEVEL ? this.townDread : 0;
+        this.vhsMaterial.uniforms.uDread.value = this.level === LEVEL_G ? this.kingDread : this.level === OLD_TOWN_LEVEL ? this.townDread : this.poolDirector ? this.poolDirector.dread * 0.35 : 0;
+        this.vhsMaterial.uniforms.uUnder.value = this.poolDirector?.underwater ?? 0;
+        this.vhsMaterial.uniforms.uAir.value = this.poolDirector?.airDanger ?? 0;
         this.vhsMaterial.uniforms.uFlash.value = this.kingFlash;
         this.vhsMaterial.uniforms.uBlack.value = Math.min(1, this.deathBlack * 1.6);
         this.vhsMaterial.uniforms.tDiffuse.value = this.vhsRenderTarget.texture;
@@ -1938,14 +1997,18 @@ export class GameEngine {
   /** The local player's footstep: splashing in the pool, carpet/concrete anywhere else. */
   private onLocalFootstep(speed: 'walk' | 'run' | 'crouch') {
     const { x, z } = this.player.position;
-    if (this.map?.isWaterAt(x, z)) {
-      this.audio.playWaterStep(speed);
-      this.ripples?.spawn(x, z, speed === 'run' ? 1.3 : speed === 'crouch' ? 0.6 : 1, speed === 'run');
+    const surface = this.map?.waterSurfaceAt(x, z) ?? null;
+    if (surface !== null) {
+      const depth = surface - this.map.getFloorHeightAt(x, z);
+      this.audio.playWaterStep(speed, 0, 1, depth);
+      this.ripples?.spawn(x, z, speed === 'run' ? 1.0 : speed === 'crouch' ? 0.3 : 0.55, speed === 'run', surface);
+      // Wading: running splashes carry across a hall, a careful walk barely does.
+      this.noiseBus.emit(x, z, PoolDirector.wadeLoudness(speed, depth), "water", this.totalPlayTime);
     } else {
       const isWet = this.map ? this.map.isCellWet(x, z) : false;
       this.audio.playFootstep(speed, 0.0, isWet); // panning 0.0 for self
+      this.noiseBus.emit(x, z, footstepLoudness(speed), "footstep", this.totalPlayTime);
     }
-    this.noiseBus.emit(x, z, footstepLoudness(speed), "footstep", this.totalPlayTime);
     this.localStepTimes.push(this.totalPlayTime);
     if (this.localStepTimes.length > 8) this.localStepTimes.shift();
   }
@@ -1954,13 +2017,16 @@ export class GameEngine {
   private onRemoteFootstep(x: number, z: number, state: string) {
     if (!this.map || !this.player) return;
     const speed: 'walk' | 'run' | 'crouch' = state === "running" ? "run" : state === "crouching" ? "crouch" : "walk";
-    const inWater = this.map.isWaterAt(x, z);
-    if (inWater) this.ripples?.spawn(x, z, speed === 'run' ? 1.3 : 0.9, speed === 'run');
+    const surface = this.map.waterSurfaceAt(x, z);
+    const depth = surface !== null ? surface - this.map.getFloorHeightAt(x, z) : 0;
+    if (surface !== null) this.ripples?.spawn(x, z, speed === 'run' ? 1.0 : 0.55, speed === 'run', surface);
+    // The world authority's monsters hear teammates' steps too, not just its own explorer's.
+    this.noiseBus.emit(x, z, surface !== null ? PoolDirector.wadeLoudness(speed, depth) : footstepLoudness(speed), surface !== null ? "water" : "footstep", this.totalPlayTime);
     const { dist, pan } = this.listenerPan(x, z);
     const HEARING = 22;
     if (dist > HEARING) return;
     const vol = Math.pow(1 - dist / HEARING, 1.5);
-    if (inWater) this.audio.playWaterStep(speed, pan, vol);
+    if (surface !== null) this.audio.playWaterStep(speed, pan, vol, depth);
     else this.audio.playFootstep(speed, pan, this.map.isCellWet(x, z), vol);
   }
 
@@ -1986,8 +2052,9 @@ export class GameEngine {
       const weight = e.stepWeight;
       if (weight <= 0) continue;
       const { x, z } = e.mesh.position;
-      const inWater = this.map.isWaterAt(x, z);
-      if (inWater) this.ripples?.spawn(x, z, 0.8 + weight * 0.6, e.runningGait);
+      const surface = this.map.waterSurfaceAt(x, z);
+      const inWater = surface !== null;
+      if (inWater) this.ripples?.spawn(x, z, 0.5 + weight * 0.6, e.runningGait, surface);
       const { dist, pan } = this.listenerPan(x, z);
       // The Finger King's knees pop on every step.
       if (e.type === EntityType.FINGER_KING && dist < 18) {
@@ -2002,11 +2069,12 @@ export class GameEngine {
 
     // Standing in the pool still stirs the water a little.
     const { x, z } = this.player.position;
-    if (this.map.isWaterAt(x, z)) {
+    const surface = this.map.waterSurfaceAt(x, z);
+    if (surface !== null && !this.player.submerged) {
       this.wadeTimer -= delta;
       if (this.wadeTimer <= 0) {
         this.wadeTimer = 1.1 + Math.random() * 0.8;
-        this.ripples?.spawn(x, z, 0.35);
+        this.ripples?.spawn(x, z, this.player.swimming ? 0.3 : 0.2, false, surface);
       }
     }
   }
@@ -3020,6 +3088,7 @@ export class GameEngine {
     void preloadCreatureAssets(roster);
     this.teardownFun();
     this.teardownSpace();
+    this.teardownPool();
     this.teardownTown();
     this.teardownHotel();
     this.teardownLevelG();
@@ -3090,6 +3159,7 @@ export class GameEngine {
     this.setupOfficeSkyline();
     this.setupFun();
     this.setupSpace();
+    this.setupPool();
     this.setupTown();
     this.setupHotel();
     this.requestLevelSync();
@@ -3691,6 +3761,8 @@ export class GameEngine {
    * valve in reach.
    */
   public tryTurnValve(): boolean {
+    // The exit landing's shutter wheel shares the valves' key.
+    if (!this.isDead && !this.isWaitingForTransition && this.poolDirector?.interact()) return true;
     if (this.isDead) return false;
     const i = this.nearestUntouchedValveIndex();
     if (i < 0) return false;
@@ -3702,8 +3774,17 @@ export class GameEngine {
     return true;
   }
 
+  /** A valve's wheel screeching round carries across the halls (the Vigia comes to see). */
+  private valveNoise(index: number, loudness: number) {
+    const pos = this.map?.valvePositions[index];
+    if (!pos) return;
+    const cs = this.map.cellSize;
+    this.noiseBus.emit((pos[0] + 0.5) * cs, (pos[1] + 0.5) * cs, loudness, "prop", this.totalPlayTime);
+  }
+
   private predictValveTurn(index: number) {
     if (!this.map || this.valvesTurned.has(index)) return;
+    this.valveNoise(index, 0.6);
     const per = this.map.poolValvesPerRoom;
     const rooms = this.map.poolRoomCount;
     const room = Math.floor(index / per);
@@ -3712,6 +3793,8 @@ export class GameEngine {
     for (let k = 0; k < per; k++) if (this.valvesTurned.has(roomBase + k)) doneInRoom++;
 
     if (index !== roomBase + this.map.poolValveOrder[room][doneInRoom]) {
+      // The wrong wheel: the whole sector's pipes bang as the sequence resets.
+      this.valveNoise(index, 1);
       for (let k = 0; k < per; k++) this.valvesTurned.delete(roomBase + k);
       this.map.poolVigiaIntellect = Math.min(1, this.map.poolVigiaIntellect + 0.32);
       this.map.setPoolroomsValveState(this.valvesTurned, this.countSolvedPoolrooms());
@@ -3754,6 +3837,7 @@ export class GameEngine {
     stage?: number;
     solved?: boolean;
     vigiaIntellect?: unknown;
+    levers?: unknown;
   }) {
     if (!this.map || this.level !== POOLROOMS_LEVEL || data.level !== undefined && data.level !== this.level) return;
     if (typeof data.revision !== "number" || !Number.isInteger(data.revision) || data.revision < this.poolValveRevision) return;
@@ -3766,12 +3850,22 @@ export class GameEngine {
     }
     const hadState = this.poolValveRevision >= 0;
     const previousCount = this.valvesTurned.size;
+    // A teammate's wheel makes the same noise on whichever client runs the Vigia.
+    if (hadState) {
+      for (const index of turned) if (!this.valvesTurned.has(index)) this.valveNoise(index, 0.6);
+      for (const index of this.valvesTurned) if (!turned.has(index)) this.valveNoise(index, 1);
+    }
     const wasSolved = this.map.poolroomsSolved;
     this.poolValveRevision = data.revision;
     this.valvesTurned = turned;
     this.map.setPoolroomsValveState(turned, data.stage);
     if (typeof data.vigiaIntellect === "number" && Number.isFinite(data.vigiaIntellect)) {
       this.map.poolVigiaIntellect = Math.max(0, Math.min(1, data.vigiaIntellect));
+    }
+    if (Array.isArray(data.levers)) {
+      const levers = new Set<number>();
+      for (const index of data.levers) if (typeof index === "number" && Number.isInteger(index) && index >= 0 && index < POOL_LEVER_COUNT) levers.add(index);
+      this.applyPoolLevers(levers, hadState);
     }
     if (!hadState) return;
 
@@ -3786,6 +3880,27 @@ export class GameEngine {
       } else {
         this.onHUDNotification?.(t("eng.valveTurn", { n: turned.size, total: this.map.valvePositions.length }));
       }
+    }
+  }
+
+  /**
+   * Part 2's levers: the room's set, or the local prediction of a pull. Each
+   * new one clanks (and is heard by the Vigia wherever its AI runs); all of
+   * them open the door down to Part 3.
+   */
+  private applyPoolLevers(levers: Set<number>, announce: boolean) {
+    const before = this.map.poolLevers;
+    const added = [...levers].filter((i) => !before.has(i));
+    if (added.length === 0 && levers.size === before.size) return;
+    for (const i of before) levers.add(i); // idempotent: a stale snapshot never un-pulls one
+    const wasOpen = this.map.poolLeversOpen;
+    this.map.setPoolLevers(levers);
+    if (!announce || added.length === 0) return;
+    if (!wasOpen && this.map.poolLeversOpen) {
+      this.onHUDNotification?.(t("pool.leversDone"));
+      this.audio.playGrind("shutter", 0, 0.7);
+    } else {
+      this.onHUDNotification?.(t("pool.lever", { n: levers.size, total: POOL_LEVER_COUNT }));
     }
   }
 
@@ -3806,7 +3921,7 @@ export class GameEngine {
     if (this.map && this.player && this.player.mapFullyLoaded && (this.player.isLocked || this.player.isOverrideActive)) {
       const [fx, fz] = this.lookDirectionXZ();
       const funPrompt = this.funDirector ? this.funDirector.interactionPrompt() : null;
-      const spacePrompt = this.spaceDirector ? this.spaceDirector.interactionPrompt() : null;
+      const spacePrompt = this.spaceDirector ? this.spaceDirector.interactionPrompt() : this.poolDirector?.interactionPrompt() ?? null;
       const townPrompt = this.townDirector ? this.townDirector.interactionPrompt() : null;
       const hotelPrompt = this.hotelDirector?.interactionPrompt();
       if (hotelPrompt) {
@@ -3976,6 +4091,55 @@ export class GameEngine {
   // ---------------------------------------------------------------------
   // Level 79
   // ---------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------
+  // The Poolrooms (see levels/poolDirector.ts)
+  // ---------------------------------------------------------------------
+
+  private poolDirector: PoolDirector | null = null;
+
+  private teardownPool() {
+    this.poolDirector?.dispose();
+    this.poolDirector = null;
+    if (this.player) this.player.onBodyEvent = null;
+  }
+
+  private setupPool() {
+    this.teardownPool();
+    if (this.level !== POOLROOMS_LEVEL || !this.map?.pool) return;
+    const director = new PoolDirector({
+      audio: this.audio,
+      map: () => this.map,
+      player: () => this.player,
+      ripples: () => this.ripples,
+      notify: (text) => this.onHUDNotification?.(text),
+      breath: (value) => this.onBreathChange?.(value),
+      noise: (x, z, loudness, source) => this.noiseBus.emit(x, z, loudness, source, this.totalPlayTime),
+      vigias: () => this.entities.filter((e) => e.type === EntityType.VIGIA).map((e) => e.mesh.position),
+      rescue: (x, z) => {
+        // Out of air: you come to on the last dry ground, shaken — the water doesn't end a run.
+        this.audio.playEntityCatchSound(0.4);
+        if (!this.cheatLife) this.sanity = Math.max(0.05, this.sanity - 0.18);
+        this.onSanityChange?.(this.sanity);
+        this.player.placeAt(x, z);
+        this.deathBlack = 1.2;
+        this.map.performProximityCulling(this.scene, x, z, true);
+      },
+      inactive: () => this.isDead || this.isWaitingForTransition,
+      pullLever: (index) => {
+        this.applyPoolLevers(new Set([index]), true);
+        this.sendToServer({ type: "pool_lever", level: POOLROOMS_LEVEL, index });
+      },
+    });
+    this.poolDirector = director;
+    this.player.onBodyEvent = (kind, strength) => director.onBodyEvent(kind, strength);
+  }
+
+  private updatePool(delta: number) {
+    if (!this.poolDirector || !this.player) return;
+    this.poolDirector.update(delta);
+    this.map.pool?.update(delta);
+  }
 
   private teardownSpace() {
     this.spaceDirector?.dispose();
@@ -4686,6 +4850,8 @@ export class GameEngine {
       crouched: this.player.position.y < CROUCHED_EYE_HEIGHT,
       x: this.player.position.x,
       z: this.player.position.z,
+      y: this.player.position.y,
+      submerged: this.player.submerged,
       state: this.player.state,
       dir: camDir,
       flashlight: this.player.isFlashlightOn,
@@ -4699,7 +4865,12 @@ export class GameEngine {
       // Camera forward for a YXZ yaw/pitch (the camera looks down -Z).
       const cosPitch = Math.cos(r.pitch);
       dir.set(-Math.sin(r.yaw) * cosPitch, Math.sin(r.pitch), -Math.cos(r.yaw) * cosPitch);
-      targets.push({ id, hidden: false, crouched: r.y < CROUCHED_EYE_HEIGHT, x: r.x, z: r.z, state: r.state, dir, flashlight: r.flashlight });
+      const surface = this.map?.waterSurfaceAt(r.x, r.z) ?? null;
+      const floor = this.map?.getFloorHeightAt(r.x, r.z) ?? 0;
+      targets.push({
+        id, hidden: false, crouched: r.y - floor < CROUCHED_EYE_HEIGHT, x: r.x, z: r.z, y: r.y,
+        submerged: surface !== null && r.y < surface - 0.06, state: r.state, dir, flashlight: r.flashlight,
+      });
     });
     // A dead explorer is only hunted when there is nobody else left to hunt.
     if (this.isDead && targets.length > 1) targets.shift();
@@ -5384,6 +5555,7 @@ export class GameEngine {
     this.officeCity = null;
     this.teardownFun();
     this.teardownSpace();
+    this.teardownPool();
     this.teardownTown();
     if (this.fadeOverlay) {
       this.fadeOverlay.geometry.dispose();
