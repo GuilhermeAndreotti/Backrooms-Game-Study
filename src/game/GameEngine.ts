@@ -38,6 +38,7 @@ import {
   SPACE_LEVEL,
 } from "./levels/constants";
 import { POOL_LEVER_COUNT, POOL_VALVE_COUNT } from "./poolroomsPuzzle";
+import { POOL_LEVERS } from "./levels/poolLayout";
 import { FunDirector } from "./levels/funDirector";
 import { SpaceDirector, type SpaceTerminalView } from "./levels/spaceDirector";
 import { PoolDirector } from "./levels/poolDirector";
@@ -4767,6 +4768,14 @@ export class GameEngine {
     if (this.level === POOLROOMS_LEVEL && map.townExitX >= 0) targets.push({ x: (map.townExitX + 0.5) * cs, z: (map.townExitZ + 0.5) * cs, label: "94" });
     if (this.level === ABANDONED_OFFICE_LEVEL && map.abandonedSecretX >= 0) targets.push({ x: (map.abandonedSecretX + 0.5) * cs, z: (map.abandonedSecretZ + 0.5) * cs, label: "G" });
     return targets;
+  }
+
+  /** Part 2's levers for the radar: where each is, and whether it's been pulled (none until Part 1 drains). */
+  public poolLeverTargets(): { x: number; z: number; pulled: boolean }[] {
+    const map = this.map;
+    if (!map || this.level !== POOLROOMS_LEVEL || !map.poolroomsSolved) return [];
+    const cs = map.cellSize;
+    return POOL_LEVERS.map(([gx, gz], i) => ({ x: (gx + 0.5) * cs, z: (gz + 0.5) * cs, pulled: map.poolLevers.has(i) }));
   }
 
   /** Sets (or, with null, clears) the SKIN cheat's monster body; replicated to teammates on the next network tick. */

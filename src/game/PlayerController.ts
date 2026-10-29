@@ -581,12 +581,17 @@ export class PlayerController {
     const rise = atSurface ? HOIST_UP : STEP_UP;
     const blocked = (x: number, z: number) =>
       !this.isNoclipping && (map.checkCollision(x, z, radius) || map.blocksBody(x, z, radius, probeY + rise, eye + 0.14));
+    // Came down beside a ledge too high to get onto (a jump that fell short, a
+    // walk off a block) and the body overlaps it: every step would still
+    // overlap, pinning you in the corner. Slide out to the nearest clear spot.
+    if (blocked(this.position.x, this.position.z)) this.slideClear(blocked, dt);
+    const sx = this.position.x, sz = this.position.z;
     this.position.x += strideX;
-    if (blocked(this.position.x, z0)) this.position.x = x0;
+    if (blocked(this.position.x, sz)) this.position.x = sx;
     this.position.z += strideZ;
-    if (blocked(this.position.x, this.position.z)) this.position.z = z0;
-    this.velX = (this.position.x - x0) / dt;
-    this.velZ = (this.position.z - z0) / dt;
+    if (blocked(this.position.x, this.position.z)) this.position.z = sz;
+    this.velX = (this.position.x - sx) / dt;
+    this.velZ = (this.position.z - sz) / dt;
     const moving = wantsMove && this.velX * this.velX + this.velZ * this.velZ > 0.04;
     if (!moving && !this.swimming && (this.state === "walking" || this.state === "running")) {
       if (this.state === "running" && drain) this.stamina = Math.min(this.maxStamina, this.stamina + this.staminaDrainRate * dt);
@@ -685,6 +690,22 @@ export class PlayerController {
       // A slow roll with the water instead of a walking bob.
       this.camera.position.y += Math.sin(this.breathingTime * 0.7) * 0.025;
       this.camera.rotation.z += Math.sin(this.breathingTime * 0.45) * 0.012;
+    }
+  }
+
+  /** Eases the body toward the nearest position `blocked` lets it stand in (searching out to just over a body-width). */
+  private slideClear(blocked: (x: number, z: number) => boolean, dt: number) {
+    const x = this.position.x, z = this.position.z;
+    for (let r = 0.05; r <= 0.9; r += 0.05) {
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2;
+        const cx = x + Math.cos(a) * r, cz = z + Math.sin(a) * r;
+        if (blocked(cx, cz)) continue;
+        const k = Math.min(1, (3.5 * dt) / r);
+        this.position.x += (cx - x) * k;
+        this.position.z += (cz - z) * k;
+        return;
+      }
     }
   }
 

@@ -9,7 +9,7 @@ O plano das partes 2 e 3 está em [poolLayout.ts](../../src/game/levels/poolLayo
 
 ## Parte 1 — As válvulas (exploração)
 
-Os salões alagados de sempre, **sem o Vigia**. Drene a contaminação girando **6 válvulas** — **3 em cada uma das 2 primeiras áreas** — **na ordem correta** de cada área (`poolValveOrderForSeed`, em [poolroomsPuzzle.ts](../../src/game/poolroomsPuzzle.ts)). Cada área tem **três pistas** no piso (símbolo + posição na sequência). Os dois salões mais fundos só ficam rasos quando tudo drena. O progresso é compartilhado pela sala (`poolroomsState` no servidor).
+Os salões alagados de sempre, **sem o Vigia**. Drene a contaminação girando **3 válvulas**, todas no **primeiro salão**, **na ordem correta** (`poolValveOrderForSeed`, em [poolroomsPuzzle.ts](../../src/game/poolroomsPuzzle.ts)). O salão tem **três pistas** no piso (símbolo + posição na sequência). Os outros salões são fundos demais para atravessar a pé até as válvulas drenarem tudo de uma vez. O progresso é compartilhado pela sala (`poolroomsState` no servidor).
 
 Quando tudo drena, **a grade no fundo do terceiro salão (célula `38,10`) sobe** e abre o caminho para a parte 2.
 
@@ -19,7 +19,8 @@ Um natatório enorme com água pelo tornozelo, em três salões (**arquibancadas
 
 - **Subir:** blocos sobem de ~0,9 m em ~0,9 m (pule), escadas de marinheiro (encoste olhando e segure `W`), escadas.
 - **A regra:** o Vigia **nunca sai do chão** e não alcança quem está com os pés **≥ 2 m acima dele**. Blocos baixos não salvam.
-- Ele espreita a base da estrutura por um tempo, depois se afasta — mas fica por perto.
+- Quem está **na água ao alcance dele** é perseguido em disparada, direto. Quem fica lá em cima ele espreita por alguns segundos e depois **vai embora** para o outro lado do circuito, ignorando você enquanto não descer.
+- As alavancas aparecem no **radar** (laranja até serem puxadas; uma seta na borda aponta as que estão fora do alcance).
 - **Som:** correr na água chama atenção; andar quase não; agachado, quase nada. Cair de uma passarela é ouvido do outro lado do salão.
 - **Objetivo: as 3 alavancas** da ala de máquinas — duas no chão, expostas, uma no alto de uma caixa d'água (`POOL_LEVERS`). Puxar uma (`E`) faz barulho. Estado compartilhado pela sala (mensagem `pool_lever`, validada pelo servidor). Com as três, **abre a porta** no alto da passagem sul (`60,38`), à qual se chega pelas passarelas (rota oeste com a passarela desabada, ou leste pelas escadas do escorregador).
 

@@ -2314,9 +2314,9 @@ export class ProceduralMap {
 
   /**
    * LEVEL 7 ("LEVEL 5" display — classic Poolrooms). A windowed start room
-   * leads into a snaking flooded corridor and a broad central basin. Twelve
-   * hydraulic valves, arranged as three sequences across four sectors, lower
-   * the water in stages and reveal its submerged exit.
+   * leads into a snaking flooded corridor and a broad central basin. Three
+   * hydraulic valves, one sequence in the first hall, drain every hall at once
+   * and raise the grate into Part 2.
    * CLUMP is this level's native hazard — see mobs/clump.ts's sense() for
    * its level-7-only "loses you if you're submerged in WATER_ROOM" weakness.
    */
@@ -2356,8 +2356,8 @@ export class ProceduralMap {
     stub(26, 16, 28, 16); stub(28, 18, 28, 19);
     stub(26, 25, 28, 25); stub(35, 29, 37, 29); stub(33, 35, 33, 37);
 
-    // Each flooded sector has three valves, deliberately spread over its usable
-    // walls. This keeps every wheel visible and in arm's reach without forcing
+    // The valve sector (only the first hall now) has three valves, deliberately
+    // spread over its usable walls. This keeps every wheel visible and in arm's reach without forcing
     // explorers through the old, identical valve closets.
     this.valvePositions = [];
     this.poolStairCells.clear();

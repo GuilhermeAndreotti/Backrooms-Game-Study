@@ -1,8 +1,8 @@
 /** Shared Poolrooms puzzle constants and deterministic valve ordering. */
 
 export const POOL_VALVES_PER_ROOM = 3;
-/** Two sectors of three: six valves in all, before the hunt. */
-export const POOL_ROOM_COUNT = 2;
+/** One sector of three: the start hall's valves are all that stand before the hunt. */
+export const POOL_ROOM_COUNT = 1;
 export const POOL_VALVE_COUNT = POOL_VALVES_PER_ROOM * POOL_ROOM_COUNT;
 export const POOL_VALVE_ORDER_SALT = 0x7a11;
 /** Part 2's levers: all three open the way down to Part 3 (levels/poolLayout.ts places them). */

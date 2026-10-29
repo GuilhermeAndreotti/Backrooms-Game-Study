@@ -384,6 +384,19 @@ export default function App() {
     rosterDirtyRef.current = true;
   }, []);
 
+  // Ctrl+W (Ctrl is crouch / dive, W forward) can only be swallowed in
+  // fullscreen with Keyboard Lock (lockGameInput). Everywhere else — Firefox,
+  // Safari, windowed after Esc — at least ask before the tab closes mid-run.
+  useEffect(() => {
+    if (phase !== ConnectionPhase.PLAYING && phase !== ConnectionPhase.LOBBY) return;
+    const confirmLeave = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", confirmLeave);
+    return () => window.removeEventListener("beforeunload", confirmLeave);
+  }, [phase]);
+
   useEffect(() => {
     if (phase !== ConnectionPhase.PLAYING && phase !== ConnectionPhase.LOBBY) return;
     const timer = setInterval(() => {

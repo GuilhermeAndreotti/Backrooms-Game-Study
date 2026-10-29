@@ -340,6 +340,40 @@ const RadarHUDComponent: React.FC<RadarHUDProps> = ({
         }
       }
 
+      // 4c. The Poolrooms' Part 2 levers: orange until pulled (with a rim arrow
+      // when off the scope), a dim tick once pulled.
+      for (const lever of engine.poolLeverTargets()) {
+        const rx = lever.x - px;
+        const rz = lever.z - pz;
+        const dist = Math.sqrt(rx * rx + rz * rz);
+        const pulse = 0.55 + Math.abs(Math.sin(Date.now() * 0.005)) * 0.45;
+        ctx.font = "bold 8px Courier New, monospace";
+        ctx.textAlign = "center";
+        ctx.lineWidth = 1.4;
+        if (dist < maxRange - 6) {
+          const rX = rx * scale, rY = rz * scale;
+          ctx.fillStyle = lever.pulled ? "rgba(120, 113, 108, 0.7)" : `rgba(249, 115, 22, ${pulse})`;
+          ctx.strokeStyle = lever.pulled ? "#a8a29e" : "#fdba74";
+          ctx.fillRect(rX - 5, rY - 5, 10, 10);
+          ctx.strokeRect(rX - 5, rY - 5, 10, 10);
+          ctx.fillStyle = lever.pulled ? "#a8a29e" : "#fdba74";
+          ctx.fillText(lever.pulled ? `${t("radar.lever")} ✓` : t("radar.lever"), rX, rY - 9);
+        } else if (!lever.pulled) {
+          const ang = Math.atan2(rz, rx);
+          const rim = cx - 22;
+          ctx.fillStyle = `rgba(249, 115, 22, ${pulse})`;
+          ctx.strokeStyle = "#fdba74";
+          ctx.save();
+          ctx.translate(Math.cos(ang) * rim, Math.sin(ang) * rim);
+          ctx.rotate(ang + Math.PI / 2);
+          ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(7, 6); ctx.lineTo(0, 2); ctx.lineTo(-7, 6); ctx.closePath();
+          ctx.fill(); ctx.stroke();
+          ctx.restore();
+          ctx.fillStyle = "#fdba74";
+          ctx.fillText(`${Math.round(dist)}m`, Math.cos(ang) * (rim - 16), Math.sin(ang) * (rim - 16) + 3);
+        }
+      }
+
       // 5. Draw peer remote player teammates (VHF Transceivers tracked)
       playersRef.current.forEach((p) => {
         // Only render teammates who are currently exploring the same level

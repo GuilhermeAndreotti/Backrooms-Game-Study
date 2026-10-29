@@ -54,11 +54,13 @@ export interface VigiaTarget {
 interface Temper {
   sight: number; hear: number; lose: number; search: number; alertHold: number; stalk: number;
   patrol: number; investigate: number; searchSpeed: number; chase: number;
+  /** Chase pace at someone down in the water within its reach: a flat-out run straight at them. */
+  rush: number;
 }
 const TEMPER: Record<PoolPart, Temper> = {
-  1: { sight: 20, hear: 18, lose: 3.0, search: 14, alertHold: 1.1, stalk: 10, patrol: 1.0, investigate: 1.7, searchSpeed: 1.3, chase: 2.35 },
-  2: { sight: 30, hear: 26, lose: 4.0, search: 18, alertHold: 0.7, stalk: 16, patrol: 1.25, investigate: 1.9, searchSpeed: 1.5, chase: 3.15 },
-  3: { sight: 24, hear: 22, lose: 4.5, search: 20, alertHold: 0.8, stalk: 14, patrol: 1.1, investigate: 1.8, searchSpeed: 1.4, chase: 2.9 },
+  1: { sight: 20, hear: 18, lose: 3.0, search: 14, alertHold: 1.1, stalk: 6, patrol: 1.0, investigate: 1.7, searchSpeed: 1.3, chase: 2.35, rush: 4.6 },
+  2: { sight: 30, hear: 26, lose: 4.0, search: 18, alertHold: 0.7, stalk: 8, patrol: 1.25, investigate: 1.9, searchSpeed: 1.5, chase: 3.15, rush: 5.6 },
+  3: { sight: 24, hear: 22, lose: 4.5, search: 20, alertHold: 0.8, stalk: 7, patrol: 1.1, investigate: 1.8, searchSpeed: 1.4, chase: 2.9, rush: 5.2 },
 };
 /** Cosine of the half-angle of its sight cone: calm, and once it's onto someone. */
 const CONE_CALM = Math.cos((72 * Math.PI) / 180);
@@ -104,6 +106,8 @@ export class VigiaBrain {
   private lurkTime = 0;
   private patrolIndex = -1;
   private engagedSubmerged = false;
+  /** The one it attends to is down in the water and within its reach: it runs at them. */
+  private preyInWater = false;
   /** 0..1, Part 1 only: how much the valve puzzle has taught it (map.poolVigiaIntellect). */
   intellect = 0;
 
@@ -220,6 +224,7 @@ export class VigiaBrain {
     const heard = this.hear(self, noise);
     if (heard?.water) this.lastWaterNoise = now;
     const reach = this.reachFor(tgx, tgz, t);
+    this.preyInWater = reach !== null && this.map.waterSurfaceAt(t.x, t.z) !== null;
 
     if (sees) {
       this.lastSeenX = t.x;
@@ -237,8 +242,9 @@ export class VigiaBrain {
         // Having given up on someone perched out of reach, it leaves them be — until they come down.
         if (sees && (reach || !this.lurkingNear(t.x, t.z))) {
           // It stops, rises and fixes on you before it moves: the moment to run.
+          // Someone in the water within reach gets barely a heartbeat.
+          this.hold = this.preyInWater ? 0.25 : T.alertHold * (this.mode === "patrol" ? 1 : 0.6);
           this.setMode("alert");
-          this.hold = T.alertHold * (this.mode === "patrol" ? 1 : 0.6);
           this.goalX = this.goalZ = -1;
           break;
         }
@@ -301,14 +307,13 @@ export class VigiaBrain {
           this.hold = 0.8 + this.random() * 1.6;
         }
         if (this.modeTime > this.stalkMax) {
-          // It gives up on you — for now. It'll be somewhere near, out of sight.
+          // You stayed up there long enough: it gives up and walks off to the far
+          // end of its rounds, leaving you be while you stay up (lurkingNear) —
+          // until you come back down into the water.
           this.lurkX = this.lastSeenX;
           this.lurkZ = this.lastSeenZ;
-          this.lurkTime = 25 + this.random() * 15;
-          // Back off the way it came, far enough to lose the clear view, and wait around there.
-          const away = Math.atan2(self.x - this.lastSeenX, self.z - this.lastSeenZ);
-          const reachCell = 7 * this.map.cellSize;
-          this.startSearch(this.lastSeenX + Math.sin(away) * reachCell, this.lastSeenZ + Math.cos(away) * reachCell, true);
+          this.lurkTime = 40 + this.random() * 20;
+          this.leave(this.lastSeenX, this.lastSeenZ);
         }
         break;
 
@@ -353,6 +358,22 @@ export class VigiaBrain {
     // Shorter each time it comes back to the same spot.
     const returning = this.lurkTime > 0 && Math.hypot(this.lurkX - this.lastSeenX, this.lurkZ - this.lastSeenZ) < 12;
     this.stalkMax = (this.temper.stalk + this.random() * 8) * (returning ? 0.5 : 1);
+  }
+
+  /** Back to patrol, heading for the waypoint of its rounds farthest from (x, z). */
+  private leave(x: number, z: number) {
+    this.setMode("patrol");
+    this.lostTime = 0;
+    this.hold = 0;
+    const cs = this.map.cellSize;
+    let best: [number, number] | null = null, bestDist = -1;
+    for (const [wx, wz] of POOL_PATROL[this.part]) {
+      const d = Math.hypot((wx + 0.5) * cs - x, (wz + 0.5) * cs - z);
+      if (d > bestDist) { bestDist = d; best = [wx, wz]; }
+    }
+    const spot = best && (this.map.vigiaMayStand(best[0], best[1], this.part) ? best : this.standableNear((best[0] + 0.5) * cs, (best[1] + 0.5) * cs, 3, false));
+    if (spot) this.goTo(spot[0], spot[1]);
+    else this.goalX = this.goalZ = -1;
   }
 
   private startSearch(x: number, z: number, lurk = false) {
@@ -477,14 +498,14 @@ export class VigiaBrain {
 
   private updateSpeed(delta: number, T: Temper) {
     this.wantSpeed =
-      this.mode === "chase" ? T.chase + (this.part === 1 ? this.intellect * 0.65 : 0)
+      this.mode === "chase" ? (this.preyInWater ? T.rush : T.chase + (this.part === 1 ? this.intellect * 0.65 : 0))
       : this.mode === "ambush" ? 2.4
       : this.mode === "investigate" || this.mode === "shadow" ? T.investigate
       : this.mode === "search" ? T.searchSpeed
       : this.mode === "stalk" ? 1.0
       : T.patrol;
     // It builds up to a run and slows heavily: no instant bursts.
-    const rate = this.wantSpeed > this.speed ? 1.6 : 3;
+    const rate = this.wantSpeed > this.speed ? (this.mode === "chase" && this.preyInWater ? 4 : 1.6) : 3;
     this.speed += Math.max(-rate * delta, Math.min(rate * delta, this.wantSpeed - this.speed));
     this.speed = Math.max(0.6, this.speed);
   }
