@@ -769,6 +769,8 @@ export const enUS: Record<MessageKey, string> = {
   "err.serverBusy": "The server is full. Try again in a moment.",
   "lobby.goal": "GOOOAL!",
   "lobby.title": "ROOM LOBBY",
+  "lobby.minimize": "Minimize lobby panel",
+  "lobby.restore": "Restore lobby panel",
   "lobby.code": "ROOM CODE",
   "lobby.copyLink": "Copy invite link",
   "lobby.copied": "Link copied!",

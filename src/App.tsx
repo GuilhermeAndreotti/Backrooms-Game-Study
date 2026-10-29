@@ -41,7 +41,7 @@ import { t, useLanguage, localeTag } from "./i18n";
 import { LeaderboardModal } from "./components/LeaderboardModal";
 import { RunTimer } from "./components/RunTimer";
 import { formatRunTime } from "./utils/runTime";
-import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, FileText, Compass, Skull } from "lucide-react";
+import { Loader2, AlertCircle, RefreshCw, HelpCircle, Trophy, FileText, Compass, Skull, Minus, Plus } from "lucide-react";
 
 /**
  * Player-facing level label. Internal level ids and what's shown on screen
@@ -304,6 +304,8 @@ export default function App() {
 
   // Game levels
   const [currentLevel, setCurrentLevel] = useState(0);
+  const [lobbyMinimized, setLobbyMinimized] = useState(false);
+  useEffect(() => { setLobbyMinimized(false); }, [currentLevel, roomCode, phase]);
 
   // Live FPS readout fed by the engine (never drives a re-render on its own).
   const [perf, setPerf] = useState({ fps: 0, scale: 1 });
@@ -2150,7 +2152,29 @@ export default function App() {
           {currentLevel === LOBBY_LEVEL && !loadingMap && (
             <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 w-[min(92vw,26rem)] font-mono select-none">
               <div className="border border-[#a28e3b]/40 bg-[#0c0b05]/85 backdrop-blur-sm rounded p-4 space-y-3 text-center pointer-events-auto">
-                <div className="text-[10px] tracking-[0.3em] text-[#a28e3b] uppercase">{t("lobby.title")}</div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-left">
+                    <div className="text-[10px] tracking-[0.3em] text-[#a28e3b] uppercase">{t("lobby.title")}</div>
+                    {lobbyMinimized && <div className="text-sm font-black tracking-[0.3em] text-[#deb81d]">{roomCode}</div>}
+                  </div>
+                  <button
+                    type="button"
+                    id="btn-lobby-toggle"
+                    onClick={() => setLobbyMinimized((value) => !value)}
+                    onKeyDown={(event) => {
+                      // Activating this control must not trigger Enter's expedition shortcut.
+                      if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+                    }}
+                    aria-expanded={!lobbyMinimized}
+                    aria-controls="lobby-panel-content"
+                    aria-label={t(lobbyMinimized ? "lobby.restore" : "lobby.minimize")}
+                    title={t(lobbyMinimized ? "lobby.restore" : "lobby.minimize")}
+                    className="shrink-0 rounded border border-[#deb81d]/40 text-[#deb81d] hover:bg-[#deb81d]/10 p-2 cursor-pointer transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#deb81d]"
+                  >
+                    {lobbyMinimized ? <Plus className="w-4 h-4" aria-hidden="true" /> : <Minus className="w-4 h-4" aria-hidden="true" />}
+                  </button>
+                </div>
+                <div id="lobby-panel-content" hidden={lobbyMinimized} className="space-y-3">
                 <div>
                   <div className="text-[9px] text-[#a28e3b]/70 uppercase tracking-widest">{t("lobby.code")}</div>
                   <div id="lobby-room-code" className="text-3xl font-black tracking-[0.35em] text-[#deb81d]">{roomCode}</div>
@@ -2211,6 +2235,7 @@ export default function App() {
                   <div className="text-[10px] text-[#a28e3b] uppercase tracking-wider animate-pulse">{t("lobby.waitHost")}</div>
                 )}
                 <div className="text-[9px] text-stone-500 leading-relaxed">{t("lobby.tips")}</div>
+                </div>
               </div>
             </div>
           )}

@@ -767,6 +767,8 @@ export const ptBR = {
   "err.serverBusy": "O servidor está lotado. Tente novamente em instantes.",
   "lobby.goal": "GOOOL!",
   "lobby.title": "LOBBY DA SALA",
+  "lobby.minimize": "Minimizar painel do lobby",
+  "lobby.restore": "Restaurar painel do lobby",
   "lobby.code": "CÓDIGO DA SALA",
   "lobby.copyLink": "Copiar link de convite",
   "lobby.copied": "Link copiado!",
