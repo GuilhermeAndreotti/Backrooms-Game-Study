@@ -6,14 +6,14 @@
  * their valves) is still carved by ProceduralMap.carveLevel7; this file lays
  * out what lies past its drained gate:
  *
- *  - Part 2, "A Caçada" (x 38..93, z 2..39): one huge ankle-deep natatorium
+ *  - Part 2, "A Caçada" (authored x 38..93, z 2..39): one huge ankle-deep natatorium
  *    split into three halls by partition walls with wide openings, and the
  *    machine wing east of them. Bleachers, lifeguard towers, a diving
  *    platform, water tanks, catwalks and block stacks rise out of the water.
  *    The rule the whole part teaches: the Vigia never leaves the floor, and
  *    cannot reach anyone standing VIGIA_REACH_UP above it. Three levers,
  *    spread over the part, open the door down to Part 3.
- *  - Part 3, "As Profundezas" (x 42..76, z 40..76): a drowned labyrinth with
+ *  - Part 3, "As Profundezas" (authored x 42..76, z 40..76): a drowned labyrinth with
  *    corridors two cells wide under a low roof, broken by air holes where you
  *    can come up to breathe. Over its roof lies a dark tiled hall the holes
  *    open into like wells: that is where the Vigia walks. The two ways out
@@ -23,6 +23,13 @@
  * Everything here is a pure function of constants (no seed), so every client
  * and the server agree on it without sending geometry. Heights are world Y in
  * metres: the dry floor is 0, Part 1's pool floor is POOL_FLOOR_Y (-0.55).
+ *
+ * The coordinates written below (and in ProceduralMap.carveLevel7 and the
+ * level's spawn roster) are *authored* ones, from before the halls were made
+ * smaller. At the end of this file every one of them goes through
+ * {@link poolRemap}, which drops a few rows and columns of open water / repeated
+ * structure from Parts 1 and 2 (POOL_DROP) and slides Part 3 along to meet
+ * them; everything exported is in final grid coordinates.
  */
 
 import { POOL_FLOOR_Y } from "../Water";
@@ -35,8 +42,10 @@ export type PoolPart = 1 | 2 | 3;
 
 interface Rect { x1: number; z1: number; x2: number; z2: number }
 
-/** Part 1's original halls. */
-export const POOL_PART1: Rect = { x1: 2, z1: 2, x2: 37, z2: 37 };
+/** Part 1's halls, as carveLevel7 authors them (POOL_PART1 is where they end up). */
+export const POOL_PART1_AUTHORED: Readonly<Rect> = { x1: 2, z1: 2, x2: 37, z2: 37 };
+/** Part 1's halls (final coordinates, set by the remap at the end of this file). */
+export const POOL_PART1: Rect = { ...POOL_PART1_AUTHORED };
 const PART2: Rect = { x1: 38, z1: 2, x2: 93, z2: 39 };
 const PART3: Rect = { x1: 42, z1: 40, x2: 76, z2: 76 };
 
@@ -409,3 +418,74 @@ export const POOL_SIGNS: [number, number, "N" | "S" | "E" | "W", MessageKey][] =
   [57, 42, "N", "pool.sign.breath"],
   [75, 72, "N", "pool.sign.exit"],
 ];
+
+// --- Making the halls smaller -------------------------------------------------
+
+/**
+ * Authored rows and columns dropped from Parts 1 and 2. Each one is open
+ * water, or a cell repeated beside it (a stretch of bleacher, catwalk or tank
+ * that just gets shorter), and none holds a ladder, lever, sign, gate or door,
+ * so nothing is cut through, only brought closer. No two are adjacent.
+ */
+const POOL_DROP = {
+  1: { x: [7, 10, 16, 20, 23, 30, 36], z: [7, 11, 13, 17, 22, 27, 31] },
+  2: { x: [43, 45, 48, 55, 59, 72, 79, 83, 87, 89], z: [7, 14, 21, 24, 27, 30, 32] },
+};
+const AUTHORED = { 1: { ...POOL_PART1_AUTHORED }, 2: { ...PART2 }, 3: { ...PART3 } };
+const dropsBelow = (list: number[], v: number) => list.reduce((n, d) => n + (d < v ? 1 : 0), 0);
+/** Part 2 slides west by Part 1's dropped columns, so its gate still meets Part 1's east wall. */
+const remap2 = (x: number, z: number): [number, number] =>
+  [x - POOL_DROP[1].x.length - dropsBelow(POOL_DROP[2].x, x), z - dropsBelow(POOL_DROP[2].z, z)];
+/** Part 3 moves whole, keeping its way in right under Part 2's high doorway corridor. */
+const [P3_DX, P3_DZ] = (() => {
+  const [x, z] = remap2(60, 39);
+  return [x - 60, z + 1 - 40];
+})();
+
+/**
+ * An authored cell -> its final grid cell. A dropped row or column lands on
+ * the next one kept (a lamp or patrol point that stood on it moves over).
+ */
+export function poolRemap(x: number, z: number): [number, number] {
+  if (inside(AUTHORED[1], x, z)) return [x - dropsBelow(POOL_DROP[1].x, x), z - dropsBelow(POOL_DROP[1].z, z)];
+  if (inside(AUTHORED[2], x, z)) return remap2(x, z);
+  if (inside(AUTHORED[3], x, z)) return [x + P3_DX, z + P3_DZ];
+  return [x, z];
+}
+
+/** Whether carveLevel7's authored cell (x, z) is one of Part 1's dropped rows or columns. */
+export function poolPart1Dropped(x: number, z: number): boolean {
+  return POOL_DROP[1].x.includes(x) || POOL_DROP[1].z.includes(z);
+}
+
+const authoredOf = new Map<string, [number, number]>();
+/** The authored coordinates of a final Part 2/3 cell (set pieces placed by their authored spot). */
+export function poolAuthoredAt(gx: number, gz: number): [number, number] {
+  return authoredOf.get(key(gx, gz)) ?? [gx, gz];
+}
+
+{
+  const authored = [...cells];
+  cells.clear();
+  for (const [k, cell] of authored) {
+    const [x, z] = k.split(",").map(Number);
+    if (cell.part === 2 && (POOL_DROP[2].x.includes(x) || POOL_DROP[2].z.includes(z))) continue;
+    const [nx, nz] = poolRemap(x, z);
+    cells.set(key(nx, nz), cell);
+    authoredOf.set(key(nx, nz), [x, z]);
+  }
+  const move = (p: { x: number; z: number }) => { [p.x, p.z] = poolRemap(p.x, p.z); };
+  const moveTuple = (p: [number, number, ...unknown[]]) => { [p[0], p[1]] = poolRemap(p[0], p[1]); };
+  const moveRect = (r: Rect) => {
+    [r.x1, r.z1] = poolRemap(r.x1, r.z1);
+    [r.x2, r.z2] = poolRemap(r.x2, r.z2);
+  };
+  POOL_LADDERS.forEach(move);
+  [POOL_GATE, POOL_DEEP_DOOR, POOL_STATION_EXIT, POOL_TOWN_EXIT, POOL_SHUTTER_WHEEL].forEach(move);
+  [POOL_AMBUSH.watchX, POOL_AMBUSH.watchZ] = poolRemap(POOL_AMBUSH.watchX, POOL_AMBUSH.watchZ);
+  move(POOL_AMBUSH);
+  [POOL_PART1, PART2, PART3, POOL_LANDING, POOL_FINALE].forEach(moveRect);
+  [...POOL_LEVERS, ...POOL_PATROL[2], ...POOL_PATROL[3]].forEach(moveTuple);
+  POOL_LAMPS.forEach(moveTuple);
+  POOL_SIGNS.forEach(moveTuple);
+}

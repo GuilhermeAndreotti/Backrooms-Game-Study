@@ -30,8 +30,8 @@ import type { OfficeSkyline } from "./officeWindow";
 import { POOL_FLOOR_Y, WATER_SURFACE_Y, createPoolTileMaterial, createWallTileMaterial, createWaterMaterial } from "./Water";
 import { POOL_ROOM_COUNT, POOL_VALVES_PER_ROOM, poolValveOrderForSeed } from "./poolroomsPuzzle";
 import {
-  POOL_DEEP_DOOR, POOL_GATE, POOL_GRID, POOL_LEVER_SLOTS, POOL_PART1, POOL_STATION_EXIT, POOL_TOWN_EXIT, PoolPart, SWIM_DEPTH, VIGIA_MAX_FLOOR, VIGIA_MAX_WADE,
-  forEachPoolCell, poolCellAt, poolPartAt, poolStairHeight,
+  POOL_DEEP_DOOR, POOL_GATE, POOL_GRID, POOL_LEVER_SLOTS, POOL_PART1, POOL_PART1_AUTHORED, POOL_STATION_EXIT, POOL_TOWN_EXIT, PoolPart, SWIM_DEPTH, VIGIA_MAX_FLOOR, VIGIA_MAX_WADE,
+  forEachPoolCell, poolCellAt, poolPart1Dropped, poolPartAt, poolRemap, poolStairHeight,
 } from "./levels/poolLayout";
 import { PoolWorld } from "./levels/poolWorld";
 
@@ -61,6 +61,11 @@ export class SeededRandom {
 
 /** Wall height in the Poolrooms (m). No ceiling: walls just rise into the haze. */
 const POOLROOMS_WALL_HEIGHT = 24;
+/** Part 1's hall walls and floor inscription, from their authored spots (carveLevel7). */
+const POOL_ZONE_WALL_X1 = poolRemap(12, 2)[0];
+const POOL_ZONE_WALL_X2 = poolRemap(25, 2)[0];
+const POOL_ZONE_WALL_Z = poolRemap(2, 20)[1];
+const POOL_INSCRIPTION = poolRemap(8, 10);
 
 export enum CellType {
   SOLID = 0,      // Wall pillar block
@@ -2322,7 +2327,8 @@ export class ProceduralMap {
    */
   private carveLevel7() {
     // Part 1 only: Parts 2 and 3 lie east and south of it (carvePoolDepths).
-    const lo = POOL_PART1.x1, hi = POOL_PART1.x2;
+    // Carved at its authored size, then compacted (see poolLayout's poolRemap).
+    let lo = POOL_PART1_AUTHORED.x1, hi = POOL_PART1_AUTHORED.x2;
 
     // Four flooded halls chained by wide doorways, each with its own water level.
     for (let x = lo; x <= hi; x++) {
@@ -2355,6 +2361,16 @@ export class ProceduralMap {
     stub(13, 28, 15, 28); stub(22, 30, 24, 30); stub(24, 14, 24, 16); stub(13, 10, 15, 10);
     stub(26, 16, 28, 16); stub(28, 18, 28, 19);
     stub(26, 25, 28, 25); stub(35, 29, 37, 29); stub(33, 35, 33, 37);
+
+    // Drop the rows and columns that make the halls smaller.
+    const authored = this.grid.slice(lo, hi + 1).map((col) => col.slice(lo, hi + 1));
+    for (let x = lo; x <= hi; x++) for (let z = lo; z <= hi; z++) this.grid[x][z] = CellType.SOLID;
+    for (let x = lo; x <= hi; x++) for (let z = lo; z <= hi; z++) {
+      if (poolPart1Dropped(x, z)) continue;
+      const [nx, nz] = poolRemap(x, z);
+      this.grid[nx][nz] = authored[x - lo][z - lo];
+    }
+    lo = POOL_PART1.x1; hi = POOL_PART1.x2;
 
     // The valve sector (only the first hall now) has three valves, deliberately
     // spread over its usable walls. This keeps every wheel visible and in arm's reach without forcing
@@ -2411,7 +2427,10 @@ export class ProceduralMap {
       const candidates: [number, number][] = [];
       for (let x = lo; x <= hi; x++) {
         for (let z = lo; z <= hi; z++) {
-          if (this.grid[x][z] === CellType.WATER_ROOM && this.poolZoneOf(x, z) === sector) candidates.push([x, z]);
+          if (this.grid[x][z] !== CellType.WATER_ROOM || this.poolZoneOf(x, z) !== sector) continue;
+          // Not under a wheel: a clue is read off the floor, away from the valves.
+          if (this.valvePositions.some(([vx, vz]) => Math.abs(vx - x) <= 1 && Math.abs(vz - z) <= 1)) continue;
+          candidates.push([x, z]);
         }
       }
       const chosen: [number, number][] = [];
@@ -2493,9 +2512,10 @@ export class ProceduralMap {
 
   /** Which of the Poolrooms' four halls (0 = start hall … 3 = exit hall) a cell belongs to. */
   private poolZoneOf(gx: number, gz: number): number {
-    if (gx < 12) return 0;
-    if (gx < 25) return 1;
-    return gz < 20 ? 2 : 3;
+    // The authored walls between them: x = 12, x = 25, and z = 20 east of that.
+    if (gx < POOL_ZONE_WALL_X1) return 0;
+    if (gx < POOL_ZONE_WALL_X2) return 1;
+    return gz < POOL_ZONE_WALL_Z ? 2 : 3;
   }
 
   private poolZoneTargetSurface(zone: number, stage: number): number {
@@ -4277,7 +4297,7 @@ export class ProceduralMap {
 
     if (this.level === 7) {
       if (gx <= 6 && gz <= 6) return; // the dry start room
-      if (gx === 8 && gz === 10) return; // the floor inscription
+      if (gx === POOL_INSCRIPTION[0] && gz === POOL_INSCRIPTION[1]) return; // the floor inscription
       if (cellType !== CellType.WATER_ROOM) return; // dry decks stay clear for the valves
       const zone = this.poolZoneOf(gx, gz);
       let open = true;

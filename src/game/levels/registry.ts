@@ -10,6 +10,7 @@
 
 import { EntityType } from "../../shared/entityTypes";
 import { LevelDefinition } from "./types";
+import { poolRemap } from "./poolLayout";
 import {
   ABANDONED_OFFICE_LEVEL,
   ELECTRICAL_ROOM_LEVEL,
@@ -126,9 +127,9 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
     spawn: {
       kind: "static",
       roster: [
-        { type: EntityType.CLUMP, targetCell: [24, 14] },
-        { type: EntityType.VIGIA, targetCell: [56, 30] },
-        { type: EntityType.VIGIA, targetCell: [55, 63] },
+        { type: EntityType.CLUMP, targetCell: poolRemap(24, 14) },
+        { type: EntityType.VIGIA, targetCell: poolRemap(56, 30) },
+        { type: EntityType.VIGIA, targetCell: poolRemap(55, 63) },
       ],
     },
   },

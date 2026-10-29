@@ -23,7 +23,7 @@ import { createPoolTileMaterial, createWallTileMaterial, createWaterMaterial, PO
 import {
   POOL_CELL, POOL_DEEP_DOOR, POOL_GATE, POOL_LADDERS, POOL_LAMPS, POOL_LEVERS, POOL_SHUTTER_WHEEL, POOL_SIGNS, POOL_STATION_EXIT, POOL_TOWN_EXIT,
   PoolCell, PoolLampKind,
-  poolCellAt, poolPartAt,
+  poolAuthoredAt, poolCellAt, poolPartAt,
 } from "./poolLayout";
 
 const CELL = POOL_CELL;
@@ -290,10 +290,12 @@ export class PoolWorld {
     for (const [sx, sz, side, key] of POOL_SIGNS) if (sx === gx && sz === gz) this.buildSign(group, x, z, cell.floor, side, t(key));
 
     if (cell.kind === "block" && cell.floor >= 2.5 && cell.floor < 2.9) this.buildLifeguardChair(group, x, z, cell.floor);
-    if (cell.part === 2 && cell.kind === "floor" && gz >= 14 && gz <= 24 && gz % 2 === 1) this.buildLaneRope(group, x, z, cell.water!);
-    if (cell.part === 2 && cell.kind === "block" && gx === 42 && cell.floor < 0.5) this.buildStartingBlock(group, x, z, cell.floor, gz);
-    if (gx === 66 && gz === 28) this.buildSlide(group, x, z, cell.floor);
-    if (gx === 58 && gz === 57) this.buildSunkenChair(group, x, z, cell.floor);
+    // Set pieces sit at their authored spots (poolLayout's poolRemap).
+    const [ax, az] = poolAuthoredAt(gx, gz);
+    if (cell.part === 2 && cell.kind === "floor" && az >= 14 && az <= 24 && az % 2 === 1) this.buildLaneRope(group, x, z, cell.water!);
+    if (cell.part === 2 && cell.kind === "block" && ax === 42 && cell.floor < 0.5) this.buildStartingBlock(group, x, z, cell.floor, az);
+    if (ax === 66 && az === 28) this.buildSlide(group, x, z, cell.floor);
+    if (ax === 58 && az === 57) this.buildSunkenChair(group, x, z, cell.floor);
     if (cell.part === 3 && cell.kind === "deck" && poolCellAt(gx, gz - 1) === undefined && poolPartAt(gx, gz - 1) !== 1) this.buildWallPipe(group, x, z, cell.floor);
     POOL_LEVERS.forEach(([lx, lz], i) => { if (lx === gx && lz === gz) this.buildLever(group, i, x, z, cell.floor); });
     if (gx === POOL_DEEP_DOOR.x && gz === POOL_DEEP_DOOR.z) this.buildDeepDoor(group, x, z, cell.floor);
