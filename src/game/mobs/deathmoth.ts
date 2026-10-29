@@ -34,6 +34,16 @@ export const deathmoth: MobDefinition = {
       }
     });
     bake(c, c.group, eyeMat, "moth_eyes", (p) => { for (const s of [-1, 1]) p.blob(V(s * 0.05, 0.02, 0.23), 0.04); });
+    const fur = c.smat("moth_fur", () => new THREE.MeshStandardMaterial({ color: 0x8c7c60, roughness: 1 }));
+    bake(c, c.group, fur, "moth_fur", p => {
+      for (let i = 0; i < 110; i++) {
+        const theta = i * 2.399963, y = 1 - 2 * (i + 0.5) / 110;
+        const radius = Math.sqrt(1 - y * y);
+        const normal = V(Math.cos(theta) * radius, y, Math.sin(theta) * radius);
+        const base = normal.clone().multiply(V(0.116, 0.11, 0.14)).add(V(0, 0, 0.05));
+        p.spike(base, base.clone().addScaledVector(normal, 0.015 + (i % 7) * 0.002), 0.0015, 3);
+      }
+    });
 
     for (const side of [-1, 1]) {
       const joint = c.joint(`wing${side}`, side * 0.08, 0.02, 0.02);
@@ -77,7 +87,9 @@ let wingTexture: THREE.CanvasTexture | null = null;
 /** Dusty grey-brown scales: dark cross-bands, veins fanning from the root, an eyespot on the hindwing. */
 function mothWingTexture(): THREE.CanvasTexture {
   if (wingTexture) return wingTexture;
-  const size = 256;
+  const size = 512;
+  let seed = 7301;
+  const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = size;
   const g = canvas.getContext("2d");
@@ -105,9 +117,9 @@ function mothWingTexture(): THREE.CanvasTexture {
     eye.addColorStop(0, "#0b0907"); eye.addColorStop(0.35, "#1a140e"); eye.addColorStop(0.5, "#b8a77e"); eye.addColorStop(0.62, "#3a2e20"); eye.addColorStop(1, "rgba(58, 46, 32, 0)");
     g.fillStyle = eye;
     g.fillRect(0, 0, size, size);
-    for (let i = 0; i < 1600; i++) {
-      g.fillStyle = Math.random() < 0.5 ? "rgba(30, 24, 16, 0.18)" : "rgba(190, 176, 140, 0.14)";
-      g.fillRect(Math.random() * size, Math.random() * size, 2, 1);
+    for (let i = 0; i < 9000; i++) {
+      g.fillStyle = random() < 0.5 ? "rgba(30, 24, 16, 0.18)" : "rgba(190, 176, 140, 0.14)";
+      g.fillRect(random() * size, random() * size, 2, 1);
     }
   }
   wingTexture = new THREE.CanvasTexture(canvas);

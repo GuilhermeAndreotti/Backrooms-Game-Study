@@ -19,10 +19,12 @@
  */
 
 import * as THREE from "three";
+import { sculptedHead } from "./sculpt";
 import { bake, hand, ribcage } from "./anatomy";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
 import { animateBiped } from "./anim";
+import { anatomicalEye } from "./eyes";
 
 const GAZE_COS_THRESHOLD = 0.86; // a fairly direct stare, narrower cone than HOUND's 0.81
 const SENSE_RADIUS = 18;
@@ -80,7 +82,7 @@ export const observador: MobDefinition = {
 
     // Elongated head, faceless but for a lipless slit of a mouth.
     const head = ctx.joint("head", 0, 0.62, 0, spine);
-    const skull = new THREE.Mesh(ctx.sgeo("observador_head", () => new THREE.SphereGeometry(0.16, 16, 12)), skinMat);
+    const skull = new THREE.Mesh(ctx.sgeo("observador_head", () => sculptedHead(0.16, true)), skinMat);
     skull.position.set(0, 0.78, 0);
     skull.scale.set(0.85, 1.3, 0.85);
     ctx.put(head, skull);
@@ -90,8 +92,6 @@ export const observador: MobDefinition = {
     // spiral, same technique CLUMP uses for its spikes, so it looks identical
     // on every instance), each set in the skin of the torso inside a dark,
     // wet lid. Each sits on its own pivot so it can blink.
-    const eyeMat = ctx.smat("observador_eye", () => new THREE.MeshStandardMaterial({ color: 0xfef9c3, emissive: 0xfde68a, emissiveIntensity: 1.3 }));
-    const eyeGeo = ctx.sgeo("observador_eye_geo", () => new THREE.SphereGeometry(0.02, 8, 6));
     const spots: THREE.Vector3[] = [];
     for (let i = 0; i < EYES; i++) {
       const t = i / EYES;
@@ -107,9 +107,8 @@ export const observador: MobDefinition = {
     });
     spots.forEach((s, i) => {
       const socket = ctx.joint(`eye${i}`, s.x, s.y, s.z, spine);
-      const eye = new THREE.Mesh(eyeGeo, eyeMat);
-      eye.position.copy(s).setX(s.x * 1.06).setZ(s.z * 1.06);
-      ctx.put(socket, eye);
+      const center = s.clone().setX(s.x * 1.06).setZ(s.z * 1.06);
+      anatomicalEye(ctx, socket, center, 0.023, 0x897a51, V(s.x, 0, s.z));
     });
   },
 

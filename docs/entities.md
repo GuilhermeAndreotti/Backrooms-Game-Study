@@ -47,6 +47,7 @@ Elencos de [levels/registry.ts](../src/game/levels/registry.ts). "Estático" = p
 
 ## Notas técnicas
 
+- **Assets visuais**: os mobs têm GLBs articulados com três LODs, gerados offline a partir dos builders. Materiais PBR, laboratório visual, regeneração e limites da produção artística estão em [mob-assets.md](mob-assets.md).
 - **Rádio**: algumas entidades (`FINGER_KING`, `CEIFADOR`, `TOWN_KING`) são **invisíveis ao radar** de propósito — "sem aviso" é a mecânica.
 - **Autoridade**: só o cliente-autoridade do nível simula as entidades e transmite `entities`; os demais renderizam. Veja o README principal.
 - **Falas/sons**: vozes procedurais em [AudioManager.ts](../src/game/AudioManager.ts); falas legendadas em `sp.*` no i18n.

@@ -46,6 +46,9 @@ import { HOTEL_LEVEL } from "./levels/constants";
 import type { HotelAction, HotelState, HotelWorldState } from "../shared/hotel";
 import { ANIMATION_CELLS, KING_THRONE, townRelocationCells } from "./levels/townLayout";
 import { MOB_DEFS } from "./mobs/registry";
+import { preloadCreatureAssets, releaseCreatureAsset, setCreatureAssetQuality } from "./mobs/creatureAssets";
+import { setCreatureMaterialQuality } from "./mobs/creatureMaterials";
+import { createSmiler, animateSmiler, disposeSmilerAssets } from "./mobs/smiler";
 import type { SpaceConsoleId, SpaceTarget, SpaceTerminalId } from "./levels/spaceLayout";
 import type { FunStage } from "./LevelFunModels";
 import { RoomEnvironment } from "./Environment";
@@ -409,7 +412,7 @@ export class GameEngine {
   private frameCounter = 0;
 
   // Smilers system
-  public smilers: { netId: number; mesh: THREE.Mesh; gridX: number; gridZ: number; spawnTime: number; gazeTimer: number }[] = [];
+  public smilers: { netId: number; mesh: THREE.Group; gridX: number; gridZ: number; spawnTime: number; gazeTimer: number }[] = [];
   private smilerSpawnCheckTimer = 0;
   /** Level 3 ("Lights Out"): seconds the flashlight has been held on continuously. */
   private lightsOutSummonTimer = 0;
@@ -655,6 +658,8 @@ export class GameEngine {
 
     this.qualityLevel = settings.quality === "auto" ? detectQualityLevel() : settings.quality;
     this.quality = getQualityProfile(this.qualityLevel);
+    setCreatureAssetQuality(this.qualityLevel);
+    setCreatureMaterialQuality(this.qualityLevel);
     this.adaptiveEnabled = settings.adaptiveResolution !== false;
     this.adaptive = new AdaptiveResolution(60, 0.5);
     console.log(`[Quality] Preset "${this.qualityLevel}" (adaptive: ${this.adaptiveEnabled})`);
@@ -1093,6 +1098,8 @@ export class GameEngine {
   public setQuality(level: QualityLevel) {
     this.qualityLevel = level;
     this.quality = getQualityProfile(level);
+    setCreatureAssetQuality(level);
+    setCreatureMaterialQuality(level);
     this.adaptive.reset();
     this.renderScale = 1;
 
@@ -2551,6 +2558,7 @@ export class GameEngine {
       // it made for itself.
       const skinBody = group.getObjectByName("monsterSkinBody");
       if (skinBody) {
+        releaseCreatureAsset(skinBody as THREE.Group);
         (skinBody.userData.tintMaterials as THREE.Material[] | undefined)?.forEach((m) => m.dispose());
         group.remove(skinBody);
       }
@@ -3004,6 +3012,12 @@ export class GameEngine {
 
   public transitionToLevel(level: number, seed: number, settings: GameSettings) {
     console.log(`Transitioning to Level ${level} in backrooms...`);
+    const spawn = LEVEL_DEFS[level]?.spawn;
+    const roster = spawn?.kind === "static" ? spawn.roster.map(s => s.type)
+      : spawn?.kind === "timedSummon" ? spawn.pool
+      : level === LEVEL_G ? [EntityType.FINGER_KING]
+      : level === OLD_TOWN_LEVEL ? [EntityType.TOWN_KING, EntityType.ANIMATION] : [];
+    void preloadCreatureAssets(roster);
     this.teardownFun();
     this.teardownSpace();
     this.teardownTown();
@@ -3155,75 +3169,6 @@ export class GameEngine {
 
     // Initial map cull
     this.map.performProximityCulling(this.scene, this.player.position.x, this.player.position.z);
-  }
-
-  private smilerTexture: THREE.Texture | null = null;
-
-  private getSmilerTexture(): THREE.Texture {
-    if (!this.smilerTexture) {
-      this.smilerTexture = this.createSmilerTexture();
-    }
-    return this.smilerTexture;
-  }
-
-  private createSmilerTexture(): THREE.Texture {
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext("2d")!;
-    ctx.clearRect(0, 0, 256, 256);
-
-    // Glow effect
-    ctx.shadowBlur = 15;
-    ctx.shadowColor = "#deb81d"; // eerie matching glow for backrooms
-
-    // Glow Eyes
-    ctx.fillStyle = "#ffffff";
-    ctx.beginPath();
-    ctx.arc(88, 100, 14, 0, Math.PI * 2);
-    ctx.arc(168, 100, 14, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Dark Pupils looking right at you
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "#000000";
-    ctx.beginPath();
-    ctx.arc(88, 100, 4, 0, Math.PI * 2);
-    ctx.arc(168, 100, 4, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Creepy wide smiling mouth
-    ctx.shadowBlur = 12;
-    ctx.shadowColor = "#deb81d";
-    ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth = 5;
-    ctx.lineCap = "round";
-
-    ctx.beginPath();
-    ctx.arc(128, 115, 60, 0.1 * Math.PI, 0.9 * Math.PI, false);
-    ctx.stroke();
-
-    // Corner lines curling up
-    ctx.beginPath();
-    ctx.moveTo(128 + Math.cos(0.1 * Math.PI) * 60, 115 + Math.sin(0.1 * Math.PI) * 60);
-    ctx.lineTo(128 + Math.cos(0.1 * Math.PI) * 60 + 10, 115 + Math.sin(0.1 * Math.PI) * 60 - 15);
-    ctx.moveTo(128 + Math.cos(0.9 * Math.PI) * 60, 115 + Math.sin(0.9 * Math.PI) * 60);
-    ctx.lineTo(128 + Math.cos(0.9 * Math.PI) * 60 - 10, 115 + Math.sin(0.9 * Math.PI) * 60 - 15);
-    ctx.stroke();
-
-    // Jagged vertical stitch lines / teeth
-    ctx.lineWidth = 3;
-    for (let angle = 0.2 * Math.PI; angle <= 0.8 * Math.PI; angle += 0.1) {
-      const sx = 128 + Math.cos(angle) * 60;
-      const sy = 115 + Math.sin(angle) * 60;
-      ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      ctx.lineTo(sx, sy - 12);
-      ctx.stroke();
-    }
-
-    const texture = new THREE.CanvasTexture(canvas);
-    return texture;
   }
 
   // ---------------------------------------------------------------------------
@@ -4901,23 +4846,12 @@ export class GameEngine {
     console.log(`[Smiler] Spawned creepily at grid (${gx}, ${gz})`);
   }
 
-  /** Builds a smiler billboard at a cell (spawned here or replicated from the authority). */
+  /** Builds the volumetric eyes and smile (spawned here or replicated from the authority). */
   private addSmiler(gx: number, gz: number, netId: number) {
     if (!this.map) return;
     const hSize = this.map.cellSize;
 
-    // Create Smiler Plane mesh (texture is shared across every smiler)
-    const texture = this.getSmilerTexture();
-    const mat = new THREE.MeshBasicMaterial({
-      map: texture,
-      transparent: true,
-      side: THREE.DoubleSide,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    });
-    // A 1.8m wide, 1.8m high billboard
-    const geo = new THREE.PlaneGeometry(1.8, 1.8);
-    const mesh = new THREE.Mesh(geo, mat);
+    const mesh = createSmiler();
 
     // Place at 1.15m height (chest level) above this cell's floor — sector 3
     // (the only sector smilers spawn in) is a real elevated storey.
@@ -4936,14 +4870,8 @@ export class GameEngine {
     });
   }
 
-  private disposeSmiler(smiler: { mesh: THREE.Mesh }) {
+  private disposeSmiler(smiler: { mesh: THREE.Group }) {
     this.scene.remove(smiler.mesh);
-    smiler.mesh.geometry.dispose();
-    if (Array.isArray(smiler.mesh.material)) {
-      smiler.mesh.material.forEach(m => m.dispose());
-    } else if (smiler.mesh.material) {
-      smiler.mesh.material.dispose();
-    }
   }
 
   private clearAllSmilers() {
@@ -5138,6 +5066,7 @@ export class GameEngine {
 
       // 1. Billboard: Turn horizontally to face player head-on (creepy staring!)
       mesh.lookAt(px, mesh.position.y, pz);
+      animateSmiler(mesh, this.totalPlayTime, smiler.netId);
 
       const dx = mesh.position.x - px;
       const dz = mesh.position.z - pz;
@@ -5463,10 +5392,6 @@ export class GameEngine {
     }
 
     this.clearAllSmilers();
-    if (this.smilerTexture) {
-      this.smilerTexture.dispose();
-      this.smilerTexture = null;
-    }
 
     this.entities.forEach(entity => entity.returnToPool(this.scene));
     this.entities = [];
@@ -5516,6 +5441,7 @@ export class GameEngine {
 
     // Purge static entities pool to free up GPU buffers and memory
     WanderingEntity.clearPool();
+    disposeSmilerAssets();
 
     // Purge scene contents completely
     Array.from(this.remotePlayerGroups.keys()).forEach((id) => this.removeRemotePlayer(id));

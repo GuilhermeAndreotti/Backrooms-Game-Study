@@ -45,6 +45,12 @@ export interface QualityProfile {
   surfaceRelief: boolean;
   /** Light halation (glow around bright tubes/lamps) and fine film grain in the VHS pass. */
   bloom: boolean;
+  /** Creature LOD thresholds in metres, plus a low-end detail bias (0..1). */
+  creatureNearDistance: number;
+  creatureFarDistance: number;
+  creatureLodBias: number;
+  /** Sub-millimetre PBR relief strength; 0 disables relief on low-end devices. */
+  creatureRelief: number;
 }
 
 const PROFILES: Record<QualityLevel, QualityProfile> = {
@@ -63,6 +69,10 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     anisotropy: 1,
     surfaceRelief: false,
     bloom: false,
+    creatureNearDistance: 5,
+    creatureFarDistance: 16,
+    creatureLodBias: 1,
+    creatureRelief: 0,
   },
   medium: {
     renderScale: 0.55,
@@ -79,6 +89,10 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     anisotropy: 4,
     surfaceRelief: true,
     bloom: true,
+    creatureNearDistance: 6,
+    creatureFarDistance: 20,
+    creatureLodBias: 0,
+    creatureRelief: 0.65,
   },
   high: {
     renderScale: 0.8,
@@ -95,6 +109,10 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
     anisotropy: 8,
     surfaceRelief: true,
     bloom: true,
+    creatureNearDistance: 9,
+    creatureFarDistance: 24,
+    creatureLodBias: 0,
+    creatureRelief: 1,
   },
 };
 

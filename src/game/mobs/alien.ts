@@ -63,6 +63,7 @@ export const alien: MobDefinition = {
     const teeth = ctx.smat("alien_teeth", () => new THREE.MeshStandardMaterial({ color: 0xc9ced6, roughness: 0.3, metalness: 0.6 }));
     // A faint wet sheen along the skull and spine: the only thing that catches the station lights.
     const sheen = new THREE.MeshStandardMaterial({ color: 0x1a2a33, emissive: 0x0d3b4a, emissiveIntensity: 0.6, roughness: 0.15, metalness: 0.7 });
+    sheen.name = "alien_sheen";
     ctx.addTintMaterial(sheen);
 
     // Torso: a narrow, hunched trunk with ribs showing through the hide.

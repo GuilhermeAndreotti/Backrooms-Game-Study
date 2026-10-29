@@ -49,6 +49,7 @@ import type { TownWorld } from "./townWorld";
 import { TownBall } from "./townBall";
 import type { BallNetState } from "../Lobby";
 import { EntityType } from "../../shared/entityTypes";
+import { releaseCreatureAsset, updateCreatureAsset } from "../mobs/creatureAssets";
 
 export type TownAudio = Pick<AudioManager,
   "startFunMusic" | "stopFunMusic" | "funMusicPlaying" | "playFunSound" | "playKingBreath" | "playKingWhisper" | "playKingStinger" |
@@ -325,6 +326,7 @@ export class TownDirector {
 
   dispose() {
     this.host.audio.stopFunMusic(true);
+    if (this.king) releaseCreatureAsset(this.king.body);
     this.host.audio.stopTownAmbience();
     this.host.setFade(0);
     this.host.setDread(0);
@@ -941,6 +943,7 @@ export class TownDirector {
       agitated: true, chasing: false, ...NO_SCRIPTED_POSE,
     }, 8, 0.6);
     fig.body.position.y += 0.95 * scale;
+    updateCreatureAsset(fig.body);
   }
 
   private updateVision(delta: number, p: { x: number; z: number; alive: boolean }) {

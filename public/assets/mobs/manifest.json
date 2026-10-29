@@ -1,0 +1,176 @@
+{
+  "schema": 1,
+  "generator": "build-mobs.ts",
+  "creatures": {
+    "BELLMAN": {
+      "bytes": 1507172,
+      "triangles": [
+        22470,
+        11470,
+        5496
+      ],
+      "bones": 6,
+      "surfaces": 5
+    },
+    "DEATHMOTH": {
+      "bytes": 2026160,
+      "triangles": [
+        34486,
+        13906,
+        5502
+      ],
+      "bones": 3,
+      "surfaces": 4
+    },
+    "HOUND": {
+      "bytes": 1970652,
+      "triangles": [
+        32018,
+        15028,
+        5580
+      ],
+      "bones": 16,
+      "surfaces": 7
+    },
+    "SKIN_STEALER": {
+      "bytes": 1914464,
+      "triangles": [
+        28058,
+        15358,
+        5520
+      ],
+      "bones": 15,
+      "surfaces": 8
+    },
+    "CLUMP": {
+      "bytes": 2187864,
+      "triangles": [
+        39080,
+        15416,
+        5576
+      ],
+      "bones": 39,
+      "surfaces": 4
+    },
+    "WRETCH": {
+      "bytes": 2201544,
+      "triangles": [
+        39748,
+        15882,
+        5620
+      ],
+      "bones": 13,
+      "surfaces": 5
+    },
+    "DULLER": {
+      "bytes": 2141424,
+      "triangles": [
+        40650,
+        15952,
+        5498
+      ],
+      "bones": 11,
+      "surfaces": 2
+    },
+    "FINGER_KING": {
+      "bytes": 1792320,
+      "triangles": [
+        20806,
+        15998,
+        5528
+      ],
+      "bones": 60,
+      "surfaces": 12
+    },
+    "ECO": {
+      "bytes": 2165764,
+      "triangles": [
+        42000,
+        16000,
+        5500
+      ],
+      "bones": 11,
+      "surfaces": 1
+    },
+    "OBSERVADOR": {
+      "bytes": 2730184,
+      "triangles": [
+        41994,
+        15992,
+        5496
+      ],
+      "bones": 55,
+      "surfaces": 5
+    },
+    "IMITADOR": {
+      "bytes": 1979328,
+      "triangles": [
+        34486,
+        15072,
+        5496
+      ],
+      "bones": 13,
+      "surfaces": 4
+    },
+    "SOMBRA": {
+      "bytes": 2167636,
+      "triangles": [
+        42000,
+        16000,
+        5500
+      ],
+      "bones": 11,
+      "surfaces": 1
+    },
+    "VIGIA": {
+      "bytes": 1935576,
+      "triangles": [
+        33306,
+        15804,
+        5422
+      ],
+      "bones": 43,
+      "surfaces": 6
+    },
+    "CEIFADOR": {
+      "bytes": 1281212,
+      "triangles": [
+        21772,
+        9144,
+        4042
+      ],
+      "bones": 11,
+      "surfaces": 5
+    },
+    "ALIEN": {
+      "bytes": 2002328,
+      "triangles": [
+        36246,
+        14570,
+        5496
+      ],
+      "bones": 16,
+      "surfaces": 4
+    },
+    "ANIMATION": {
+      "bytes": 1387948,
+      "triangles": [
+        16650,
+        11026,
+        5530
+      ],
+      "bones": 13,
+      "surfaces": 10
+    },
+    "TOWN_KING": {
+      "bytes": 1489860,
+      "triangles": [
+        15112,
+        12686,
+        5566
+      ],
+      "bones": 13,
+      "surfaces": 14
+    }
+  }
+}

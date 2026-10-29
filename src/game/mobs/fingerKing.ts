@@ -26,6 +26,8 @@
  */
 
 import * as THREE from "three";
+import { sculptedHead } from "./sculpt";
+import { torsoGeometry } from "./creatureSkin";
 import { EntityType } from "../../shared/entityTypes";
 import { MobAnimCtx, MobBuildCtx, MobDefinition } from "./types";
 import { rot, rx } from "./anim";
@@ -86,7 +88,7 @@ export const fingerKing: MobDefinition = {
 
     // --- Torso: narrow-waisted, flattened, shoulders at different heights
     const spine = ctx.joint("spine", 0, 0.04, 0);
-    const torso = new THREE.Mesh(ctx.sgeo("king2_torso", () => new THREE.CylinderGeometry(0.2, 0.11, 0.7, 14)), suitMat);
+    const torso = new THREE.Mesh(ctx.sgeo("king2_torso", () => torsoGeometry(0.2, 0.11, 0.7, 32)), suitMat);
     torso.position.set(0, 0.39, 0);
     torso.scale.set(1, 1, 0.7);
     ctx.put(spine, torso);
@@ -172,7 +174,7 @@ export const fingerKing: MobDefinition = {
     const neck = ctx.joint("neck", 0, 0.76, 0, spine);
     limb(ctx, neck, skinMat, V(0, 0.76, 0), V(0, 0.98, 0.02), 0.034, 0.8);
     const head = ctx.joint("head", 0, 0.98, 0.02, neck);
-    const skull = new THREE.Mesh(ctx.sgeo("king2_skull", () => new THREE.SphereGeometry(0.15, 16, 14)), skinMat);
+    const skull = new THREE.Mesh(ctx.sgeo("king2_skull", () => sculptedHead(0.15)), skinMat);
     skull.position.set(0, 1.1, 0.02);
     skull.scale.set(0.8, 1.3, 0.9);
     ctx.put(head, skull);
@@ -182,6 +184,7 @@ export const fingerKing: MobDefinition = {
     const eyeGeo = ctx.sgeo("king2_eye", () => new THREE.SphereGeometry(0.0075, 6, 5));
     // Per-instance: its glow is driven every frame by animate() (face.userData.eyeMat).
     const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1a0000, emissive: 0xff1a0a, emissiveIntensity: 0.2 });
+    eyeMat.name = "king2_eye";
     ctx.addTintMaterial(eyeMat);
     for (const side of [-1, 1]) {
       const socket = new THREE.Mesh(socketGeo, holeMat);

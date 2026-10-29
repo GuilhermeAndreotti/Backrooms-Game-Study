@@ -22,6 +22,12 @@ import { animateBiped, rot, rx } from "../mobs/anim";
 import type { MobAnimCtx, MobBuildCtx, MobJoints } from "../mobs/types";
 import { NO_SCRIPTED_POSE } from "../mobs/types";
 import { townGroundHeight, type TownsfolkRole, type TownsfolkSpot } from "./townLayout";
+import { anatomicalEye } from "../mobs/eyes";
+import { Parts, teeth } from "../mobs/anatomy";
+import { createMobBuildContext } from "../mobs/buildContext";
+import { applyCreatureMaterial } from "../mobs/creatureMaterials";
+import { attachCreatureAsset } from "../mobs/creatureAssets";
+import { EntityType } from "../../shared/entityTypes";
 
 export type ToonBuild = Pick<MobBuildCtx, "joint" | "limbIn" | "put" | "sgeo" | "smat" | "V">;
 
@@ -177,6 +183,21 @@ export function buildToon(ctx: ToonBuild, look: ToonLook) {
   const head = ctx.joint("head", 0, 0.2 * s, 0, spine);
   const faceMat = ctx.smat(`${k}_face`, () => new THREE.MeshStandardMaterial({ map: toonFaceTexture(look.face, hex(0xf3d2b0)), roughness: 0.55 }));
   ball(head, faceMat, 0, 0.47, 0.02, 0.28, 0.27, 0.27);
+  if (look.face !== "towns") {
+    // The painted cartoon face is now a physical mask: real eyes, a recessed
+    // mouth and uneven ceramic teeth. Its rubber-hose silhouette stays intact.
+    for (const side of [-1, 1]) anatomicalEye(ctx, head, V(side * 0.095, 0.55, 0.252), 0.037 * s, 0x716657);
+    const mouth = ctx.smat("toon_mouth_void", () => new THREE.MeshStandardMaterial({ color: 0x080504, roughness: 0.8 }));
+    ball(head, mouth, 0, 0.37, 0.245, 0.17, 0.065, 0.025);
+    const enamel = ctx.smat("toon_teeth", () => new THREE.MeshStandardMaterial({ color: 0xc9bd9d, roughness: 0.4 }));
+    const dental = ctx.sgeo(`toon_dental_${s}`, () => {
+      const p = new Parts();
+      teeth(p, V(0, 0.405, 0.267), 0.15 * s, 0.025 * s, 13, 0.052 * s, false, 0.014 * s);
+      teeth(p, V(0, 0.33, 0.267), 0.135 * s, 0.025 * s, 12, 0.035 * s, true, 0.012 * s);
+      return p.merge();
+    });
+    ctx.put(head, new THREE.Mesh(dental, enamel));
+  }
   const hatMat = ctx.smat(`${k}_hat`, () => new THREE.MeshStandardMaterial({ color: look.hatColor, roughness: look.hat === "crown" ? 0.25 : 0.6, metalness: look.hat === "crown" ? 0.85 : 0 }));
   const hatY = 0.66;
   switch (look.hat) {
@@ -354,8 +375,16 @@ export function buildStandaloneToon(kit: DecorKit, look: ToonLook): { group: THR
   const body = new THREE.Group();
   body.position.y = TOON_FEET * look.scale;
   group.add(body);
-  const { ctx, joints } = standaloneToonCtx(kit, body);
+  const standalone = standaloneToonCtx(kit, body);
+  const ctx = look.key === "king" ? createMobBuildContext(body, {
+    sgeo: (key, build) => kit.geo(`tg_${key}`, build),
+    smat: (key, build) => kit.mat(`tm_${key}`, () => applyCreatureMaterial(build(), key)),
+    addTintMaterial: () => {}, setCalmHostileEyes: () => {}, setKingEyeMaterial: () => {},
+  }) : standalone.ctx;
+  // Standalone contexts expose joints separately; the common context keeps them itself.
+  const joints = "joints" in ctx ? (ctx as MobBuildCtx).joints : standalone.joints;
   buildToon(ctx, look);
+  if (look.key === "king") attachCreatureAsset(body, EntityType.TOWN_KING);
   return { group, body, joints };
 }
 

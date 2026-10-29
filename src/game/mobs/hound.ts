@@ -12,6 +12,7 @@ import { bake, teeth, vertebrae } from "./anatomy";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
 import { animateQuadruped } from "./anim";
+import { anatomicalEye } from "./eyes";
 
 export const hound: MobDefinition = {
   type: EntityType.HOUND,
@@ -88,10 +89,8 @@ export const hound: MobDefinition = {
     });
     bake(ctx, head, boneMat, "hound_upper_teeth", (p) => teeth(p, V(0, 0.085, 0.66), 0.032, 0.06, 9, 0.035, false, 0.007));
 
-    const eyeMat = ctx.smat("hound_eye", () => new THREE.MeshStandardMaterial({ color: 0xfef08a, emissive: 0xeab308, emissiveIntensity: 1.4 }));
-    const eyeGeo = ctx.sgeo("hound_eye_geo", () => new THREE.SphereGeometry(0.02, 8, 6));
-    const eyeL = new THREE.Mesh(eyeGeo, eyeMat); eyeL.position.set(-0.08, 0.205, 0.585); ctx.put(head, eyeL);
-    const eyeR = new THREE.Mesh(eyeGeo, eyeMat); eyeR.position.set(0.08, 0.205, 0.585); ctx.put(head, eyeR);
+    anatomicalEye(ctx, head, V(-0.095, 0.213, 0.605), 0.025, 0x756332, V(-0.4, 0, 1));
+    anatomicalEye(ctx, head, V(0.095, 0.213, 0.605), 0.025, 0x756332, V(0.4, 0, 1));
 
     const jawPivot = ctx.joint("jaw", 0, 0.08, 0.5, head);
     bake(ctx, jawPivot, gumMat, "hound_jaw", (p) => p.chain([V(-0.055, 0.07, 0.5), V(-0.035, 0.045, 0.62), V(0, 0.04, 0.69), V(0.035, 0.045, 0.62), V(0.055, 0.07, 0.5)], 0.022, 0.02));
