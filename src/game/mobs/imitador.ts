@@ -20,6 +20,7 @@
  */
 
 import * as THREE from "three";
+import { sculptedHead } from "./sculpt";
 import { bake, hand } from "./anatomy";
 import { torsoGeometry } from "./creatureSkin";
 import { EntityType } from "../../shared/entityTypes";
@@ -82,7 +83,7 @@ export const imitador: MobDefinition = {
     // A face with every feature smoothed nearly away: brow, nose and chin are
     // only suggestions, and where the eyes should be the skin is closed over.
     const head = ctx.joint("head", 0, 0.2, 0, spine);
-    const skull = new THREE.Mesh(ctx.sgeo("imitador_head", () => new THREE.SphereGeometry(0.15, 16, 12)), skinMat);
+    const skull = new THREE.Mesh(ctx.sgeo("imitador_head", () => sculptedHead(0.15, true)), skinMat);
     skull.position.set(0, 0.32, 0);
     ctx.put(head, skull);
     bake(ctx, head, skinMat, "imitador_face", (p) => {

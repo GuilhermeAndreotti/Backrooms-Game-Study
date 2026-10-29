@@ -14,7 +14,8 @@
  */
 
 import * as THREE from "three";
-import { bake, hand } from "./anatomy";
+import { bake, hand, teeth } from "./anatomy";
+import { sculptedHead } from "./sculpt";
 import { torsoGeometry } from "./creatureSkin";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
@@ -94,7 +95,7 @@ export const skinStealer: MobDefinition = {
     // cheekbones and chin all slightly too sharp — on a slack neck.
     const head = ctx.joint("head", 0, 0.22, 0, spine);
     const headMat = ctx.smat("stealer_head", () => new THREE.MeshStandardMaterial({ color: 0xd9d2c5, roughness: 0.55 }));
-    const skull = new THREE.Mesh(ctx.sgeo("stealer_head_geo", () => new THREE.SphereGeometry(0.16, 16, 12)), headMat);
+    const skull = new THREE.Mesh(ctx.sgeo("stealer_head_geo", () => sculptedHead(0.16)), headMat);
     skull.position.set(0, 0.38, 0);
     ctx.put(head, skull);
     bake(ctx, head, headMat, "stealer_face", (p) => {
@@ -115,7 +116,8 @@ export const skinStealer: MobDefinition = {
     // The mask's mouth: a hinged slit that gapes once it's revealed.
     const jaw = ctx.joint("jaw", 0, 0.33, 0.1, head);
     const mouthMat = ctx.smat("stealer_mouth", () => new THREE.MeshStandardMaterial({ color: 0x1c0a0a, roughness: 1.0 }));
-    const mouth = new THREE.Mesh(ctx.sgeo("stealer_mouth_geo", () => new THREE.BoxGeometry(0.08, 0.02, 0.03)), mouthMat);
+    const mouth = new THREE.Mesh(ctx.sgeo("stealer_mouth_geo", () => new THREE.SphereGeometry(0.045, 24, 16)), mouthMat);
+    mouth.scale.set(1, 0.35, 0.5);
     mouth.position.set(0, 0.31, 0.14);
     ctx.put(jaw, mouth);
 
@@ -131,12 +133,18 @@ export const skinStealer: MobDefinition = {
     const hL = new THREE.Mesh(eyeGeo, hostileMat); hL.position.set(-0.05, 0.4, 0.14); hostile.add(hL);
     const hR = new THREE.Mesh(eyeGeo, hostileMat); hR.position.set(0.05, 0.4, 0.14); hostile.add(hR);
     hostile.visible = false;
+    const enamel = ctx.smat("stealer_teeth", () => new THREE.MeshStandardMaterial({ color: 0xb8aa8c, roughness: 0.35 }));
+    const revealedJaw = ctx.joint("revealedJaw", 0, 0.31, 0.14, jaw);
+    revealedJaw.userData.visualSwitch = true;
+    revealedJaw.visible = false;
+    bake(ctx, revealedJaw, enamel, "stealer_teeth", p => teeth(p, V(0, 0.305, 0.16), 0.035, 0.014, 9, 0.025, true, 0.005));
     ctx.put(head, hostile);
 
     ctx.setCalmHostileEyes(calm, hostile);
   },
 
   animate(ctx) {
+    if (ctx.joints.revealedJaw) ctx.joints.revealedJaw.visible = ctx.agitated;
     // Calm: a stiff, almost-human shuffle. Revealed: a lunging sprint, arms out.
     animateBiped(ctx, { stride: 0.45, armSwing: ctx.agitated ? 0.15 : 0.3, knee: 0.8, elbow: 0.15, lean: 0.45, bounce: 0.05, breathe: 0.025, reach: 0.9 });
     if (ctx.agitated) {

@@ -20,6 +20,7 @@
  */
 
 import * as THREE from "three";
+import { sculptedHead } from "./sculpt";
 import { bake, teeth } from "./anatomy";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
@@ -66,7 +67,7 @@ export const vigia: MobDefinition = {
     // A broad, flat skull pushed forward on the neck: heavy brow, cheek
     // ridges, and a wide lipless mouth of uneven teeth.
     const head = ctx.joint("head", 0, 0.55, 0, spine);
-    const skull = new THREE.Mesh(ctx.sgeo("vigia_head", () => new THREE.SphereGeometry(0.22, 16, 12)), mat);
+    const skull = new THREE.Mesh(ctx.sgeo("vigia_head", () => sculptedHead(0.22)), mat);
     skull.position.set(0, 0.75, 0);
     skull.scale.set(1.15, 0.85, 1);
     ctx.put(head, skull);
@@ -81,6 +82,7 @@ export const vigia: MobDefinition = {
       teeth(p, V(0, 0.625, 0.205), 0.1, 0.07, 10, 0.03, true, 0.011);
     });
     const eyeMat = new THREE.MeshStandardMaterial({ color: 0x5ee9dc, emissive: 0x0b5958, emissiveIntensity: 1.1, roughness: 0.25 });
+    eyeMat.name = "vigia_eye";
     ctx.addTintMaterial(eyeMat);
     for (const side of [-1, 1]) {
       const eye = new THREE.Mesh(ctx.sgeo("vigia_eye", () => new THREE.SphereGeometry(0.055, 8, 6)), eyeMat);
@@ -130,6 +132,7 @@ export const vigia: MobDefinition = {
       const tip = V(side * 2.15, -0.62, -0.82);
       const arm = ctx.joint(`extraArm${n}`, shoulder.x, shoulder.y, shoulder.z, spine);
       arm.visible = false;
+      arm.userData.visualSwitch = true;
       ctx.limbIn(arm, limbMat, shoulder, elbow, 0.045, 0.8);
       const fore = ctx.joint(`extraFore${n}`, elbow.x, elbow.y, elbow.z, arm);
       ctx.limbIn(fore, limbMat, elbow, wrist, 0.035, 0.7);

@@ -10,6 +10,7 @@
  */
 
 import * as THREE from "three";
+import { sculptedHead } from "./sculpt";
 import { bake, hand, ribcage } from "./anatomy";
 import { EntityType } from "../../shared/entityTypes";
 import { MobDefinition } from "./types";
@@ -63,7 +64,7 @@ export const duller: MobDefinition = {
 
     // A drowned face: sunken sockets and a mouth hanging open, all hollow.
     const head = ctx.joint("head", 0, 0.4, 0, spine);
-    const skull = new THREE.Mesh(ctx.sgeo("duller_head", () => new THREE.SphereGeometry(0.15, 16, 12)), mat);
+    const skull = new THREE.Mesh(ctx.sgeo("duller_head", () => sculptedHead(0.15)), mat);
     skull.position.set(0, 0.53, 0);
     skull.scale.set(0.9, 1.1, 1);
     ctx.put(head, skull);

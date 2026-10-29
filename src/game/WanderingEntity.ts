@@ -5,7 +5,9 @@
 
 import { t } from "../i18n";
 import * as THREE from "three";
-import { applyCreatureSkin, roundedLimbGeometry } from "./mobs/creatureSkin";
+import { createMobBuildContext } from "./mobs/buildContext";
+import { applyCreatureMaterial, disposeCreatureTextures } from "./mobs/creatureMaterials";
+import { attachCreatureAsset, updateCreatureAsset, releaseCreatureAsset, disposeCreatureAssets } from "./mobs/creatureAssets";
 import { ProceduralMap, CellType } from "./ProceduralMap";
 import { EntityType } from "../shared/entityTypes";
 import { MOB_DEFS } from "./mobs/registry";
@@ -210,8 +212,7 @@ export class WanderingEntity {
   }
   private smat<T extends THREE.Material>(key: string, build: () => T): T {
     let m = WanderingEntity.matCache.get(key) as T | undefined;
-    // Plain body materials get the procedural hide (eyes, glows and glass are left alone).
-    if (!m) { m = applyCreatureSkin(build()); WanderingEntity.matCache.set(key, m); }
+    if (!m) { m = applyCreatureMaterial(build(), key); WanderingEntity.matCache.set(key, m); }
     return m;
   }
 
@@ -221,25 +222,8 @@ export class WanderingEntity {
     WanderingEntity.geoCache.clear();
     WanderingEntity.matCache.forEach((m) => m.dispose());
     WanderingEntity.matCache.clear();
-  }
-
-  /** A tapered limb/spike mesh running from world-local point `a` to `b`. */
-  private limbBetween(mat: THREE.Material, a: THREE.Vector3, b: THREE.Vector3, radius: number, taper = 0.75): THREE.Mesh {
-    const dir = new THREE.Vector3().subVectors(b, a);
-    // Built at its real length (to the centimetre, so a body's limbs still share
-    // geometry) with rounded ends centred on a and b: limbs meeting at a joint
-    // overlap into a smooth knee or elbow.
-    const cm = Math.max(1, Math.round(dir.length() * 100));
-    const geo = this.sgeo(`limb_${radius}_${taper}_${cm}`, () => roundedLimbGeometry(radius, taper, cm / 100));
-    const m = new THREE.Mesh(geo, mat);
-    m.position.copy(a).addScaledVector(dir, 0.5); // centred between a and b
-    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
-    m.castShadow = true;
-    return m;
-  }
-
-  private V(x: number, y: number, z: number): THREE.Vector3 {
-    return new THREE.Vector3(x, y, z);
+    disposeCreatureAssets();
+    disposeCreatureTextures();
   }
 
   /** Per-instance materials whose colour/emissive changes with AI state (agitation, chase). */
@@ -250,46 +234,13 @@ export class WanderingEntity {
 
   /** Builds a MobBuildCtx bound to this instance's caches/scratch fields — see mobs/types.ts's MobBuildCtx doc. */
   private buildCtx(group: THREE.Group): MobBuildCtx {
-    // The joint map lives in this closure, not a class field: buildSkinMesh
-    // runs this on an Object.create'd instance whose field initializers never ran.
-    const joints: MobJoints = {};
-    /** Body-space position of `o`'s origin (joints have no rotation at build time). */
-    const origin = (o: THREE.Object3D): THREE.Vector3 => {
-      const v = new THREE.Vector3();
-      for (let n: THREE.Object3D | null = o; n && n !== group; n = n.parent) v.add(n.position);
-      return v;
-    };
-    return {
-      group,
+    return createMobBuildContext(group, {
       sgeo: (key, build) => this.sgeo(key, build),
       smat: (key, build) => this.smat(key, build),
-      limbBetween: (mat, a, b, radius, taper) => this.limbBetween(mat, a, b, radius, taper),
-      V: (x, y, z) => this.V(x, y, z),
-      addTintMaterial: (m) => { this.tintMaterials.push(applyCreatureSkin(m)); },
+      addTintMaterial: (m) => { this.tintMaterials.push(applyCreatureMaterial(m, m.name || `${this.type.toLowerCase()}_body`)); },
       setCalmHostileEyes: (calm, hostile) => { this.calmEyes = calm; this.hostileEyes = hostile; },
-      setKingEyeMaterial: (m) => { this.kingEyeMaterial = m; },
-      joints,
-      joint: (name, x, y, z, parent = group) => {
-        const j = new THREE.Group();
-        j.name = name;
-        j.position.set(x, y, z).sub(origin(parent));
-        j.userData.rest = j.position.clone();
-        parent.add(j);
-        joints[name] = j;
-        return j;
-      },
-      limbIn: (joint, mat, a, b, radius, taper) => {
-        const o = origin(joint);
-        const m = this.limbBetween(mat, a.clone().sub(o), b.clone().sub(o), radius, taper);
-        joint.add(m);
-        return m;
-      },
-      put: (joint, obj) => {
-        obj.position.sub(origin(joint));
-        joint.add(obj);
-        return obj;
-      },
-    };
+      setKingEyeMaterial: (m) => { this.kingEyeMaterial = applyCreatureMaterial(m, "king2_eye"); },
+    });
   }
 
   private createVisualMesh(): THREE.Group {
@@ -297,6 +248,7 @@ export class WanderingEntity {
     const body = new THREE.Group();
     const ctx = this.buildCtx(body);
     MOB_DEFS[this.type].build(ctx);
+    attachCreatureAsset(body, this.type);
     this.joints = ctx.joints;
     group.add(body);
     this.bodyRoot = body;
@@ -588,19 +540,11 @@ export class WanderingEntity {
       });
     }
 
-    // Glitch animation (subtle scaling artifacts)
-    if (this.glitchTimer >= 0.11) {
-      this.glitchTimer = 0.0;
-      if (Math.random() < 0.18) {
-        this.mesh.scale.set(
-          1.0 + (Math.random() * 0.06 - 0.03),
-          1.0 + (Math.random() * 0.06 - 0.03),
-          1.0
-        );
-      } else {
-        this.mesh.scale.set(1.0, 1.0, 1.0);
-      }
-    }
+    // Physical creatures keep their mass. Only the incorporeal silhouettes distort.
+    const spectral = this.type === EntityType.DULLER || this.type === EntityType.SOMBRA;
+    const distortion = spectral ? Math.sin(this.bobTime * 13 + this.netId) * Math.sin(this.bobTime * 2.3) * 0.012 : 0;
+    this.mesh.scale.set(1 + distortion, 1 - distortion, 1);
+    if (body) updateCreatureAsset(body, dist);
   }
 
   /** True once per footfall while it walks; GameEngine turns these into footstep sounds and ripples. */
@@ -1344,6 +1288,7 @@ export class WanderingEntity {
     const group = new THREE.Group();
     const ctx = proto.buildCtx(group);
     MOB_DEFS[type].build(ctx);
+    attachCreatureAsset(group, type);
     group.name = "monsterSkinBody";
     group.userData.tintMaterials = proto.tintMaterials;
     group.userData.rig = { type, joints: ctx.joints, phase: 0, time: 0, move: 0, run: 0 };
@@ -1384,6 +1329,7 @@ export class WanderingEntity {
       agitated: false, chasing: running, ...NO_SCRIPTED_POSE,
     });
     body.position.y += rig.anchorY;
+    updateCreatureAsset(body);
   }
 
   /** Height above the floor the type's body is centred at — mirrors syncWorldPosition's `ey`. */
@@ -1419,6 +1365,7 @@ export class WanderingEntity {
    */
   public returnToPool(scene: THREE.Scene) {
     scene.remove(this.mesh);
+    if (this.bodyRoot) releaseCreatureAsset(this.bodyRoot);
     // Reset temporary runtime fields
     this.transitionProgress = 0.0;
     this.isMoving = false;
@@ -1478,6 +1425,7 @@ export class WanderingEntity {
 
     this.resetBaseSpeed();
     this.syncWorldPosition();
+    if (this.bodyRoot) attachCreatureAsset(this.bodyRoot, this.type);
     // Forced: a reused entity must repaint immediately, not wait out the
     // coalescing window with the previous occupant's label on screen.
     this.updateVisualState();
@@ -1493,6 +1441,7 @@ export class WanderingEntity {
   public static clearPool() {
     this.entityPool.forEach((list) => {
       list.forEach((entity) => {
+        if (entity.bodyRoot) releaseCreatureAsset(entity.bodyRoot);
         entity.tintMaterials.forEach((m) => m.dispose());
         entity.tintMaterials = [];
         if (entity.speechTexture) entity.speechTexture.dispose();

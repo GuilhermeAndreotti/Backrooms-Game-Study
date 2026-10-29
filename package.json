@@ -9,6 +9,8 @@
     "start": "NODE_ENV=production node dist/server.cjs",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
+    "assets:mobs": "python3 scripts/creature-textures.py && tsx scripts/build-mobs.ts",
+    "test:mobs": "node --import tsx --test scripts/mob-assets.test.ts",
     "test:hotel": "node --import tsx --test src/shared/hotel.test.ts",
     "test:hotel:multiplayer": "node --import tsx --test src/shared/hotel.multiplayer.test.ts"
   },
@@ -24,6 +26,7 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@napi-rs/canvas": "^1.0.13",
     "@tailwindcss/vite": "^4.1.14",
     "@types/compression": "^1.8.1",
     "@types/express": "^4.17.21",
@@ -33,7 +36,9 @@
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
+    "meshoptimizer": "^1.3.0",
     "tailwindcss": "^4.1.14",
+    "three-mesh-bvh": "^0.9.17",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
