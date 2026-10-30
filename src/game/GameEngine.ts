@@ -1207,7 +1207,7 @@ export class GameEngine {
 
       const delta = this.timer.update().getDelta();
       this.totalPlayTime += delta;
-      this.superGuards.update(this.scene, this.level, delta);
+      this.superGuards.update(this.scene, this.level, delta, this.superGuardTargetPosition);
       this.noiseBus.prune(this.totalPlayTime);
       this.frameCounter++;
 
@@ -2511,6 +2511,12 @@ export class GameEngine {
   private remoteDead = new Set<string>();
 
   private superGuards = new SuperGuardRenderer();
+
+  private superGuardTargetPosition = (id: string) => {
+    if (id === this.localPlayerId) return this.player.position;
+    const remote = this.remoteStates.get(id);
+    return remote && (remote.level ?? this.level) === this.level ? remote : undefined;
+  };
 
   public applySuperGuards(frames: SuperGuardFrame[]) {
     this.superGuards.apply(frames);
