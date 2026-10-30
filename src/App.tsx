@@ -253,6 +253,19 @@ export default function App() {
    * the explorer in the room (only "leave room" ever disconnects).
    */
   const [escapeReport, setEscapeReport] = useState<null | "l2" | "done">(null);
+  /** The expedition's intro/ending cutscene playing in the lobby (GameEngine.playCutscene). */
+  const [cutscene, setCutscene] = useState<null | "intro" | "ending">(null);
+  /**
+   * An ending (Level 79 / Level 94) was reached: the report waits until the
+   * lobby has loaded and the ending cutscene has played.
+   */
+  const [endingPending, setEndingPending] = useState(false);
+  // Never hold the report back for good (a lost "return_to_lobby", a failed load).
+  useEffect(() => {
+    if (!endingPending) return;
+    const timer = setTimeout(() => setEndingPending(false), 40_000);
+    return () => clearTimeout(timer);
+  }, [endingPending]);
   const [achievementToast, setAchievementToast] = useState<{ id: string; title: string; description: string } | null>(null);
 
   useEffect(() => {
@@ -1021,6 +1034,8 @@ export default function App() {
                           // go back to the room's lobby underneath it.
                           setEscapedFrom(engine.level);
                           setEscapeReport(engine.level === 1 ? "l2" : "done");
+                          // The way out: the report waits for the ending cutscene back in the lobby.
+                          if (ENDING_LEVELS.includes(engine.level)) setEndingPending(true);
                           // Level 79's ending (or Level 94's, its alternative) is the end of the timed route.
                           socketRef.current.send(JSON.stringify({ type: "return_to_lobby_request", completed: ENDING_LEVELS.includes(engine.level) }));
                         } else {
@@ -1234,55 +1249,75 @@ export default function App() {
             // extraction screen instead of silently rebuilding the lobby.
             // The report goes over the game; the lobby loads underneath (below)
             // and the explorer stays in the room.
-            if (type === "return_to_lobby" && data.completed === true) {
+            const ending = type === "return_to_lobby" && data.completed === true;
+            if (ending) {
               // Already waiting in the lobby (they aborted earlier): nothing to rebuild.
               if (engine.level === LOBBY_LEVEL) return;
               unlockAchievement("absolute_survivor");
               document.exitPointerLock?.();
               setEscapedFrom(null);
               setEscapeReport("done");
+              // Shown once the lobby has loaded and the ending cutscene has played (below).
+              setEndingPending(true);
             }
 
-            // Everyone who died is back (server-side too).
-            setIsDead(false);
-            setAllDead(false);
-            setWaitingForExit(false);
-            setExitProgress(null);
-            setSpectateName(null);
-            if (forced && (data.scratch || data.toLobby || data.completed)) {
-              setInventory([]);
-              engine.inventory = [];
-            }
-
-            setLoadingMap(true);
-            setLoadingProgress(0);
-            setCurrentLevel(nextLevel);
-            engine.transitionToLevel(nextLevel, roomSeed, settings);
-            if (nextLevel === POOLROOMS_LEVEL && data.poolroomsState) {
-              engine.applyPoolroomsState(data.poolroomsState);
-            }
-
-            if (engine.player) {
-              engine.player.mapFullyLoaded = false;
-            }
-
-            engine.precreateMap((p) => {
-              setLoadingProgress(Math.round(p * 100));
-            }).then(() => {
-              setLoadingProgress(100);
-              setTimeout(() => {
-                setLoadingMap(false);
-                if (engineRef.current?.player) {
-                  engineRef.current.player.mapFullyLoaded = true; // Unlock controls!
-                }
-              }, 350);
-            }).catch((err) => {
-              console.error(`Error during Level ${nextLevel} precreation:`, err);
-              setLoadingMap(false);
-              if (engineRef.current?.player) {
-                engineRef.current.player.mapFullyLoaded = true;
+            // Leaving the lobby: first the intro (walking off, then noclipping
+            // out of it), then the level change itself.
+            const enterLevel = () => {
+              // Everyone who died is back (server-side too).
+              setIsDead(false);
+              setAllDead(false);
+              setWaitingForExit(false);
+              setExitProgress(null);
+              setSpectateName(null);
+              if (forced && (data.scratch || data.toLobby || data.completed)) {
+                setInventory([]);
+                engine.inventory = [];
               }
-            });
+
+              setLoadingMap(true);
+              setLoadingProgress(0);
+              setCurrentLevel(nextLevel);
+              engine.transitionToLevel(nextLevel, roomSeed, settings);
+              if (nextLevel === POOLROOMS_LEVEL && data.poolroomsState) {
+                engine.applyPoolroomsState(data.poolroomsState);
+              }
+
+              if (engine.player) {
+                engine.player.mapFullyLoaded = false;
+              }
+
+              engine.precreateMap((p) => {
+                setLoadingProgress(Math.round(p * 100));
+              }).then(() => {
+                setLoadingProgress(100);
+                setTimeout(() => {
+                  setLoadingMap(false);
+                  if (engineRef.current?.player) {
+                    engineRef.current.player.mapFullyLoaded = true; // Unlock controls!
+                  }
+                  // Back from the way out: home, a cheer, a seat — then the report.
+                  if (ending) {
+                    const played = engineRef.current?.playCutscene("ending", () => { setCutscene(null); setEndingPending(false); });
+                    if (played) setCutscene("ending");
+                    else setEndingPending(false);
+                  }
+                }, 350);
+              }).catch((err) => {
+                console.error(`Error during Level ${nextLevel} precreation:`, err);
+                setLoadingMap(false);
+                setEndingPending(false);
+                if (engineRef.current?.player) {
+                  engineRef.current.player.mapFullyLoaded = true;
+                }
+              });
+            };
+
+            if (data.start && engine.level === LOBBY_LEVEL && !forced && engine.playCutscene("intro", () => { setCutscene(null); enterLevel(); })) {
+              setCutscene("intro");
+            } else {
+              enterLevel();
+            }
           }
 
           else if (type === "host") {
@@ -2591,7 +2626,17 @@ export default function App() {
       )}
 
       {/* PHASE 5: SUCCESSFUL ESCAPE / VICTORY SCREEN */}
-      {(phase === ConnectionPhase.ESCAPED || escapeReport !== null) && (
+      {/* The expedition's intro / ending: letterbox bars and how to skip */}
+      {cutscene !== null && (
+        <div className="fixed inset-0 z-[250] pointer-events-none select-none">
+          <div className="absolute top-0 inset-x-0 h-[11vh] bg-black" />
+          <div className="absolute bottom-0 inset-x-0 h-[11vh] bg-black flex items-center justify-end px-6">
+            <span className="font-mono text-[11px] uppercase tracking-widest text-[#deb81d]/70">{t("cut.skip")}</span>
+          </div>
+        </div>
+      )}
+
+      {(phase === ConnectionPhase.ESCAPED || (escapeReport !== null && !endingPending)) && (
         <div className={`${escapeReport !== null ? "fixed inset-0 z-[300]" : "w-full h-screen relative"} flex flex-col items-center justify-center bg-[#050604] text-[#deb81d] px-6 select-none animate-fade-in font-mono`}>
           {/* Subtle emergency scanline overlay */}
           <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(10,35,10,0.15)_0%,rgba(0,0,0,0.95)_100%)] pointer-events-none" />

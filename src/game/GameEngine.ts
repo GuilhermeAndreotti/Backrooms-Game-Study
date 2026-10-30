@@ -4,6 +4,7 @@
  */
 
 import { Lobby, LOBBY, CHESS, LOBBY_LEVEL, LOBBY_CAMERA_FAR, BallNetState } from "./Lobby";
+import { LobbyCutscene, type CutsceneKind } from "./LobbyCutscene";
 import { EMPTY_CHESS, type ChessNetState } from "../shared/chess";
 import { Voip } from "./Voip";
 import { t, type MessageKey } from "../i18n";
@@ -630,6 +631,13 @@ export class GameEngine {
   public secretRoutesEnabled: () => boolean = () => true;
   /** SKIN cheat: the monster/NPC body worn instead of the hazmat suit, replicated to teammates; "" for none. */
   public cheatSkin: SkinBodyChoice | null = null;
+  /** The expedition's intro/ending, played in the lobby with the camera (see LobbyCutscene). */
+  private cutscene: LobbyCutscene | null = null;
+  private cutsceneDone: (() => void) | null = null;
+  private readonly cutsceneSkipKeys = (e: KeyboardEvent) => {
+    // Space only: Escape is the pause menu, Enter the chat and the lobby's start shortcut.
+    if (this.cutscene && e.code === "Space") this.cutscene.skip();
+  };
 
   private lastReportedStamina = 1.0;
   private lastReportedState = "idle";
@@ -1225,7 +1233,11 @@ export class GameEngine {
       this.audio.init();
 
       // Tick player controllers
-      if (this.isDead || this.isWaitingForTransition) this.updateSpectator(delta);
+      if (this.cutscene && this.camera.parent) {
+        // The intro/ending: the cutscene has the camera, the explorer stands still.
+        this.cutscene.update(delta, this.camera.parent, this.camera);
+        if (this.cutscene.done) this.finishCutscene();
+      } else if (this.isDead || this.isWaitingForTransition) this.updateSpectator(delta);
       else if (this.kingGrab) this.updateKingGrab(delta);
       else if (this.pitFall) this.updatePitFall(delta);
       else if (this.townDirector?.cinematic && this.camera.parent) {
@@ -1930,6 +1942,10 @@ export class GameEngine {
         this.vhsMaterial.uniforms.uAir.value = this.poolDirector?.airDanger ?? 0;
         this.vhsMaterial.uniforms.uFlash.value = this.kingFlash;
         this.vhsMaterial.uniforms.uBlack.value = Math.min(1, this.deathBlack * 1.6);
+        if (this.cutscene) {
+          this.vhsMaterial.uniforms.uDread.value = Math.max(this.vhsMaterial.uniforms.uDread.value, this.cutscene.glitch);
+          this.vhsMaterial.uniforms.uBlack.value = Math.max(this.vhsMaterial.uniforms.uBlack.value, this.cutscene.black);
+        }
         this.vhsMaterial.uniforms.tDiffuse.value = this.vhsRenderTarget.texture;
 
         // Render standard scene to our custom render target
@@ -2325,6 +2341,62 @@ export class GameEngine {
       if (this.selfAvatar) this.selfAvatar.visible = false;
       for (const g of culled) g.visible = false;
     };
+  }
+
+  /**
+   * Plays the expedition's intro ("intro": walking across the lobby, then
+   * noclipping out of it) or ending ("ending": back in the lobby, cheering,
+   * sitting down to rest) and calls `onDone` when it ends or is skipped.
+   * Only in a loaded lobby: returns false (and never calls `onDone`) otherwise.
+   */
+  public playCutscene(kind: CutsceneKind, onDone: () => void): boolean {
+    if (this.level !== LOBBY_LEVEL || !this.lobby || !this.player || !this.camera.parent) return false;
+    this.endCutscene();
+    const p = this.player.position;
+    this.cutscene = new LobbyCutscene(kind, {
+      scene: this.scene,
+      makeAvatar: () => {
+        const look = this.selfLook;
+        return this.createHazmatExplorer(look.name, look.suitColor, look.face, this.cheatSkin ?? undefined, look.outfit);
+      },
+      disposeAvatar: (avatar) => this.disposeExplorerGroup(avatar),
+      pose: (avatar, delta, state) => {
+        (avatar as unknown as { animState: string }).animState = state;
+        this.poseRemotePlayer(avatar, 0, delta, false);
+      },
+      sound: (cue) => (cue === "noclip" ? this.audio.playGlitchNoclipSound() : this.audio.playCutsceneCue(cue)),
+    }, { x: p.x, z: p.z, eyeY: p.y, yaw: this.player.rotation.y });
+    this.cutsceneDone = onDone;
+    window.addEventListener("keydown", this.cutsceneSkipKeys);
+    return true;
+  }
+
+  public get cutscenePlaying(): boolean { return this.cutscene !== null; }
+
+  private finishCutscene() {
+    const scene = this.cutscene;
+    const done = this.cutsceneDone;
+    if (!scene) return;
+    if (scene.kind === "intro") {
+      // Stay black into the level change; it fades in over the new level.
+      this.deathBlack = 1;
+    } else if (this.player) {
+      // You get up from the chair, standing beside it.
+      const stand = LobbyCutscene.endingStand;
+      this.player.position.set(stand.x, this.player.position.y, stand.z);
+      this.player.rotation.set(0, stand.yaw, 0);
+    }
+    this.endCutscene();
+    done?.();
+  }
+
+  /** Drops a running cutscene without calling its `onDone` (level change, teardown). */
+  private endCutscene() {
+    if (!this.cutscene) return;
+    window.removeEventListener("keydown", this.cutsceneSkipKeys);
+    this.cutscene.dispose();
+    this.cutscene = null;
+    this.cutsceneDone = null;
   }
 
   /** Keeps the mirror's copy of us on our feet, facing our way, walking our walk. */
@@ -3096,6 +3168,7 @@ export class GameEngine {
 
   public transitionToLevel(level: number, seed: number, settings: GameSettings) {
     console.log(`Transitioning to Level ${level} in backrooms...`);
+    this.endCutscene();
     const spawn = LEVEL_DEFS[level]?.spawn;
     const roster = spawn?.kind === "static" ? spawn.roster.map(s => s.type)
       : spawn?.kind === "timedSummon" ? spawn.pool
@@ -5556,6 +5629,7 @@ export class GameEngine {
    * Halts loop, untethers document/canvas events, and purges WebGL memory stacks.
    */
   public destroy() {
+    this.endCutscene();
     this.superGuards.dispose();
     this.isRunning = false;
     this.timer.dispose();

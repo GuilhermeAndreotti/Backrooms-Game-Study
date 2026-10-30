@@ -1881,6 +1881,49 @@ export class AudioManager {
   }
 
   /**
+   * The ending cutscene's cues (see LobbyCutscene): "home" is a bright little
+   * major arpeggio for making it back; "sigh" a long breath out, sitting down.
+   */
+  public playCutsceneCue(kind: "home" | "sigh") {
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx, t = ctx.currentTime, vol = this.settings.volumeSfx;
+    if (kind === "home") {
+      [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+        const at = t + i * 0.13;
+        const osc = ctx.createOscillator();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(freq, at);
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.0001, at);
+        gain.gain.exponentialRampToValueAtTime(0.12 * vol, at + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0005, at + (i === 3 ? 1.1 : 0.4));
+        osc.connect(gain);
+        gain.connect(this.masterGain!);
+        osc.start(at);
+        osc.stop(at + 1.2);
+      });
+      return;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise();
+    src.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.Q.value = 0.9;
+    filter.frequency.setValueAtTime(900, t);
+    filter.frequency.exponentialRampToValueAtTime(380, t + 1.6);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.16 * vol, t + 0.25);
+    gain.gain.exponentialRampToValueAtTime(0.0005, t + 1.7);
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.masterGain);
+    src.start(t, Math.random());
+    src.stop(t + 1.8);
+  }
+
+  /**
    * Level G's final alarm: a two-tone klaxon replaces the fluorescent hum,
    * which drops almost to nothing. Runs until stopAlarm() or destroy().
    */

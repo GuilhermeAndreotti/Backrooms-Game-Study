@@ -778,6 +778,7 @@ export const es: Record<MessageKey, string> = {
   "lobby.start": "Iniciar expedición",
   "lobby.startKey": "[ENTER] Iniciar expedición",
   "lobby.waitHost": "Esperando a que el anfitrión inicie la expedición...",
+  "cut.skip": "ESPACIO para saltar",
   "lobby.expeditionRunning": "Expedición en curso: tu grupo sigue dentro. Te reincorporas con ellos en el siguiente nivel.",
   "lobby.host": "anfitrión",
   "lobby.players": "En el lobby: {n}/4",

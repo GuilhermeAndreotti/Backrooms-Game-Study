@@ -422,7 +422,11 @@ export class VigiaBrain {
 
   /** The cell to chase toward (theirs, or the edge it can grab them from), or null if they're out of reach. */
   private reachFor(tgx: number, tgz: number, t: VigiaTarget): [number, number] | null {
-    if (this.map.vigiaMayStand(tgx, tgz, this.part) && !t.submerged) return [tgx, tgz];
+    // Over its floor — unless the body there is really standing on a ledge it overhangs (feet too high to grab).
+    if (this.map.vigiaMayStand(tgx, tgz, this.part) && !t.submerged) {
+      const floor = this.map.standHeightAt((tgx + 0.5) * this.map.cellSize, (tgz + 0.5) * this.map.cellSize);
+      return vigiaReachesHeight(floor, t.eyeY) ? [tgx, tgz] : null;
+    }
     // Up on something, or in deep water: only reachable from an edge, if the arms make the height.
     const spot = this.standableNear(t.x, t.z, 1, false);
     if (!spot) return null;
