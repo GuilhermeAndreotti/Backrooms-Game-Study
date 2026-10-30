@@ -20,9 +20,10 @@ Um natatório enorme com água pelo tornozelo, em três salões (**arquibancadas
 - **Subir:** blocos sobem de ~0,9 m em ~0,9 m (pule), escadas de marinheiro (encoste olhando e segure `W`), escadas.
 - **A regra:** o Vigia **nunca sai do chão** e não alcança quem está com os pés **≥ 2 m acima dele**. Blocos baixos não salvam.
 - **Ronda:** anda entre os postos de salva-vidas dos salões e para em cada um, varrendo a água com o olhar; o corpo vira para onde ele olha (o cone de visão é o que ele mostra).
-- Quem ele vê **na água ao seu alcance** ouve **dois apitos** — ele para, leva o apito à boca — e é perseguido em disparada, direto. Quem fica lá em cima ele espreita de braços erguidos por alguns segundos e depois **vai embora** para o outro lado do circuito, ignorando você enquanto não descer.
+- **Ouve de muito longe:** correr na água é ouvido do salão inteiro, andar a ~70 m; agachado, só a ~13 m.
+- Quem ele ouve ou vê **no chão ao seu alcance** ouve **dois apitos** — ele para, leva o apito à boca — e é perseguido em disparada, **a qualquer distância**: enquanto você estiver no chão, ele sabe onde você está.
+- **Suba e ele desiste:** um segundo ou dois de braços erguidos ao pé do que você subiu e ele **vai embora correndo** para o canto mais distante do circuito, ignorando você (e o barulho que fizer lá em cima) até você descer.
 - As alavancas aparecem no **radar** (laranja até serem puxadas; uma seta na borda aponta as que estão fora do alcance).
-- **Som:** correr na água chama atenção; andar quase não; agachado, quase nada. Cair de uma passarela é ouvido do outro lado do salão.
 - **Objetivo: as 3 alavancas** da ala de máquinas — duas no chão, expostas, uma no alto de uma caixa d'água (`POOL_LEVERS`). Puxar uma (`E`) faz barulho. Estado compartilhado pela sala (mensagem `pool_lever`, validada pelo servidor). Com as três, **abre a porta** no alto da passagem sul (`48,31`), à qual se chega pelas passarelas (rota oeste com a passarela desabada, ou leste pelas escadas do escorregador).
 
 ## Parte 3 — As Profundezas (labirinto submerso)

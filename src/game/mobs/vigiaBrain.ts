@@ -14,22 +14,23 @@
  *    points: standing, it turns to look. Walls, raised blocks and the roof
  *    over a drowned corridor block its sight. Crouching makes you harder to
  *    see; a diver more than a body-length down is invisible to it.
- *  - It hears noise (see systems/noiseBus.ts): running through water,
- *    landing from a height, splashing, a valve or a lever. Walking is quiet;
- *    crouching is nearly silent. A sound only tells it *where to look*.
+ *  - It hears noise from very far (see systems/noiseBus.ts): running
+ *    through water carries across the whole part, walking a good way, a
+ *    landing, a splash or a lever further still. Crouching is nearly silent.
+ *  - Once it has heard or seen you, it knows where you are for as long as
+ *    you stay on its floor within its reach, however far away: it whistles
+ *    and comes. Climb out of its reach (or dive, in Part 3) and it loses you.
  *  - It never leaves the floor: no blocks, stairs or ladders, no water
  *    deeper than it wades. Its arms reach anyone whose feet are less than
  *    VIGIA_REACH_UP above it — not higher, and not a diver below the edge.
- *  - It forgets. Out of sight long enough, it searches where it lost you,
- *    then goes back to its rounds.
+ *  - It doesn't wait under a perch: a few seconds of reaching up and it gives
+ *    up, walks off fast to the far end of its rounds and leaves you be until
+ *    you come down. A diver it loses it searches for, then goes back to its rounds.
  *
  * How it keeps each part:
  *  - Part 2 (the hunt): rounds between the halls' lifeguard posts, where it
  *    stops and sweeps the water with its eyes. Anyone down in the water
- *    within reach is run at, flat out, after one blast of its whistle.
- *    Someone perched out of reach is stalked at the foot of the structure,
- *    arms raised, until it gives up and walks off to the far end of its
- *    rounds, leaving them be until they come down.
+ *    within reach is run at, flat out, after its whistle.
  *  - Part 3 (the deep): rounds from well to well across the hall over the
  *    labyrinth, bending over each rim to peer down. Peering, its arm hangs
  *    into the well: whoever surfaces near that side is pulled out
@@ -75,10 +76,12 @@ interface Temper {
   rush: number;
   /** Seconds it lingers at a post (Part 2) or over a well (Part 3): [min, extra random]. */
   watch: [number, number];
+  /** Pace walking off after giving up on someone perched out of reach. */
+  retreat: number;
 }
 const TEMPER: Record<VigiaPart, Temper> = {
-  2: { sight: 30, hear: 26, lose: 4.0, search: 18, alertHold: 0.7, stalk: 8, patrol: 1.25, investigate: 1.9, searchSpeed: 1.5, chase: 3.15, rush: 5.6, watch: [2, 2.5] },
-  3: { sight: 24, hear: 22, lose: 4.5, search: 20, alertHold: 0.8, stalk: 7, patrol: 1.1, investigate: 1.8, searchSpeed: 1.4, chase: 2.9, rush: 5.2, watch: [3, 3] },
+  2: { sight: 30, hear: 260, lose: 4.0, search: 18, alertHold: 0.7, stalk: 1.5, patrol: 1.25, investigate: 1.9, searchSpeed: 1.5, chase: 3.15, rush: 5.6, watch: [2, 2.5], retreat: 4.6 },
+  3: { sight: 24, hear: 180, lose: 4.5, search: 20, alertHold: 0.8, stalk: 1.5, patrol: 1.1, investigate: 1.8, searchSpeed: 1.4, chase: 2.9, rush: 5.2, watch: [3, 3], retreat: 4.2 },
 };
 /** Cosine of the half-angle of its sight cone: calm, and once it's onto someone. */
 const CONE_CALM = Math.cos((72 * Math.PI) / 180);
@@ -280,6 +283,11 @@ export class VigiaBrain {
     if (heard?.water) this.lastWaterNoise = now;
     const reach = this.reachFor(tgx, tgz, t);
     this.preyInWater = reach !== null && this.map.waterSurfaceAt(t.x, t.z) !== null;
+    // On its floor in its part, within reach and not under the water: once onto you, it always knows where.
+    const tracked = reach !== null && !t.submerged && poolPartAt(tgx, tgz) === this.part;
+    // Someone it gave up on up there makes no sound worth coming back for — until they come down.
+    const ignored = !reach && this.lurkingNear(t.x, t.z);
+    const heardIt = heard && !(ignored && this.lurkingNear(heard.x, heard.z)) ? heard : null;
 
     if (sees) {
       this.lastSeenX = t.x;
@@ -296,7 +304,10 @@ export class VigiaBrain {
       case "shadow":
       case "retreat":
         // Having given up on someone perched out of reach, it leaves them be — until they come down.
-        if (sees && (reach || !this.lurkingNear(t.x, t.z))) {
+        // Seen, or heard while on its floor and within reach: it fixes on you from wherever it is.
+        if ((sees && !ignored) || (heardIt && tracked)) {
+          this.lastSeenX = t.x;
+          this.lastSeenZ = t.z;
           // It stops, straightens and fixes on you before it moves: the moment to
           // run. Someone in the water within reach hears the whistle, then it comes.
           this.hold = this.preyInWater ? WHISTLE_HOLD : T.alertHold * (this.mode === "patrol" || this.mode === "watch" ? 1 : 0.6);
@@ -311,15 +322,15 @@ export class VigiaBrain {
           this.lookAt = [(POOL_AMBUSH.watchX + 0.5) * cs, (POOL_AMBUSH.watchZ + 0.5) * cs];
           break;
         }
-        if (heard && this.mode !== "retreat") {
+        if (heardIt && this.mode !== "retreat") {
           // A diver it lost: follow the rings on the water from rim to rim.
-          const follow = this.mode === "shadow" || (heard.water && this.part === 3 && this.engagedSubmerged);
+          const follow = this.mode === "shadow" || (heardIt.water && this.part === 3 && this.engagedSubmerged);
           const mode: VigiaMode = follow ? "shadow" : "investigate";
           if (this.mode !== mode || this.modeTime > 1.5) {
             this.setMode(mode);
             this.lookAt = null;
-            if (follow) this.goToWellNear(heard.x, heard.z);
-            else this.goToNear(heard.x, heard.z);
+            if (follow) this.goToWellNear(heardIt.x, heardIt.z);
+            else this.goToNear(heardIt.x, heardIt.z);
             this.hold = Math.min(this.hold, 0.3);
           }
           break;
@@ -338,9 +349,17 @@ export class VigiaBrain {
         break;
 
       case "chase":
-        if (sees) {
-          if (!reach) this.startStalk();
-          else this.goTo(reach[0], reach[1]);
+        if (tracked) {
+          // However far, wherever it last saw or heard you: it knows.
+          this.lostTime = 0;
+          this.lastSeenX = t.x;
+          this.lastSeenZ = t.z;
+          this.goTo(reach[0], reach[1]);
+        } else if (!reach && !t.submerged) {
+          // Up out of its reach: a moment at the foot of it, then it gives up.
+          this.lastSeenX = t.x;
+          this.lastSeenZ = t.z;
+          this.startStalk();
         } else {
           this.lostTime += delta;
           if (this.lostTime > T.lose || (self.gx === this.goalX && self.gz === this.goalZ && this.lostTime > 0.6)) {
@@ -356,9 +375,10 @@ export class VigiaBrain {
         break;
 
       case "stalk":
-        if (sees && reach) { this.setMode("chase"); break; }
-        if (!sees) this.lostTime += delta;
-        if (this.lostTime > T.lose + 1) { this.startSearch(this.lastSeenX, this.lastSeenZ); break; }
+        if (tracked) { this.setMode("chase"); break; }
+        // It knows where you went up.
+        this.lastSeenX = t.x;
+        this.lastSeenZ = t.z;
         // Pace at the foot of whatever you climbed, as close as it can stand.
         if (this.hold <= 0 && (this.goalX < 0 || (self.gx === this.goalX && self.gz === this.goalZ))) {
           const spot = this.standableNear(this.lastSeenX, this.lastSeenZ, 3, true);
@@ -371,7 +391,7 @@ export class VigiaBrain {
           // until you come back down into the water.
           this.lurkX = this.lastSeenX;
           this.lurkZ = this.lastSeenZ;
-          this.lurkTime = 40 + this.random() * 20;
+          this.lurkTime = 60 + this.random() * 30;
           this.retreat(this.lastSeenX, this.lastSeenZ);
         }
         break;
@@ -421,7 +441,7 @@ export class VigiaBrain {
     this.hold = 0;
     // Shorter each time it comes back to the same spot.
     const returning = this.lurkingNear(this.lastSeenX, this.lastSeenZ);
-    this.stalkMax = (this.temper.stalk + this.random() * 8) * (returning ? 0.5 : 1);
+    this.stalkMax = (this.temper.stalk + this.random() * 1.5) * (returning ? 0.5 : 1);
   }
 
   /** Walks off toward the waypoint of its rounds farthest from (x, z), and patrols from there. */
@@ -637,9 +657,10 @@ export class VigiaBrain {
       : this.mode === "investigate" || this.mode === "shadow" ? T.investigate
       : this.mode === "search" ? T.searchSpeed
       : this.mode === "stalk" ? 1.0
+      : this.mode === "retreat" ? T.retreat
       : T.patrol;
     // It builds up to a run and slows heavily: no instant bursts.
-    const rate = this.wantSpeed > this.speed ? (this.mode === "chase" && this.preyInWater ? 4 : 1.6) : 3;
+    const rate = this.wantSpeed > this.speed ? ((this.mode === "chase" && this.preyInWater) || this.mode === "retreat" ? 4 : 1.6) : 3;
     this.speed += Math.max(-rate * delta, Math.min(rate * delta, this.wantSpeed - this.speed));
     this.speed = Math.max(0.6, this.speed);
   }
