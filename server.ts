@@ -189,7 +189,6 @@ interface Room {
   /** Authoritative Poolrooms puzzle state; clients only render snapshots of it. */
   poolValvesTurned: Set<number>;
   poolValveRevision: number;
-  poolVigiaIntellect: number;
   /** Part 2's levers pulled so far (idempotent; all of them open the way to Part 3). */
   poolLevers: Set<number>;
   /** Level FUN puzzle facts announced so far ("kind:index"), replayed to explorers who arrive later. */
@@ -369,7 +368,6 @@ function poolroomsSnapshot(room: Room) {
     turned: [...room.poolValvesTurned].sort((a, b) => a - b),
     stage,
     solved: stage === POOL_ROOM_COUNT,
-    vigiaIntellect: room.poolVigiaIntellect,
     levers: [...room.poolLevers].sort((a, b) => a - b),
   };
 }
@@ -377,7 +375,6 @@ function poolroomsSnapshot(room: Room) {
 function resetPoolroomsState(room: Room) {
   room.poolValvesTurned.clear();
   room.poolValveRevision++;
-  room.poolVigiaIntellect = 0;
   room.poolLevers.clear();
 }
 
@@ -395,10 +392,8 @@ function applyPoolValveTurn(room: Room, index: number) {
 
   if (index !== base + order[sector][done]) {
     for (let valve = 0; valve < POOL_VALVES_PER_ROOM; valve++) room.poolValvesTurned.delete(base + valve);
-    room.poolVigiaIntellect = Math.min(1, room.poolVigiaIntellect + 0.32);
   } else {
     room.poolValvesTurned.add(index);
-    room.poolVigiaIntellect = Math.min(1, room.poolVigiaIntellect + 0.08);
   }
   room.poolValveRevision++;
   return poolroomsSnapshot(room);
@@ -460,6 +455,8 @@ function sanitizeEntities(data: Record<string, unknown>) {
       s: sanitizeText(e.s, MAX_SPEECH_LENGTH),
       // Scripted pose (e.g. the Finger King's stare): a small enum, 0 = none.
       k: typeof e.k === "number" && Number.isInteger(e.k) && e.k >= 0 && e.k < 8 ? e.k : 0,
+      // Where a watcher (O Vigia) faces while standing: its sight cone, in radians. Optional.
+      ...(typeof e.h === "number" && Number.isFinite(e.h) ? { h: Math.max(-Math.PI, Math.min(Math.PI, e.h)) } : {}),
     });
   }
 
@@ -798,7 +795,6 @@ async function startServer() {
             garageGateOpen: false,
             megIds: new Set(),
             chess: { seats: { w: "", b: "" }, game: null, rev: 0 },
-            poolVigiaIntellect: 0,
             poolLevers: new Set(),
             run: null,
           };

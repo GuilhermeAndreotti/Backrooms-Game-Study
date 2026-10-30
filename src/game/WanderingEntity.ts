@@ -75,6 +75,7 @@ export interface EntityNetState {
   c: boolean; // chasing
   s: string;  // speech bubble text
   k: number;  // scripted pose (MobSenseResult.pose), 0 = none
+  h?: number; // where a mob whose body shows its sight cone faces while standing (radians), when it has one (O Vigia)
 }
 
 export class WanderingEntity {
@@ -101,6 +102,8 @@ export class WanderingEntity {
   public vigiaTarget: VigiaTarget | null = null;
   /** The Poolrooms' Vigia's mind (see mobs/vigiaBrain.ts); null for every other mob and level. */
   private vigia: VigiaBrain | null = null;
+  /** Where the body faces while it stands, when its mind decides that (O Vigia's sight cone); null otherwise. Replicated as `h`. */
+  private scriptedHeading: number | null = null;
   
   // Grid/logic position
   public gridX: number;
@@ -399,6 +402,7 @@ export class WanderingEntity {
       c: this.isChasing,
       s: this.currentSpeechText,
       k: this.pose,
+      ...(this.scriptedHeading !== null ? { h: Math.round(this.scriptedHeading * 100) / 100 } : {}),
     };
   }
 
@@ -422,6 +426,7 @@ export class WanderingEntity {
     this.isChasing = s.c;
     this.currentSpeechText = s.s;
     this.pose = s.k ?? 0;
+    this.scriptedHeading = typeof s.h === "number" ? s.h : null;
 
     if (cellChanged) this.updateWallClipLook();
     if (looksChanged) this.updateVisualState(); // forced: a coalesced skip would never be retried
@@ -508,6 +513,7 @@ export class WanderingEntity {
     const stepZ = this.targetGridZ - this.gridZ;
     if (def.facesViewer) want = toViewer;
     else if (this.isMoving && (stepX !== 0 || stepZ !== 0)) want = Math.atan2(stepX, stepZ);
+    else if (this.scriptedHeading !== null) want = this.scriptedHeading;
     else if (near && !ignoresViewer) want = toViewer;
     this.heading = wrapAngle(this.heading + wrapAngle(want - this.heading) * Math.min(1, (this.isChasing ? 10 : 5) * delta));
     this.mesh.rotation.set(0, this.heading, 0);
@@ -916,11 +922,8 @@ export class WanderingEntity {
     const cx = x * cs + cs / 2, cz = z * cs + cs / 2;
     const ox = fx * cs + cs / 2, oz = fz * cs + cs / 2;
     // Props (crates, pillars, boilers) block the cell centre or the edge crossing.
-    // The Vigia is not constrained by the water-depth gates between Poolrooms
-    // sectors. It still collides with solid walls, the locked exit and props.
-    const crossesPoolGate = this.type === EntityType.VIGIA && this.map.networkLevel === POOLROOMS_LEVEL;
-    if (this.map.checkCollision(cx, cz, 0.35, crossesPoolGate)) return false;
-    if (this.map.checkCollision((cx + ox) / 2, (cz + oz) / 2, 0.35, crossesPoolGate)) return false;
+    if (this.map.checkCollision(cx, cz, 0.35)) return false;
+    if (this.map.checkCollision((cx + ox) / 2, (cz + oz) / 2, 0.35)) return false;
     if (!this.hunting && this.targetHidden && this.map.hideCells.has(`${x},${z}`)) return false;
     if (this.type === EntityType.ALIEN && !this.alienMayStep(fx, fz, x, z)) return false;
     // O Vigia keeps to the floor of its own part of the Poolrooms; anything else stays in Part 1.
@@ -1206,10 +1209,12 @@ export class WanderingEntity {
 
   private setupVigiaBrain() {
     this.vigia = null;
+    this.scriptedHeading = null;
     if (this.type !== EntityType.VIGIA || this.map.networkLevel !== POOLROOMS_LEVEL) return;
     const cs = this.map.cellSize;
-    const part = this.map.poolPartAt((this.gridX + 0.5) * cs, (this.gridZ + 0.5) * cs) || 1;
-    this.vigia = new VigiaBrain(part, this.map, () => this.decisionRandom());
+    const part = this.map.poolPartAt((this.gridX + 0.5) * cs, (this.gridZ + 0.5) * cs);
+    // It keeps Parts 2 and 3 only; anywhere else it falls back to its plain sense().
+    if (part === 2 || part === 3) this.vigia = new VigiaBrain(part, this.map, () => this.decisionRandom());
   }
 
   /** The part of the Poolrooms this Vigia lives in (0 for any other mob). */
@@ -1227,7 +1232,6 @@ export class WanderingEntity {
 
   private senseVigia(delta: number, px: number, pz: number, state: "idle" | "walking" | "running" | "crouching", flashlight?: boolean) {
     const brain = this.vigia!;
-    brain.intellect = this.map.poolVigiaIntellect;
     const target = this.vigiaTarget ?? {
       x: px, z: pz, eyeY: this.map.getFloorHeightAt(px, pz) + 1.33, state, crouched: state === "crouching", submerged: false, flashlight: !!flashlight,
     };
@@ -1235,6 +1239,7 @@ export class WanderingEntity {
     this.isChasing = brain.chasing;
     this.isAgitated = brain.agitated;
     this.pose = brain.pose;
+    this.scriptedHeading = brain.facing;
     this.moveSpeed = brain.speed;
     // Once it has you it doesn't finish a pause first.
     if (brain.chasing) this.pauseTimer = Math.min(this.pauseTimer, 0.05);

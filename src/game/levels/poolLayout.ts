@@ -2,9 +2,9 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * The Poolrooms' three parts, as data. Part 1 (the four flooded halls and
- * their valves) is still carved by ProceduralMap.carveLevel7; this file lays
- * out what lies past its drained gate:
+ * The Poolrooms' three parts, as data. Part 1 (the one flooded valve hall)
+ * is still carved by ProceduralMap.carveLevel7; this file lays out what lies
+ * past its drained gate:
  *
  *  - Part 2, "A Caçada" (authored x 38..93, z 2..39): one huge ankle-deep natatorium
  *    split into three halls by partition walls with wide openings, and the
@@ -90,6 +90,23 @@ export const VIGIA_REACH_UP = 2.0;
  */
 export const VIGIA_REACH_DOWN = 2.3;
 
+/** How far (m) its arm reaches from a well's rim when it bends over to peer down (VIGIA_POSE.PEER). */
+export const VIGIA_WELL_REACH = 3.2;
+
+/** Its replicated pose (MobSenseResult.pose): what every client's rig shows (mobs/vigia.ts). */
+export const VIGIA_POSE = {
+  /** On its rounds, or sweeping the water from a post. */
+  CALM: 0,
+  /** Stopped, head cocked toward a sound. */
+  LISTEN: 1,
+  /** Whistle blown, hunched, coming for you. */
+  HUNT: 2,
+  /** At the foot of something you climbed, arms up, fingers working. */
+  REACH_UP: 3,
+  /** Bent over a well's rim, one arm hanging down into it. */
+  PEER: 4,
+} as const;
+
 /** Water deeper than this can't be waded: you swim. */
 export const SWIM_DEPTH = 1.45;
 
@@ -173,7 +190,7 @@ export const POOL_DEEP_DOOR = { x: 60, z: 38 };
   wall(40, 25, 71, 25);
   paint(42, 25, 44, 25, P, "floor", P2_FLOOR, P2_WATER); paint(55, 25, 57, 25, P, "floor", P2_FLOOR, P2_WATER); paint(68, 25, 70, 25, P, "floor", P2_FLOOR, P2_WATER);
 
-  // The drained gate out of Part 1's third hall, and the step down into the water.
+  // The drained gate out of Part 1's valve hall, and the step down into the water.
   paint(38, 10, 38, 10, P, "gate", DECK, null);
   paint(39, 10, 39, 10, P, "corridor", DECK, null);
   paint(40, 9, 41, 11, P, "block", STEP, null);
@@ -241,6 +258,8 @@ const MAZE = { x0: 44, z0: 45, nx: 10, nz: 10 };
 const UNIT = 3;
 /** Rooms open to the hall above (air holes), by unit — filled in below. */
 export const POOL_AIR_HOLES: [number, number][] = [];
+/** The same holes as wells in the hall's floor: the north-west cell of each 2×2 opening (grid coordinates). */
+export const POOL_WELLS: [number, number][] = [];
 const P3_LAMPS: [number, number, PoolLampKind][] = [];
 const P3_PATROL: [number, number][] = [];
 
@@ -317,13 +336,15 @@ const P3_PATROL: [number, number][] = [];
     corridor(cx(ux), cz(uz), cx(ux) + 1, cz(uz) + 1, isAir);
     if (isAir) {
       POOL_AIR_HOLES.push([ux, uz]);
+      POOL_WELLS.push([cx(ux), cz(uz)]);
       P3_LAMPS.push([cx(ux), cz(uz), "pocket"]);
     } else if ((ux * 7 + uz * 3) % 4 === 0) {
       P3_LAMPS.push([cx(ux) + 1, cz(uz), "under"]);
     }
     if (ux + 1 < nx && linked(u, id(ux + 1, uz))) corridor(cx(ux) + 2, cz(uz), cx(ux) + 2, cz(uz) + 1, false);
     if (uz + 1 < nz && linked(u, id(ux, uz + 1))) corridor(cx(ux), cz(uz) + 2, cx(ux) + 1, cz(uz) + 2, false);
-    // Its rounds: the hall's crossings, every other one.
+    // Where it can be sent back to (relocateFarAway): the hall's crossings, every
+    // other one. Its actual rounds go from well to well (POOL_WELLS).
     if ((ux + uz) % 2 === 0 && ux < nx - 1 && uz < nz - 1) P3_PATROL.push([cx(ux) + 2, cz(uz) + 2]);
     if ((ux + uz) % 3 === 0) P3_LAMPS.push([cx(ux) + 2, cz(uz) + 2, "hall"]);
   }
@@ -388,9 +409,8 @@ export const inPoolFinale = (gx: number, gz: number) => inside(POOL_FINALE, gx, 
 /** Where it waits for whoever comes through the last rooms: at the rim of the exit hole, looking down into it. */
 export const POOL_AMBUSH = { x: 70, z: 73, watchX: 71, watchZ: 73 };
 
-/** Where each part's Vigia walks its rounds (cells it can stand on). */
-export const POOL_PATROL: Record<PoolPart, [number, number][]> = {
-  1: [],
+/** Where each part's Vigia walks its rounds (cells it can stand on). Part 1 has none. */
+export const POOL_PATROL: Record<2 | 3, [number, number][]> = {
   2: [[48, 7], [62, 8], [56, 11], [45, 18], [60, 22], [68, 19], [45, 30], [55, 31], [68, 33], [58, 28], [50, 22],
     [83, 10], [90, 8], [79, 17], [87, 24], [80, 31], [91, 36], [76, 22]],
   3: P3_PATROL,
@@ -485,7 +505,7 @@ export function poolAuthoredAt(gx: number, gz: number): [number, number] {
   [POOL_AMBUSH.watchX, POOL_AMBUSH.watchZ] = poolRemap(POOL_AMBUSH.watchX, POOL_AMBUSH.watchZ);
   move(POOL_AMBUSH);
   [POOL_PART1, PART2, PART3, POOL_LANDING, POOL_FINALE].forEach(moveRect);
-  [...POOL_LEVERS, ...POOL_PATROL[2], ...POOL_PATROL[3]].forEach(moveTuple);
+  [...POOL_LEVERS, ...POOL_PATROL[2], ...POOL_PATROL[3], ...POOL_WELLS].forEach(moveTuple);
   POOL_LAMPS.forEach(moveTuple);
   POOL_SIGNS.forEach(moveTuple);
 }

@@ -394,7 +394,7 @@ export const ptBR = {
   "eng.computer": "Um computador antigo ainda ligado. Pressione [E] para usar.",
   "eng.noRoom": "Não há espaço para empurrar a caixa.",
   "eng.valveTurn": "VÁLVULA GIRADA: {n}/{total}",
-  "eng.valveAllTurned": "AS VÁLVULAS DRENARAM A CONTAMINAÇÃO. A grade no fundo do terceiro salão se abriu.",
+  "eng.valveAllTurned": "AS VÁLVULAS DRENARAM A CONTAMINAÇÃO. A grade na parede leste do salão se abriu.",
   "pool.part1": "POOLROOMS — PARTE 1: AS VÁLVULAS. Encontre as pistas e gire as 3 válvulas na ordem certa.",
   "pool.part2": "PARTE 2: A CAÇADA. Ele está aqui embaixo com você. Procure lugares altos — e as 3 alavancas.",
   "pool.part3": "PARTE 3: AS PROFUNDEZAS. Um labirinto debaixo d'água. Espaço sobe, C mergulha; respire nos poços.",

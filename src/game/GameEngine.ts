@@ -44,7 +44,7 @@ import { POOL_LEVERS } from "./levels/poolLayout";
 import { FunDirector } from "./levels/funDirector";
 import { SpaceDirector, type SpaceTerminalView } from "./levels/spaceDirector";
 import { PoolDirector } from "./levels/poolDirector";
-import { vigiaReachesHeight } from "./mobs/vigiaBrain";
+import { VIGIA_POSE, VIGIA_WELL_REACH, vigiaReachesHeight } from "./mobs/vigiaBrain";
 import { TownDirector, type TownDialogueChoice, type TownDialogueView } from "./levels/townDirector";
 import { HotelDirector, type HotelObserver, type HotelPanel } from "./levels/hotelDirector";
 import { HOTEL_LEVEL } from "./levels/constants";
@@ -1508,7 +1508,9 @@ export class GameEngine {
           // or the mob's own reach.
           const dx = entity.mesh.position.x - px;
           const dz = entity.mesh.position.z - pz;
-          const reach = MOB_DEFS[entity.type].catchRadius ?? 1.45;
+          // Bent over a well's rim, the Vigia's hanging arm reaches further down into it.
+          const reach = entity.type === EntityType.VIGIA && entity.scriptedPose === VIGIA_POSE.PEER
+            ? VIGIA_WELL_REACH : MOB_DEFS[entity.type].catchRadius ?? 1.45;
           // In the Poolrooms the Vigia's arms reach so far up and down, and no further.
           const heightOk = entity.type !== EntityType.VIGIA || !this.map.verticalTerrain
             || vigiaReachesHeight(this.map.standHeightAt(entity.mesh.position.x, entity.mesh.position.z), this.player.position.y);
@@ -1705,7 +1707,7 @@ export class GameEngine {
         this.player.position.x,
         this.player.position.z
       );
-      this.map.updatePoolroomsWater(delta, this.player?.position.x, this.player?.position.z);
+      this.map.updatePoolroomsWater(delta);
       const eventNow = this.map.globalEventState;
       if (this.map.rollGlobalEvents && eventBefore === "normal" && eventNow !== "normal") {
         this.sendToServer({ type: "world_event", level: this.level, state: eventNow, duration: this.map.globalEventTimer });
@@ -3788,7 +3790,7 @@ export class GameEngine {
     return true;
   }
 
-  /** A valve's wheel screeching round carries across the halls (the Vigia comes to see). */
+  /** A valve's wheel screeching round carries across the hall. */
   private valveNoise(index: number, loudness: number) {
     const pos = this.map?.valvePositions[index];
     if (!pos) return;
@@ -3810,7 +3812,6 @@ export class GameEngine {
       // The wrong wheel: the whole sector's pipes bang as the sequence resets.
       this.valveNoise(index, 1);
       for (let k = 0; k < per; k++) this.valvesTurned.delete(roomBase + k);
-      this.map.poolVigiaIntellect = Math.min(1, this.map.poolVigiaIntellect + 0.32);
       this.map.setPoolroomsValveState(this.valvesTurned, this.countSolvedPoolrooms());
       this.audio.playTerminalBeep(false);
       this.onHUDNotification?.(t("eng.denied"));
@@ -3818,7 +3819,6 @@ export class GameEngine {
     }
 
     this.valvesTurned.add(index);
-    this.map.poolVigiaIntellect = Math.min(1, this.map.poolVigiaIntellect + 0.08);
     const solved = this.countSolvedPoolrooms();
     this.map.setPoolroomsValveState(this.valvesTurned, solved);
     this.audio.playTerminalBeep(true);
@@ -3850,7 +3850,6 @@ export class GameEngine {
     turned?: unknown;
     stage?: number;
     solved?: boolean;
-    vigiaIntellect?: unknown;
     levers?: unknown;
   }) {
     if (!this.map || this.level !== POOLROOMS_LEVEL || data.level !== undefined && data.level !== this.level) return;
@@ -3873,9 +3872,6 @@ export class GameEngine {
     this.poolValveRevision = data.revision;
     this.valvesTurned = turned;
     this.map.setPoolroomsValveState(turned, data.stage);
-    if (typeof data.vigiaIntellect === "number" && Number.isFinite(data.vigiaIntellect)) {
-      this.map.poolVigiaIntellect = Math.max(0, Math.min(1, data.vigiaIntellect));
-    }
     if (Array.isArray(data.levers)) {
       const levers = new Set<number>();
       for (const index of data.levers) if (typeof index === "number" && Number.isInteger(index) && index >= 0 && index < POOL_LEVER_COUNT) levers.add(index);

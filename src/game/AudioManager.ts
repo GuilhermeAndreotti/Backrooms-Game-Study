@@ -1742,14 +1742,30 @@ export class AudioManager {
         break;
       }
       case "VIGIA": {
-        // A heavy, infrequent groan — something massive shifting its weight.
-        dur = alert ? 1.6 : 2.2;
-        envelope(dur, alert ? 0.7 : 0.35);
-        const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 220; lp.connect(out);
-        const o = osc("sawtooth", alert ? 55 : 35, alert ? 40 : 30, dur, lp);
-        const lfo = ctx.createOscillator(); lfo.frequency.value = 3;
-        const lg = ctx.createGain(); lg.gain.value = 6;
-        lfo.connect(lg); lg.connect(o.frequency); lfo.start(t); lfo.stop(t + dur + 0.05);
+        if (alert) {
+          // Its lifeguard's whistle, full of water: two shrill, gargling blasts.
+          dur = 1.3;
+          envelope(dur, 0.8);
+          const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 2600; bp.Q.value = 3; bp.connect(out);
+          for (const [at, len] of [[0, 0.32], [0.45, 0.7]] as const) {
+            const o = osc("square", 2350, 2150, len, bp, t + at);
+            // The pea rattling through water in the chamber.
+            const lfo = ctx.createOscillator(); lfo.frequency.value = 38;
+            const lg = ctx.createGain(); lg.gain.value = 140;
+            lfo.connect(lg); lg.connect(o.frequency); lfo.start(t + at); lfo.stop(t + at + len + 0.05);
+            noiseBurst(len, "bandpass", 1800, 2, 0.35, t + at);
+          }
+        } else {
+          // A slow breath drawn through waterlogged lungs: a low, bubbling rattle.
+          dur = 2.2;
+          envelope(dur, 0.35);
+          const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 260; lp.connect(out);
+          const o = osc("sawtooth", 48, 34, dur, lp);
+          const lfo = ctx.createOscillator(); lfo.frequency.value = 7;
+          const lg = ctx.createGain(); lg.gain.value = 9;
+          lfo.connect(lg); lg.connect(o.frequency); lfo.start(t); lfo.stop(t + dur + 0.05);
+          for (let i = 0; i < 4; i++) noiseBurst(0.06, "bandpass", 500 + i * 140, 6, 0.4, t + 0.4 + i * 0.27);
+        }
         break;
       }
       case "ALIEN": {

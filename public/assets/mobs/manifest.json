@@ -123,14 +123,14 @@
       "surfaces": 1
     },
     "VIGIA": {
-      "bytes": 1935576,
+      "bytes": 2016084,
       "triangles": [
-        33306,
-        15804,
-        5422
+        31590,
+        15886,
+        5540
       ],
-      "bones": 43,
-      "surfaces": 6
+      "bones": 38,
+      "surfaces": 9
     },
     "CEIFADOR": {
       "bytes": 1281212,

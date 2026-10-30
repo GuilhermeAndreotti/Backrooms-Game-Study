@@ -120,7 +120,7 @@ export const LEVEL_DEFS: Record<number, LevelDefinition> = {
   // native hazard (it loses you if you're submerged). The Vigia only waits
   // past Part 1's drained grate: one keeps Part 2 and one Part 3
   // (levels/poolLayout.ts). It never leaves its own part, so each must stand
-  // where that part's floor is (see mobs/vigiaBrain.ts).
+  // where that part's floor is; outside Parts 2/3 it has no brain (see mobs/vigiaBrain.ts).
   [POOLROOMS_LEVEL]: {
     id: POOLROOMS_LEVEL,
     displayLabel: "POOLROOMS",

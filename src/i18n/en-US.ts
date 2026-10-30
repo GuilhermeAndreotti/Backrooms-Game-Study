@@ -396,7 +396,7 @@ export const enUS: Record<MessageKey, string> = {
   "eng.computer": "An old computer still running. Press [E] to use it.",
   "eng.noRoom": "There's no room to push the box.",
   "eng.valveTurn": "VALVE TURNED: {n}/{total}",
-  "eng.valveAllTurned": "THE VALVES DRAINED THE CONTAMINATION. The grate at the back of the third hall has lifted.",
+  "eng.valveAllTurned": "THE VALVES DRAINED THE CONTAMINATION. The grate in the east wall of the hall has lifted.",
   "pool.part1": "POOLROOMS — PART 1: THE VALVES. Find the clues and turn the 3 valves in the right order.",
   "pool.part2": "PART 2: THE HUNT. It is down here with you. Look for high places — and the 3 levers.",
   "pool.part3": "PART 3: THE DEPTHS. A labyrinth under the water. Space rises, C dives; breathe in the wells.",

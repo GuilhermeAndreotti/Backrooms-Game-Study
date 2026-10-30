@@ -61,10 +61,7 @@ export class SeededRandom {
 
 /** Wall height in the Poolrooms (m). No ceiling: walls just rise into the haze. */
 const POOLROOMS_WALL_HEIGHT = 24;
-/** Part 1's hall walls and floor inscription, from their authored spots (carveLevel7). */
-const POOL_ZONE_WALL_X1 = poolRemap(12, 2)[0];
-const POOL_ZONE_WALL_X2 = poolRemap(25, 2)[0];
-const POOL_ZONE_WALL_Z = poolRemap(2, 20)[1];
+/** Part 1's floor inscription, from its authored spot (carveLevel7). */
 const POOL_INSCRIPTION = poolRemap(8, 10);
 
 export enum CellType {
@@ -416,7 +413,7 @@ export class ProceduralMap {
   public toxicWaterCells = new Set<string>();
   /** Level 7's hydraulic valve interaction points. */
   public valvePositions: [number, number][] = [];
-  /** Each flooded sector holds this many valves; valve i belongs to sector floor(i / poolValvesPerRoom). */
+  /** The valve hall holds this many valves; valve i belongs to sector floor(i / poolValvesPerRoom). */
   public readonly poolValvesPerRoom = POOL_VALVES_PER_ROOM;
   /** Symbols appear in this physical order on each room's valves. */
   public readonly poolValveSymbols = ["○", "△", "□"] as const;
@@ -429,25 +426,13 @@ export class ProceduralMap {
   public get poolRoomCount(): number { return Math.floor(this.valvePositions.length / this.poolValvesPerRoom); }
   public poolroomsDrainStage = 0;
   public poolroomsSolved = false;
-  /** Escalates the Vigia's awareness as the hydraulic puzzle is disturbed. */
-  public poolVigiaIntellect = 0;
   private poolWaterMeshes: THREE.Mesh[] = [];
-  /** Tiled walls holding back a higher room's water; sized every frame by updatePoolroomsWater. */
-  private poolEdgeWalls: { mesh: THREE.Mesh; zone: number; neighbourZone: number }[] = [];
-  /** Resting water depth (m above the pool floor) of each room before any valve is turned. */
-  private readonly poolZoneBaseDepth = [0.45, 1.4, 2.3, 3.6];
-  /** Each valve lowers every room's water by this much, down to a wadeable minimum. */
-  /** Three completed sectors must make the final sector wadeable. */
-  private readonly poolDrainPerStage = 0.9;
-  private readonly poolMinDepth = 0.45;
-  /** Deeper than this and a room can't be entered on foot. */
-  private readonly poolWadeMaxDepth = 1.0;
-  /** Current (animated) water surface height of each room. */
-  private poolZoneSurface: number[] = [];
-  private poolPlayerZone = -1;
-  /** Water cells that are a staircase up into a valve room -> [dx, dz] toward the room. */
-  private poolStairCells = new Map<string, [number, number]>();
-  private readonly poolStairSteps = 6;
+  /** Resting water depth (m above the pool floor) of the valve hall before any valve is turned: just under the deck. */
+  private readonly poolBaseDepth = 0.5;
+  /** Each valve turned in the right order lowers it this much; the last one drains it. */
+  private readonly poolDrainPerValve = 0.14;
+  /** Current (animated) water surface height of the valve hall. */
+  private poolSurface = POOL_FLOOR_Y + 0.5;
   /** Cells LevelDecor already dressed, so wall dividers don't pile onto the same spot. */
   private decoredCells = new Set<string>();
   /** Parts 2 and 3 of the Poolrooms (see levels/poolWorld.ts). */
@@ -2318,10 +2303,10 @@ export class ProceduralMap {
   }
 
   /**
-   * LEVEL 7 ("LEVEL 5" display — classic Poolrooms). A windowed start room
-   * leads into a snaking flooded corridor and a broad central basin. Three
-   * hydraulic valves, one sequence in the first hall, drain every hall at once
-   * and raise the grate into Part 2.
+   * LEVEL 7 ("LEVEL 5" display — classic Poolrooms), Part 1: a dry, windowed
+   * start room opening onto one long flooded hall, the only room of the part.
+   * Its three hydraulic valves, turned in the order the floor clues give,
+   * drain it and raise the grate in its east wall into Part 2.
    * CLUMP is this level's native hazard — see mobs/clump.ts's sense() for
    * its level-7-only "loses you if you're submerged in WATER_ROOM" weakness.
    */
@@ -2330,19 +2315,18 @@ export class ProceduralMap {
     // Carved at its authored size, then compacted (see poolLayout's poolRemap).
     let lo = POOL_PART1_AUTHORED.x1, hi = POOL_PART1_AUTHORED.x2;
 
-    // Four flooded halls chained by wide doorways, each with its own water level.
+    // One hall along the north of the part, from the start room to the grate
+    // (authored 38,10, just past its east wall); everything south of it is rock.
+    const HALL_Z2 = 19;
     for (let x = lo; x <= hi; x++) {
-      for (let z = lo; z <= hi; z++) this.grid[x][z] = CellType.WATER_ROOM;
+      for (let z = lo; z <= hi; z++) this.grid[x][z] = z <= HALL_Z2 ? CellType.WATER_ROOM : CellType.SOLID;
     }
-    for (let z = lo; z <= hi; z++) {
-      if (z !== 19 && z !== 20) this.grid[12][z] = CellType.SOLID; // A | B
-      if (z !== 9 && z !== 10) this.grid[25][z] = CellType.SOLID; // B | C, D
-    }
-    for (let x = 26; x <= hi; x++) {
-      if (x !== 31 && x !== 32) this.grid[x][20] = CellType.SOLID; // C | D
-    }
+    // Two half-walls break it into bays without closing any of them off: the
+    // sight lines are cut, the water and the way through are not.
+    for (let z = 13; z <= HALL_Z2; z++) this.grid[12][z] = CellType.SOLID;
+    for (let z = lo; z <= 7; z++) this.grid[25][z] = CellType.SOLID;
     // Square tiled pillars.
-    for (const [px, pz] of [[8, 14], [8, 28], [18, 12], [18, 28], [21, 20], [31, 8], [31, 15], [31, 26], [28, 33], [34, 32]]) {
+    for (const [px, pz] of [[8, 14], [18, 12], [19, 4], [31, 8], [31, 15], [35, 4]]) {
       this.grid[px][pz] = CellType.SOLID;
     }
 
@@ -2351,18 +2335,15 @@ export class ProceduralMap {
       for (let z = 2; z <= 6; z++) this.grid[x][z] = CellType.ROOM_SMALL;
     }
 
-    // Extra wall stubs breaking up the halls (fewer than Levels 3/4, more than
-    // an empty hall). Each hangs off an existing wall and stays clear of
-    // doorways, valve rooms, the exit and its approach.
+    // Wall stubs give the valves walls to hang on and the hall some corners.
+    // Each hangs off an existing wall and stays clear of the start room and the grate.
     const stub = (x1: number, z1: number, x2: number, z2: number) => {
       for (let x = x1; x <= x2; x++) for (let z = z1; z <= z2; z++) this.grid[x][z] = CellType.SOLID;
     };
-    stub(2, 12, 4, 12); stub(9, 24, 11, 24); stub(5, 34, 5, 37);
-    stub(13, 28, 15, 28); stub(22, 30, 24, 30); stub(24, 14, 24, 16); stub(13, 10, 15, 10);
-    stub(26, 16, 28, 16); stub(28, 18, 28, 19);
-    stub(26, 25, 28, 25); stub(35, 29, 37, 29); stub(33, 35, 33, 37);
+    stub(2, 12, 4, 12); stub(13, 10, 15, 10); stub(9, 17, 9, 19); stub(22, 2, 22, 4);
+    stub(21, 16, 21, 19); stub(26, 16, 28, 16); stub(28, 18, 28, 19); stub(34, 18, 37, 18);
 
-    // Drop the rows and columns that make the halls smaller.
+    // Drop the rows and columns that make the hall smaller.
     const authored = this.grid.slice(lo, hi + 1).map((col) => col.slice(lo, hi + 1));
     for (let x = lo; x <= hi; x++) for (let z = lo; z <= hi; z++) this.grid[x][z] = CellType.SOLID;
     for (let x = lo; x <= hi; x++) for (let z = lo; z <= hi; z++) {
@@ -2372,25 +2353,20 @@ export class ProceduralMap {
     }
     lo = POOL_PART1.x1; hi = POOL_PART1.x2;
 
-    // The valve sector (only the first hall now) has three valves, deliberately
-    // spread over its usable walls. This keeps every wheel visible and in arm's reach without forcing
-    // explorers through the old, identical valve closets.
+    // Three wall-mounted valves, spread as far apart over the hall's walls as
+    // they will go, so finding them (and the clues) walks you through every bay.
     this.valvePositions = [];
-    this.poolStairCells.clear();
     this.poolClueCells.clear();
     this.poolValveOrder = [];
     const valveOrder = poolValveOrderForSeed(this.seed);
-    // Keep this stream aligned with the old combined order/selection stream so
-    // existing seeds retain their valve positions.
     const orderRng = new SeededRandom(this.seed + 0x7a11);
     for (let room = 0; room < POOL_ROOM_COUNT; room++) {
-      const order = valveOrder[room];
-      for (let i = 2; i > 0; i--) orderRng.nextInt(0, i + 1);
-      this.poolValveOrder.push(order);
+      this.poolValveOrder.push(valveOrder[room]);
       const candidates: [number, number][] = [];
       for (let x = lo; x <= hi; x++) for (let z = lo; z <= hi; z++) {
-        if (this.grid[x][z] !== CellType.WATER_ROOM || this.poolZoneOf(x, z) !== room) continue;
-        // A wall-mounted wheel has a clear approach and cannot disappear into open water.
+        if (this.grid[x][z] !== CellType.WATER_ROOM) continue;
+        // Clear of the grate's approach, and on a wall (a clear approach, never in open water).
+        if (Math.abs(x - POOL_GATE.x) <= 2 && Math.abs(z - POOL_GATE.z) <= 2) continue;
         if ([[0, -1], [0, 1], [-1, 0], [1, 0]].some(([dx, dz]) => this.grid[x + dx]?.[z + dz] === CellType.SOLID)) candidates.push([x, z]);
       }
       const selected: [number, number][] = [];
@@ -2398,37 +2374,25 @@ export class ProceduralMap {
         let bestIndex = 0, bestScore = -Infinity;
         for (let i = 0; i < candidates.length; i++) {
           const [x, z] = candidates[i];
-          let score = selected.length === 0 ? (x * 31 + z * 17 + orderRng.next() * 0.01) : Infinity;
+          let score = selected.length === 0 ? (x * 31 + z * 17 + orderRng.next() * 40) : Infinity;
           for (const [sx, sz] of selected) score = Math.min(score, (x - sx) ** 2 + (z - sz) ** 2);
           if (score > bestScore) { bestScore = score; bestIndex = i; }
         }
         selected.push(candidates.splice(bestIndex, 1)[0]);
       }
       if (selected.length !== this.poolValvesPerRoom) {
-        throw new Error(`Poolrooms sector ${room} generated ${selected.length} valves; expected ${this.poolValvesPerRoom}`);
+        throw new Error(`Poolrooms valve hall generated ${selected.length} valves; expected ${this.poolValvesPerRoom}`);
       }
       this.valvePositions.push(...selected);
     }
-    if (this.valvePositions.length !== POOL_ROOM_COUNT * POOL_VALVES_PER_ROOM) {
-      throw new Error(`Poolrooms generated ${this.valvePositions.length} valves; expected ${POOL_ROOM_COUNT * POOL_VALVES_PER_ROOM}`);
-    }
-    for (let zone = 0; zone < POOL_ROOM_COUNT; zone++) {
-      const depth = Math.max(this.poolMinDepth, this.poolZoneBaseDepth[zone] - this.poolDrainPerStage * zone);
-      if (depth > this.poolWadeMaxDepth + 1e-6) {
-        throw new Error(`Poolrooms sector ${zone} remains blocked after ${zone} drain stages (${depth.toFixed(3)}m)`);
-      }
-    }
-    // Hide all three parts of each sequence around its own sector. The marks are
-    // far enough apart that players must explore, but never leave the sector they
-    // are currently trying to drain.
+    // The three clues: faded tile marks read off the floor, away from the
+    // wheels and from each other, so the hall has to be walked to read them.
     for (let room = 0; room < this.poolRoomCount; room++) {
       const [valveX, valveZ] = this.valvePositions[room * this.poolValvesPerRoom];
-      const sector = room;
       const candidates: [number, number][] = [];
       for (let x = lo; x <= hi; x++) {
         for (let z = lo; z <= hi; z++) {
-          if (this.grid[x][z] !== CellType.WATER_ROOM || this.poolZoneOf(x, z) !== sector) continue;
-          // Not under a wheel: a clue is read off the floor, away from the valves.
+          if (this.grid[x][z] !== CellType.WATER_ROOM) continue;
           if (this.valvePositions.some(([vx, vz]) => Math.abs(vx - x) <= 1 && Math.abs(vz - z) <= 1)) continue;
           candidates.push([x, z]);
         }
@@ -2448,8 +2412,7 @@ export class ProceduralMap {
         this.poolClueCells.set(`${best[0]},${best[1]}`, { valve: this.poolValveOrder[room][order], order: order + 1 });
       }
     }
-    this.poolZoneSurface = this.poolZoneBaseDepth.map((_, zone) => this.poolZoneTargetSurface(zone, 0));
-
+    this.poolSurface = this.poolTargetSurface();
   }
 
   /**
@@ -2510,26 +2473,10 @@ export class ProceduralMap {
     this.pool?.setLevers(this.poolLevers);
   }
 
-  /** Which of the Poolrooms' four halls (0 = start hall … 3 = exit hall) a cell belongs to. */
-  private poolZoneOf(gx: number, gz: number): number {
-    // The authored walls between them: x = 12, x = 25, and z = 20 east of that.
-    if (gx < POOL_ZONE_WALL_X1) return 0;
-    if (gx < POOL_ZONE_WALL_X2) return 1;
-    return gz < POOL_ZONE_WALL_Z ? 2 : 3;
-  }
-
-  private poolZoneTargetSurface(zone: number, stage: number): number {
-    const solved = stage >= this.poolRoomCount && this.poolRoomCount > 0;
-    const depth = solved ? 0.04 : Math.max(this.poolMinDepth, this.poolZoneBaseDepth[zone] - this.poolDrainPerStage * stage);
+  /** Where the valve hall's water settles: a step lower for every valve turned in order, near dry once drained. */
+  private poolTargetSurface(): number {
+    const depth = this.poolroomsSolved ? 0.04 : this.poolBaseDepth - this.poolDrainPerValve * this.poolTurned.size;
     return POOL_FLOOR_Y + depth;
-  }
-
-  /** A flooded hall too deep to wade is closed to anyone not already standing in it. */
-  private isPoolCellBlocked(gx: number, gz: number): boolean {
-    if (this.level !== 7 || this.grid[gx]?.[gz] !== CellType.WATER_ROOM || poolPartAt(gx, gz) !== 1) return false;
-    const zone = this.poolZoneOf(gx, gz);
-    if (zone === this.poolPlayerZone) return false;
-    return this.poolZoneSurface[zone] - POOL_FLOOR_Y > this.poolWadeMaxDepth;
   }
 
   private carveSideLabyrinth(xStart: number, zStart: number, xEnd: number, zEnd: number, cellType: CellType) {
@@ -3380,15 +3327,7 @@ export class ProceduralMap {
       if (cell) return cell.stair ? poolStairHeight(cell, gx, gz, worldX, worldZ) : cell.floor;
     }
     // Flooded pool cells are sunken: wading in is a step down, leaving is a step up.
-    let pool = this.grid[gx][gz] === CellType.WATER_ROOM ? POOL_FLOOR_Y : 0;
-    const stair = this.level === 7 ? this.poolStairCells.get(`${gx},${gz}`) : undefined;
-    if (stair) {
-      // A staircase rising out of the water toward its valve room, step for step with the tiled blocks.
-      const cs = this.cellSize;
-      const t = ((worldX - (gx + 0.5) * cs) * stair[0] + (worldZ - (gz + 0.5) * cs) * stair[1] + cs / 2) / cs;
-      const k = Math.max(0, Math.min(this.poolStairSteps - 1, Math.floor(t * this.poolStairSteps)));
-      pool = POOL_FLOOR_Y * (1 - (k + 1) / this.poolStairSteps);
-    }
+    const pool = this.grid[gx][gz] === CellType.WATER_ROOM ? POOL_FLOOR_Y : 0;
     // Level 1's ramps are one continuous slope, not a staircase of flat cells.
     const ramp = this.garage && this.rampCells.has(`${gx},${gz}`) ? rampAt(this.garage, gx, gz) : null;
     if (ramp) return rampHeightAt(ramp, worldX / this.cellSize);
@@ -3412,7 +3351,7 @@ export class ProceduralMap {
     const cell = poolCellAt(gx, gz);
     if (cell) return cell.water;
     if (this.poolroomsSolved) return null;
-    return this.poolZoneSurface[this.poolZoneOf(gx, gz)] ?? WATER_SURFACE_Y;
+    return this.poolSurface;
   }
 
   /** Underside of a roof dipping into the water over a position (Infinity: open above). */
@@ -3633,7 +3572,7 @@ export class ProceduralMap {
    * Player position (world space) is checked against the 2D grid matrix.
    * Returns true if there's a collision.
    */
-  public checkCollision(x: number, z: number, radius = 0.5, ignorePoolGate = false): boolean {
+  public checkCollision(x: number, z: number, radius = 0.5): boolean {
     const minGridX = Math.floor((x - radius) / this.cellSize);
     const maxGridX = Math.floor((x + radius) / this.cellSize);
     const minGridZ = Math.floor((z - radius) / this.cellSize);
@@ -3667,7 +3606,7 @@ export class ProceduralMap {
         if (this.level === 9 && !this.level4DoorOpen && gx === this.level4DoorX && gz === this.level4DoorZ) {
           return true;
         }
-        // The Poolrooms: Part 1's grate stays down until the halls drain; the exit nooks stay shuttered until opened.
+        // The Poolrooms: Part 1's grate stays down until the valve hall drains; the exit nooks stay shuttered until opened.
         if (this.level === 7 && !this.poolroomsSolved && gx === POOL_GATE.x && gz === POOL_GATE.z) return true;
         if (this.level === 7 && !this.poolLeversOpen && gx === POOL_DEEP_DOOR.x && gz === POOL_DEEP_DOOR.z) return true;
         if (this.level === 7 && !this.poolExitOpen && ((gx === POOL_STATION_EXIT.x && gz === POOL_STATION_EXIT.z) || (gx === POOL_TOWN_EXIT.x && gz === POOL_TOWN_EXIT.z))) return true;
@@ -3676,7 +3615,6 @@ export class ProceduralMap {
         if (this.hotel?.blocksMovement(gx, gz)) return true;
         // Level 94's gates likewise (the barricade, the portcullis, the King's door).
         if (this.town && this.town.isBlocked(gx, gz)) return true;
-        if (!ignorePoolGate && this.isPoolCellBlocked(gx, gz)) return true;
         if (this.level === 8 && !this.level3GateOpen && gx === this.level3GateX && gz === this.level3GateZ) {
           const gateEdge = this.level3GateX * this.cellSize;
           if (Math.abs(x - gateEdge) < radius + 0.12) return true;
@@ -3903,21 +3841,6 @@ export class ProceduralMap {
     floor.receiveShadow = true;
     group.add(floor);
 
-    const stairDir = this.poolStairCells.get(`${gx},${gz}`);
-    if (stairDir) {
-      const steps = this.poolStairSteps, rise = -POOL_FLOOR_Y / steps, run = size / steps;
-      for (let k = 0; k < steps; k++) {
-        const h = (k + 1) * rise;
-        const alongX = stairDir[0] !== 0;
-        const geo = this.sharedGeo(`pool_step_${alongX ? "x" : "z"}_${k}`, () => alongX ? new THREE.BoxGeometry(run, h, size) : new THREE.BoxGeometry(size, h, run));
-        const step = new THREE.Mesh(geo, this.wallMaterial);
-        const off = -size / 2 + run * (k + 0.5);
-        step.position.set(posX + stairDir[0] * off, POOL_FLOOR_Y + h / 2, posZ + stairDir[1] * off);
-        step.receiveShadow = true;
-        group.add(step);
-      }
-    }
-
     const depth = -POOL_FLOOR_Y;
     const wallGeo = this.sharedGeo("pool_wall", () => {
       const g = new THREE.PlaneGeometry(size, depth);
@@ -3933,39 +3856,13 @@ export class ProceduralMap {
       [-1, 0, -size / 2, 0, Math.PI / 2],
       [1, 0, size / 2, 0, -Math.PI / 2],
     ];
-    const zone = this.poolZoneOf(gx, gz);
-    const edgeGeo = this.sharedGeo("pool_edge", () => {
-      const g = new THREE.PlaneGeometry(size, 4);
-      const uv = g.getAttribute("uv") as THREE.BufferAttribute;
-      for (let i = 0; i < uv.count; i++) uv.setY(i, uv.getY(i) * (4 / size));
-      return g;
-    });
-    const edgeMat = this.sharedMat("pool_edge_mat", () => {
-      const m = createPoolTileMaterial(false);
-      m.side = THREE.DoubleSide;
-      return m;
-    });
     for (const [dx, dz, ox, oz, rot] of sides) {
-      const neighbour = this.grid[gx + dx]?.[gz + dz];
-      let neighbourZone = -2;
-      if (neighbour === CellType.WATER_ROOM) {
-        const nz = this.poolZoneOf(gx + dx, gz + dz);
-        if (nz !== zone) neighbourZone = nz;
-      } else {
-        const wall = new THREE.Mesh(wallGeo, tile);
-        wall.position.set(posX + ox, POOL_FLOOR_Y / 2, posZ + oz);
-        wall.rotation.y = rot;
-        wall.receiveShadow = true;
-        group.add(wall);
-        if (neighbour !== CellType.SOLID) neighbourZone = -1; // a dry deck
-      }
-      if (neighbourZone === -2) continue;
-      // Holds back this room's water where it is higher than next door's.
-      const edge = new THREE.Mesh(edgeGeo, edgeMat);
-      edge.position.set(posX + ox * 0.99, this.poolZoneSurface[zone] - 2, posZ + oz * 0.99);
-      edge.rotation.y = rot;
-      group.add(edge);
-      this.poolEdgeWalls.push({ mesh: edge, zone, neighbourZone });
+      if (this.grid[gx + dx]?.[gz + dz] === CellType.WATER_ROOM) continue;
+      const wall = new THREE.Mesh(wallGeo, tile);
+      wall.position.set(posX + ox, POOL_FLOOR_Y / 2, posZ + oz);
+      wall.rotation.y = rot;
+      wall.receiveShadow = true;
+      group.add(wall);
     }
 
     const surfaceGeo = this.sharedGeo("pool_surface", () => {
@@ -3974,8 +3871,7 @@ export class ProceduralMap {
       return g;
     });
     const water = new THREE.Mesh(surfaceGeo, this.sharedMat(`pool_water_${toxic ? "toxic" : "clear"}`, () => createWaterMaterial(toxic)));
-    water.position.set(posX, this.poolZoneSurface[zone], posZ);
-    water.userData.zone = zone;
+    water.position.set(posX, this.poolSurface, posZ);
     water.renderOrder = 1;
     group.add(water);
     this.poolWaterMeshes.push(water);
@@ -4088,25 +3984,11 @@ export class ProceduralMap {
     for (const layer of this.poolCeilingFog.children) ((layer as THREE.Mesh).material as THREE.MeshBasicMaterial).color.setHex(color);
   }
 
-  /**
-   * Smoothly moves each hall's water toward its level for the current valve
-   * stage, and resizes the walls holding a higher hall back from its neighbours.
-   */
-  public updatePoolroomsWater(delta: number, playerX = 0, playerZ = 0) {
-    if (this.level !== 7 || this.poolZoneSurface.length === 0) return;
-    this.poolPlayerZone = this.poolZoneOf(Math.floor(playerX / this.cellSize), Math.floor(playerZ / this.cellSize));
-    const k = Math.min(1, delta * 0.7);
-    for (let zone = 0; zone < this.poolZoneSurface.length; zone++) {
-      const target = this.poolZoneTargetSurface(zone, this.poolroomsDrainStage);
-      this.poolZoneSurface[zone] += (target - this.poolZoneSurface[zone]) * k;
-    }
-    for (const water of this.poolWaterMeshes) water.position.y = this.poolZoneSurface[water.userData.zone as number];
-    for (const { mesh, zone, neighbourZone } of this.poolEdgeWalls) {
-      const top = this.poolZoneSurface[zone];
-      const neighbourTop = neighbourZone >= 0 ? this.poolZoneSurface[neighbourZone] : 0;
-      mesh.visible = top - neighbourTop > 0.08;
-      mesh.position.y = top - 2;
-    }
+  /** Smoothly moves the valve hall's water toward its level for the valves turned so far. */
+  public updatePoolroomsWater(delta: number) {
+    if (this.level !== 7) return;
+    this.poolSurface += (this.poolTargetSurface() - this.poolSurface) * Math.min(1, delta * 0.7);
+    for (const water of this.poolWaterMeshes) water.position.y = this.poolSurface;
   }
 
   /**
@@ -4299,15 +4181,10 @@ export class ProceduralMap {
       if (gx <= 6 && gz <= 6) return; // the dry start room
       if (gx === POOL_INSCRIPTION[0] && gz === POOL_INSCRIPTION[1]) return; // the floor inscription
       if (cellType !== CellType.WATER_ROOM) return; // dry decks stay clear for the valves
-      const zone = this.poolZoneOf(gx, gz);
       let open = true;
       for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
-        if (!dx && !dz) continue;
-        const n = at(gx + dx, gz + dz);
-        if (n === CellType.WATER_ROOM && this.poolZoneOf(gx + dx, gz + dz) !== zone) return; // a doorway between halls
-        if (n !== CellType.WATER_ROOM) open = false;
+        if ((dx || dz) && at(gx + dx, gz + dz) !== CellType.WATER_ROOM) open = false;
       }
-      if (this.poolStairCells.has(`${gx},${gz}`)) return;
       // The dry side of a wading cell: only when no valve room is near (checked below).
       const deckSide = pickSide((dx, dz) => { const n = at(gx + dx, gz + dz); return n !== undefined && n !== CellType.SOLID && n !== CellType.WATER_ROOM; });
       if (deckSide !== null) {

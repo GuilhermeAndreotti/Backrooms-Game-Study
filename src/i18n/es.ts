@@ -396,7 +396,7 @@ export const es: Record<MessageKey, string> = {
   "eng.computer": "Un ordenador antiguo todavía encendido. Pulsa [E] para usarlo.",
   "eng.noRoom": "No hay espacio para empujar la caja.",
   "eng.valveTurn": "VÁLVULA GIRADA: {n}/{total}",
-  "eng.valveAllTurned": "LAS VÁLVULAS DRENARON LA CONTAMINACIÓN. La reja al fondo de la tercera sala se levantó.",
+  "eng.valveAllTurned": "LAS VÁLVULAS DRENARON LA CONTAMINACIÓN. La reja en la pared este de la sala se levantó.",
   "pool.part1": "POOLROOMS — PARTE 1: LAS VÁLVULAS. Encuentra las pistas y gira las 3 válvulas en el orden correcto.",
   "pool.part2": "PARTE 2: LA CACERÍA. Está aquí abajo contigo. Busca lugares altos — y las 3 palancas.",
   "pool.part3": "PARTE 3: LAS PROFUNDIDADES. Un laberinto bajo el agua. Espacio sube, C bucea; respira en los pozos.",
