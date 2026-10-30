@@ -260,6 +260,8 @@ export default function App() {
    * lobby has loaded and the ending cutscene has played.
    */
   const [endingPending, setEndingPending] = useState(false);
+  /** This explorer just left through an ending: the server's "return_to_lobby" reply plays the ending cutscene. */
+  const endingRequestedRef = useRef(false);
   // Never hold the report back for good (a lost "return_to_lobby", a failed load).
   useEffect(() => {
     if (!endingPending) return;
@@ -1035,7 +1037,10 @@ export default function App() {
                           setEscapedFrom(engine.level);
                           setEscapeReport(engine.level === 1 ? "l2" : "done");
                           // The way out: the report waits for the ending cutscene back in the lobby.
-                          if (ENDING_LEVELS.includes(engine.level)) setEndingPending(true);
+                          if (ENDING_LEVELS.includes(engine.level)) {
+                            setEndingPending(true);
+                            endingRequestedRef.current = true;
+                          }
                           // Level 79's ending (or Level 94's, its alternative) is the end of the timed route.
                           socketRef.current.send(JSON.stringify({ type: "return_to_lobby_request", completed: ENDING_LEVELS.includes(engine.level) }));
                         } else {
@@ -1249,8 +1254,12 @@ export default function App() {
             // extraction screen instead of silently rebuilding the lobby.
             // The report goes over the game; the lobby loads underneath (below)
             // and the explorer stays in the room.
-            const ending = type === "return_to_lobby" && data.completed === true;
-            if (ending) {
+            // The server answers an ending with a plain (solo) "return_to_lobby":
+            // whether it was one is what this client asked for (onEscapeTrigger).
+            const legacyCompleted = type === "return_to_lobby" && data.completed === true;
+            const ending = legacyCompleted || (type === "return_to_lobby" && endingRequestedRef.current);
+            if (type === "return_to_lobby") endingRequestedRef.current = false;
+            if (legacyCompleted) {
               // Already waiting in the lobby (they aborted earlier): nothing to rebuild.
               if (engine.level === LOBBY_LEVEL) return;
               unlockAchievement("absolute_survivor");
