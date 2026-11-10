@@ -20,6 +20,7 @@ import { GIVE_RANGE_SERVER, isInventoryItemId, isQuickChatId } from "./src/share
 import { ROOM_CHEATS, SUDO_CHEAT, SUIT_COLORS, type DeathAction, type RoomCheat, type RoomConfig } from "./src/types/game";
 import { sanitizeOutfit, type Outfit } from "./src/shared/outfit";
 import { ChessGame, initialPosition, toFen, type Color, type Promotion } from "./src/shared/chess";
+import { EMPTY_POWER_CHESS, PowerChessGame, type PowerChessNetState } from "./src/shared/powerChess";
 
 const INITIAL_FEN = toFen(initialPosition());
 import { LOBBY_LEVEL, LEVEL_1, MAIN_LEVELS, FUN_LEVEL, SPACE_LEVEL, HOTEL_LEVEL, LEVEL_G, LIGHTS_OUT_LEVEL, OLD_TOWN_LEVEL, POOLROOMS_LEVEL, ELECTRICAL_ROOM_LEVEL, ABANDONED_OFFICE_LEVEL, ENDING_LEVELS, nextMainLevel } from "./src/game/levels/constants";
@@ -210,6 +211,8 @@ interface Room {
   megIds: Set<number>;
   /** The lobby's chess table: who sits where, and the game they're playing. */
   chess: ChessTable;
+  /** The lobby's second table, "Xadrez Anômalo" (chess with power cards). */
+  powerChess: PowerChessTable;
   /**
    * The speedrun being timed: from leaving the lobby for Level 0 to Level 79's
    * ending. Null when the expedition started elsewhere (the level picker) or
@@ -653,8 +656,85 @@ function sweepChess(room: Room) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The lobby's power-chess table ("Xadrez Anômalo")
+// ---------------------------------------------------------------------------
+//
+// Same seat rules as the classic table, with src/shared/powerChess.ts as the
+// game. Hands are private, so `pchess_state` is built per recipient: each
+// player only ever receives their own cards (spectators get none), and nobody
+// gets the order of a deck.
+
+interface PowerChessTable {
+  seats: Record<Color, string>;
+  game: PowerChessGame | null;
+  rev: number;
+  /** Games started at this table (lets clients tell a rematch from the last game). */
+  games: number;
+}
+
+function powerSeatOf(room: Room, playerId: string): Color | null {
+  return room.powerChess.seats.w === playerId ? "w" : room.powerChess.seats.b === playerId ? "b" : null;
+}
+
+function powerChessState(room: Room, viewerId: string): PowerChessNetState & { type: string } {
+  const t = room.powerChess;
+  const g = t.game;
+  const name = (c: Color) => room.players.get(t.seats[c])?.name ?? "";
+  const seat = powerSeatOf(room, viewerId);
+  return {
+    ...(g ? g.netState(seat) : EMPTY_POWER_CHESS),
+    type: "pchess_state",
+    rev: t.rev,
+    game: t.games,
+    white: t.seats.w, black: t.seats.b,
+    whiteName: name("w"), blackName: name("b"),
+    status: !g ? "waiting" : g.over ? "over" : "playing",
+  };
+}
+
+function sendPowerChess(room: Room, conn: Connection) {
+  send(conn.ws, powerChessState(room, conn.player.id));
+}
+
+function broadcastPowerChess(room: Room) {
+  room.powerChess.rev++;
+  room.connections.forEach((conn) => {
+    if (conn.player.level === LOBBY_LEVEL && conn.ws.readyState === WebSocket.OPEN) sendPowerChess(room, conn);
+  });
+}
+
+function startPowerChessIfReady(room: Room) {
+  const t = room.powerChess;
+  if (t.seats.w && t.seats.b && !t.game) {
+    t.game = new PowerChessGame(Math.random);
+    t.games++;
+  }
+}
+
+function standFromPowerChess(room: Room, playerId: string) {
+  const t = room.powerChess;
+  const color = powerSeatOf(room, playerId);
+  if (!color) return;
+  const wasOver = !!t.game?.over;
+  if (t.game && !t.game.over) t.game.end(color, "abandon");
+  t.seats[color] = "";
+  if (wasOver || (!t.seats.w && !t.seats.b)) t.game = null;
+  broadcastPowerChess(room);
+}
+
+function sweepPowerChess(room: Room) {
+  for (const c of ["w", "b"] as Color[]) {
+    const id = room.powerChess.seats[c];
+    if (!id) continue;
+    const p = room.players.get(id);
+    if (!p || p.level !== LOBBY_LEVEL || room.level !== LOBBY_LEVEL) standFromPowerChess(room, id);
+  }
+}
+
 function sweepSharedLevelState(room: Room) {
   sweepChess(room);
+  sweepPowerChess(room);
   const occupied = new Set<number>();
   room.players.forEach((p) => {
     occupied.add(p.level);
@@ -795,6 +875,7 @@ async function startServer() {
             garageGateOpen: false,
             megIds: new Set(),
             chess: { seats: { w: "", b: "" }, game: null, rev: 0 },
+            powerChess: { seats: { w: "", b: "" }, game: null, rev: 0, games: 0 },
             poolLevers: new Set(),
             run: null,
           };
@@ -1190,6 +1271,60 @@ async function startServer() {
           [t.seats.w, t.seats.b] = [t.seats.b, t.seats.w];
           t.game = new ChessGame();
           broadcastChess(room);
+        }
+        return;
+      }
+
+      // --- the lobby's power-chess table (same rules for who may act) ---------
+      if (type === "pchess_sync") {
+        sendPowerChess(room, conn);
+        return;
+      }
+      if (type === "pchess_sit" || type === "pchess_stand" || type === "pchess_move" || type === "pchess_card" || type === "pchess_resign" || type === "pchess_new") {
+        if (room.level !== LOBBY_LEVEL || conn.player.level !== LOBBY_LEVEL) return;
+        const t = room.powerChess;
+        const me = conn.player.id;
+        const mine = powerSeatOf(room, me);
+        const square = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 63 ? v : null);
+        if (type === "pchess_sit") {
+          const color = data.color === "w" ? "w" : data.color === "b" ? "b" : null;
+          if (!color || t.seats[color]) return;
+          if (mine) standFromPowerChess(room, me);
+          if (t.game?.over) t.game = null;
+          t.seats[color] = me;
+          startPowerChessIfReady(room);
+          broadcastPowerChess(room);
+        } else if (type === "pchess_stand") {
+          standFromPowerChess(room, me);
+        } else if (type === "pchess_move") {
+          const g = t.game;
+          const from = square(data.from), to = square(data.to);
+          if (!g || g.over || !mine || from === null || to === null) return;
+          const promo = typeof data.promo === "string" && data.promo.length === 1 && "qrbn".includes(data.promo) ? (data.promo as Promotion) : undefined;
+          if (!g.play(mine, from, to, promo)) return;
+          broadcastPowerChess(room);
+        } else if (type === "pchess_card") {
+          const g = t.game;
+          if (!g || g.over || !mine) return;
+          const index = data.index;
+          if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= 5) return;
+          if (!Array.isArray(data.targets) || data.targets.length > 2) return;
+          const targets: number[] = [];
+          for (const v of data.targets) { const sq = square(v); if (sq === null) return; targets.push(sq); }
+          const choice = data.choice === "n" || data.choice === "b" ? data.choice : undefined;
+          if (!g.playCard(mine, index, { targets, choice })) return;
+          broadcastPowerChess(room);
+        } else if (type === "pchess_resign") {
+          const g = t.game;
+          if (!g || g.over || !mine) return;
+          g.end(mine, "resign");
+          broadcastPowerChess(room);
+        } else if (type === "pchess_new") {
+          if (!mine || !t.game?.over || !t.seats.w || !t.seats.b) return;
+          [t.seats.w, t.seats.b] = [t.seats.b, t.seats.w];
+          t.game = null;
+          startPowerChessIfReady(room);
+          broadcastPowerChess(room);
         }
         return;
       }

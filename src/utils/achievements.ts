@@ -134,6 +134,34 @@ export const DEFAULT_ACHIEVEMENTS: Achievement[] = [
     description: "",
     iconName: "Sparkles",
     unlocked: false,
+  },
+  {
+    id: "pchess_first_win",
+    title: "",
+    description: "",
+    iconName: "Trophy",
+    unlocked: false,
+  },
+  {
+    id: "pchess_noclip_mate",
+    title: "",
+    description: "",
+    iconName: "Unlock",
+    unlocked: false,
+  },
+  {
+    id: "pchess_comeback",
+    title: "",
+    description: "",
+    iconName: "Activity",
+    unlocked: false,
+  },
+  {
+    id: "pchess_pure",
+    title: "",
+    description: "",
+    iconName: "Key",
+    unlocked: false,
   }
 ];
 

@@ -6,6 +6,7 @@
 import { Lobby, LOBBY, CHESS, LOBBY_LEVEL, LOBBY_CAMERA_FAR, BallNetState } from "./Lobby";
 import { LobbyCutscene, type CutsceneKind } from "./LobbyCutscene";
 import { EMPTY_CHESS, type ChessNetState } from "../shared/chess";
+import { EMPTY_POWER_CHESS, type PowerChessNetState } from "../shared/powerChess";
 import { Voip } from "./Voip";
 import { t, type MessageKey } from "../i18n";
 import { OfficeWorker } from "./npc/OfficeWorker";
@@ -4029,6 +4030,8 @@ export class GameEngine {
         text = t(this.cheatSkin ? "act.wardrobeBlocked" : "act.wardrobe");
       } else if (this.nearChessTable()) {
         text = t("chess.act.open");
+      } else if (this.nearPowerChessTable()) {
+        text = t("pchess.act.open");
       } else if (this.nearGarageKeypad()) {
         text = t("act.garageKeypad");
       } else if (this.map.findPushable(this.player.position.x, this.player.position.z, fx, fz)) {
@@ -4509,7 +4512,10 @@ export class GameEngine {
     this.sendToServer({ type: "consumables_sync", level: this.level });
     if (this.funDirector) this.sendToServer({ type: "fun_sync", level: FUN_LEVEL });
     if (this.townDirector) this.sendToServer({ type: "town_sync", level: OLD_TOWN_LEVEL });
-    if (this.level === LOBBY_LEVEL) this.sendToServer({ type: "chess_sync" });
+    if (this.level === LOBBY_LEVEL) {
+      this.sendToServer({ type: "chess_sync" });
+      this.sendToServer({ type: "pchess_sync" });
+    }
     if (this.level === 1) this.sendToServer({ type: "garage_sync", level: 1 });
     if (this.level === ABANDONED_OFFICE_LEVEL) this.sendToServer({ type: "meg_sync", level: ABANDONED_OFFICE_LEVEL });
   }
@@ -4595,7 +4601,7 @@ export class GameEngine {
   }
 
   /** The interactables: the exit desk's paper (Levels 0/1), the lobby's cheat terminal, and Level G's main-room terminal. */
-  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "space_terminal" | "town" | "town_model" | "chess" | "wardrobe" | "hotel" | "hotel_panel" | null {
+  public tryInteract(): "terminal" | "garage_keypad" | "paper" | "cheat" | "meg_employee" | "meg_door" | "fun_panel" | "fun" | "space_terminal" | "town" | "town_model" | "chess" | "power_chess" | "wardrobe" | "hotel" | "hotel_panel" | null {
     // Waiting at the exit we spectate a teammate, so "where we are" is where they are.
     if (this.isDead || this.isWaitingForTransition) return null;
     if (this.hotelDirector) {
@@ -4652,6 +4658,7 @@ export class GameEngine {
       return "wardrobe";
     }
     if (this.nearChessTable()) return "chess";
+    if (this.nearPowerChessTable()) return "power_chess";
     if (this.nearGarageKeypad()) return "garage_keypad";
     if (this.level !== LEVEL_G || !this.map || !this.player || this.map.levelGTerminalX < 0) return null;
     const cs = this.map.cellSize;
@@ -4726,22 +4733,42 @@ export class GameEngine {
   /** The table as the server last described it (shown by the 3D table, and by the board panel via App). */
   public chessState: ChessNetState = EMPTY_CHESS;
 
-  /** The table and its two chairs are solid, so nobody walks through them. */
+  /** The power-chess table ("Xadrez Anômalo") as the server last described it to this player. */
+  public powerChessState: PowerChessNetState = EMPTY_POWER_CHESS;
+
+  /** Both tables and their chairs are solid, so nobody walks through them. */
   private setupChessTable() {
     if (!this.map || !this.lobby) return;
     const cs = this.map.cellSize;
-    const { x, z } = LOBBY.chess;
-    const add = (ox: number, oz: number, r: number) => this.map.addObstacle(Math.floor((x + ox) / cs), Math.floor((z + oz) / cs), x + ox, z + oz, r);
-    for (const ox of [-0.5, 0.5]) for (const oz of [-0.5, 0.5]) add(ox, oz, 0.5);
-    for (const side of [-1, 1]) add(0, side * CHESS.seatDist, 0.3);
+    for (const { x, z } of [LOBBY.chess, LOBBY.powerChess]) {
+      const add = (ox: number, oz: number, r: number) => this.map.addObstacle(Math.floor((x + ox) / cs), Math.floor((z + oz) / cs), x + ox, z + oz, r);
+      for (const ox of [-0.5, 0.5]) for (const oz of [-0.5, 0.5]) add(ox, oz, 0.5);
+      for (const side of [-1, 1]) add(0, side * CHESS.seatDist, 0.3);
+    }
     this.lobby.setChess(this.chessState);
+    this.lobby.setPowerChess(this.powerChessState);
   }
 
-  /** Within reach of the chess table (anywhere around it, not just at a seat). */
-  private nearChessTable(): boolean {
+  /** Within reach of a table (anywhere around it, not just at a seat). */
+  private nearTable(at: { x: number; z: number }): boolean {
     if (this.level !== LOBBY_LEVEL || !this.player) return false;
-    const dx = Math.abs(this.player.position.x - LOBBY.chess.x), dz = Math.abs(this.player.position.z - LOBBY.chess.z);
+    const dx = Math.abs(this.player.position.x - at.x), dz = Math.abs(this.player.position.z - at.z);
     return Math.hypot(Math.max(0, dx - CHESS.size / 2), Math.max(0, dz - CHESS.seatDist)) < 1.7;
+  }
+
+  private nearChessTable(): boolean {
+    return this.nearTable(LOBBY.chess);
+  }
+
+  private nearPowerChessTable(): boolean {
+    return this.nearTable(LOBBY.powerChess);
+  }
+
+  /** A `pchess_state` frame from the server. */
+  public applyPowerChessState(msg: PowerChessNetState) {
+    if (typeof msg.fen !== "string" || typeof msg.rev !== "number" || msg.rev < this.powerChessState.rev) return;
+    this.powerChessState = msg;
+    this.lobby?.setPowerChess(msg);
   }
 
   /** A `chess_state` frame from the server. */
