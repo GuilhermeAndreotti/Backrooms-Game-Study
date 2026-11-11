@@ -80,7 +80,7 @@ export const POWER = {
   /** Half-moves before the game is called a draw. */
   maxPlies: 200,
   /** Log entries kept in the network frame. */
-  logSize: 40,
+  logSize: 600,
 };
 
 export const PIECE_VALUE: Record<PieceType, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
@@ -104,10 +104,12 @@ export interface PowerResult {
 }
 
 /** One line of the game's log: a move (`san`) or a card (`card` + the squares it hit). */
-export interface PowerLogEntry { c: Color; san?: string; card?: CardId; sq?: number[]; choice?: "n" | "b" }
+export interface PowerLogEntry { c: Color; san?: string; card?: CardId; sq?: number[]; choice?: "n" | "b"; ply: number; elapsedMs: number }
 
 /** What the server tells one viewer about the power table (`pchess_state`). */
 export interface PowerChessNetState {
+  error?: "stale" | "illegal";
+  pieceIds: number[];
   rev: number;
   /** Bumped for every new game (so a client can tell a rematch from the last one). */
   game: number;
@@ -136,13 +138,14 @@ export interface PowerChessNetState {
   /** Adrenaline's second move pending: the square of the piece that already moved (it can't go again), else -1. */
   extra: number;
   log: PowerLogEntry[];
-  lastCard: { c: Color; card: CardId; sq: number[]; seq: number } | null;
+  lastCard: { c: Color; card: CardId; sq: number[]; seq: number; energyGained?: number; cardsDrawn?: number; piece?: PieceType } | null;
   cardsPlayed: Record<Color, number>;
   /** The worst material deficit each side has been in this game (for the comeback achievement). */
   deficit: Record<Color, number>;
 }
 
 export const EMPTY_POWER_CHESS: PowerChessNetState = {
+  pieceIds: [],
   rev: -1, game: 0, white: "", black: "", whiteName: "", blackName: "",
   fen: toFen(initialPosition()), ply: 0, last: null, status: "waiting", result: null,
   energy: { w: 0, b: 0 }, handCount: { w: 0, b: 0 }, deckCount: { w: 0, b: 0 }, hand: [],
@@ -185,6 +188,13 @@ export class PowerChessGame {
   last: [number, number] | null = null;
   lastCard: PowerChessNetState["lastCard"] = null;
   private cardSeq = 0;
+  private actionStarted = Date.now();
+
+  private record(entry: Omit<PowerLogEntry, "ply" | "elapsedMs">) {
+    const now = Date.now();
+    this.log.push({ ...entry, ply: this.ply, elapsedMs: Math.max(0, now - this.actionStarted) });
+    this.actionStarted = now;
+  }
   result: PowerResult | null = null;
   private rng: (() => number) | null;
 
@@ -280,7 +290,10 @@ export class PowerChessGame {
   }
 
   private givesCheck(m: Move): boolean {
-    return inCheck(applyMove(this.pos, m), other(this.pos.turn), this.rulesAt(this.ply + 1));
+    const rules = this.rulesAt(this.ply + 1);
+    // A captured frozen piece must not transfer its frozen square to the capturer.
+    rules.frozen?.delete(m.to);
+    return inCheck(applyMove(this.pos, m), other(this.pos.turn), rules);
   }
 
   /** The side to move plays from -> to (promo defaults to a queen); false if it isn't legal now. */
@@ -354,7 +367,7 @@ export class PowerChessGame {
     const f = this.fx.get(id);
     if (f) f.ghost = false;
     this.last = [mv.from, mv.to];
-    this.log.push({ c: mover, san });
+    this.record({ c: mover, san });
 
     if (this.adrenaline) {
       // Adrenaline: the same side moves again, unless this move gave check or nothing qualifies.
@@ -406,7 +419,7 @@ export class PowerChessGame {
       this.result = this.inCheck(c)
         ? { winner: other(c), reason: "checkmate", card: this.lastTurnCard[other(c)] }
         : { winner: null, reason: "stalemate", card: null };
-    } else if (insufficientMaterial(this.pos.board)) this.result = { winner: null, reason: "insufficient", card: null };
+    } else if (insufficientMaterial(this.pos.board) && !this.memoryPiece("w") && !this.memoryPiece("b")) this.result = { winner: null, reason: "insufficient", card: null };
     else if (this.ply >= POWER.maxPlies) this.result = { winner: null, reason: "turns", card: null };
   }
 
@@ -637,13 +650,17 @@ export class PowerChessGame {
     const card = this.hands[c][index];
     // Exit names only the landing square; the log shows where the king came from too.
     const sq = card === "exit" ? [this.pos.board.findIndex((p) => p?.c === c && p.t === "k"), play.targets[0]] : play.targets.slice();
+    if (card === "gust") sq.push(backOf(sq[0], other(c)));
+    const energyGained = card === "almond" ? g.energy[c] - this.energy[c] : undefined;
+    const cardsDrawn = card === "sanity" ? g.hands[c].length - this.hands[c].length + 1 : undefined;
+    const piece = card === "ascend" || card === "memory" ? g.pos.board[sq[0]]?.t : undefined;
     Object.assign(this, g);
     this.discard[c].push(card);
     this.cardUsed = true;
     this.cardThisTurn = card;
     this.cardsPlayed[c]++;
-    this.log.push({ c, card, sq, choice: play.choice });
-    this.lastCard = { c, card, sq, seq: ++this.cardSeq };
+    this.record({ c, card, sq, choice: play.choice });
+    this.lastCard = { c, card, sq, seq: ++this.cardSeq, energyGained, cardsDrawn, piece };
     if (CARDS[card].endsTurn) {
       this.last = card === "exit" ? [sq[0], sq[1]] : null;
       this.pos = { ...this.pos, turn: other(c), full: this.pos.full + (c === "b" ? 1 : 0) };
@@ -665,6 +682,7 @@ export class PowerChessGame {
     }
     const extraSq = this.extra ? this.ids.indexOf(this.extra.id) : -1;
     return {
+      pieceIds: this.ids.slice(),
       fen: toFen(this.pos),
       ply: this.ply,
       last: this.last,
