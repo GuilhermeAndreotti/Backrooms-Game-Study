@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  fromFen, inCheck, legalMovesFrom, needsPromotion, row, square, squareName,
-  type ChessNetState, type Color, type PieceType, type Promotion,
+  fromFen, inCheck, legalMovesFrom, needsPromotion,
+  type ChessNetState, type Color,
 } from "../shared/chess";
 import { t } from "../i18n";
+import { ChessBoardGrid } from "./ChessBoardGrid";
 
 interface ChessModalProps {
   state: ChessNetState;
@@ -12,10 +13,6 @@ interface ChessModalProps {
   send: (message: Record<string, unknown>) => void;
   onClose: () => void;
 }
-
-/** Filled glyphs for both colours (tinted by CSS), with the text-style selector so none turns into an emoji. */
-const GLYPH: Record<PieceType, string> = { k: "♚︎", q: "♛︎", r: "♜︎", b: "♝︎", n: "♞︎", p: "♟︎" };
-const PROMOTIONS: Promotion[] = ["q", "r", "b", "n"];
 
 /** The lobby's chess table: sit, play, or watch. The server decides every move; this only shows the board and sends clicks. */
 export function ChessModal({ state, myId, send, onClose }: ChessModalProps) {
@@ -68,10 +65,6 @@ export function ChessModal({ state, myId, send, onClose }: ChessModalProps) {
     return checked >= 0 ? `${turn} · ${t("chess.check")}` : turn;
   })();
 
-  // Squares from the viewer's side: white at the bottom, unless they sit with black.
-  const squares: number[] = [];
-  for (let r = 0; r < 8; r++) for (let f = 0; f < 8; f++) squares.push(flipped ? square(7 - f, 7 - r) : square(f, r));
-
   const seatRow = (color: Color) => {
     const id = color === "w" ? state.white : state.black;
     const name = color === "w" ? state.whiteName : state.blackName;
@@ -104,60 +97,18 @@ export function ChessModal({ state, myId, send, onClose }: ChessModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 font-mono">
       <div className="flex w-full max-w-4xl flex-col gap-4 border-2 border-[#c9962a] bg-[#140c08]/95 p-4 shadow-[0_0_40px_rgba(201,150,42,0.18)] md:flex-row">
-        <div className="relative mx-auto aspect-square w-full max-w-[min(70vh,560px)] shrink-0 select-none">
-          <div className="grid h-full w-full grid-cols-8 grid-rows-8 border-4 border-[#3e2a18]">
-            {squares.map((sq) => {
-              const piece = pos.board[sq];
-              const light = ((sq & 7) + row(sq)) % 2 === 0;
-              const isTarget = targetSet.has(sq);
-              const last = state.last?.includes(sq);
-              return (
-                <button
-                  key={sq}
-                  onClick={() => click(sq)}
-                  aria-label={squareName(sq)}
-                  className={`relative flex items-center justify-center text-[clamp(1.6rem,6.2vmin,3.6rem)] leading-none ${light ? "bg-[#ecd9b0]" : "bg-[#a8744a]"} ${myTurn ? "cursor-pointer" : "cursor-default"}`}
-                >
-                  {last && <span className="absolute inset-0 bg-[#ffd95a]/40" />}
-                  {sq === selected && <span className="absolute inset-0 bg-[#6cf]/45" />}
-                  {sq === checked && <span className="absolute inset-0 bg-red-600/60" />}
-                  {piece && (
-                    <span
-                      className="relative"
-                      style={piece.c === "w"
-                        ? { color: "#fffaf0", textShadow: "0 0 2px #000, 0 0 2px #000, 0 0 3px #000, 1px 1px 0 #000" }
-                        : { color: "#17110d", textShadow: "0 0 1px rgba(255,255,255,0.35)" }}
-                    >
-                      {GLYPH[piece.t]}
-                    </span>
-                  )}
-                  {isTarget && (piece
-                    ? <span className="absolute inset-1 rounded-full border-4 border-[#3a7a2a]/80" />
-                    : <span className="absolute h-[28%] w-[28%] rounded-full bg-[#3a7a2a]/70" />)}
-                </button>
-              );
-            })}
-          </div>
-          {pending && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/65">
-              <div className="border-2 border-[#c9962a] bg-[#140c08] p-3">
-                <div className="mb-2 text-center text-xs tracking-widest text-[#e9d8a8]">{t("chess.promote")}</div>
-                <div className="flex gap-2">
-                  {PROMOTIONS.map((p) => (
-                    <button
-                      key={p}
-                      onClick={() => { send({ type: "chess_move", from: pending.from, to: pending.to, promo: p }); setPending(null); }}
-                      className="h-16 w-16 border border-stone-600 bg-[#ecd9b0] text-5xl hover:border-[#c9962a]"
-                      style={mySeat === "w" ? { color: "#fffaf0", textShadow: "0 0 2px #000, 0 0 2px #000, 1px 1px 0 #000" } : { color: "#17110d" }}
-                    >
-                      {GLYPH[p]}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+        <ChessBoardGrid
+          pos={pos}
+          flipped={flipped}
+          clickable={myTurn}
+          onSquare={click}
+          selected={selected}
+          targets={targetSet}
+          last={state.last}
+          checked={checked}
+          promoting={pending ? mySeat : null}
+          onPromote={(p) => { if (pending) send({ type: "chess_move", from: pending.from, to: pending.to, promo: p }); setPending(null); }}
+        />
 
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           <div className="bg-[#c9962a] px-3 py-1 text-sm font-bold tracking-[0.3em] text-[#1a0f05]">{t("chess.title")}</div>

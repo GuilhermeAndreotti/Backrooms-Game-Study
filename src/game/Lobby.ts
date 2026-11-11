@@ -19,6 +19,7 @@ import * as THREE from "three";
 import { weatherCanvas } from "./surfaceTextures";
 import { Reflector } from "three/examples/jsm/objects/Reflector.js";
 import { EMPTY_CHESS, fromFen, type ChessNetState, type PieceType } from "../shared/chess";
+import { EMPTY_POWER_CHESS, type PowerChessNetState } from "../shared/powerChess";
 import { t } from "../i18n";
 export { LOBBY_LEVEL } from "./levels/constants";
 
@@ -43,6 +44,12 @@ export const LOBBY = {
    * (+z), black on the north; the board spans CHESS.board metres.
    */
   chess: { x: 41, z: 13.5 },
+  /**
+   * The second table, "Xadrez Anômalo" (chess with power cards), south of the
+   * first one; same orientation. Clear of the ending cutscene's walk, which
+   * goes from (38.6, 18.8) to the classic table's white chair.
+   */
+  powerChess: { x: 41, z: 22 },
   /** Almond-water vending machine against the north fence (decorative, solid). */
   vending: { x: 45.6, z: 8.75 },
   /** Bleachers along the pitch's north touchline (centre of the front row's footprint). */
@@ -69,6 +76,30 @@ function mulberry(seed: number): () => number {
 const FENCE = { minX: 7.7, maxX: 48.3, minZ: 7.7, maxZ: 40.3, height: 2.3 };
 /** Far enough to hold the sky dome; restored to the default when leaving (see GameEngine.setupLobby). */
 export const LOBBY_CAMERA_FAR = 230;
+
+interface TableTheme {
+  wood: number; dark: number; light: string; darkSq: string; border: string; letters: string;
+  cushion: number; pieceW: number; pieceB: number;
+  /** The power table: adds the hanging lamp and the effect materials. */
+  power?: boolean;
+}
+
+/** One chess table in the scene. */
+interface ChessTableView {
+  at: { x: number; z: number };
+  root: THREE.Group;
+  /** Pieces (and power-table markers), in world coordinates; rebuilt on each new frame. */
+  pieces: THREE.Group;
+  last: THREE.Mesh[];
+  mat: Record<"w" | "b", THREE.MeshStandardMaterial>;
+  labels: Record<"w" | "b", { ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture; key: string }>;
+  rev: number;
+  lamp?: THREE.MeshBasicMaterial;
+  fxMats?: {
+    ghost: Record<"w" | "b", THREE.MeshStandardMaterial>;
+    ice: THREE.Material; shield: THREE.Material; wet: THREE.Material; cone: THREE.Material;
+  };
+}
 
 /** The chess table's dimensions (metres). */
 export const CHESS = { top: 0.78, size: 1.7, board: 1.36, seatDist: 1.35 };
@@ -777,19 +808,26 @@ export class Lobby {
     this.group.add(glow);
   }
 
-  // --- chess table ---------------------------------------------------------
+  // --- chess tables ------------------------------------------------------
+  //
+  // Two tables share one builder: the classic one (LOBBY.chess) and the
+  // power-chess one, "Xadrez Anômalo" (LOBBY.powerChess), with its own look
+  // and markers for frozen / shielded / ghost pieces and wet-floor walls.
 
-  private chessPieces = new THREE.Group();
-  private chessLast: THREE.Mesh[] = [];
   private chessGeo = new Map<string, THREE.BufferGeometry>();
-  private chessMat!: Record<"w" | "b", THREE.MeshStandardMaterial>;
-  private chessLabels: Record<"w" | "b", { ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture; key: string }> | null = null;
-  private chessRev = -2;
+  private lampClock = 0;
+  private classic!: ChessTableView;
+  private power!: ChessTableView;
 
-  /** Centre of a square of the board, in world metres (white's side is +z; file a is on white's left). */
-  public chessSquareCenter(sq: number): { x: number; z: number } {
+  /** Centre of a square of a board, in world metres (white's side is +z; file a is on white's left). */
+  private squareCenterAt(at: { x: number; z: number }, sq: number): { x: number; z: number } {
     const s = CHESS.board / 8;
-    return { x: LOBBY.chess.x + ((sq & 7) - 3.5) * s, z: LOBBY.chess.z + ((sq >> 3) - 3.5) * s };
+    return { x: at.x + ((sq & 7) - 3.5) * s, z: at.z + ((sq >> 3) - 3.5) * s };
+  }
+
+  /** Centre of a square of the classic board. */
+  public chessSquareCenter(sq: number): { x: number; z: number } {
+    return this.squareCenterAt(LOBBY.chess, sq);
   }
 
   /** A turned piece: a profile (radius, height pairs, in units of one square) spun round the Y axis. */
@@ -803,9 +841,8 @@ export class Lobby {
     return g;
   }
 
-  private chessPiece(type: PieceType, color: "w" | "b"): THREE.Group {
+  private chessPiece(type: PieceType, color: "w" | "b", mat: THREE.Material): THREE.Group {
     const s = CHESS.board / 8;
-    const mat = this.chessMat[color];
     const base: [number, number][] = [[0, 0], [0.36, 0], [0.37, 0.05], [0.3, 0.1], [0.24, 0.16]];
     const g = new THREE.Group();
     const add = (geo: THREE.BufferGeometry, x = 0, y = 0, z = 0) => {
@@ -858,13 +895,26 @@ export class Lobby {
   }
 
   private buildChessTable() {
-    const { x, z } = LOBBY.chess;
+    this.classic = this.buildTable(LOBBY.chess, {
+      wood: 0x6b4a2b, dark: 0x3e2a18, light: "#ecd9b0", darkSq: "#a8744a", border: "#3e2a18", letters: "#d9b87a",
+      cushion: 0x8a2a2a, pieceW: 0xf2e8d0, pieceB: 0x2a211c,
+    });
+    this.power = this.buildTable(LOBBY.powerChess, {
+      wood: 0x2c2a3a, dark: 0x15131f, light: "#d8d2a8", darkSq: "#5b4a7a", border: "#1d1630", letters: "#c9b6ff",
+      cushion: 0x5a2a8a, pieceW: 0xf4ecc8, pieceB: 0x231b2e, power: true,
+    });
+    this.setChess(EMPTY_CHESS);
+    this.setPowerChess(EMPTY_POWER_CHESS);
+  }
+
+  private buildTable(at: { x: number; z: number }, theme: TableTheme): ChessTableView {
+    const { x, z } = at;
     const { top, size, board, seatDist } = CHESS;
-    const wood = this.track(new THREE.MeshStandardMaterial({ color: 0x6b4a2b, roughness: 0.7 }));
-    const dark = this.track(new THREE.MeshStandardMaterial({ color: 0x3e2a18, roughness: 0.6 }));
-    this.chessMat = {
-      w: this.track(new THREE.MeshStandardMaterial({ color: 0xf2e8d0, roughness: 0.35 })),
-      b: this.track(new THREE.MeshStandardMaterial({ color: 0x2a211c, roughness: 0.3 })),
+    const wood = this.track(new THREE.MeshStandardMaterial({ color: theme.wood, roughness: 0.7 }));
+    const dark = this.track(new THREE.MeshStandardMaterial({ color: theme.dark, roughness: 0.6 }));
+    const mat = {
+      w: this.track(new THREE.MeshStandardMaterial({ color: theme.pieceW, roughness: 0.35 })),
+      b: this.track(new THREE.MeshStandardMaterial({ color: theme.pieceB, roughness: 0.3 })),
     };
     const root = new THREE.Group();
     root.position.set(x, 0, z);
@@ -883,12 +933,12 @@ export class Lobby {
     c.width = c.height = 1024;
     const g = c.getContext("2d")!;
     const border = 64, cell = (1024 - border * 2) / 8;
-    g.fillStyle = "#3e2a18"; g.fillRect(0, 0, 1024, 1024);
+    g.fillStyle = theme.border; g.fillRect(0, 0, 1024, 1024);
     for (let r = 0; r < 8; r++) for (let f = 0; f < 8; f++) {
-      g.fillStyle = (f + r) % 2 ? "#a8744a" : "#ecd9b0";
+      g.fillStyle = (f + r) % 2 ? theme.darkSq : theme.light;
       g.fillRect(border + f * cell, border + r * cell, cell, cell);
     }
-    g.fillStyle = "#d9b87a";
+    g.fillStyle = theme.letters;
     g.font = "bold 40px Georgia, serif";
     g.textAlign = "center"; g.textBaseline = "middle";
     for (let i = 0; i < 8; i++) {
@@ -908,24 +958,26 @@ export class Lobby {
     // Last move: two squares glowing under the pieces.
     const glow = this.track(new THREE.MeshBasicMaterial({ color: 0xffd95a, transparent: true, opacity: 0.55, depthWrite: false }));
     const glowGeo = this.track(new THREE.PlaneGeometry(board / 8, board / 8));
+    const last: THREE.Mesh[] = [];
     for (let i = 0; i < 2; i++) {
       const m = new THREE.Mesh(glowGeo, glow);
       m.rotation.x = -Math.PI / 2;
       m.position.y = top + 0.009;
       m.visible = false;
       root.add(m);
-      this.chessLast.push(m);
+      last.push(m);
     }
     // The pieces live in world coordinates inside the lobby group (not the table's root).
-    this.group.add(this.chessPieces);
+    const pieces = new THREE.Group();
+    this.group.add(pieces);
     // A chair on each side, and a name plate on the table's edge facing it.
-    const seatMat = this.track(new THREE.MeshStandardMaterial({ color: 0x4a2f1a, roughness: 0.8 }));
-    const cushion = this.track(new THREE.MeshStandardMaterial({ color: 0x8a2a2a, roughness: 0.95 }));
+    const seatMat = this.track(new THREE.MeshStandardMaterial({ color: theme.power ? 0x2a2438 : 0x4a2f1a, roughness: 0.8 }));
+    const cushion = this.track(new THREE.MeshStandardMaterial({ color: theme.cushion, roughness: 0.95 }));
     const chairBase = this.track(new THREE.BoxGeometry(0.5, 0.06, 0.5));
     const chairBack = this.track(new THREE.BoxGeometry(0.5, 0.55, 0.06));
     const chairLeg = this.track(new THREE.BoxGeometry(0.06, 0.45, 0.06));
     const cushionGeo = this.track(new THREE.BoxGeometry(0.42, 0.05, 0.42));
-    const labels: Partial<NonNullable<typeof this.chessLabels>> = {};
+    const labels: Partial<ChessTableView["labels"]> = {};
     for (const color of ["w", "b"] as const) {
       const side = color === "w" ? 1 : -1;
       const chair = new THREE.Group();
@@ -950,14 +1002,34 @@ export class Lobby {
       root.add(plate);
       labels[color] = { ctx: lctx, tex: ltex, key: "" };
     }
-    this.chessLabels = labels as NonNullable<typeof this.chessLabels>;
-    this.setChess(EMPTY_CHESS);
+    const view: ChessTableView = { at, root, pieces, last, mat, labels: labels as ChessTableView["labels"], rev: -2 };
+    if (theme.power) {
+      // A lamp hanging over the anomalous table, flickering a little (see update()).
+      const lampMat = this.track(new THREE.MeshBasicMaterial({ color: 0xd7c8ff }));
+      const lamp = new THREE.Mesh(this.track(new THREE.BoxGeometry(0.9, 0.04, 0.22)), lampMat);
+      lamp.position.y = 2.6;
+      root.add(lamp);
+      const cord = new THREE.Mesh(this.track(new THREE.BoxGeometry(0.015, 0.6, 0.015)), dark);
+      cord.position.y = 2.92;
+      root.add(cord);
+      view.lamp = lampMat;
+      view.fxMats = {
+        ghost: {
+          w: this.track(new THREE.MeshStandardMaterial({ color: theme.pieceW, roughness: 0.35, transparent: true, opacity: 0.38, emissive: 0x6650aa, emissiveIntensity: 0.4 })),
+          b: this.track(new THREE.MeshStandardMaterial({ color: theme.pieceB, roughness: 0.3, transparent: true, opacity: 0.45, emissive: 0x6650aa, emissiveIntensity: 0.4 })),
+        },
+        ice: this.track(new THREE.MeshStandardMaterial({ color: 0x9fdcff, roughness: 0.1, transparent: true, opacity: 0.42, emissive: 0x2a6a9a, emissiveIntensity: 0.35, depthWrite: false })),
+        shield: this.track(new THREE.MeshBasicMaterial({ color: 0xffd23a, transparent: true, opacity: 0.85 })),
+        wet: this.track(new THREE.MeshStandardMaterial({ color: 0x1a2a3a, roughness: 0.05, metalness: 0.4, transparent: true, opacity: 0.8 })),
+        cone: this.track(new THREE.MeshStandardMaterial({ color: 0xf2c21a, roughness: 0.6 })),
+      };
+    }
+    return view;
   }
 
   /** Name plates for the two seats: "WHITE · name" / "BLACK · free". */
-  private drawChessLabel(color: "w" | "b", text: string, active: boolean) {
-    const l = this.chessLabels?.[color];
-    if (!l) return;
+  private drawChessLabel(view: ChessTableView, color: "w" | "b", text: string, active: boolean) {
+    const l = view.labels[color];
     const key = `${text}|${active}`;
     if (l.key === key) return;
     l.key = key;
@@ -974,31 +1046,80 @@ export class Lobby {
     l.tex.needsUpdate = true;
   }
 
-  /** Puts the pieces where the server says they are. */
-  public setChess(state: ChessNetState) {
-    if (state.rev === this.chessRev && state.rev >= 0) return;
-    this.chessRev = state.rev;
-    this.chessPieces.clear();
+  /** Lays one board out from a frame (pieces, last move, name plates); returns the parsed position, or null if unchanged. */
+  private layTable(view: ChessTableView, state: { rev: number; fen: string; last: [number, number] | null; status: string; whiteName: string; blackName: string }) {
+    if (state.rev === view.rev && state.rev >= 0) return null;
+    view.rev = state.rev;
+    view.pieces.clear();
     const pos = fromFen(state.fen);
-    pos.board.forEach((p, sq) => {
-      if (!p) return;
-      const piece = this.chessPiece(p.t, p.c);
-      const c = this.chessSquareCenter(sq);
-      piece.position.set(c.x, CHESS.top + 0.004, c.z);
-      this.chessPieces.add(piece);
-    });
-    this.chessLast.forEach((m, i) => {
+    view.last.forEach((m, i) => {
       const sq = state.last?.[i];
-      m.visible = sq !== undefined;
-      if (sq !== undefined) {
-        const c = this.chessSquareCenter(sq);
-        m.position.x = c.x - LOBBY.chess.x;
-        m.position.z = c.z - LOBBY.chess.z;
+      m.visible = sq !== undefined && sq >= 0;
+      if (sq !== undefined && sq >= 0) {
+        const c = this.squareCenterAt(view.at, sq);
+        m.position.x = c.x - view.at.x;
+        m.position.z = c.z - view.at.z;
       }
     });
     const turn = state.status === "playing" ? pos.turn : null;
-    this.drawChessLabel("w", `♙ ${state.whiteName || "—"}`, turn === "w");
-    this.drawChessLabel("b", `♟ ${state.blackName || "—"}`, turn === "b");
+    this.drawChessLabel(view, "w", `♙ ${state.whiteName || "—"}`, turn === "w");
+    this.drawChessLabel(view, "b", `♟ ${state.blackName || "—"}`, turn === "b");
+    return pos;
+  }
+
+  /** Puts the classic table's pieces where the server says they are. */
+  public setChess(state: ChessNetState) {
+    const pos = this.layTable(this.classic, state);
+    if (!pos) return;
+    pos.board.forEach((p, sq) => {
+      if (!p) return;
+      const piece = this.chessPiece(p.t, p.c, this.classic.mat[p.c]);
+      const c = this.squareCenterAt(this.classic.at, sq);
+      piece.position.set(c.x, CHESS.top + 0.004, c.z);
+      this.classic.pieces.add(piece);
+    });
+  }
+
+  /** The power table: pieces plus ice on frozen ones, a gold ring under shielded ones, ghosts see-through, cones on wet floor. */
+  public setPowerChess(state: PowerChessNetState) {
+    const view = this.power;
+    const pos = this.layTable(view, state);
+    if (!pos || !view.fxMats) return;
+    const fx = view.fxMats;
+    const s = CHESS.board / 8;
+    const geo = (key: string, make: () => THREE.BufferGeometry) => this.chessGeo.get(key) ?? (this.chessGeo.set(key, this.track(make())), this.chessGeo.get(key)!);
+    const effects = new Map(state.fx.map((f) => [f[0], f]));
+    pos.board.forEach((p, sq) => {
+      if (!p) return;
+      const f = effects.get(sq);
+      const frozen = !!f && f[1] >= state.ply, shielded = !!f && f[2] >= state.ply, ghost = !!f && !!f[4];
+      const piece = this.chessPiece(p.t, p.c, ghost ? fx.ghost[p.c] : view.mat[p.c]);
+      const c = this.squareCenterAt(view.at, sq);
+      piece.position.set(c.x, CHESS.top + 0.004, c.z);
+      if (frozen) {
+        const ice = new THREE.Mesh(geo("fx_ice", () => new THREE.CylinderGeometry(0.4 * s, 0.44 * s, 1.25 * s, 7)), fx.ice);
+        ice.position.y = 0.62 * s;
+        piece.add(ice);
+      }
+      if (shielded) {
+        const ring = new THREE.Mesh(geo("fx_ring", () => new THREE.TorusGeometry(0.42 * s, 0.045 * s, 6, 24)), fx.shield);
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.y = 0.04 * s;
+        piece.add(ring);
+      }
+      view.pieces.add(piece);
+    });
+    for (const [sq, until] of state.walls) {
+      if (until < state.ply) continue;
+      const c = this.squareCenterAt(view.at, sq);
+      const puddle = new THREE.Mesh(geo("fx_wet", () => new THREE.PlaneGeometry(s * 0.96, s * 0.96)), fx.wet);
+      puddle.rotation.x = -Math.PI / 2;
+      puddle.position.set(c.x, CHESS.top + 0.008, c.z);
+      view.pieces.add(puddle);
+      const cone = new THREE.Mesh(geo("fx_cone", () => new THREE.ConeGeometry(0.22 * s, 0.7 * s, 4)), fx.cone);
+      cone.position.set(c.x, CHESS.top + 0.36 * s, c.z);
+      view.pieces.add(cone);
+    }
   }
 
   private buildBall(): THREE.Mesh {
@@ -1053,6 +1174,14 @@ export class Lobby {
   public update(delta: number, ctx: LobbyUpdateContext) {
     const dt = Math.min(delta, 0.1);
     this.kickCooldown -= dt;
+
+    // The power table's lamp: steady, with the odd Backrooms flicker.
+    this.lampClock += dt;
+    if (this.power?.lamp) {
+      const k = this.lampClock;
+      const flicker = Math.sin(k * 23) + Math.sin(k * 7.3) > 1.75 ? 0.35 : 1;
+      this.power.lamp.color.setRGB(0.84 * flicker, 0.78 * flicker, flicker);
+    }
 
     // Kick: run into the ball.
     const dx = this.x - ctx.px, dz = this.z - ctx.pz;

@@ -23,6 +23,9 @@ import { SpaceWiringModal } from "./components/SpaceWiringModal";
 import { TownModelModal } from "./components/TownModelModal";
 import { KingDialogueModal } from "./components/KingDialogueModal";
 import { ChessModal } from "./components/ChessModal";
+import { PowerChessModal } from "./components/PowerChessModal";
+import { EMPTY_POWER_CHESS, type PowerChessNetState } from "./shared/powerChess";
+import { recordPowerChessFrame } from "./utils/powerChessStats";
 import { GarageKeypadModal } from "./components/GarageKeypadModal";
 import { WardrobeModal, type WardrobeLook } from "./components/WardrobeModal";
 import { EMPTY_OUTFIT, sanitizeOutfit } from "./shared/outfit";
@@ -226,6 +229,9 @@ export default function App() {
   /** The lobby's chess table: the server's latest description of it, and whether its board panel is open. */
   const [chessState, setChessState] = useState<ChessNetState>(EMPTY_CHESS);
   const [chessOpen, setChessOpen] = useState(false);
+  /** The lobby's power-chess table ("Xadrez Anômalo"): this player's view of it (their own hand only). */
+  const [powerChessState, setPowerChessState] = useState<PowerChessNetState>(EMPTY_POWER_CHESS);
+  const [powerChessOpen, setPowerChessOpen] = useState(false);
   /** Level the explorer last escaped from, so the report can tell FUN's ending apart. */
   const [escapedFrom, setEscapedFrom] = useState<number | null>(null);
   /** The timed expedition (lobby -> Level 79's ending), as a local performance.now() start. */
@@ -376,11 +382,11 @@ export default function App() {
    * count as "the player left the game": no pause menu behind them.
    */
   const interfaceOpen = isTerminalOpen || isMegDoorOpen || isFunPanelOpen || isCheatTerminalOpen || wardrobeInitial !== null || isLevelSelectorOpen
-    || hotelPanel !== null || resumePrompt || isAchievementsOpen || spaceTerminal !== null || spaceWiring !== null || townModelOpen || townDialogue !== null || chessOpen;
+    || hotelPanel !== null || resumePrompt || isAchievementsOpen || spaceTerminal !== null || spaceWiring !== null || townModelOpen || townDialogue !== null || chessOpen || powerChessOpen;
   useEffect(() => {
     if (currentLevel !== SPACE_LEVEL) { setSpaceTerminal(null); setSpaceWiring(null); }
     if (currentLevel !== OLD_TOWN_LEVEL) { setTownModelOpen(false); setTownDialogue(null); }
-    if (currentLevel !== LOBBY_LEVEL) { setChessOpen(false); setWardrobeInitial(null); }
+    if (currentLevel !== LOBBY_LEVEL) { setChessOpen(false); setPowerChessOpen(false); setWardrobeInitial(null); }
     setHotelPanel(null);
   }, [currentLevel]);
   useEffect(() => { if (isDead) { setHotelPanel(null); setResumePrompt(false); } }, [isDead]);
@@ -542,6 +548,12 @@ export default function App() {
         setIsInventoryOpen(false);
         setIsAchievementsOpen(false);
         setChessOpen(true);
+        document.exitPointerLock?.();
+        return true;
+      case "power_chess":
+        setIsInventoryOpen(false);
+        setIsAchievementsOpen(false);
+        setPowerChessOpen(true);
         document.exitPointerLock?.();
         return true;
       case "town_model":
@@ -1550,6 +1562,13 @@ export default function App() {
             engineRef.current?.applyChessState(data as ChessNetState);
           }
 
+          else if (type === "pchess_state") {
+            const ps = data as PowerChessNetState;
+            setPowerChessState(ps);
+            engineRef.current?.applyPowerChessState(ps);
+            recordPowerChessFrame(ps, clientIdRef.current ?? "");
+          }
+
           else if (type === "town_event") {
             engineRef.current?.applyTownEvent(data);
           }
@@ -2364,6 +2383,17 @@ export default function App() {
               send={(message) => socketRef.current?.send(JSON.stringify(message))}
               onClose={() => {
                 setChessOpen(false);
+                resumeGameInput();
+              }}
+            />
+          )}
+          {powerChessOpen && currentLevel === LOBBY_LEVEL && (
+            <PowerChessModal
+              state={powerChessState}
+              myId={clientIdRef.current ?? ""}
+              send={(message) => socketRef.current?.send(JSON.stringify(message))}
+              onClose={() => {
+                setPowerChessOpen(false);
                 resumeGameInput();
               }}
             />

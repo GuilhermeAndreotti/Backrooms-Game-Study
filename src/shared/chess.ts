@@ -37,6 +37,21 @@ export type GameStatus = "playing" | "checkmate" | "stalemate" | "fifty" | "insu
 export type ChessReason = "checkmate" | "stalemate" | "resign" | "abandon" | "fifty" | "insufficient" | "repetition";
 export interface ChessResult { winner: Color | null; reason: ChessReason }
 
+/**
+ * Optional board modifiers (the lobby's power-chess table, src/shared/powerChess.ts).
+ * Without them every function here plays plain chess.
+ */
+export interface MoveRules {
+  /** Squares whose pieces can't move and don't attack anything. */
+  frozen?: Set<number>;
+  /** Squares whose pieces can't be captured. */
+  shielded?: Set<number>;
+  /** Squares nothing may enter; they also block sliding pieces and attack rays. */
+  walls?: Set<number>;
+  /** Square of a piece whose move this turn passes through other pieces and walls. */
+  ghost?: number;
+}
+
 export const file = (sq: number) => sq & 7;
 /** 0 = rank 8 .. 7 = rank 1. */
 export const row = (sq: number) => sq >> 3;
@@ -93,33 +108,40 @@ const other = (c: Color): Color => (c === "w" ? "b" : "w");
 const inside = (f: number, r: number) => f >= 0 && f < 8 && r >= 0 && r < 8;
 
 /** Whether `sq` is attacked by any piece of `by`. */
-export function isAttacked(board: (Piece | null)[], sq: number, by: Color): boolean {
+export function isAttacked(board: (Piece | null)[], sq: number, by: Color, rules?: MoveRules): boolean {
   const f = file(sq), r = row(sq);
+  const inert = rules?.frozen, walls = rules?.walls;
+  const live = (at: number) => !inert || !inert.has(at);
   // Pawns: a white pawn attacks up the board (towards row 0), so it sits one row below the target.
   const pr = by === "w" ? r + 1 : r - 1;
   for (const df of [-1, 1]) {
     if (!inside(f + df, pr)) continue;
-    const p = board[square(f + df, pr)];
-    if (p && p.c === by && p.t === "p") return true;
+    const at = square(f + df, pr);
+    const p = board[at];
+    if (p && p.c === by && p.t === "p" && live(at)) return true;
   }
   for (const [df, dr] of KNIGHT) {
     if (!inside(f + df, r + dr)) continue;
-    const p = board[square(f + df, r + dr)];
-    if (p && p.c === by && p.t === "n") return true;
+    const at = square(f + df, r + dr);
+    const p = board[at];
+    if (p && p.c === by && p.t === "n" && live(at)) return true;
   }
   for (const [df, dr] of KING) {
     if (!inside(f + df, r + dr)) continue;
-    const p = board[square(f + df, r + dr)];
-    if (p && p.c === by && p.t === "k") return true;
+    const at = square(f + df, r + dr);
+    const p = board[at];
+    if (p && p.c === by && p.t === "k" && live(at)) return true;
   }
   const ray = (dirs: [number, number][], types: PieceType[]) => {
     for (const [df, dr] of dirs) {
       for (let k = 1; ; k++) {
         const ff = f + df * k, rr = r + dr * k;
         if (!inside(ff, rr)) break;
-        const p = board[square(ff, rr)];
+        const at = square(ff, rr);
+        if (walls?.has(at)) break;
+        const p = board[at];
         if (!p) continue;
-        if (p.c === by && types.includes(p.t)) return true;
+        if (p.c === by && types.includes(p.t) && live(at)) return true;
         break;
       }
     }
@@ -132,53 +154,64 @@ function kingSquare(board: (Piece | null)[], c: Color): number {
   return board.findIndex((p) => p?.c === c && p.t === "k");
 }
 
-export function inCheck(pos: Position, c: Color = pos.turn): boolean {
+export function inCheck(pos: Position, c: Color = pos.turn, rules?: MoveRules): boolean {
   const k = kingSquare(pos.board, c);
-  return k >= 0 && isAttacked(pos.board, k, other(c));
+  return k >= 0 && isAttacked(pos.board, k, other(c), rules);
 }
 
 /** Pseudo-legal moves (own king may be left in check; filtered by legalMoves). */
-function pseudoMoves(pos: Position): Move[] {
+function pseudoMoves(pos: Position, rules?: MoveRules): Move[] {
   const out: Move[] = [];
   const { board, turn } = pos;
+  const walls = rules?.walls, shielded = rules?.shielded, frozen = rules?.frozen;
+  const wall = (sq: number) => !!walls && walls.has(sq);
+  /**
+   * A square this side may land on: not a wall, not its own piece, not a
+   * shielded enemy. Never the enemy king either: a legal position can't have
+   * it attacked, except by a ghost passing through what shields it.
+   */
+  const open = (sq: number) => !wall(sq) && (!board[sq] || (board[sq]!.c !== turn && board[sq]!.t !== "k" && !shielded?.has(sq)));
   const push = (from: number, to: number, promoRow = false) => {
     if (promoRow) for (const promo of ["q", "r", "b", "n"] as Promotion[]) out.push({ from, to, promo });
     else out.push({ from, to });
   };
   for (let from = 0; from < 64; from++) {
     const p = board[from];
-    if (!p || p.c !== turn) continue;
+    if (!p || p.c !== turn || frozen?.has(from)) continue;
     const f = file(from), r = row(from);
+    const ghost = rules?.ghost === from;
     if (p.t === "p") {
       const dir = turn === "w" ? -1 : 1;
       const start = turn === "w" ? 6 : 1;
       const last = turn === "w" ? 0 : 7;
-      if (inside(f, r + dir) && !board[square(f, r + dir)]) {
-        push(from, square(f, r + dir), r + dir === last);
-        if (r === start && !board[square(f, r + 2 * dir)]) push(from, square(f, r + 2 * dir));
+      const one = square(f, r + dir);
+      if (inside(f, r + dir) && !board[one] && !wall(one)) push(from, one, r + dir === last);
+      if (r === start) {
+        const two = square(f, r + 2 * dir);
+        // A ghost pawn's double step goes through whatever stands in front of it.
+        if (!board[two] && !wall(two) && (ghost || (!board[one] && !wall(one)))) push(from, two);
       }
       for (const df of [-1, 1]) {
         if (!inside(f + df, r + dir)) continue;
         const to = square(f + df, r + dir);
         const target = board[to];
-        if ((target && target.c !== turn) || to === pos.ep) push(from, to, r + dir === last);
+        if (target ? target.c !== turn && open(to) : to === pos.ep && !wall(to) && !shielded?.has(to + (turn === "w" ? 8 : -8))) push(from, to, r + dir === last);
       }
     } else if (p.t === "n" || p.t === "k") {
       for (const [df, dr] of p.t === "n" ? KNIGHT : KING) {
         if (!inside(f + df, r + dr)) continue;
         const to = square(f + df, r + dr);
-        const target = board[to];
-        if (!target || target.c !== turn) push(from, to);
+        if (open(to)) push(from, to);
       }
       if (p.t === "k") {
         const home = turn === "w" ? 60 : 4;
-        if (from === home && !isAttacked(board, home, other(turn))) {
+        const safe = (sq: number) => !isAttacked(board, sq, other(turn), rules);
+        const clear = (...sqs: number[]) => sqs.every((sq) => !board[sq] && !wall(sq));
+        if (from === home && safe(home)) {
           const rights = turn === "w" ? [pos.castling.K, pos.castling.Q] : [pos.castling.k, pos.castling.q];
-          const rookAt = (sq: number) => board[sq]?.t === "r" && board[sq]?.c === turn;
-          if (rights[0] && rookAt(home + 3) && !board[home + 1] && !board[home + 2]
-            && !isAttacked(board, home + 1, other(turn)) && !isAttacked(board, home + 2, other(turn))) push(from, home + 2);
-          if (rights[1] && rookAt(home - 4) && !board[home - 1] && !board[home - 2] && !board[home - 3]
-            && !isAttacked(board, home - 1, other(turn)) && !isAttacked(board, home - 2, other(turn))) push(from, home - 2);
+          const rookAt = (sq: number) => board[sq]?.t === "r" && board[sq]?.c === turn && !frozen?.has(sq);
+          if (rights[0] && rookAt(home + 3) && clear(home + 1, home + 2) && safe(home + 1) && safe(home + 2)) push(from, home + 2);
+          if (rights[1] && rookAt(home - 4) && clear(home - 1, home - 2, home - 3) && safe(home - 1) && safe(home - 2)) push(from, home - 2);
         }
       }
     } else {
@@ -188,9 +221,11 @@ function pseudoMoves(pos: Position): Move[] {
           const ff = f + df * k, rr = r + dr * k;
           if (!inside(ff, rr)) break;
           const to = square(ff, rr);
+          if (ghost) { if (open(to)) push(from, to); continue; }
+          if (wall(to)) break;
           const target = board[to];
           if (!target) { push(from, to); continue; }
-          if (target.c !== turn) push(from, to);
+          if (open(to)) push(from, to);
           break;
         }
       }
@@ -234,12 +269,17 @@ export function applyMove(pos: Position, mv: Move): Position {
   };
 }
 
-export function legalMoves(pos: Position): Move[] {
-  return pseudoMoves(pos).filter((mv) => !inCheck(applyMove(pos, mv), pos.turn));
+/**
+ * Moves that don't leave the mover's own king attacked. `checkRules` (default:
+ * `rules`) is how the board will stand once the move is over, which on the
+ * power table can differ from now (a wall or a freeze running out).
+ */
+export function legalMoves(pos: Position, rules?: MoveRules, checkRules: MoveRules | undefined = rules): Move[] {
+  return pseudoMoves(pos, rules).filter((mv) => !inCheck(applyMove(pos, mv), pos.turn, checkRules));
 }
 
-export function legalMovesFrom(pos: Position, from: number): Move[] {
-  return legalMoves(pos).filter((mv) => mv.from === from);
+export function legalMovesFrom(pos: Position, from: number, rules?: MoveRules, checkRules?: MoveRules): Move[] {
+  return legalMoves(pos, rules, checkRules ?? rules).filter((mv) => mv.from === from);
 }
 
 /** Whether moving `from` -> `to` is a pawn reaching the last row (the player must choose a piece). */
@@ -248,7 +288,7 @@ export function needsPromotion(pos: Position, from: number, to: number): boolean
   return !!p && p.t === "p" && (row(to) === 0 || row(to) === 7);
 }
 
-function insufficientMaterial(board: (Piece | null)[]): boolean {
+export function insufficientMaterial(board: (Piece | null)[]): boolean {
   const rest = board.map((p, i) => ({ p, i })).filter((x) => x.p && x.p.t !== "k") as { p: Piece; i: number }[];
   if (rest.length === 0) return true;
   if (rest.some((x) => x.p.t === "p" || x.p.t === "r" || x.p.t === "q")) return false;
