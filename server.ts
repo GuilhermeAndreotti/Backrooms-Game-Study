@@ -1285,6 +1285,11 @@ async function startServer() {
         const t = room.powerChess;
         const me = conn.player.id;
         const mine = powerSeatOf(room, me);
+        const reject = (error: "stale" | "illegal") => send(conn.ws, { ...powerChessState(room, me), error });
+        if ((type === "pchess_move" || type === "pchess_card") && (data.rev !== t.rev || data.game !== t.games)) {
+          reject("stale");
+          return;
+        }
         const square = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 63 ? v : null);
         if (type === "pchess_sit") {
           const color = data.color === "w" ? "w" : data.color === "b" ? "b" : null;
@@ -1299,20 +1304,22 @@ async function startServer() {
         } else if (type === "pchess_move") {
           const g = t.game;
           const from = square(data.from), to = square(data.to);
-          if (!g || g.over || !mine || from === null || to === null) return;
+          if (!g || g.over || !mine || from === null || to === null) { reject("illegal"); return; }
           const promo = typeof data.promo === "string" && data.promo.length === 1 && "qrbn".includes(data.promo) ? (data.promo as Promotion) : undefined;
-          if (!g.play(mine, from, to, promo)) return;
+          if (data.promo !== undefined && !promo) { reject("illegal"); return; }
+          if (!g.play(mine, from, to, promo)) { reject("illegal"); return; }
           broadcastPowerChess(room);
         } else if (type === "pchess_card") {
           const g = t.game;
-          if (!g || g.over || !mine) return;
+          if (!g || g.over || !mine) { reject("illegal"); return; }
           const index = data.index;
-          if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= 5) return;
-          if (!Array.isArray(data.targets) || data.targets.length > 2) return;
+          if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= 5) { reject("illegal"); return; }
+          if (!Array.isArray(data.targets) || data.targets.length > 2) { reject("illegal"); return; }
           const targets: number[] = [];
-          for (const v of data.targets) { const sq = square(v); if (sq === null) return; targets.push(sq); }
+          for (const v of data.targets) { const sq = square(v); if (sq === null) { reject("illegal"); return; } targets.push(sq); }
           const choice = data.choice === "n" || data.choice === "b" ? data.choice : undefined;
-          if (!g.playCard(mine, index, { targets, choice })) return;
+          if (data.choice !== undefined && !choice) { reject("illegal"); return; }
+          if (!g.playCard(mine, index, { targets, choice })) { reject("illegal"); return; }
           broadcastPowerChess(room);
         } else if (type === "pchess_resign") {
           const g = t.game;
