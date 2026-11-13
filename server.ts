@@ -93,7 +93,7 @@ interface PlayerState {
   dead: boolean;
   exitReady: boolean;
   /**
-   * Hand-drawn helmet face: 16x16 palette digits (see src/utils/face.ts), or
+   * Helmet face: 16x16 palette digits or an https image link (see src/utils/face.ts), or
    * "" for none. Sent with the join/roster messages only — stripped from the
    * movement snapshots so it isn't re-sent 20 times a second.
    */
@@ -139,8 +139,20 @@ function sanitizeSuitColor(value: unknown): string {
 /** 16x16 pixels, one palette digit each (0 = transparent, 1-7 = FACE_PALETTE). */
 const FACE_PATTERN = /^[0-7]{256}$/;
 
+/** Longest image link accepted as a face — kept in sync with FACE_URL_MAX in src/utils/face.ts. */
+const FACE_URL_MAX = 500;
+
+/** A face is either 16x16 palette digits or an https image link (see faceImageUrl in src/utils/face.ts). */
 function sanitizeFace(value: unknown): string {
-  return typeof value === "string" && FACE_PATTERN.test(value) ? value : "";
+  if (typeof value !== "string") return "";
+  if (FACE_PATTERN.test(value)) return value;
+  if (value.length > FACE_URL_MAX || !/^https:\/\/[^\s"'<>\\`]+$/i.test(value)) return "";
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname ? url.href : "";
+  } catch {
+    return "";
+  }
 }
 
 /** Bodies the lobby's SKIN cheat may hand out — every monster type plus the NPC looks; kept in sync with client-side MONSTER_SKIN_TYPES. */

@@ -10,7 +10,8 @@
  * Stored as FACE_SIZE*FACE_SIZE palette indices, one digit per pixel, row by
  * row ("0" = transparent). A 256-char string: small enough to ride along in
  * the join message, trivially validated server-side, and it can only ever
- * become pixels — no images or URLs passed between players.
+ * become pixels. (A face can also be an https image link instead — see
+ * faceImageUrl below.)
  */
 export const FACE_SIZE = 16;
 
@@ -42,5 +43,23 @@ export function drawFace(ctx: CanvasRenderingContext2D, face: string, pixelSize 
     if (!color) continue;
     ctx.fillStyle = color;
     ctx.fillRect((i % FACE_SIZE) * pixelSize, Math.floor(i / FACE_SIZE) * pixelSize, pixelSize, pixelSize);
+  }
+}
+
+/** Longest image link accepted as a face (kept in sync with server.ts). */
+export const FACE_URL_MAX = 500;
+
+/**
+ * Instead of pixels, the face can be the link to an image (https only), shown
+ * behind the helmet's face shield. Returns the normalized link, or null when
+ * `face` isn't one. Validated the same way server-side (sanitizeFace).
+ */
+export function faceImageUrl(face: unknown): string | null {
+  if (typeof face !== "string" || face.length > FACE_URL_MAX || !/^https:\/\/[^\s"'<>\\`]+$/i.test(face)) return null;
+  try {
+    const url = new URL(face);
+    return url.protocol === "https:" && url.hostname ? url.href : null;
+  } catch {
+    return null;
   }
 }

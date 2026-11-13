@@ -5,8 +5,8 @@
 
 import { t, useLanguage } from "../i18n";
 import React, { useEffect, useRef, useState } from "react";
-import { Eraser, Trash2 } from "lucide-react";
-import { EMPTY_FACE, FACE_PALETTE, FACE_SIZE } from "../utils/face";
+import { Eraser, ImageIcon, Pencil, Trash2 } from "lucide-react";
+import { EMPTY_FACE, FACE_PALETTE, FACE_SIZE, FACE_URL_MAX, faceImageUrl } from "../utils/face";
 
 interface FaceEditorProps {
   face: string;
@@ -15,9 +15,17 @@ interface FaceEditorProps {
   onChange: (face: string) => void;
 }
 
-/** 16x16 pixel-art pad for the explorer's helmet face. Click or drag to paint. */
+/**
+ * The explorer's face behind the helmet's shield: a 16x16 pixel-art pad
+ * (click or drag to paint), or the link to an image.
+ */
 export const FaceEditor: React.FC<FaceEditorProps> = ({ face: rawFace, suitColor, onChange }) => {
   useLanguage();
+  const savedUrl = faceImageUrl(rawFace);
+  const [mode, setMode] = useState<"draw" | "image">(savedUrl ? "image" : "draw");
+  const [urlText, setUrlText] = useState(savedUrl ?? "");
+  const [preview, setPreview] = useState<"idle" | "ok" | "error">("idle");
+  const typedUrl = faceImageUrl(urlText.trim());
   // A stale/corrupt saved value would render the wrong number of cells.
   const face = rawFace?.length === FACE_SIZE * FACE_SIZE ? rawFace : EMPTY_FACE;
   const [colorIndex, setColorIndex] = useState(1);
@@ -42,6 +50,81 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ face: rawFace, suitColor
     onChange(next);
   };
 
+  const tabClass = (on: boolean) =>
+    `flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[10px] uppercase tracking-wider rounded cursor-pointer transition-colors ${
+      on ? "bg-[#deb81d] text-black font-bold" : "bg-white/5 text-[#F2E8CF]/60 hover:text-white"
+    }`;
+
+  const switchMode = (next: "draw" | "image") => {
+    if (next === mode) return;
+    setMode(next);
+    // The face is one or the other: switching clears what the other mode left behind.
+    if (next === "draw") onChange(EMPTY_FACE);
+    else if (typedUrl) onChange(typedUrl);
+    else onChange(EMPTY_FACE);
+  };
+
+  const modeTabs = (
+    <div className="flex gap-2 mt-2">
+      <button type="button" className={tabClass(mode === "draw")} onClick={() => switchMode("draw")}>
+        <Pencil className="w-3 h-3" /> {t("face.mode.draw")}
+      </button>
+      <button type="button" className={tabClass(mode === "image")} onClick={() => switchMode("image")}>
+        <ImageIcon className="w-3 h-3" /> {t("face.mode.image")}
+      </button>
+    </div>
+  );
+
+  if (mode === "image") {
+    return (
+      <div className="mt-6">
+        <span className="text-[11px] text-[#F2E8CF]/50 uppercase tracking-wider">{t("face.title")}</span>
+        {modeTabs}
+        <input
+          type="url"
+          inputMode="url"
+          spellCheck={false}
+          maxLength={FACE_URL_MAX}
+          value={urlText}
+          placeholder="https://..."
+          onChange={(e) => {
+            const text = e.target.value;
+            setUrlText(text);
+            setPreview("idle");
+            const url = faceImageUrl(text.trim());
+            onChange(url ?? EMPTY_FACE);
+          }}
+          className="mt-3 w-full bg-black/40 border border-white/15 rounded px-2 py-1.5 text-xs text-[#F2E8CF] placeholder:text-[#F2E8CF]/30 focus:outline-none focus:border-[#deb81d]"
+        />
+        <div
+          className="mt-3 mx-auto w-full max-w-[160px] aspect-square rounded overflow-hidden border-2 border-white/10 flex items-center justify-center"
+          style={{ backgroundColor: suitColor }}
+        >
+          {typedUrl ? (
+            <img
+              key={typedUrl}
+              src={typedUrl}
+              alt=""
+              crossOrigin="anonymous"
+              referrerPolicy="no-referrer"
+              onLoad={() => setPreview("ok")}
+              onError={() => setPreview("error")}
+              className={`w-full h-full object-cover ${preview === "error" ? "hidden" : ""}`}
+            />
+          ) : null}
+          {(!typedUrl || preview === "error") && <ImageIcon className="w-8 h-8 text-black/40" />}
+        </div>
+        <p className="mt-2 text-[10px] leading-snug text-center text-[#F2E8CF]/50">
+          {urlText.trim() && !typedUrl
+            ? t("face.url.invalid")
+            : preview === "error"
+              ? t("face.url.blocked")
+              : t("face.url.hint")}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="mt-6">
       <div className="flex items-center justify-between">
@@ -54,9 +137,10 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ face: rawFace, suitColor
           <Trash2 className="w-3 h-3" /> {t("face.clear")}
         </button>
       </div>
+      {modeTabs}
 
       <div
-        className="mt-2 mx-auto grid w-full max-w-[256px] aspect-square rounded overflow-hidden border-2 border-white/10 touch-none select-none"
+        className="mt-3 mx-auto grid w-full max-w-[256px] aspect-square rounded overflow-hidden border-2 border-white/10 touch-none select-none"
         style={{ gridTemplateColumns: `repeat(${FACE_SIZE}, 1fr)`, backgroundColor: suitColor }}
         onPointerLeave={() => { painting.current = false; }}
       >

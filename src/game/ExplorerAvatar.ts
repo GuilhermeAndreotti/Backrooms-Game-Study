@@ -2,9 +2,9 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * The explorer avatar everyone else sees: the low-poly hazmat suit (colour,
- * hand-drawn face and wardrobe accessories), or a monster body for the SKIN
- * cheat. Used for teammates, the lobby mirror's copy of yourself and the
+ * The explorer avatar everyone else sees: the realistic hazmat suit
+ * (explorerSuit.ts — colour, drawn face or image link, wardrobe accessories),
+ * or a monster body for the SKIN cheat. Used for teammates, the lobby mirror's copy of yourself and the
  * wardrobe's preview, so it depends on nothing but three and the look itself.
  *
  * Every accessory is a handful of primitives with its own geometry and
@@ -13,7 +13,7 @@
  */
 
 import * as THREE from "three";
-import { FACE_SIZE, drawFace, hasFace } from "../utils/face";
+import { buildHazmatSuit } from "./explorerSuit";
 import { WanderingEntity, type SkinBodyChoice } from "./WanderingEntity";
 import { ALL_ENTITY_TYPES } from "../shared/entityTypes";
 import type { Outfit } from "../shared/outfit";
@@ -35,9 +35,9 @@ export interface ExplorerLook {
 }
 
 /**
- * Builds a stylized retro hazmat explorer out of THREE primitive blocks —
- * no assets to load. Rig: hips -> spine -> (head, arms), hips -> legs; every
- * pivot is named so GameEngine.poseRemotePlayer can animate it.
+ * Builds an explorer avatar — no assets to load. Rig: hips -> spine -> (head,
+ * arms), hips -> legs; every pivot is named so GameEngine.poseRemotePlayer
+ * can animate it.
  */
 export function buildExplorerAvatar({ name, suitColor, face, monsterSkin, outfit }: ExplorerLook): THREE.Group {
   const group = new THREE.Group();
@@ -52,141 +52,13 @@ export function buildExplorerAvatar({ name, suitColor, face, monsterSkin, outfit
     body.position.y = WanderingEntity.skinAnchorY(skinType);
     group.add(body);
   } else {
-    // Hazmat suit fabric — colour picked in the customization screen, defaults
-    // to the classic Level 0 yellow (flat shading keeps the vintage polygon look)
-    const suitMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(suitColor || "#deb81d"), roughness: 0.9, metalness: 0.1 });
-
-    // Visor Glass: Shiny dark glass block
-    const visorMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.9, roughness: 0.1 });
-
-    // Black boot soles / rubber belt
-    const darkMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9, metalness: 0.1 });
-
-    // Rig: hips -> spine -> (head, arms), hips -> legs. Every pivot is named
-    // so animateRemotePlayers can pose walk / run / crouch / idle; limbs hang
-    // along -Y from their pivot, the visor faces +Z.
-    const hips = new THREE.Group();
-    hips.name = "hips";
-    hips.position.set(0, 0.47, 0);
-    group.add(hips);
-
-    const spine = new THREE.Group();
-    spine.name = "spine";
-    hips.add(spine);
-
-    // Torso (Main bodysuit body)
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 0.9, 8), suitMat);
-    body.position.set(0, 0.28, 0);
-    spine.add(body);
-
-    // Breathing Apparatus Back Oxygen Tank
-    const tank = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.65, 0.18), suitMat);
-    tank.position.set(0, 0.31, -0.18);
-    spine.add(tank);
-
-    // Belt
-    const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.08, 8), darkMat);
-    belt.position.set(0, -0.02, 0);
-    spine.add(belt);
-
-    // Everything on the head hangs off a pivot at the neck so the whole head
-    // (helmet, visor, drawn face) tilts up/down with where the player looks.
-    const headPivot = new THREE.Group();
-    headPivot.name = "head";
-    headPivot.position.set(0, 0.83, 0);
-    spine.add(headPivot);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 10), suitMat);
-    headPivot.add(head);
-
-    // Distinctive Level 0 reflective Visor Mask — skipped when the player has
-    // drawn a custom face, so the drawing shows through the hood opening
-    // instead of sitting behind a dark glass plate.
-    if (!hasFace(face)) {
-      const visor = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.1, 0.12), visorMat);
-      // Face the positive Z direction as default orientation
-      visor.position.set(0, 0.03, 0.14);
-      headPivot.add(visor);
-    }
-
-    // Arms: shoulder -> elbow -> glove; the right hand carries the flashlight.
-    const upperArmGeo = new THREE.CylinderGeometry(0.07, 0.065, 0.3, 6);
-    const forearmGeo = new THREE.CylinderGeometry(0.062, 0.055, 0.27, 6);
-    const gloveGeo = new THREE.SphereGeometry(0.065, 6, 6);
-    for (const side of [-1, 1]) {
-      const prefix = side < 0 ? "l" : "r";
-      const shoulder = new THREE.Group();
-      shoulder.name = `${prefix}Arm`;
-      shoulder.position.set(side * 0.31, 0.64, 0);
-      spine.add(shoulder);
-      const upper = new THREE.Mesh(upperArmGeo, suitMat);
-      upper.position.y = -0.15;
-      shoulder.add(upper);
-      const elbow = new THREE.Group();
-      elbow.name = `${prefix}Forearm`;
-      elbow.position.y = -0.3;
-      shoulder.add(elbow);
-      const fore = new THREE.Mesh(forearmGeo, suitMat);
-      fore.position.y = -0.135;
-      elbow.add(fore);
-      const glove = new THREE.Mesh(gloveGeo, darkMat);
-      glove.position.y = -0.29;
-      elbow.add(glove);
-      if (side > 0) {
-        const torch = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.2, 8), darkMat);
-        torch.rotation.x = Math.PI / 2;
-        torch.position.set(0, -0.3, 0.08);
-        elbow.add(torch);
-      }
-    }
-
-    // Legs: hip (lLeg/rLeg) -> knee (lShin/rShin) -> boot
-    const thighGeo = new THREE.CylinderGeometry(0.09, 0.08, 0.24, 6);
-    const shinGeo = new THREE.CylinderGeometry(0.08, 0.075, 0.2, 6);
-    const bootGeo = new THREE.BoxGeometry(0.11, 0.07, 0.18);
-    for (const side of [-1, 1]) {
-      const prefix = side < 0 ? "l" : "r";
-      const hip = new THREE.Group();
-      hip.name = `${prefix}Leg`;
-      hip.position.set(side * 0.11, 0, 0);
-      hips.add(hip);
-      const thigh = new THREE.Mesh(thighGeo, suitMat);
-      thigh.position.y = -0.11;
-      hip.add(thigh);
-      const knee = new THREE.Group();
-      knee.name = `${prefix}Shin`;
-      knee.position.y = -0.23;
-      hip.add(knee);
-      const shin = new THREE.Mesh(shinGeo, suitMat);
-      shin.position.y = -0.1;
-      knee.add(shin);
-      const boot = new THREE.Mesh(bootGeo, darkMat);
-      boot.position.set(0, -0.2, 0.03);
-      knee.add(boot);
-    }
-
-    // Hand-drawn face from the customization screen, as a pixel-art decal just
-    // in front of the helmet. Transparent pixels let the visor show through.
-    if (hasFace(face)) {
-      const faceCanvas = document.createElement("canvas");
-      faceCanvas.width = FACE_SIZE;
-      faceCanvas.height = FACE_SIZE;
-      const faceCtx = faceCanvas.getContext("2d");
-      if (faceCtx) {
-        drawFace(faceCtx, face);
-        const faceTexture = new THREE.CanvasTexture(faceCanvas);
-        faceTexture.magFilter = THREE.NearestFilter;
-        faceTexture.minFilter = THREE.NearestFilter;
-        faceTexture.colorSpace = THREE.SRGBColorSpace;
-        const faceMat = new THREE.MeshStandardMaterial({ map: faceTexture, alphaTest: 0.5, roughness: 0.7 });
-        const facePlane = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.26), faceMat);
-        facePlane.position.set(0, 0.01, 0.215);
-        headPivot.add(facePlane);
-      }
-    }
-
+    // The realistic hazmat explorer (see explorerSuit.ts): rig pivots named
+    // hips/spine/head/lArm.../rShin for poseRemotePlayer, plus anchors the
+    // wardrobe accessories hang from.
+    const rig = buildHazmatSuit(group, { name, suitColor, face });
     // Wardrobe accessories (the lobby's "Armário"): hat/face pieces ride the
-    // head pivot so they nod with it, neck/back pieces ride the spine.
-    addAccessories(group, spine, headPivot, outfit);
+    // head so they nod with it, neck/back pieces ride the torso.
+    addAccessories(group, rig.bodyAnchor, rig.backAnchor, rig.headAnchor, outfit);
   }
 
   // Floating UI player tag card setup in 3D Space! (both suit and skin get one)
@@ -216,10 +88,11 @@ export function buildExplorerAvatar({ name, suitColor, face, monsterSkin, outfit
 // ---------------------------------------------------------------------------
 // Wardrobe accessories
 // ---------------------------------------------------------------------------
-// Coordinates: the head pivot's origin is the centre of the 0.2 m helmet
-// sphere (front = +Z, face decal at z 0.215); the spine's origin is the hips,
-// the torso's top edge is at y 0.73 with a ~0.245 m radius, and the oxygen
-// tank's back face sits at z -0.27.
+// Coordinates (authored for the original blocky suit; buildHazmatSuit's
+// headAnchor/bodyAnchor map them onto the realistic body): the head frame's
+// origin is the centre of a 0.2 m helmet sphere (front = +Z, face at z 0.215);
+// the body frame's origin is the hips, the torso's top edge at y 0.73 with a
+// ~0.245 m radius, and the back at z -0.27.
 
 type Mat = THREE.Material;
 const std = (color: number, extra: THREE.MeshStandardMaterialParameters = {}) =>
@@ -516,13 +389,13 @@ const BACK: Record<string, (s: THREE.Object3D, anim: THREE.Object3D[]) => void> 
   },
 };
 
-function addAccessories(group: THREE.Group, spine: THREE.Object3D, head: THREE.Object3D, outfit?: Outfit): void {
+function addAccessories(group: THREE.Group, spine: THREE.Object3D, back: THREE.Object3D, head: THREE.Object3D, outfit?: Outfit): void {
   if (!outfit) return;
   const anim: THREE.Object3D[] = [];
   HEAD[outfit.head]?.(head, anim);
   FACE[outfit.face]?.(head);
   NECK[outfit.neck]?.(spine);
-  BACK[outfit.back]?.(spine, anim);
+  BACK[outfit.back]?.(back, anim);
   for (const o of anim) o.userData.rest = o.rotation.clone();
   if (anim.length) group.userData.accessoryAnim = anim;
 }
