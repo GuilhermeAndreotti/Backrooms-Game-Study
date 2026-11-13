@@ -66,7 +66,7 @@ export function ChessBoardGrid({
   for (let r = 0; r < 8; r++) for (let f = 0; f < 8; f++) squares.push(flipped ? square(7 - f, 7 - r) : square(f, r));
   return (
     <div className="relative mx-auto aspect-square w-full max-w-[min(58vh,560px)] shrink-0 select-none">
-      <div ref={board} className="relative grid h-full w-full grid-cols-8 grid-rows-8 overflow-hidden rounded-md border-4 shadow-[0_12px_40px_#0008,0_0_0_1px_#ffffff30]" style={{ borderColor: frame }}
+      <div ref={board} className="relative isolate grid h-full w-full grid-cols-8 grid-rows-8 overflow-hidden rounded-md border-4 shadow-[0_12px_40px_#0008,0_0_0_1px_#ffffff30]" style={{ borderColor: frame }}
         onPointerMove={(e) => {
           const g = gesture.current;
           if (!g) return;
@@ -135,7 +135,7 @@ export function ChessBoardGrid({
         </AnimatePresence>
       </div>
       {promoting && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/65">
+        <div role="dialog" aria-label={t("chess.promote")} className="absolute inset-0 z-40 flex items-center justify-center rounded-lg bg-black/75 backdrop-blur-sm">
           <div className="border-2 border-[#c9962a] bg-[#140c08] p-3">
             <div className="mb-2 text-center text-xs tracking-widest text-[#e9d8a8]">{t("chess.promote")}</div>
             <div className="flex gap-2">

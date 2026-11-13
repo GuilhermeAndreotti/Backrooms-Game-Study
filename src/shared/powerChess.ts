@@ -9,11 +9,11 @@
  * highlight legal moves and card targets.
  *
  * Rules in short (docs/levels/lobby.md has the full write-up):
- * - Energy: +1 at the start of each of your turns (max 10). Whoever *loses* a
+ * - Energy: +1 at the start of each of your turns (max 6). Whoever *loses* a
  *   piece gains energy (+1 pawn/minor, +2 rook/queen): a comeback mechanic.
- * - Hand: 3 cards to start, draw 1 per turn from your second turn on, max 5.
+ * - Hand: 3 cards to start, draw 1 per turn from your second turn on, max 7.
  *   Both players get the same 24-card deck, shuffled by the server.
- * - A turn: at most one card, then your move (some cards replace the move).
+ * - A turn: cards while energy permits, then your move (some replace it).
  * - Every timed effect runs out in one place, `endHalfMove()`, at the end of a
  *   half-move; a move is only legal if the mover's king is safe *after* that.
  * - Cards never touch the enemy king and never leave the opponent in check:
@@ -74,9 +74,9 @@ export const isCardId = (v: unknown): v is CardId => typeof v === "string" && Ob
 export const POWER = {
   /** Energy before each side's first turn bonus: white plays its first turn with 2, black with 3. */
   startEnergy: { w: 1, b: 2 } as Record<Color, number>,
-  maxEnergy: 10,
+  maxEnergy: 6,
   startHand: 3,
-  maxHand: 5,
+  maxHand: 7,
   /** Half-moves before the game is called a draw. */
   maxPlies: 200,
   /** Log entries kept in the network frame. */
@@ -250,16 +250,16 @@ export class PowerChessGame {
   /** The board's modifiers as they stand during half-move `at`. */
   rulesAt(at: number): MoveRules {
     const frozen = new Set<number>(), shielded = new Set<number>(), walls = new Set<number>();
-    let ghost: number | undefined;
+    const ghosts = new Set<number>();
     for (let sq = 0; sq < 64; sq++) {
       const f = this.ids[sq] ? this.fx.get(this.ids[sq]) : undefined;
       if (!f) continue;
       if (f.frozen >= at) frozen.add(sq);
       if (f.shield >= at) shielded.add(sq);
-      if (f.ghost && at === this.ply) ghost = sq;
+      if (f.ghost && at === this.ply) ghosts.add(sq);
     }
     this.walls.forEach((until, sq) => { if (until >= at) walls.add(sq); });
-    return { frozen, shielded, walls, ghost };
+    return { frozen, shielded, walls, ghosts };
   }
 
   frozenAt(sq: number, at = this.ply) { const f = this.ids[sq] ? this.fx.get(this.ids[sq]) : undefined; return !!f && f.frozen >= at; }
@@ -460,9 +460,9 @@ export class PowerChessGame {
     return g;
   }
 
-  /** Can `c` play a card at all right now (their turn, none played yet, no move half-done)? */
+  /** Cards can be chained before moving, but not between Adrenaline's moves. */
   canPlayCards(c: Color): boolean {
-    return !this.result && this.pos.turn === c && !this.cardUsed && !this.extra && !this.adrenaline;
+    return !this.result && this.pos.turn === c && !this.extra;
   }
 
   /** Any move, removal or arrival on a rook corner or king's home costs the matching castling right. */
@@ -566,6 +566,7 @@ export class PowerChessGame {
         this.removeAt(at);
         return true;
       case "adrenaline":
+        if (this.adrenaline) return false;
         this.adrenaline = true;
         return true;
       case "memory": {

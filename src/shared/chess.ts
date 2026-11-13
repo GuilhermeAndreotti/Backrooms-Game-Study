@@ -50,6 +50,7 @@ export interface MoveRules {
   walls?: Set<number>;
   /** Square of a piece whose move this turn passes through other pieces and walls. */
   ghost?: number;
+  ghosts?: Set<number>;
 }
 
 export const file = (sq: number) => sq & 7;
@@ -179,7 +180,7 @@ function pseudoMoves(pos: Position, rules?: MoveRules): Move[] {
     const p = board[from];
     if (!p || p.c !== turn || frozen?.has(from)) continue;
     const f = file(from), r = row(from);
-    const ghost = rules?.ghost === from;
+    const ghost = rules?.ghost === from || !!rules?.ghosts?.has(from);
     if (p.t === "p") {
       const dir = turn === "w" ? -1 : 1;
       const start = turn === "w" ? 6 : 1;

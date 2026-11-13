@@ -24,28 +24,66 @@ test("stable identities, private hands and timed paired history survive serializ
   assert.deepEqual(PowerChessGame.fromNet(frame, "w").moves(), g.moves());
 });
 
-test("one card per turn, invalid targets are atomic, card and move share a turn", () => {
+test("cards chain until energy runs out; invalid actions are atomic", () => {
   const g = new PowerChessGame(() => .5);
-  g.hands.w = ["almond", "smiler"];
+  g.hands.w = ["almond", "tape", "tape", "smiler"];
   const before = g.netState("w");
-  assert.equal(g.playCard("w", 1, { targets: [4] }), false);
+  assert.equal(g.playCard("w", 3, { targets: [4] }), false);
   assert.deepEqual(g.netState("w"), before);
   assert.equal(g.playCard("w", 0, { targets: [] }), true);
+  assert.equal(g.playCard("w", 0, { targets: [52] }), true);
+  const frame = { ...EMPTY_POWER_CHESS, ...g.netState("w") };
+  assert.ok(PowerChessGame.fromNet(frame, "w").cardPlays("w", 0).length);
+  assert.equal(g.playCard("w", 0, { targets: [51] }), true);
+  assert.equal(g.energy.w, 0);
   assert.equal(g.playCard("w", 0, { targets: [8] }), false);
   assert.equal(g.play("w", 52, 36), true);
-  assert.deepEqual(g.log.map(e => e.ply), [0, 0]);
+  assert.deepEqual(g.log.map(e => e.ply), [0, 0, 0, 0]);
 });
 
 test("Adrenaline retains turn and rejects moving the same piece twice", () => {
   const g = new PowerChessGame(() => .5);
-  g.energy.w = 10; g.hands.w = ["adrenaline"];
+  g.energy.w = 6; g.hands.w = ["adrenaline", "almond", "almond"];
+  assert.equal(g.playCard("w", 0, { targets: [] }), true);
   assert.equal(g.playCard("w", 0, { targets: [] }), true);
   assert.equal(g.play("w", 52, 36), true);
   assert.equal(g.turn, "w");
+  assert.equal(g.playCard("w", 0, { targets: [] }), false);
   assert.equal(g.play("w", 36, 28), false);
   assert.equal(g.play("w", 51, 35), true);
   assert.equal(g.turn, "b");
-  assert.deepEqual(g.log.map(e => e.ply), [0, 0, 0]);
+  assert.deepEqual(g.log.map(e => e.ply), [0, 0, 0, 0]);
+});
+
+test("energy caps at 6 and drawing over 7 cards discards the excess", () => {
+  const g = new PowerChessGame(() => .5);
+  g.energy.w = 5;
+  g.hands.w = ["almond", "sanity", "tape", "tape", "door", "door", "memory"];
+  assert.equal(g.playCard("w", 0, { targets: [] }), true);
+  assert.equal(g.energy.w, 6);
+  assert.equal(g.lastCard?.energyGained, 1);
+  g.decks.w = ["tape", "tape", "tape", "tape"];
+  assert.equal(g.playCard("w", 0, { targets: [] }), true);
+  assert.equal(g.hands.w.length, 7);
+  g.hands.w[0] = "sanity";
+  assert.equal(g.playCard("w", 0, { targets: [] }), true);
+  assert.equal(g.hands.w.length, 7);
+  assert.equal(g.lastCard?.cardsDrawn, 1);
+  assert.ok(g.discard.w.includes("tape"));
+});
+
+test("multiple Noclip cards preserve both targets and turn-ending cards stop chains", () => {
+  const g = new PowerChessGame(() => .5);
+  g.energy.w = 6; g.hands.w = ["noclip", "noclip"];
+  assert.equal(g.playCard("w", 0, { targets: [56] }), true);
+  assert.equal(g.playCard("w", 0, { targets: [63] }), true);
+  assert.ok(g.movesFrom(56).some(m => m.to === 40));
+  assert.ok(g.movesFrom(63).some(m => m.to === 47));
+  const h = new PowerChessGame(() => .5);
+  h.energy.w = 6; h.hands.w = ["exit", "almond"];
+  assert.equal(h.playCard("w", 0, { targets: [44] }), true);
+  assert.equal(h.turn, "b");
+  assert.equal(h.playCard("w", 0, { targets: [] }), false);
 });
 
 test("capturing a frozen piece does not suppress the capturer's check notation", () => {

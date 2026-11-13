@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { fromFen, needsPromotion, squareName, type Color, type Promotion } from "../shared/chess";
 import {
@@ -8,7 +9,7 @@ import {
 import { t } from "../i18n";
 import { ChessBoardGrid, GLYPH, pieceStyle } from "./ChessBoardGrid";
 import { ChessPiece } from "./ChessPiece";
-import { PowerCardImpact } from "./PowerCardImpact";
+import { PowerCardImpact, PowerCardSurge } from "./PowerCardImpact";
 import { favoriteCard, loadPowerChessStats } from "../utils/powerChessStats";
 
 interface PowerChessModalProps {
@@ -33,24 +34,48 @@ const cardName = (id: CardId) => t(`pchess.card.${id}.name`);
 const cardDesc = (id: CardId) => t(`pchess.card.${id}.desc`);
 
 function CardFace({ id, onClick, disabled, active, small, reason }: { key?: string; id: CardId; onClick?: () => void; disabled?: boolean; active?: boolean; small?: boolean; reason?: string }) {
+  const [details, setDetails] = useState(false);
+  const infoButton = useRef<HTMLButtonElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!details) return;
+    closeButton.current?.focus();
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape" || event.key.toLowerCase() === "e") {
+        event.stopImmediatePropagation(); setDetails(false); infoButton.current?.focus();
+      }
+      if (event.key === "Tab") { event.preventDefault(); closeButton.current?.focus(); }
+    };
+    window.addEventListener("keydown", close, true);
+    return () => window.removeEventListener("keydown", close, true);
+  }, [details]);
   const def = CARDS[id];
   const r = RARITY[def.rarity];
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={!onClick || disabled}
+    <div
       title={`${cardName(id)} — ${reason || cardDesc(id)}`}
       className={`relative flex shrink-0 flex-col items-center rounded-xl border bg-gradient-to-b from-[#30243f] to-[#100d18] text-center transition-all duration-200 ${small ? "w-20 p-1" : "w-32 p-2"} ${onClick && !disabled ? "hover:-translate-y-2 hover:rotate-1 cursor-pointer" : "cursor-default"} ${disabled ? "opacity-60 saturate-50" : ""} ${active ? "-translate-y-3 ring-2 ring-amber-200/40" : ""}`}
       style={{ borderColor: active ? "#ffd95a" : r.border, boxShadow: `0 0 ${active ? 22 : 12}px ${active ? "rgba(255,217,90,0.6)" : r.glow}` }}
     >
       <span className="absolute -left-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full border border-[#ffd95a] bg-[#2a2008] text-xs font-bold text-[#ffd95a]">{def.cost}</span>
+      <button ref={infoButton} type="button" aria-label={`${t("pchess.help")}: ${cardName(id)}`} aria-expanded={details} onClick={() => setDetails(true)} className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full border border-violet-300/60 bg-[#191323] text-sm text-violet-100 hover:bg-violet-800">?</button>
       <span className={small ? "text-2xl" : "text-3xl"}>{CARD_ICON[id]}</span>
       <span className="mt-1 text-[0.65rem] font-bold uppercase leading-tight tracking-wide" style={{ color: r.text }}>{cardName(id)}</span>
       {!small && <span className="mt-2 text-[0.65rem] leading-snug text-stone-300">{cardDesc(id)}</span>}
       {def.endsTurn && !small && <span className="mt-1 text-[0.55rem] uppercase tracking-widest text-red-300">{t("pchess.endsTurn")}</span>}
       {reason && <span className="mt-2 text-[0.6rem] text-amber-200">{reason}</span>}
-    </button>
+      {onClick && <button type="button" onClick={onClick} disabled={disabled} className="mt-auto w-full rounded-md border border-violet-300/50 bg-violet-500/20 px-2 py-1.5 text-xs font-bold text-violet-100 hover:bg-violet-500/40 disabled:cursor-not-allowed disabled:opacity-40">{t("pchess.use")}</button>}
+      {details && createPortal(<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-4 font-mono backdrop-blur-sm" onClick={() => { setDetails(false); infoButton.current?.focus(); }}>
+        <div role="dialog" aria-modal="true" aria-label={cardName(id)} onClick={e => e.stopPropagation()} className="w-full max-w-md rounded-2xl border border-violet-300/60 bg-[#191323] p-6 text-sm text-stone-200 shadow-[0_0_80px_#8b5cf644]">
+          <div className="mb-4 text-xl font-bold text-violet-200">{CARD_ICON[id]} {cardName(id)}</div>
+          <p className="mb-3 font-bold text-cyan-200">{t("pchess.cardCost", { n: def.cost })}</p>
+          <p className="mb-3 leading-relaxed">{t(`pchess.card.${id}.detail`)}</p>
+          <p className={`mb-3 font-bold ${def.endsTurn ? "text-red-300" : "text-emerald-300"}`}>{t(def.endsTurn ? "pchess.endsTurn" : "pchess.keepsTurn")}</p>
+          <p className="text-xs leading-relaxed text-stone-400">{t("pchess.cardRestrictions")}</p>
+          <button ref={closeButton} onClick={() => { setDetails(false); infoButton.current?.focus(); }} className="mt-5 rounded border border-violet-400 px-4 py-2 text-violet-100">{t("chess.close")}</button>
+        </div>
+      </div>, document.body)}
+    </div>
   );
 }
 
@@ -347,8 +372,9 @@ export function PowerChessModal({ state, myId, send, onClose }: PowerChessModalP
               pieceExtra={(sq) => (ghost(sq) ? { opacity: 0.5, filter: "drop-shadow(0 0 6px #b58aff)" } : undefined)}
             />
             <div className="mx-auto mt-2 max-w-[560px]">{seatRow(flipped ? "b" : "w")}</div>
+            {flash && <PowerCardSurge key={`${state.game}-${flash.key}`} card={flash.card} />}
             {choosing && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black/65">
+              <div role="dialog" aria-label={t("pchess.ascendTo")} className="absolute inset-0 z-40 flex items-center justify-center rounded-lg bg-black/75 backdrop-blur-sm">
                 <div className="border-2 border-[#c58aff] bg-[#140c20] p-3">
                   <div className="mb-2 text-center text-xs tracking-widest text-[#e2c6ff]">{t("pchess.ascendTo")}</div>
                   <div className="flex gap-2">
@@ -427,7 +453,7 @@ export function PowerChessModal({ state, myId, send, onClose }: PowerChessModalP
           <div className="flex flex-col gap-1 border-t border-[#3a1e6a] pt-3">
             <div className="flex items-center justify-between text-[0.65rem] uppercase tracking-widest text-stone-500">
               <span>{t("pchess.yourHand")} ({state.hand.length}/{POWER.maxHand})<HelpTip text={t("pchess.rules.hand")} /></span>
-              {myTurn && state.cardUsed && <span className="text-[#c58aff]">{t("pchess.cardUsed")}</span>}
+              {myTurn && <span className="text-[#c58aff]">⚡ {state.energy[seat]}/{POWER.maxEnergy}</span>}
             </div>
             <div className="flex gap-3 overflow-x-auto px-2 pb-1 pt-3">
               {state.hand.length === 0 && <span className="text-xs text-stone-600">{t("pchess.noCards")}</span>}
@@ -439,7 +465,7 @@ export function PowerChessModal({ state, myId, send, onClose }: PowerChessModalP
                     id={id}
                     onClick={myTurn ? () => pickCard(i) : undefined}
                      disabled={!interactive || !usable}
-                     reason={!myTurn ? undefined : busy ? t("pchess.busy") : state.cardUsed ? t("pchess.cardUsed") : seat && state.energy[seat] < CARDS[id].cost ? t("pchess.noEnergy") : !usable ? t("pchess.unavailable") : undefined}
+                      reason={!myTurn ? undefined : busy ? t("pchess.busy") : seat && state.energy[seat] < CARDS[id].cost ? t("pchess.noEnergy") : !usable ? t("pchess.unavailable") : undefined}
                     active={aiming?.index === i || choosing?.index === i}
                   />
                 );
@@ -449,7 +475,7 @@ export function PowerChessModal({ state, myId, send, onClose }: PowerChessModalP
         )}
 
         {help && (
-          <div className="absolute inset-0 z-10 overflow-y-auto bg-[#0b0712]/97 p-5 text-sm text-stone-300">
+          <div className="absolute inset-0 z-50 overflow-y-auto bg-[#0b0712]/97 p-5 text-sm text-stone-300">
             <div className="mb-3 flex items-center justify-between">
               <span className="font-bold tracking-[0.3em] text-[#e2c6ff]">{t("pchess.rules.title")}</span>
               <button onClick={() => setHelp(false)} className="text-xs text-stone-400 hover:text-white">{t("chess.close")}</button>
