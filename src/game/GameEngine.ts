@@ -16,6 +16,7 @@ import * as THREE from "three";
 import { ProceduralMap, LEVEL_G_DOOR_OPEN_ANGLE, CellType } from "./ProceduralMap";
 import { PlayerController, PLAYER_STANDING_HEIGHT, PLAYER_CROUCH_HEIGHT } from "./PlayerController";
 import { animateAccessories, buildExplorerAvatar, monsterSkinType, MONSTER_SKIN_TYPES } from "./ExplorerAvatar";
+import { AVATAR_CROUCH_DROP, AVATAR_HAND_Y, AVATAR_HIP_Y } from "./explorerSuit";
 import { SuperGuardRenderer } from "./SuperGuard";
 import type { SuperGuardFrame } from "../shared/superGuard";
 import { outfitKey, sanitizeOutfit, type Outfit } from "../shared/outfit";
@@ -2860,7 +2861,7 @@ export class GameEngine {
     const hand = group.getObjectByName("lForearm");
     if (hand && !group.getObjectByName("monsterSkinBody")) {
       // Arm held forward (see poseRemotePlayer): counter-rotate so the item stays upright in the glove.
-      model.position.set(0, -0.33, 0.06);
+      model.position.set(0, AVATAR_HAND_Y, 0.06);
       model.rotation.x = REMOTE_CARRY_ARM + REMOTE_CARRY_FOREARM;
       hand.add(model);
     } else {
@@ -2977,7 +2978,7 @@ export class GameEngine {
     if (rShin) rShin.rotation.x = Math.max(0, -cos) * knee + crouch * 1.7;
 
     // Hips: two bounces per stride, lowered in a crouch.
-    if (hips) hips.position.y = 0.47 - crouch * 0.2 + (Math.abs(sin) - 0.5) * 0.05 * gait;
+    if (hips) hips.position.y = AVATAR_HIP_Y - crouch * AVATAR_CROUCH_DROP + (Math.abs(sin) - 0.5) * 0.05 * gait;
 
     // Torso: running lean, crouch hunch, shoulder counter-twist, breathing.
     if (spine) spine.rotation.set(0.28 * run * move + crouch * 0.45 + breath, sin * 0.1 * gait, Math.sin(time * 0.7) * 0.02 * (1 - move));
